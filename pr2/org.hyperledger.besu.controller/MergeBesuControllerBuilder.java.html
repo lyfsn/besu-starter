@@ -1,0 +1,263 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MergeBesuControllerBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">MergeBesuControllerBuilder.java</span></div><h1>MergeBesuControllerBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.merge.MergeContext;
+import org.hyperledger.besu.consensus.merge.MergeProtocolSchedule;
+import org.hyperledger.besu.consensus.merge.PostMergeContext;
+import org.hyperledger.besu.consensus.merge.TransitionBestPeerComparator;
+import org.hyperledger.besu.consensus.merge.blockcreation.MergeCoordinator;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.manager.MergePeerFilter;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.RequiredBlocksPeerValidator;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.BackwardChain;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.BackwardSyncContext;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Merge besu controller builder. */
+<span class="fc" id="L58">public class MergeBesuControllerBuilder extends BesuControllerBuilder {</span>
+<span class="fc" id="L59">  private final AtomicReference&lt;SyncState&gt; syncState = new AtomicReference&lt;&gt;();</span>
+<span class="fc" id="L60">  private static final Logger LOG = LoggerFactory.getLogger(MergeBesuControllerBuilder.class);</span>
+
+  @Override
+  protected MiningCoordinator createMiningCoordinator(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParameters,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager) {
+<span class="fc" id="L70">    return createTransitionMiningCoordinator(</span>
+        protocolSchedule,
+        protocolContext,
+        transactionPool,
+        miningParameters,
+        syncState,
+        new BackwardSyncContext(
+            protocolContext,
+            protocolSchedule,
+            metricsSystem,
+<span class="fc" id="L80">            ethProtocolManager.ethContext(),</span>
+            syncState,
+<span class="fc" id="L82">            BackwardChain.from(</span>
+<span class="fc" id="L83">                storageProvider, ScheduleBasedBlockHeaderFunctions.create(protocolSchedule))),</span>
+<span class="fc" id="L84">        ethProtocolManager.ethContext().getScheduler());</span>
+  }
+
+  @Override
+  protected EthProtocolManager createEthProtocolManager(
+      final ProtocolContext protocolContext,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthContext ethContext,
+      final EthMessages ethMessages,
+      final EthScheduler scheduler,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter) {
+
+<span class="fc" id="L100">    var mergeContext = protocolContext.getConsensusContext(MergeContext.class);</span>
+
+<span class="fc" id="L102">    var mergeBestPeerComparator =</span>
+        new TransitionBestPeerComparator(
+            configOptionsSupplier
+<span class="fc" id="L105">                .get()</span>
+<span class="fc" id="L106">                .getTerminalTotalDifficulty()</span>
+<span class="fc" id="L107">                .map(Difficulty::of)</span>
+<span class="fc" id="L108">                .orElseThrow());</span>
+<span class="fc" id="L109">    ethPeers.setBestChainComparator(mergeBestPeerComparator);</span>
+<span class="fc" id="L110">    mergeContext.observeNewIsPostMergeState(mergeBestPeerComparator);</span>
+
+<span class="fc" id="L112">    Optional&lt;MergePeerFilter&gt; filterToUse = Optional.of(new MergePeerFilter());</span>
+
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">    if (mergePeerFilter.isPresent()) {</span>
+<span class="nc" id="L115">      filterToUse = mergePeerFilter;</span>
+    }
+<span class="fc" id="L117">    mergeContext.observeNewIsPostMergeState(filterToUse.get());</span>
+<span class="fc" id="L118">    mergeContext.addNewUnverifiedForkchoiceListener(filterToUse.get());</span>
+
+<span class="fc" id="L120">    EthProtocolManager ethProtocolManager =</span>
+<span class="fc" id="L121">        super.createEthProtocolManager(</span>
+            protocolContext,
+            synchronizerConfiguration,
+            transactionPool,
+            ethereumWireProtocolConfiguration,
+            ethPeers,
+            ethContext,
+            ethMessages,
+            scheduler,
+            peerValidators,
+            filterToUse);
+
+<span class="fc" id="L133">    return ethProtocolManager;</span>
+  }
+
+  /**
+   * Create transition mining coordinator.
+   *
+   * @param protocolSchedule the protocol schedule
+   * @param protocolContext the protocol context
+   * @param transactionPool the transaction pool
+   * @param miningParameters the mining parameters
+   * @param syncState the sync state
+   * @param backwardSyncContext the backward sync context
+   * @param ethScheduler the scheduler
+   * @return the mining coordinator
+   */
+  protected MiningCoordinator createTransitionMiningCoordinator(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParameters,
+      final SyncState syncState,
+      final BackwardSyncContext backwardSyncContext,
+      final EthScheduler ethScheduler) {
+
+<span class="fc" id="L157">    this.syncState.set(syncState);</span>
+
+<span class="fc" id="L159">    final GenesisConfigOptions genesisConfigOptions = configOptionsSupplier.get();</span>
+<span class="fc" id="L160">    final Optional&lt;Address&gt; depositContractAddress =</span>
+<span class="fc" id="L161">        genesisConfigOptions.getDepositContractAddress();</span>
+
+<span class="fc" id="L163">    return new MergeCoordinator(</span>
+        protocolContext,
+        protocolSchedule,
+        ethScheduler,
+        transactionPool,
+        miningParameters,
+        backwardSyncContext,
+        depositContractAddress);
+  }
+
+  @Override
+  protected ProtocolSchedule createProtocolSchedule() {
+<span class="fc" id="L175">    return MergeProtocolSchedule.create(</span>
+<span class="fc" id="L176">        configOptionsSupplier.get(),</span>
+        privacyParameters,
+        isRevertReasonEnabled,
+        miningParameters,
+        badBlockManager);
+  }
+
+  @Override
+  protected MergeContext createConsensusContext(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule) {
+
+<span class="fc" id="L189">    final GenesisConfigOptions genesisConfigOptions = configOptionsSupplier.get();</span>
+<span class="fc" id="L190">    final OptionalLong terminalBlockNumber = genesisConfigOptions.getTerminalBlockNumber();</span>
+<span class="fc" id="L191">    final Optional&lt;Hash&gt; terminalBlockHash = genesisConfigOptions.getTerminalBlockHash();</span>
+<span class="fc" id="L192">    final boolean isPostMergeAtGenesis =</span>
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">        genesisConfigOptions.getTerminalTotalDifficulty().isPresent()</span>
+<span class="pc bpc" id="L194" title="1 of 2 branches missed.">            &amp;&amp; genesisConfigOptions.getTerminalTotalDifficulty().get().isZero()</span>
+<span class="pc bnc" id="L195" title="All 2 branches missed.">            &amp;&amp; blockchain.getGenesisBlockHeader().getDifficulty().isZero();</span>
+
+    final MergeContext mergeContext =
+<span class="fc" id="L198">        PostMergeContext.get()</span>
+<span class="fc" id="L199">            .setSyncState(syncState.get())</span>
+<span class="fc" id="L200">            .setTerminalTotalDifficulty(</span>
+                genesisConfigOptions
+<span class="fc" id="L202">                    .getTerminalTotalDifficulty()</span>
+<span class="fc" id="L203">                    .map(Difficulty::of)</span>
+<span class="fc" id="L204">                    .orElse(Difficulty.ZERO))</span>
+<span class="fc" id="L205">            .setPostMergeAtGenesis(isPostMergeAtGenesis);</span>
+
+<span class="fc" id="L207">    blockchain</span>
+<span class="fc" id="L208">        .getFinalized()</span>
+<span class="fc" id="L209">        .flatMap(blockchain::getBlockHeader)</span>
+<span class="fc" id="L210">        .ifPresent(mergeContext::setFinalized);</span>
+
+<span class="fc" id="L212">    blockchain</span>
+<span class="fc" id="L213">        .getSafeBlock()</span>
+<span class="fc" id="L214">        .flatMap(blockchain::getBlockHeader)</span>
+<span class="fc" id="L215">        .ifPresent(mergeContext::setSafeBlock);</span>
+
+<span class="pc bpc" id="L217" title="1 of 4 branches missed.">    if (terminalBlockNumber.isPresent() &amp;&amp; terminalBlockHash.isPresent()) {</span>
+<span class="fc" id="L218">      Optional&lt;BlockHeader&gt; termBlock = blockchain.getBlockHeader(terminalBlockNumber.getAsLong());</span>
+<span class="fc" id="L219">      mergeContext.setTerminalPoWBlock(termBlock);</span>
+    }
+<span class="fc" id="L221">    blockchain.observeBlockAdded(</span>
+        blockAddedEvent -&gt;
+<span class="fc" id="L223">            blockchain</span>
+<span class="fc" id="L224">                .getTotalDifficultyByHash(blockAddedEvent.getBlock().getHeader().getHash())</span>
+<span class="fc" id="L225">                .ifPresent(mergeContext::setIsPostMerge));</span>
+
+<span class="fc" id="L227">    return mergeContext;</span>
+  }
+
+  @Override
+  protected PluginServiceFactory createAdditionalPluginServices(
+      final Blockchain blockchain, final ProtocolContext protocolContext) {
+<span class="fc" id="L233">    return new NoopPluginServiceFactory();</span>
+  }
+
+  @Override
+  protected List&lt;PeerValidator&gt; createPeerValidators(final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L238">    List&lt;PeerValidator&gt; retval = super.createPeerValidators(protocolSchedule);</span>
+<span class="fc" id="L239">    final OptionalLong powTerminalBlockNumber =</span>
+<span class="fc" id="L240">        configOptionsSupplier.get().getTerminalBlockNumber();</span>
+<span class="fc" id="L241">    final Optional&lt;Hash&gt; powTerminalBlockHash = configOptionsSupplier.get().getTerminalBlockHash();</span>
+<span class="pc bpc" id="L242" title="2 of 4 branches missed.">    if (powTerminalBlockHash.isPresent() &amp;&amp; powTerminalBlockNumber.isPresent()) {</span>
+<span class="fc" id="L243">      retval.add(</span>
+          new RequiredBlocksPeerValidator(
+              protocolSchedule,
+              metricsSystem,
+<span class="fc" id="L247">              powTerminalBlockNumber.getAsLong(),</span>
+<span class="fc" id="L248">              powTerminalBlockHash.get(),</span>
+              0));
+    } else {
+<span class="nc" id="L251">      LOG.debug(&quot;unable to validate peers with terminal difficulty blocks&quot;);</span>
+    }
+<span class="fc" id="L253">    return retval;</span>
+  }
+
+  @Override
+  public BesuController build() {
+<span class="fc" id="L258">    final BesuController controller = super.build();</span>
+<span class="fc" id="L259">    PostMergeContext.get().setSyncState(controller.getSyncState());</span>
+<span class="fc" id="L260">    return controller;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

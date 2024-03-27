@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Packet.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">Packet.java</span></div><h1>Packet.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+import static org.hyperledger.besu.util.Preconditions.checkGuard;
+
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.discovery.PeerDiscoveryPacketDecodingException;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.Optional;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import io.vertx.core.buffer.Buffer;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.MutableBytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class Packet {
+
+  private static final int PACKET_TYPE_INDEX = 97;
+  private static final int PACKET_DATA_INDEX = 98;
+  private static final int SIGNATURE_INDEX = 32;
+<span class="fc" id="L47">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L48">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  private final PacketType type;
+  private final PacketData data;
+
+  private final Bytes hash;
+  private final SECPSignature signature;
+  private final SECPPublicKey publicKey;
+
+<span class="fc" id="L57">  private Packet(final PacketType type, final PacketData data, final NodeKey nodeKey) {</span>
+<span class="fc" id="L58">    this.type = type;</span>
+<span class="fc" id="L59">    this.data = data;</span>
+
+<span class="fc" id="L61">    final Bytes typeBytes = Bytes.of(this.type.getValue());</span>
+<span class="fc" id="L62">    final Bytes dataBytes = RLP.encode(this.data::writeTo);</span>
+
+<span class="fc" id="L64">    this.signature = nodeKey.sign(keccak256(Bytes.wrap(typeBytes, dataBytes)));</span>
+<span class="fc" id="L65">    this.hash = keccak256(Bytes.concatenate(encodeSignature(signature), typeBytes, dataBytes));</span>
+<span class="fc" id="L66">    this.publicKey = nodeKey.getPublicKey();</span>
+<span class="fc" id="L67">  }</span>
+
+<span class="fc" id="L69">  private Packet(final PacketType packetType, final PacketData packetData, final Bytes message) {</span>
+<span class="fc" id="L70">    final Bytes hash = message.slice(0, SIGNATURE_INDEX);</span>
+<span class="fc" id="L71">    final Bytes encodedSignature =</span>
+<span class="fc" id="L72">        message.slice(SIGNATURE_INDEX, PACKET_TYPE_INDEX - SIGNATURE_INDEX);</span>
+<span class="fc" id="L73">    final Bytes signedPayload =</span>
+<span class="fc" id="L74">        message.slice(PACKET_TYPE_INDEX, message.size() - PACKET_TYPE_INDEX);</span>
+
+    // Perform hash integrity check.
+<span class="fc" id="L77">    final Bytes rest = message.slice(SIGNATURE_INDEX, message.size() - SIGNATURE_INDEX);</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    if (!Arrays.equals(keccak256(rest).toArray(), hash.toArray())) {</span>
+<span class="fc" id="L79">      throw new PeerDiscoveryPacketDecodingException(</span>
+          &quot;Integrity check failed: non-matching hashes.&quot;);
+    }
+
+<span class="fc" id="L83">    this.type = packetType;</span>
+<span class="fc" id="L84">    this.data = packetData;</span>
+<span class="fc" id="L85">    this.hash = hash;</span>
+<span class="fc" id="L86">    this.signature = decodeSignature(encodedSignature);</span>
+<span class="fc" id="L87">    this.publicKey =</span>
+        SIGNATURE_ALGORITHM
+<span class="fc" id="L89">            .get()</span>
+<span class="fc" id="L90">            .recoverPublicKeyFromSignature(keccak256(signedPayload), this.signature)</span>
+<span class="fc" id="L91">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L93">                    new PeerDiscoveryPacketDecodingException(</span>
+                        &quot;Invalid packet signature, &quot; + &quot;cannot recover public key&quot;));
+<span class="fc" id="L95">  }</span>
+
+  public static Packet create(
+      final PacketType packetType, final PacketData packetData, final NodeKey nodeKey) {
+<span class="fc" id="L99">    return new Packet(packetType, packetData, nodeKey);</span>
+  }
+
+  public static Packet decode(final Buffer message) {
+<span class="fc" id="L103">    checkGuard(</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        message.length() &gt;= PACKET_DATA_INDEX,</span>
+        PeerDiscoveryPacketDecodingException::new,
+        &quot;Packet too short: expected at least %s bytes, got %s&quot;,
+<span class="fc" id="L107">        PACKET_DATA_INDEX,</span>
+<span class="fc" id="L108">        message.length());</span>
+
+<span class="fc" id="L110">    final byte type = message.getByte(PACKET_TYPE_INDEX);</span>
+
+<span class="fc" id="L112">    final PacketType packetType =</span>
+<span class="fc" id="L113">        PacketType.forByte(type)</span>
+<span class="fc" id="L114">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L116">                    new PeerDiscoveryPacketDecodingException(&quot;Unrecognized packet type: &quot; + type));</span>
+
+<span class="fc" id="L118">    final PacketType.Deserializer&lt;?&gt; deserializer = packetType.getDeserializer();</span>
+    final PacketData packetData;
+    try {
+<span class="fc" id="L121">      packetData =</span>
+<span class="fc" id="L122">          deserializer.deserialize(</span>
+<span class="fc" id="L123">              RLP.input(</span>
+<span class="fc" id="L124">                  Bytes.wrapBuffer(</span>
+<span class="fc" id="L125">                      message, PACKET_DATA_INDEX, message.length() - PACKET_DATA_INDEX)));</span>
+<span class="fc" id="L126">      return new Packet(packetType, packetData, Bytes.wrapBuffer(message));</span>
+<span class="nc" id="L127">    } catch (final RLPException e) {</span>
+<span class="nc" id="L128">      throw new PeerDiscoveryPacketDecodingException(&quot;Malformed packet of type: &quot; + packetType, e);</span>
+<span class="fc" id="L129">    } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L130">      throw new PeerDiscoveryPacketDecodingException(</span>
+          &quot;Failed decoding packet of type: &quot; + packetType, e);
+    }
+  }
+
+  public Buffer encode() {
+<span class="fc" id="L136">    final Bytes encodedSignature = encodeSignature(signature);</span>
+<span class="fc" id="L137">    final BytesValueRLPOutput encodedData = new BytesValueRLPOutput();</span>
+<span class="fc" id="L138">    data.writeTo(encodedData);</span>
+
+<span class="fc" id="L140">    final Buffer buffer =</span>
+<span class="fc" id="L141">        Buffer.buffer(hash.size() + encodedSignature.size() + 1 + encodedData.encodedSize());</span>
+<span class="fc" id="L142">    hash.appendTo(buffer);</span>
+<span class="fc" id="L143">    encodedSignature.appendTo(buffer);</span>
+<span class="fc" id="L144">    buffer.appendByte(type.getValue());</span>
+<span class="fc" id="L145">    appendEncoded(encodedData, buffer);</span>
+<span class="fc" id="L146">    return buffer;</span>
+  }
+
+  protected void appendEncoded(final BytesValueRLPOutput encoded, final Buffer buffer) {
+<span class="fc" id="L150">    final int size = encoded.encodedSize();</span>
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">    if (size == 0) {</span>
+<span class="nc" id="L152">      return;</span>
+    }
+
+    // We want to append to the buffer, and Buffer always grows to accommodate anything writing,
+    // so we write the last byte we know we'll need to make it resize accordingly.
+<span class="fc" id="L157">    final int start = buffer.length();</span>
+<span class="fc" id="L158">    buffer.setByte(start + size - 1, (byte) 0);</span>
+<span class="fc" id="L159">    encoded.writeEncoded(MutableBytes.wrapBuffer(buffer, start, size));</span>
+<span class="fc" id="L160">  }</span>
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  public &lt;T extends PacketData&gt; Optional&lt;T&gt; getPacketData(final Class&lt;T&gt; expectedPacketType) {
+<span class="pc bpc" id="L164" title="1 of 4 branches missed.">    if (data == null || !data.getClass().equals(expectedPacketType)) {</span>
+<span class="fc" id="L165">      return Optional.empty();</span>
+    }
+<span class="fc" id="L167">    return Optional.of((T) data);</span>
+  }
+
+  public Bytes getNodeId() {
+<span class="fc" id="L171">    return publicKey.getEncodedBytes();</span>
+  }
+
+  public PacketType getType() {
+<span class="fc" id="L175">    return type;</span>
+  }
+
+  public Bytes getHash() {
+<span class="fc" id="L179">    return hash;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L184">    return &quot;Packet{&quot;</span>
+        + &quot;type=&quot;
+        + type
+        + &quot;, data=&quot;
+        + data
+        + &quot;, hash=&quot;
+        + hash
+        + &quot;, signature=&quot;
+        + signature
+        + &quot;, publicKey=&quot;
+        + publicKey
+        + '}';
+  }
+
+  private static Bytes encodeSignature(final SECPSignature signature) {
+<span class="fc" id="L199">    final MutableBytes encoded = MutableBytes.create(65);</span>
+<span class="fc" id="L200">    UInt256.valueOf(signature.getR()).copyTo(encoded, 0);</span>
+<span class="fc" id="L201">    UInt256.valueOf(signature.getS()).copyTo(encoded, 32);</span>
+<span class="fc" id="L202">    final int v = signature.getRecId();</span>
+<span class="fc" id="L203">    encoded.set(64, (byte) v);</span>
+<span class="fc" id="L204">    return encoded;</span>
+  }
+
+  private static SECPSignature decodeSignature(final Bytes encodedSignature) {
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">    checkArgument(</span>
+<span class="pc bpc" id="L209" title="1 of 2 branches missed.">        encodedSignature != null &amp;&amp; encodedSignature.size() == 65, &quot;encodedSignature is 65 bytes&quot;);</span>
+<span class="fc" id="L210">    final BigInteger r = encodedSignature.slice(0, 32).toUnsignedBigInteger();</span>
+<span class="fc" id="L211">    final BigInteger s = encodedSignature.slice(32, 32).toUnsignedBigInteger();</span>
+<span class="fc" id="L212">    final int recId = encodedSignature.get(64);</span>
+<span class="fc" id="L213">    return SIGNATURE_ALGORITHM.get().createSignature(r, s, (byte) recId);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

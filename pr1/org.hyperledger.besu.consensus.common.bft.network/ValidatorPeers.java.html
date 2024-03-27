@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ValidatorPeers.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.bft.network</a> &gt; <span class="el_source">ValidatorPeers.java</span></div><h1>ValidatorPeers.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common.bft.network;
+
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection.PeerNotConnected;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Responsible for tracking the network peers which have a connection to this node, then
+ * multicasting packets to ONLY the peers which have been identified as being validators.
+ */
+public class ValidatorPeers implements ValidatorMulticaster, PeerConnectionTracker {
+
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(ValidatorPeers.class);</span>
+
+  // It's possible for multiple connections between peers to exist for brief periods, so map each
+  // address to a set of connections
+<span class="fc" id="L44">  private final Map&lt;Address, Set&lt;PeerConnection&gt;&gt; connectionsByAddress = new ConcurrentHashMap&lt;&gt;();</span>
+  private final ValidatorProvider validatorProvider;
+  private final String protocolName;
+
+  /**
+   * Instantiates a new Validator peers.
+   *
+   * @param validatorProvider the validator provider
+   * @param protocolName the protocol name
+   */
+<span class="fc" id="L54">  public ValidatorPeers(final ValidatorProvider validatorProvider, final String protocolName) {</span>
+<span class="fc" id="L55">    this.validatorProvider = validatorProvider;</span>
+<span class="fc" id="L56">    this.protocolName = protocolName;</span>
+<span class="fc" id="L57">  }</span>
+
+  @Override
+  public void add(final PeerConnection newConnection) {
+<span class="fc" id="L61">    final Address peerAddress = newConnection.getPeerInfo().getAddress();</span>
+<span class="fc" id="L62">    final Set&lt;PeerConnection&gt; connections =</span>
+<span class="fc" id="L63">        connectionsByAddress.computeIfAbsent(</span>
+<span class="fc" id="L64">            peerAddress, (k) -&gt; Collections.newSetFromMap(new ConcurrentHashMap&lt;&gt;()));</span>
+<span class="fc" id="L65">    connections.add(newConnection);</span>
+<span class="fc" id="L66">  }</span>
+
+  @Override
+  public void remove(final PeerConnection removedConnection) {
+<span class="fc" id="L70">    final Address peerAddress = removedConnection.getPeerInfo().getAddress();</span>
+<span class="fc" id="L71">    final Set&lt;PeerConnection&gt; connections = connectionsByAddress.get(peerAddress);</span>
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">    if (connections == null) {</span>
+<span class="nc" id="L73">      return;</span>
+    }
+<span class="fc" id="L75">    connections.remove(removedConnection);</span>
+<span class="fc" id="L76">  }</span>
+
+  @Override
+  public void send(final MessageData message) {
+<span class="fc" id="L80">    sendMessageToSpecificAddresses(getLatestValidators(), message);</span>
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public void send(final MessageData message, final Collection&lt;Address&gt; denylist) {
+<span class="fc" id="L85">    final Collection&lt;Address&gt; includedValidators =</span>
+<span class="fc" id="L86">        getLatestValidators().stream()</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">            .filter(a -&gt; !denylist.contains(a))</span>
+<span class="fc" id="L88">            .collect(Collectors.toSet());</span>
+<span class="fc" id="L89">    sendMessageToSpecificAddresses(includedValidators, message);</span>
+<span class="fc" id="L90">  }</span>
+
+  private void sendMessageToSpecificAddresses(
+      final Collection&lt;Address&gt; recipients, final MessageData message) {
+<span class="fc" id="L94">    LOG.trace(</span>
+<span class="fc" id="L95">        &quot;Sending message to peers messageCode={} recipients={}&quot;, message.getCode(), recipients);</span>
+<span class="fc" id="L96">    recipients.stream()</span>
+<span class="fc" id="L97">        .map(connectionsByAddress::get)</span>
+<span class="fc" id="L98">        .filter(Objects::nonNull)</span>
+<span class="fc" id="L99">        .flatMap(Set::stream)</span>
+<span class="fc" id="L100">        .forEach(</span>
+            connection -&gt; {
+              try {
+<span class="fc" id="L103">                connection.sendForProtocol(protocolName, message);</span>
+<span class="nc" id="L104">              } catch (final PeerNotConnected peerNotConnected) {</span>
+<span class="nc" id="L105">                LOG.trace(</span>
+                    &quot;Lost connection to a validator. remoteAddress={} peerInfo={}&quot;,
+<span class="nc" id="L107">                    connection.getRemoteAddress(),</span>
+<span class="nc" id="L108">                    connection.getPeerInfo());</span>
+<span class="fc" id="L109">              }</span>
+<span class="fc" id="L110">            });</span>
+<span class="fc" id="L111">  }</span>
+
+  private Collection&lt;Address&gt; getLatestValidators() {
+<span class="fc" id="L114">    return validatorProvider.getValidatorsAtHead();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

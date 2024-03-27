@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PivotSelectorFromSafeBlock.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">PivotSelectorFromSafeBlock.java</span></div><h1>PivotSelectorFromSafeBlock.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.merge.ForkchoiceEvent;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.task.WaitForPeersTask;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.RetryingGetHeaderFromPeerByHashTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PivotSelectorFromSafeBlock implements PivotBlockSelector {
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(PivotSelectorFromSafeBlock.class);</span>
+  private final ProtocolContext protocolContext;
+  private final ProtocolSchedule protocolSchedule;
+  private final EthContext ethContext;
+  private final MetricsSystem metricsSystem;
+  private final GenesisConfigOptions genesisConfig;
+  private final Supplier&lt;Optional&lt;ForkchoiceEvent&gt;&gt; forkchoiceStateSupplier;
+  private final Runnable cleanupAction;
+
+<span class="fc" id="L47">  private long lastNoFcuReceivedInfoLog = System.currentTimeMillis();</span>
+  private static final long NO_FCU_RECEIVED_LOGGING_THRESHOLD = 60000L;
+<span class="fc" id="L49">  private volatile Optional&lt;BlockHeader&gt; maybeCachedHeadBlockHeader = Optional.empty();</span>
+
+  public PivotSelectorFromSafeBlock(
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final GenesisConfigOptions genesisConfig,
+      final Supplier&lt;Optional&lt;ForkchoiceEvent&gt;&gt; forkchoiceStateSupplier,
+<span class="fc" id="L58">      final Runnable cleanupAction) {</span>
+<span class="fc" id="L59">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L60">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L61">    this.ethContext = ethContext;</span>
+<span class="fc" id="L62">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L63">    this.genesisConfig = genesisConfig;</span>
+<span class="fc" id="L64">    this.forkchoiceStateSupplier = forkchoiceStateSupplier;</span>
+<span class="fc" id="L65">    this.cleanupAction = cleanupAction;</span>
+<span class="fc" id="L66">  }</span>
+
+  @Override
+  public Optional&lt;FastSyncState&gt; selectNewPivotBlock() {
+<span class="nc" id="L70">    final Optional&lt;ForkchoiceEvent&gt; maybeForkchoice = forkchoiceStateSupplier.get();</span>
+<span class="nc bnc" id="L71" title="All 4 branches missed.">    if (maybeForkchoice.isPresent() &amp;&amp; maybeForkchoice.get().hasValidSafeBlockHash()) {</span>
+<span class="nc" id="L72">      return Optional.of(selectLastSafeBlockAsPivot(maybeForkchoice.get().getSafeBlockHash()));</span>
+    }
+<span class="nc bnc" id="L74" title="All 2 branches missed.">    if (lastNoFcuReceivedInfoLog + NO_FCU_RECEIVED_LOGGING_THRESHOLD &lt; System.currentTimeMillis()) {</span>
+<span class="nc" id="L75">      lastNoFcuReceivedInfoLog = System.currentTimeMillis();</span>
+<span class="nc" id="L76">      LOG.info(</span>
+          &quot;Waiting for consensus client, this may be because your consensus client is still syncing&quot;);
+    }
+<span class="nc" id="L79">    LOG.debug(&quot;No finalized block hash announced yet&quot;);</span>
+<span class="nc" id="L80">    return Optional.empty();</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; prepareRetry() {
+    // nothing to do
+<span class="nc" id="L86">    return CompletableFuture.completedFuture(null);</span>
+  }
+
+  private FastSyncState selectLastSafeBlockAsPivot(final Hash safeHash) {
+<span class="nc" id="L90">    LOG.debug(&quot;Returning safe block hash {} as pivot&quot;, safeHash);</span>
+<span class="nc" id="L91">    return new FastSyncState(safeHash);</span>
+  }
+
+  @Override
+  public void close() {
+<span class="nc" id="L96">    cleanupAction.run();</span>
+<span class="nc" id="L97">  }</span>
+
+  @Override
+  public long getMinRequiredBlockNumber() {
+<span class="fc" id="L101">    return genesisConfig.getTerminalBlockNumber().orElse(0L);</span>
+  }
+
+  @Override
+  public long getBestChainHeight() {
+<span class="nc" id="L106">    final long localChainHeight = protocolContext.getBlockchain().getChainHeadBlockNumber();</span>
+
+<span class="nc" id="L108">    return Math.max(</span>
+        forkchoiceStateSupplier
+<span class="nc" id="L110">            .get()</span>
+<span class="nc" id="L111">            .map(ForkchoiceEvent::getHeadBlockHash)</span>
+<span class="nc" id="L112">            .map(</span>
+                headBlockHash -&gt;
+                    maybeCachedHeadBlockHeader
+<span class="nc" id="L115">                        .filter(</span>
+<span class="nc" id="L116">                            cachedBlockHeader -&gt; cachedBlockHeader.getHash().equals(headBlockHash))</span>
+<span class="nc" id="L117">                        .map(BlockHeader::getNumber)</span>
+<span class="nc" id="L118">                        .orElseGet(</span>
+                            () -&gt; {
+<span class="nc" id="L120">                              LOG.debug(</span>
+                                  &quot;Downloading chain head block header by hash {}&quot;, headBlockHash);
+                              try {
+<span class="nc" id="L123">                                return waitForPeers(1)</span>
+<span class="nc" id="L124">                                    .thenCompose(unused -&gt; downloadBlockHeader(headBlockHash))</span>
+<span class="nc" id="L125">                                    .thenApply(</span>
+                                        blockHeader -&gt; {
+<span class="nc" id="L127">                                          maybeCachedHeadBlockHeader = Optional.of(blockHeader);</span>
+<span class="nc" id="L128">                                          return blockHeader.getNumber();</span>
+                                        })
+<span class="nc" id="L130">                                    .get();</span>
+<span class="nc" id="L131">                              } catch (Throwable t) {</span>
+<span class="nc" id="L132">                                LOG.debug(</span>
+                                    &quot;Error trying to download chain head block header by hash {}&quot;,
+                                    headBlockHash,
+                                    t);
+                              }
+<span class="nc" id="L137">                              return null;</span>
+                            }))
+<span class="nc" id="L139">            .orElse(0L),</span>
+        localChainHeight);
+  }
+
+  private CompletableFuture&lt;BlockHeader&gt; downloadBlockHeader(final Hash hash) {
+<span class="nc" id="L144">    return RetryingGetHeaderFromPeerByHashTask.byHash(</span>
+            protocolSchedule, ethContext, hash, 0, metricsSystem)
+<span class="nc" id="L146">        .getHeader()</span>
+<span class="nc" id="L147">        .whenComplete(</span>
+            (blockHeader, throwable) -&gt; {
+<span class="nc bnc" id="L149" title="All 2 branches missed.">              if (throwable != null) {</span>
+<span class="nc" id="L150">                LOG.debug(&quot;Error downloading block header by hash {}&quot;, hash);</span>
+              } else {
+<span class="nc" id="L152">                LOG.atDebug()</span>
+<span class="nc" id="L153">                    .setMessage(&quot;Successfully downloaded pivot block header by hash {}&quot;)</span>
+<span class="nc" id="L154">                    .addArgument(blockHeader::toLogString)</span>
+<span class="nc" id="L155">                    .log();</span>
+              }
+<span class="nc" id="L157">            });</span>
+  }
+
+  private CompletableFuture&lt;Void&gt; waitForPeers(final int count) {
+
+<span class="nc" id="L162">    final WaitForPeersTask waitForPeersTask =</span>
+<span class="nc" id="L163">        WaitForPeersTask.create(ethContext, count, metricsSystem);</span>
+<span class="nc" id="L164">    return waitForPeersTask.run();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

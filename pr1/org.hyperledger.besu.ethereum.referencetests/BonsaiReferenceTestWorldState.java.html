@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiReferenceTestWorldState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.referencetests</a> &gt; <span class="el_source">BonsaiReferenceTestWorldState.java</span></div><h1>BonsaiReferenceTestWorldState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.referencetests;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.InMemoryKeyValueStorageProvider;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedMerkleTrieLoader;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.NoOpCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiPreImageProxy;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateLayerStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogAddedEvent;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class BonsaiReferenceTestWorldState extends BonsaiWorldState
+    implements ReferenceTestWorldState {
+
+  private final BonsaiReferenceTestWorldStateStorage refTestStorage;
+  private final BonsaiPreImageProxy preImageProxy;
+  private final EvmConfiguration evmConfiguration;
+
+  protected BonsaiReferenceTestWorldState(
+      final BonsaiReferenceTestWorldStateStorage worldStateKeyValueStorage,
+      final CachedMerkleTrieLoader cachedMerkleTrieLoader,
+      final CachedWorldStorageManager cachedWorldStorageManager,
+      final TrieLogManager trieLogManager,
+      final BonsaiPreImageProxy preImageProxy,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L62">    super(</span>
+        worldStateKeyValueStorage,
+        cachedMerkleTrieLoader,
+        cachedWorldStorageManager,
+        trieLogManager,
+        evmConfiguration);
+<span class="fc" id="L68">    this.refTestStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L69">    this.preImageProxy = preImageProxy;</span>
+<span class="fc" id="L70">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L71">    setAccumulator(</span>
+        new BonsaiReferenceTestUpdateAccumulator(
+            this,
+            (addr, value) -&gt;
+<span class="fc" id="L75">                cachedMerkleTrieLoader.preLoadAccount(</span>
+<span class="fc" id="L76">                    getWorldStateStorage(), worldStateRootHash, addr),</span>
+            (addr, value) -&gt;
+<span class="fc" id="L78">                cachedMerkleTrieLoader.preLoadStorageSlot(getWorldStateStorage(), addr, value),</span>
+            preImageProxy,
+            evmConfiguration));
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public ReferenceTestWorldState copy() {
+<span class="fc" id="L85">    var layerCopy =</span>
+        new BonsaiReferenceTestWorldStateStorage(worldStateKeyValueStorage, preImageProxy);
+<span class="fc" id="L87">    return new BonsaiReferenceTestWorldState(</span>
+        layerCopy,
+        cachedMerkleTrieLoader,
+        cachedWorldStorageManager,
+        trieLogManager,
+        preImageProxy,
+        evmConfiguration);
+  }
+
+  /**
+   * For reference tests world state root validation is handled in the harness, this stubs out the
+   * behavior to always pass.
+   *
+   * @param calculatedStateRoot state root calculated during bonsai persist step.
+   * @param header supplied reference test block header.
+   */
+  @Override
+  protected void verifyWorldStateRoot(final Hash calculatedStateRoot, final BlockHeader header) {
+    // The test harness validates the root hash, no need to validate in-line for reference test
+<span class="fc" id="L106">  }</span>
+
+  @Override
+  public void processExtraStateStorageFormatValidation(final BlockHeader blockHeader) {
+<span class="pc bpc" id="L110" title="1 of 2 branches missed.">    if (blockHeader != null) {</span>
+<span class="fc" id="L111">      final Hash parentStateRoot = getWorldStateRootHash();</span>
+<span class="fc" id="L112">      final BonsaiReferenceTestUpdateAccumulator originalUpdater =</span>
+<span class="fc" id="L113">          ((BonsaiReferenceTestUpdateAccumulator) updater()).createDetachedAccumulator();</span>
+
+      // validate trielog generation with persisted state
+<span class="fc" id="L116">      validateStateRolling(parentStateRoot, originalUpdater, blockHeader, false);</span>
+      // validate trielog generation with frozen state
+<span class="fc" id="L118">      validateStateRolling(parentStateRoot, originalUpdater, blockHeader, true);</span>
+    }
+<span class="fc" id="L120">  }</span>
+
+  /**
+   * TrieLog is an important part of Bonsai, so it's important to verify the generation of the
+   * TrieLog by performing rollbacks and rollforwards.
+   *
+   * @param blockHeader header of the block to import
+   */
+  private void validateStateRolling(
+      final Hash parentStateRoot,
+      final BonsaiReferenceTestUpdateAccumulator originalUpdater,
+      final BlockHeader blockHeader,
+      final boolean isFrozenState) {
+    // With Bonsai, a TrieLog is generated when the state is persisted. Therefore, we generate the
+    // TrieLog by triggering a state persist in order to closely match the real case scenario.
+<span class="fc" id="L135">    generateTrieLogFromState(blockHeader, originalUpdater, isFrozenState);</span>
+<span class="fc" id="L136">    final TrieLog trieLogFromFrozenState =</span>
+        trieLogManager
+<span class="fc" id="L138">            .getTrieLogLayer(blockHeader.getBlockHash())</span>
+<span class="pc" id="L139">            .orElseThrow(() -&gt; new RuntimeException(&quot;trielog not found during test&quot;));</span>
+    // trying rollback rollfoward with frozen state
+<span class="fc" id="L141">    validateTrieLog(parentStateRoot, blockHeader, trieLogFromFrozenState);</span>
+<span class="fc" id="L142">  }</span>
+
+  private void validateTrieLog(
+      final Hash parentStateRoot, final BlockHeader blockHeader, final TrieLog trieLog) {
+
+<span class="fc" id="L147">    try (var bonsaiWorldState = createBonsaiWorldState(false)) {</span>
+<span class="fc" id="L148">      BonsaiWorldStateUpdateAccumulator updaterForState =</span>
+<span class="fc" id="L149">          (BonsaiWorldStateUpdateAccumulator) bonsaiWorldState.updater();</span>
+<span class="fc" id="L150">      updaterForState.rollForward(trieLog);</span>
+<span class="fc" id="L151">      updaterForState.commit();</span>
+<span class="fc" id="L152">      bonsaiWorldState.persist(blockHeader);</span>
+<span class="fc" id="L153">      Hash generatedRootHash = bonsaiWorldState.rootHash();</span>
+<span class="pc bpc" id="L154" title="1 of 2 branches missed.">      if (!bonsaiWorldState.rootHash().equals(blockHeader.getStateRoot())) {</span>
+<span class="nc" id="L155">        throw new RuntimeException(</span>
+            &quot;state root becomes invalid following a rollForward %s != %s&quot;
+<span class="nc" id="L157">                .formatted(blockHeader.getStateRoot(), generatedRootHash));</span>
+      }
+
+<span class="fc" id="L160">      updaterForState = (BonsaiWorldStateUpdateAccumulator) bonsaiWorldState.updater();</span>
+<span class="fc" id="L161">      updaterForState.rollBack(trieLog);</span>
+<span class="fc" id="L162">      updaterForState.commit();</span>
+<span class="fc" id="L163">      bonsaiWorldState.persist(null);</span>
+<span class="fc" id="L164">      generatedRootHash = bonsaiWorldState.rootHash();</span>
+<span class="pc bpc" id="L165" title="1 of 2 branches missed.">      if (!bonsaiWorldState.rootHash().equals(parentStateRoot)) {</span>
+<span class="nc" id="L166">        throw new RuntimeException(</span>
+            &quot;state root becomes invalid following a rollBackward %s != %s&quot;
+<span class="nc" id="L168">                .formatted(parentStateRoot, generatedRootHash));</span>
+      }
+    }
+<span class="fc" id="L171">  }</span>
+
+  private void generateTrieLogFromState(
+      final BlockHeader blockHeader,
+      final BonsaiReferenceTestUpdateAccumulator originalUpdater,
+      final boolean isFrozen) {
+    // generate trielog
+<span class="fc" id="L178">    BonsaiReferenceTestUpdateAccumulator updaterForState =</span>
+<span class="fc" id="L179">        originalUpdater.createDetachedAccumulator();</span>
+<span class="fc" id="L180">    try (var bonsaiWorldState = createBonsaiWorldState(isFrozen)) {</span>
+<span class="fc" id="L181">      bonsaiWorldState.setAccumulator(updaterForState);</span>
+<span class="fc" id="L182">      updaterForState.commit();</span>
+<span class="fc" id="L183">      bonsaiWorldState.persist(blockHeader);</span>
+    }
+<span class="fc" id="L185">  }</span>
+
+  private BonsaiWorldState createBonsaiWorldState(final boolean isFrozen) {
+<span class="fc" id="L188">    BonsaiWorldState bonsaiWorldState =</span>
+        new BonsaiWorldState(
+            new BonsaiWorldStateLayerStorage(worldStateKeyValueStorage),
+            cachedMerkleTrieLoader,
+            cachedWorldStorageManager,
+            trieLogManager,
+            evmConfiguration);
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    if (isFrozen) {</span>
+<span class="fc" id="L196">      bonsaiWorldState.freeze(); // freeze state</span>
+    }
+<span class="fc" id="L198">    return bonsaiWorldState;</span>
+  }
+
+  @JsonCreator
+  public static BonsaiReferenceTestWorldState create(
+      final Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts) {
+<span class="nc" id="L204">    return create(accounts, EvmConfiguration.DEFAULT);</span>
+  }
+
+  @JsonCreator
+  public static BonsaiReferenceTestWorldState create(
+      final Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L211">    final ObservableMetricsSystem metricsSystem = new NoOpMetricsSystem();</span>
+<span class="fc" id="L212">    final CachedMerkleTrieLoader cachedMerkleTrieLoader = new CachedMerkleTrieLoader(metricsSystem);</span>
+<span class="fc" id="L213">    final TrieLogManager trieLogManager = new ReferenceTestsInMemoryTrieLogManager();</span>
+<span class="fc" id="L214">    final BonsaiPreImageProxy preImageProxy =</span>
+        new BonsaiPreImageProxy.BonsaiReferenceTestPreImageProxy();
+
+<span class="fc" id="L217">    final BonsaiWorldStateKeyValueStorage bonsaiWorldStateKeyValueStorage =</span>
+        new BonsaiWorldStateKeyValueStorage(
+            new InMemoryKeyValueStorageProvider(),
+            metricsSystem,
+            DataStorageConfiguration.DEFAULT_BONSAI_CONFIG);
+
+<span class="fc" id="L223">    final BonsaiReferenceTestWorldStateStorage worldStateKeyValueStorage =</span>
+        new BonsaiReferenceTestWorldStateStorage(bonsaiWorldStateKeyValueStorage, preImageProxy);
+
+<span class="fc" id="L226">    final NoOpCachedWorldStorageManager noOpCachedWorldStorageManager =</span>
+        new NoOpCachedWorldStorageManager(bonsaiWorldStateKeyValueStorage);
+
+<span class="fc" id="L229">    final BonsaiReferenceTestWorldState worldState =</span>
+        new BonsaiReferenceTestWorldState(
+            worldStateKeyValueStorage,
+            cachedMerkleTrieLoader,
+            noOpCachedWorldStorageManager,
+            trieLogManager,
+            preImageProxy,
+            evmConfiguration);
+
+<span class="fc" id="L238">    final WorldUpdater updater = worldState.updater();</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">    for (final Map.Entry&lt;String, ReferenceTestWorldState.AccountMock&gt; entry : accounts.entrySet()) {</span>
+<span class="fc" id="L240">      ReferenceTestWorldState.insertAccount(</span>
+<span class="fc" id="L241">          updater, Address.fromHexString(entry.getKey()), entry.getValue());</span>
+<span class="fc" id="L242">    }</span>
+<span class="fc" id="L243">    updater.commit();</span>
+<span class="fc" id="L244">    return worldState;</span>
+  }
+
+  @Override
+  public Stream&lt;StreamableAccount&gt; streamAccounts(final Bytes32 startKeyHash, final int limit) {
+<span class="fc" id="L249">    return this.refTestStorage.streamAccounts(this, startKeyHash, limit);</span>
+  }
+
+  static class ReferenceTestsInMemoryTrieLogManager extends TrieLogManager {
+
+<span class="fc" id="L254">    private final Cache&lt;Hash, byte[]&gt; trieLogCache =</span>
+<span class="fc" id="L255">        CacheBuilder.newBuilder().maximumSize(5).build();</span>
+
+    public ReferenceTestsInMemoryTrieLogManager() {
+<span class="fc" id="L258">      super(null, null, 0, null);</span>
+<span class="fc" id="L259">    }</span>
+
+    @Override
+    public synchronized void saveTrieLog(
+        final BonsaiWorldStateUpdateAccumulator localUpdater,
+        final Hash forWorldStateRootHash,
+        final BlockHeader forBlockHeader,
+        final BonsaiWorldState forWorldState) {
+      // notify trie log added observers, synchronously
+<span class="fc" id="L268">      TrieLog trieLog = trieLogFactory.create(localUpdater, forBlockHeader);</span>
+<span class="fc" id="L269">      trieLogCache.put(forBlockHeader.getHash(), trieLogFactory.serialize(trieLog));</span>
+<span class="pc" id="L270">      trieLogObservers.forEach(o -&gt; o.onTrieLogAdded(new TrieLogAddedEvent(trieLog)));</span>
+<span class="fc" id="L271">    }</span>
+
+    @Override
+    public long getMaxLayersToLoad() {
+<span class="nc" id="L275">      return 0;</span>
+    }
+
+    @Override
+    public Optional&lt;TrieLog&gt; getTrieLogLayer(final Hash blockHash) {
+<span class="fc" id="L280">      final byte[] trielog = trieLogCache.getIfPresent(blockHash);</span>
+<span class="fc" id="L281">      trieLogCache.invalidate(blockHash); // remove trielog from the cache</span>
+<span class="fc" id="L282">      return Optional.ofNullable(trieLogFactory.deserialize(trielog));</span>
+    }
+  }
+
+  @Override
+  protected Hash hashAndSavePreImage(final Bytes value) {
+    // by default do not save has preImages
+<span class="fc" id="L289">    return preImageProxy.hashAndSavePreImage(value);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

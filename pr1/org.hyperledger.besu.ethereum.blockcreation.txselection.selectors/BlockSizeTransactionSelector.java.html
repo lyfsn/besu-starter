@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockSizeTransactionSelector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation.txselection.selectors</a> &gt; <span class="el_source">BlockSizeTransactionSelector.java</span></div><h1>BlockSizeTransactionSelector.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation.txselection.selectors;
+
+import org.hyperledger.besu.ethereum.blockcreation.txselection.BlockSelectionContext;
+import org.hyperledger.besu.ethereum.blockcreation.txselection.TransactionEvaluationContext;
+import org.hyperledger.besu.ethereum.blockcreation.txselection.TransactionSelectionResults;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.plugin.data.TransactionSelectionResult;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class extends AbstractTransactionSelector and provides a specific implementation for
+ * evaluating transactions based on block size. It checks if a transaction is too large for the
+ * block and determines the selection result accordingly.
+ */
+public class BlockSizeTransactionSelector extends AbstractTransactionSelector {
+<span class="fc" id="L33">  private static final Logger LOG = LoggerFactory.getLogger(BlockSizeTransactionSelector.class);</span>
+
+  public BlockSizeTransactionSelector(final BlockSelectionContext context) {
+<span class="fc" id="L36">    super(context);</span>
+<span class="fc" id="L37">  }</span>
+
+  /**
+   * Evaluates a transaction considering other transactions in the same block. If the transaction is
+   * too large for the block returns a selection result based on block occupancy.
+   *
+   * @param evaluationContext The current selection session data.
+   * @param transactionSelectionResults The results of other transaction evaluations in the same
+   *     block.
+   * @return The result of the transaction selection.
+   */
+  @Override
+  public TransactionSelectionResult evaluateTransactionPreProcessing(
+      final TransactionEvaluationContext evaluationContext,
+      final TransactionSelectionResults transactionSelectionResults) {
+
+<span class="fc bfc" id="L53" title="All 2 branches covered.">    if (transactionTooLargeForBlock(</span>
+<span class="fc" id="L54">        evaluationContext.getTransaction(), transactionSelectionResults)) {</span>
+<span class="fc" id="L55">      LOG.atTrace()</span>
+<span class="fc" id="L56">          .setMessage(&quot;Transaction {} too large to select for block creation&quot;)</span>
+<span class="fc" id="L57">          .addArgument(evaluationContext.getPendingTransaction()::toTraceLog)</span>
+<span class="fc" id="L58">          .log();</span>
+<span class="fc bfc" id="L59" title="All 2 branches covered.">      if (blockOccupancyAboveThreshold(transactionSelectionResults)) {</span>
+<span class="fc" id="L60">        LOG.trace(&quot;Block occupancy above threshold, completing operation&quot;);</span>
+<span class="fc" id="L61">        return TransactionSelectionResult.BLOCK_OCCUPANCY_ABOVE_THRESHOLD;</span>
+<span class="fc bfc" id="L62" title="All 2 branches covered.">      } else if (blockFull(transactionSelectionResults)) {</span>
+<span class="fc" id="L63">        LOG.trace(&quot;Block full, completing operation&quot;);</span>
+<span class="fc" id="L64">        return TransactionSelectionResult.BLOCK_FULL;</span>
+      } else {
+<span class="fc" id="L66">        return TransactionSelectionResult.TX_TOO_LARGE_FOR_REMAINING_GAS;</span>
+      }
+    }
+<span class="fc" id="L69">    return TransactionSelectionResult.SELECTED;</span>
+  }
+
+  @Override
+  public TransactionSelectionResult evaluateTransactionPostProcessing(
+      final TransactionEvaluationContext evaluationContext,
+      final TransactionSelectionResults blockTransactionResults,
+      final TransactionProcessingResult processingResult) {
+    // All necessary checks were done in the pre-processing method, so nothing to do here.
+<span class="fc" id="L78">    return TransactionSelectionResult.SELECTED;</span>
+  }
+
+  /**
+   * Checks if the transaction is too large for the block.
+   *
+   * @param transaction The transaction to be checked.
+   * @param transactionSelectionResults The results of other transaction evaluations in the same
+   *     block.
+   * @return True if the transaction is too large for the block, false otherwise.
+   */
+  private boolean transactionTooLargeForBlock(
+      final Transaction transaction,
+      final TransactionSelectionResults transactionSelectionResults) {
+<span class="fc" id="L92">    final long blobGasUsed = context.gasCalculator().blobGasCost(transaction.getBlobCount());</span>
+
+<span class="fc" id="L94">    if (blobGasUsed</span>
+<span class="fc" id="L95">        &gt; context.gasLimitCalculator().currentBlobGasLimit()</span>
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">            - transactionSelectionResults.getCumulativeBlobGasUsed()) {</span>
+<span class="nc" id="L97">      return true;</span>
+    }
+
+<span class="fc" id="L100">    return transaction.getGasLimit() + blobGasUsed</span>
+<span class="fc" id="L101">        &gt; context.processableBlockHeader().getGasLimit()</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">            - transactionSelectionResults.getCumulativeGasUsed();</span>
+  }
+
+  /**
+   * Checks if the block occupancy is above the threshold.
+   *
+   * @param transactionSelectionResults The results of other transaction evaluations in the same
+   *     block.
+   * @return True if the block occupancy is above the threshold, false otherwise.
+   */
+  private boolean blockOccupancyAboveThreshold(
+      final TransactionSelectionResults transactionSelectionResults) {
+<span class="fc" id="L114">    final long gasAvailable = context.processableBlockHeader().getGasLimit();</span>
+
+<span class="fc" id="L116">    final long gasUsed = transactionSelectionResults.getCumulativeGasUsed();</span>
+<span class="fc" id="L117">    final long gasRemaining = gasAvailable - gasUsed;</span>
+<span class="fc" id="L118">    final double occupancyRatio = (double) gasUsed / (double) gasAvailable;</span>
+
+<span class="fc" id="L120">    LOG.trace(</span>
+        &quot;Min block occupancy ratio {}, gas used {}, available {}, remaining {}, used/available {}&quot;,
+<span class="fc" id="L122">        context.miningParameters().getMinBlockOccupancyRatio(),</span>
+<span class="fc" id="L123">        gasUsed,</span>
+<span class="fc" id="L124">        gasAvailable,</span>
+<span class="fc" id="L125">        gasRemaining,</span>
+<span class="fc" id="L126">        occupancyRatio);</span>
+
+<span class="fc bfc" id="L128" title="All 2 branches covered.">    return occupancyRatio &gt;= context.miningParameters().getMinBlockOccupancyRatio();</span>
+  }
+
+  /**
+   * Checks if the block is full.
+   *
+   * @param transactionSelectionResults The results of other transaction evaluations in the same
+   *     block.
+   * @return True if the block is full, false otherwise.
+   */
+  private boolean blockFull(final TransactionSelectionResults transactionSelectionResults) {
+<span class="fc" id="L139">    final long gasAvailable = context.processableBlockHeader().getGasLimit();</span>
+<span class="fc" id="L140">    final long gasUsed = transactionSelectionResults.getCumulativeGasUsed();</span>
+
+<span class="fc" id="L142">    final long gasRemaining = gasAvailable - gasUsed;</span>
+
+<span class="fc bfc" id="L144" title="All 2 branches covered.">    if (gasRemaining &lt; context.gasCalculator().getMinimumTransactionCost()) {</span>
+<span class="fc" id="L145">      LOG.trace(</span>
+          &quot;Block full, remaining gas {} is less than minimum transaction gas cost {}&quot;,
+<span class="fc" id="L147">          gasRemaining,</span>
+<span class="fc" id="L148">          context.gasCalculator().getMinimumTransactionCost());</span>
+<span class="fc" id="L149">      return true;</span>
+    }
+<span class="fc" id="L151">    return false;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

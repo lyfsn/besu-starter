@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SyncState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.state</a> &gt; <span class="el_source">SyncState.java</span></div><h1>SyncState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.state;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.ChainHead;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.DefaultSyncStatus;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.core.Synchronizer.InSyncListener;
+import org.hyperledger.besu.ethereum.eth.manager.ChainHeadEstimate;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.checkpoint.Checkpoint;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloadStatus;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.data.SyncStatus;
+import org.hyperledger.besu.plugin.services.BesuEvents.InitialSyncCompletionListener;
+import org.hyperledger.besu.plugin.services.BesuEvents.SyncStatusListener;
+import org.hyperledger.besu.plugin.services.BesuEvents.TTDReachedListener;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class SyncState {
+
+  private final Blockchain blockchain;
+  private final EthPeers ethPeers;
+
+<span class="fc" id="L46">  private final AtomicLong inSyncSubscriberId = new AtomicLong();</span>
+<span class="fc" id="L47">  private final Map&lt;Long, InSyncTracker&gt; inSyncTrackers = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L48">  private final Subscribers&lt;SyncStatusListener&gt; syncStatusListeners = Subscribers.create();</span>
+<span class="fc" id="L49">  private final Subscribers&lt;TTDReachedListener&gt; ttdReachedListeners = Subscribers.create();</span>
+
+<span class="fc" id="L51">  private final Subscribers&lt;InitialSyncCompletionListener&gt; completionListenerSubscribers =</span>
+<span class="fc" id="L52">      Subscribers.create();</span>
+
+  private volatile long chainHeightListenerId;
+<span class="fc" id="L55">  private volatile Optional&lt;SyncTarget&gt; syncTarget = Optional.empty();</span>
+<span class="fc" id="L56">  private Optional&lt;WorldStateDownloadStatus&gt; worldStateDownloadStatus = Optional.empty();</span>
+  private Optional&lt;Long&gt; newPeerListenerId;
+<span class="fc" id="L58">  private Optional&lt;Boolean&gt; reachedTerminalDifficulty = Optional.empty();</span>
+  private final Optional&lt;Checkpoint&gt; checkpoint;
+  private volatile boolean isInitialSyncPhaseDone;
+
+  private volatile boolean isResyncNeeded;
+
+<span class="fc" id="L64">  private Optional&lt;Address&gt; maybeAccountToRepair = Optional.empty();</span>
+
+  public SyncState(final Blockchain blockchain, final EthPeers ethPeers) {
+<span class="fc" id="L67">    this(blockchain, ethPeers, false, Optional.empty());</span>
+<span class="fc" id="L68">  }</span>
+
+  public SyncState(
+      final Blockchain blockchain,
+      final EthPeers ethPeers,
+      final boolean hasInitialSyncPhase,
+<span class="fc" id="L74">      final Optional&lt;Checkpoint&gt; checkpoint) {</span>
+<span class="fc" id="L75">    this.blockchain = blockchain;</span>
+<span class="fc" id="L76">    this.ethPeers = ethPeers;</span>
+<span class="fc bfc" id="L77" title="All 2 branches covered.">    isInitialSyncPhaseDone = !hasInitialSyncPhase;</span>
+
+<span class="fc" id="L79">    blockchain.observeBlockAdded(</span>
+        event -&gt; {
+<span class="fc bfc" id="L81" title="All 2 branches covered.">          if (event.isNewCanonicalHead()) {</span>
+<span class="fc" id="L82">            checkInSync();</span>
+          }
+<span class="fc" id="L84">        });</span>
+
+    // Add new peer listener to prevent permissioned PoA network stalling on start-up.
+    // https://github.com/hyperledger/besu/issues/528
+<span class="fc" id="L88">    newPeerListenerId =</span>
+<span class="fc" id="L89">        Optional.of(</span>
+<span class="fc" id="L90">            ethPeers.subscribeConnect(</span>
+                newPeer -&gt; {
+<span class="pc bpc" id="L92" title="1 of 2 branches missed.">                  if (newPeer.readyForRequests()) {</span>
+<span class="fc" id="L93">                    checkInSync();</span>
+                  }
+<span class="fc" id="L95">                }));</span>
+<span class="fc" id="L96">    this.checkpoint = checkpoint;</span>
+<span class="fc" id="L97">  }</span>
+
+  /**
+   * Add a listener that will be notified when this node's sync status changes. A node is considered
+   * in-sync if the local chain height is no more than {@code SYNC_TOLERANCE} behind the highest
+   * estimated remote chain height.
+   *
+   * @param listener The callback to invoke when the sync status changes
+   * @return An {@code Unsubscriber} that can be used to stop listening for these events
+   */
+  public long subscribeInSync(final InSyncListener listener) {
+<span class="fc" id="L108">    return subscribeInSync(listener, Synchronizer.DEFAULT_IN_SYNC_TOLERANCE);</span>
+  }
+
+  /**
+   * Add a listener that will be notified when this node's sync status changes. A node is considered
+   * in-sync if the local chain height is no more than {@code syncTolerance} behind the highest
+   * estimated remote chain height.
+   *
+   * @param listener The callback to invoke when the sync status changes
+   * @param syncTolerance The tolerance used to determine whether this node is in-sync. A value of
+   *     zero means that the node is considered in-sync only when the local chain height is greater
+   *     than or equal to the best estimated remote chain height.
+   * @return An {@code Unsubscriber} that can be used to stop listening for these events
+   */
+  public long subscribeInSync(final InSyncListener listener, final long syncTolerance) {
+<span class="fc" id="L123">    final InSyncTracker inSyncTracker = InSyncTracker.create(listener, syncTolerance);</span>
+<span class="fc" id="L124">    final long id = inSyncSubscriberId.incrementAndGet();</span>
+<span class="fc" id="L125">    inSyncTrackers.put(id, inSyncTracker);</span>
+
+<span class="fc" id="L127">    return id;</span>
+  }
+
+  public boolean unsubscribeInSync(final long subscriberId) {
+<span class="pc bpc" id="L131" title="1 of 2 branches missed.">    return inSyncTrackers.remove(subscriberId) != null;</span>
+  }
+
+  public long subscribeSyncStatus(final SyncStatusListener listener) {
+<span class="fc" id="L135">    return syncStatusListeners.subscribe(listener);</span>
+  }
+
+  public long subscribeTTDReached(final TTDReachedListener listener) {
+<span class="fc" id="L139">    return ttdReachedListeners.subscribe(listener);</span>
+  }
+
+  public long subscribeCompletionReached(final InitialSyncCompletionListener listener) {
+<span class="fc" id="L143">    return completionListenerSubscribers.subscribe(listener);</span>
+  }
+
+  public boolean unsubscribeSyncStatus(final long listenerId) {
+<span class="fc" id="L147">    return syncStatusListeners.unsubscribe(listenerId);</span>
+  }
+
+  public boolean unsubscribeTTDReached(final long listenerId) {
+<span class="nc" id="L151">    return ttdReachedListeners.unsubscribe(listenerId);</span>
+  }
+
+  public boolean unsubscribeInitialConditionReached(final long listenerId) {
+<span class="nc" id="L155">    return completionListenerSubscribers.unsubscribe(listenerId);</span>
+  }
+
+  public Optional&lt;SyncStatus&gt; syncStatus() {
+<span class="fc" id="L159">    return syncStatus(syncTarget);</span>
+  }
+
+  public Optional&lt;SyncTarget&gt; syncTarget() {
+<span class="fc" id="L163">    return syncTarget;</span>
+  }
+
+  public void setSyncTarget(final EthPeer peer, final BlockHeader commonAncestor) {
+<span class="fc" id="L167">    final SyncTarget syncTarget = new SyncTarget(peer, commonAncestor);</span>
+<span class="fc" id="L168">    replaceSyncTarget(Optional.of(syncTarget));</span>
+<span class="fc" id="L169">  }</span>
+
+  public void setWorldStateDownloadStatus(final WorldStateDownloadStatus worldStateDownloadStatus) {
+<span class="fc" id="L172">    this.worldStateDownloadStatus = Optional.ofNullable(worldStateDownloadStatus);</span>
+<span class="fc" id="L173">  }</span>
+
+  public boolean isInSync() {
+<span class="fc" id="L176">    return isInSync(Synchronizer.DEFAULT_IN_SYNC_TOLERANCE);</span>
+  }
+
+  public boolean isInSync(final long syncTolerance) {
+<span class="fc" id="L180">    return isInSync(</span>
+<span class="fc" id="L181">        getLocalChainHead(), getSyncTargetChainHead(), getBestPeerChainHead(), syncTolerance);</span>
+  }
+
+  public void setReachedTerminalDifficulty(final boolean stoppedAtTerminalDifficulty) {
+<span class="fc" id="L185">    this.reachedTerminalDifficulty = Optional.of(stoppedAtTerminalDifficulty);</span>
+<span class="fc" id="L186">    ttdReachedListeners.forEach(listener -&gt; listener.onTTDReached(stoppedAtTerminalDifficulty));</span>
+<span class="fc" id="L187">  }</span>
+
+  public Optional&lt;Boolean&gt; hasReachedTerminalDifficulty() {
+<span class="fc bfc" id="L190" title="All 2 branches covered.">    if (isInitialSyncPhaseDone) {</span>
+<span class="fc" id="L191">      return reachedTerminalDifficulty;</span>
+    }
+<span class="fc" id="L193">    return Optional.of(Boolean.FALSE);</span>
+  }
+
+  private boolean isInSync(
+      final ChainHead localChain,
+      final Optional&lt;ChainHeadEstimate&gt; syncTargetChain,
+      final Optional&lt;ChainHeadEstimate&gt; bestPeerChain,
+      final long syncTolerance) {
+<span class="fc bfc" id="L201" title="All 2 branches covered.">    return isInitialSyncPhaseDone</span>
+<span class="pc bpc" id="L202" title="1 of 2 branches missed.">        &amp;&amp; reachedTerminalDifficulty.orElse(true)</span>
+        // Sync target may be temporarily empty while we switch sync targets during a sync, so
+        // check both the sync target and our best peer to determine if we're in sync or not
+<span class="fc bfc" id="L205" title="All 2 branches covered.">        &amp;&amp; isInSync(localChain, syncTargetChain, syncTolerance)</span>
+<span class="fc bfc" id="L206" title="All 2 branches covered.">        &amp;&amp; isInSync(localChain, bestPeerChain, syncTolerance);</span>
+  }
+
+  private boolean isInSync(
+      final ChainHead localChain,
+      final Optional&lt;ChainHeadEstimate&gt; remoteChain,
+      final long syncTolerance) {
+<span class="fc" id="L213">    return remoteChain</span>
+<span class="fc" id="L214">        .map(remoteState -&gt; InSyncTracker.isInSync(localChain, remoteState, syncTolerance))</span>
+<span class="fc" id="L215">        .orElse(true);</span>
+  }
+
+  private ChainHead getLocalChainHead() {
+<span class="fc" id="L219">    return blockchain.getChainHead();</span>
+  }
+
+  private Optional&lt;ChainHeadEstimate&gt; getSyncTargetChainHead() {
+<span class="fc" id="L223">    return syncTarget.map(SyncTarget::peer).map(EthPeer::chainStateSnapshot);</span>
+  }
+
+  private Optional&lt;ChainHeadEstimate&gt; getBestPeerChainHead() {
+<span class="fc" id="L227">    return ethPeers.bestPeerWithHeightEstimate().map(EthPeer::chainStateSnapshot);</span>
+  }
+
+  public void disconnectSyncTarget(final DisconnectReason reason) {
+<span class="fc" id="L231">    syncTarget.ifPresent(syncTarget -&gt; syncTarget.peer().disconnect(reason));</span>
+<span class="fc" id="L232">  }</span>
+
+  public void clearSyncTarget() {
+<span class="fc" id="L235">    replaceSyncTarget(Optional.empty());</span>
+<span class="fc" id="L236">  }</span>
+
+  private synchronized void replaceSyncTarget(final Optional&lt;SyncTarget&gt; newTarget) {
+<span class="fc bfc" id="L239" title="All 2 branches covered.">    if (syncTarget.equals(newTarget)) {</span>
+      // Nothing to do
+<span class="fc" id="L241">      return;</span>
+    }
+<span class="fc" id="L243">    syncTarget.ifPresent(this::removeEstimatedHeightListener);</span>
+<span class="fc" id="L244">    syncTarget = newTarget;</span>
+<span class="fc" id="L245">    newTarget.ifPresent(this::addEstimatedHeightListener);</span>
+<span class="fc" id="L246">    publishSyncStatus(newTarget);</span>
+<span class="fc" id="L247">    checkInSync();</span>
+<span class="fc" id="L248">  }</span>
+
+  private void publishSyncStatus(final Optional&lt;SyncTarget&gt; newTarget) {
+<span class="fc" id="L251">    final Optional&lt;SyncStatus&gt; syncStatus = syncStatus(newTarget);</span>
+<span class="fc" id="L252">    syncStatusListeners.forEach(c -&gt; c.onSyncStatusChanged(syncStatus));</span>
+<span class="fc" id="L253">  }</span>
+
+  private Optional&lt;SyncStatus&gt; syncStatus(final Optional&lt;SyncTarget&gt; maybeTarget) {
+<span class="fc" id="L256">    return maybeTarget.map(</span>
+        target -&gt; {
+<span class="fc" id="L258">          final long chainHeadBlockNumber = blockchain.getChainHeadBlockNumber();</span>
+<span class="fc" id="L259">          final long commonAncestor = target.commonAncestor().getNumber();</span>
+<span class="fc" id="L260">          final long highestKnownBlock = bestChainHeight(chainHeadBlockNumber);</span>
+<span class="fc" id="L261">          return new DefaultSyncStatus(</span>
+              commonAncestor,
+              chainHeadBlockNumber,
+              highestKnownBlock,
+<span class="fc" id="L265">              worldStateDownloadStatus.flatMap(WorldStateDownloadStatus::getPulledStates),</span>
+<span class="fc" id="L266">              worldStateDownloadStatus.flatMap(WorldStateDownloadStatus::getKnownStates));</span>
+        });
+  }
+
+  private void removeEstimatedHeightListener(final SyncTarget target) {
+<span class="fc" id="L271">    target.removePeerChainEstimatedHeightListener(chainHeightListenerId);</span>
+<span class="fc" id="L272">  }</span>
+
+  private void addEstimatedHeightListener(final SyncTarget target) {
+<span class="fc" id="L275">    chainHeightListenerId =</span>
+<span class="fc" id="L276">        target.addPeerChainEstimatedHeightListener(estimatedHeight -&gt; checkInSync());</span>
+<span class="fc" id="L277">  }</span>
+
+  public long getLocalChainHeight() {
+<span class="fc" id="L280">    return blockchain.getChainHeadBlockNumber();</span>
+  }
+
+  public long bestChainHeight() {
+<span class="fc" id="L284">    final long localChainHeight = blockchain.getChainHeadBlockNumber();</span>
+<span class="fc" id="L285">    return bestChainHeight(localChainHeight);</span>
+  }
+
+  public long bestChainHeight(final long localChainHeight) {
+<span class="fc" id="L289">    return Math.max(</span>
+        localChainHeight,
+        ethPeers
+<span class="fc" id="L292">            .bestPeerWithHeightEstimate()</span>
+<span class="fc" id="L293">            .map(p -&gt; p.chainState().getEstimatedHeight())</span>
+<span class="fc" id="L294">            .orElse(localChainHeight));</span>
+  }
+
+  private synchronized void checkInSync() {
+<span class="fc" id="L298">    final ChainHead localChain = getLocalChainHead();</span>
+<span class="fc" id="L299">    final Optional&lt;ChainHeadEstimate&gt; syncTargetChain = getSyncTargetChainHead();</span>
+<span class="fc" id="L300">    final Optional&lt;ChainHeadEstimate&gt; bestPeerChain = getBestPeerChainHead();</span>
+
+    // Remove listener when we've found a peer.
+<span class="fc" id="L303">    newPeerListenerId.ifPresent(</span>
+        listenerId -&gt; {
+<span class="fc" id="L305">          ethPeers.unsubscribeConnect(listenerId);</span>
+<span class="fc" id="L306">          newPeerListenerId = Optional.empty();</span>
+<span class="fc" id="L307">        });</span>
+
+<span class="fc" id="L309">    inSyncTrackers</span>
+<span class="fc" id="L310">        .values()</span>
+<span class="fc" id="L311">        .forEach(</span>
+<span class="fc" id="L312">            (syncTracker) -&gt; syncTracker.checkState(localChain, syncTargetChain, bestPeerChain));</span>
+<span class="fc" id="L313">  }</span>
+
+  public Optional&lt;Checkpoint&gt; getCheckpoint() {
+<span class="fc" id="L316">    return checkpoint;</span>
+  }
+
+  public boolean isInitialSyncPhaseDone() {
+<span class="fc" id="L320">    return isInitialSyncPhaseDone;</span>
+  }
+
+  public void markInitialSyncPhaseAsDone() {
+<span class="fc" id="L324">    isInitialSyncPhaseDone = true;</span>
+<span class="fc" id="L325">    isResyncNeeded = false;</span>
+<span class="fc" id="L326">    completionListenerSubscribers.forEach(InitialSyncCompletionListener::onInitialSyncCompleted);</span>
+<span class="fc" id="L327">  }</span>
+
+  public boolean isResyncNeeded() {
+<span class="fc" id="L330">    return isResyncNeeded;</span>
+  }
+
+  public void markResyncNeeded() {
+<span class="nc" id="L334">    isResyncNeeded = true;</span>
+<span class="nc" id="L335">  }</span>
+
+  public Optional&lt;Address&gt; getAccountToRepair() {
+<span class="nc" id="L338">    return maybeAccountToRepair;</span>
+  }
+
+  public void markAccountToRepair(final Optional&lt;Address&gt; address) {
+<span class="nc" id="L342">    maybeAccountToRepair = address;</span>
+<span class="nc" id="L343">  }</span>
+
+  public void markInitialSyncRestart() {
+<span class="nc" id="L346">    isInitialSyncPhaseDone = false;</span>
+<span class="nc" id="L347">    completionListenerSubscribers.forEach(InitialSyncCompletionListener::onInitialSyncRestart);</span>
+<span class="nc" id="L348">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

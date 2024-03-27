@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KZGPointEvalPrecompiledContract.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.precompile</a> &gt; <span class="el_source">KZGPointEvalPrecompiledContract.java</span></div><h1>KZGPointEvalPrecompiledContract.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.precompile;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.internal.Words;
+
+import java.nio.file.Path;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.annotation.Nonnull;
+
+import com.google.common.annotations.VisibleForTesting;
+import ethereum.ckzg4844.CKZG4844JNI;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The KZGPointEval precompile contract. */
+<span class="fc" id="L35">public class KZGPointEvalPrecompiledContract implements PrecompiledContract {</span>
+<span class="fc" id="L36">  private static final AtomicBoolean loaded = new AtomicBoolean(false);</span>
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(KZGPointEvalPrecompiledContract.class);</span>
+
+  private static Bytes successResult;
+
+  private static void loadLib() {
+<span class="fc" id="L43">    CKZG4844JNI.loadNativeLibrary();</span>
+<span class="fc" id="L44">    Bytes fieldElementsPerBlob =</span>
+<span class="fc" id="L45">        Bytes32.wrap(Words.intBytes(CKZG4844JNI.FIELD_ELEMENTS_PER_BLOB).xor(Bytes32.ZERO));</span>
+<span class="fc" id="L46">    Bytes blsModulus =</span>
+<span class="fc" id="L47">        Bytes32.wrap(Bytes.of(CKZG4844JNI.BLS_MODULUS.toByteArray()).xor(Bytes32.ZERO));</span>
+
+<span class="fc" id="L49">    successResult = Bytes.concatenate(fieldElementsPerBlob, blsModulus);</span>
+<span class="fc" id="L50">  }</span>
+
+  /**
+   * Init the C-KZG native lib using a file as trusted setup
+   *
+   * @param trustedSetupFile the file with the trusted setup
+   * @throws IllegalStateException is the trusted setup was already loaded
+   */
+  public static void init(final Path trustedSetupFile) {
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">    if (loaded.compareAndSet(false, true)) {</span>
+<span class="fc" id="L60">      loadLib();</span>
+<span class="fc" id="L61">      final String trustedSetupResourceName = trustedSetupFile.toAbsolutePath().toString();</span>
+<span class="fc" id="L62">      LOG.info(&quot;Loading trusted setup from user-specified resource {}&quot;, trustedSetupResourceName);</span>
+<span class="fc" id="L63">      CKZG4844JNI.loadTrustedSetup(trustedSetupResourceName);</span>
+<span class="fc" id="L64">    } else {</span>
+<span class="nc" id="L65">      throw new IllegalStateException(&quot;KZG trusted setup was already loaded&quot;);</span>
+    }
+<span class="fc" id="L67">  }</span>
+
+  /**
+   * Init the C-KZG native lib using mainnet trusted setup
+   *
+   * @throws IllegalStateException is the trusted setup was already loaded
+   */
+  public static void init() {
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    if (loaded.compareAndSet(false, true)) {</span>
+<span class="fc" id="L76">      loadLib();</span>
+<span class="fc" id="L77">      final String trustedSetupResourceName = &quot;/kzg-trusted-setups/mainnet.txt&quot;;</span>
+<span class="fc" id="L78">      LOG.info(</span>
+          &quot;Loading network trusted setup from classpath resource {}&quot;, trustedSetupResourceName);
+<span class="fc" id="L80">      CKZG4844JNI.loadTrustedSetupFromResource(</span>
+          trustedSetupResourceName, KZGPointEvalPrecompiledContract.class);
+    }
+<span class="fc" id="L83">  }</span>
+
+  /** free up resources. */
+  @VisibleForTesting
+  public static void tearDown() {
+<span class="fc" id="L88">    CKZG4844JNI.freeTrustedSetup();</span>
+<span class="fc" id="L89">    loaded.set(false);</span>
+<span class="fc" id="L90">  }</span>
+
+  @Override
+  public String getName() {
+<span class="nc" id="L94">    return &quot;KZGPointEval&quot;;</span>
+  }
+
+  @Override
+  public long gasRequirement(final Bytes input) {
+    // As defined in EIP-4844
+<span class="fc" id="L100">    return 50000;</span>
+  }
+
+  @Nonnull
+  @Override
+  public PrecompileContractResult computePrecompile(
+      final Bytes input, @Nonnull final MessageFrame messageFrame) {
+
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    if (input.size() != 192) {</span>
+<span class="fc" id="L109">      return PrecompileContractResult.halt(</span>
+<span class="fc" id="L110">          null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+    }
+<span class="fc" id="L112">    Bytes32 versionedHash = Bytes32.wrap(input.slice(0, 32));</span>
+<span class="fc" id="L113">    Bytes z = input.slice(32, 32);</span>
+<span class="fc" id="L114">    Bytes y = input.slice(64, 32);</span>
+<span class="fc" id="L115">    Bytes commitment = input.slice(96, 48);</span>
+<span class="fc" id="L116">    Bytes proof = input.slice(144, 48);</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    if (versionedHash.get(0) != 0x01) { // unsupported hash version</span>
+<span class="fc" id="L118">      return PrecompileContractResult.halt(</span>
+<span class="fc" id="L119">          null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+    } else {
+<span class="fc" id="L121">      byte[] hash = Hash.sha256(commitment).toArrayUnsafe();</span>
+<span class="fc" id="L122">      hash[0] = 0x01;</span>
+<span class="fc bfc" id="L123" title="All 2 branches covered.">      if (!versionedHash.equals(Bytes32.wrap(hash))) {</span>
+<span class="fc" id="L124">        return PrecompileContractResult.halt(</span>
+<span class="fc" id="L125">            null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+      }
+    }
+    try {
+<span class="fc" id="L129">      boolean proved =</span>
+<span class="fc" id="L130">          CKZG4844JNI.verifyKzgProof(</span>
+<span class="fc" id="L131">              commitment.toArray(), z.toArray(), y.toArray(), proof.toArray());</span>
+
+<span class="fc bfc" id="L133" title="All 2 branches covered.">      if (proved) {</span>
+<span class="fc" id="L134">        return PrecompileContractResult.success(successResult);</span>
+      } else {
+<span class="fc" id="L136">        return PrecompileContractResult.halt(</span>
+<span class="fc" id="L137">            null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+      }
+<span class="fc" id="L139">    } catch (RuntimeException kzgFailed) {</span>
+<span class="fc" id="L140">      System.out.println(kzgFailed.getMessage());</span>
+
+<span class="fc" id="L142">      return PrecompileContractResult.halt(</span>
+<span class="fc" id="L143">          null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

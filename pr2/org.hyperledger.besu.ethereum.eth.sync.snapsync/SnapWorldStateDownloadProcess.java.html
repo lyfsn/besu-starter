@@ -1,0 +1,474 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapWorldStateDownloadProcess.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">SnapWorldStateDownloadProcess.java</span></div><h1>SnapWorldStateDownloadProcess.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.DynamicPivotBlockSelector.doNothingOnPivotChange;
+import static org.hyperledger.besu.services.pipeline.PipelineBuilder.createPipelineFrom;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.BytecodeRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.TaskQueueIterator;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloadProcess;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.services.pipeline.Pipe;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.services.pipeline.PipelineBuilder;
+import org.hyperledger.besu.services.pipeline.WritePipe;
+import org.hyperledger.besu.services.tasks.Task;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class SnapWorldStateDownloadProcess implements WorldStateDownloadProcess {
+
+<span class="nc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(SnapWorldStateDownloadProcess.class);</span>
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; completionPipeline;
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchAccountPipeline;
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchStorageDataPipeline;
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchLargeStorageDataPipeline;
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchCodePipeline;
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; trieHealingPipeline;
+
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; flatAccountHealingPipeline;
+
+  private final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; flatStorageHealingPipeline;
+
+  private final WritePipe&lt;Task&lt;SnapDataRequest&gt;&gt; requestsToComplete;
+
+  private SnapWorldStateDownloadProcess(
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchAccountPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchStorageDataPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchLargeStorageDataPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchCodePipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; trieHealingPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; flatAccountHealingPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; flatStorageHealingPipeline,
+      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; completionPipeline,
+<span class="nc" id="L69">      final WritePipe&lt;Task&lt;SnapDataRequest&gt;&gt; requestsToComplete) {</span>
+<span class="nc" id="L70">    this.fetchStorageDataPipeline = fetchStorageDataPipeline;</span>
+<span class="nc" id="L71">    this.fetchAccountPipeline = fetchAccountPipeline;</span>
+<span class="nc" id="L72">    this.fetchLargeStorageDataPipeline = fetchLargeStorageDataPipeline;</span>
+<span class="nc" id="L73">    this.fetchCodePipeline = fetchCodePipeline;</span>
+<span class="nc" id="L74">    this.trieHealingPipeline = trieHealingPipeline;</span>
+<span class="nc" id="L75">    this.flatAccountHealingPipeline = flatAccountHealingPipeline;</span>
+<span class="nc" id="L76">    this.flatStorageHealingPipeline = flatStorageHealingPipeline;</span>
+<span class="nc" id="L77">    this.completionPipeline = completionPipeline;</span>
+<span class="nc" id="L78">    this.requestsToComplete = requestsToComplete;</span>
+<span class="nc" id="L79">  }</span>
+
+  public static Builder builder() {
+<span class="nc" id="L82">    return new Builder();</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; start(final EthScheduler ethScheduler) {
+<span class="nc" id="L87">    final CompletableFuture&lt;Void&gt; fetchAccountFuture =</span>
+<span class="nc" id="L88">        ethScheduler.startPipeline(fetchAccountPipeline);</span>
+<span class="nc" id="L89">    final CompletableFuture&lt;Void&gt; fetchStorageFuture =</span>
+<span class="nc" id="L90">        ethScheduler.startPipeline(fetchStorageDataPipeline);</span>
+<span class="nc" id="L91">    final CompletableFuture&lt;Void&gt; fetchLargeStorageFuture =</span>
+<span class="nc" id="L92">        ethScheduler.startPipeline(fetchLargeStorageDataPipeline);</span>
+<span class="nc" id="L93">    final CompletableFuture&lt;Void&gt; fetchCodeFuture = ethScheduler.startPipeline(fetchCodePipeline);</span>
+<span class="nc" id="L94">    final CompletableFuture&lt;Void&gt; trieHealingFuture =</span>
+<span class="nc" id="L95">        ethScheduler.startPipeline(trieHealingPipeline);</span>
+<span class="nc" id="L96">    final CompletableFuture&lt;Void&gt; flatAccountHealingFuture =</span>
+<span class="nc" id="L97">        ethScheduler.startPipeline(flatAccountHealingPipeline);</span>
+<span class="nc" id="L98">    final CompletableFuture&lt;Void&gt; flatStorageHealingFuture =</span>
+<span class="nc" id="L99">        ethScheduler.startPipeline(flatStorageHealingPipeline);</span>
+<span class="nc" id="L100">    final CompletableFuture&lt;Void&gt; completionFuture = ethScheduler.startPipeline(completionPipeline);</span>
+
+<span class="nc" id="L102">    fetchAccountFuture</span>
+<span class="nc" id="L103">        .thenCombine(fetchStorageFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L104">        .thenCombine(fetchLargeStorageFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L105">        .thenCombine(fetchCodeFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L106">        .thenCombine(trieHealingFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L107">        .thenCombine(flatAccountHealingFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L108">        .thenCombine(flatStorageHealingFuture, (unused, unused2) -&gt; null)</span>
+<span class="nc" id="L109">        .whenComplete(</span>
+            (result, error) -&gt; {
+<span class="nc bnc" id="L111" title="All 2 branches missed.">              if (error != null) {</span>
+<span class="nc bnc" id="L112" title="All 2 branches missed.">                if (!(ExceptionUtils.rootCause(error) instanceof CancellationException)) {</span>
+<span class="nc" id="L113">                  LOG.error(&quot;Pipeline failed&quot;, error);</span>
+                }
+<span class="nc" id="L115">                completionPipeline.abort();</span>
+              } else {
+                // No more data to fetch, so propagate the pipe closure onto the completion pipe.
+<span class="nc" id="L118">                requestsToComplete.close();</span>
+              }
+<span class="nc" id="L120">            });</span>
+
+<span class="nc" id="L122">    completionFuture.exceptionally(</span>
+        error -&gt; {
+<span class="nc bnc" id="L124" title="All 2 branches missed.">          if (!(ExceptionUtils.rootCause(error) instanceof CancellationException)) {</span>
+<span class="nc" id="L125">            LOG.error(&quot;Pipeline failed&quot;, error);</span>
+          }
+<span class="nc" id="L127">          fetchAccountPipeline.abort();</span>
+<span class="nc" id="L128">          fetchStorageDataPipeline.abort();</span>
+<span class="nc" id="L129">          fetchLargeStorageDataPipeline.abort();</span>
+<span class="nc" id="L130">          fetchCodePipeline.abort();</span>
+<span class="nc" id="L131">          trieHealingPipeline.abort();</span>
+<span class="nc" id="L132">          flatAccountHealingPipeline.abort();</span>
+<span class="nc" id="L133">          flatStorageHealingPipeline.abort();</span>
+<span class="nc" id="L134">          return null;</span>
+        });
+<span class="nc" id="L136">    return completionFuture;</span>
+  }
+
+  @Override
+  public void abort() {
+<span class="nc" id="L141">    fetchAccountPipeline.abort();</span>
+<span class="nc" id="L142">    fetchStorageDataPipeline.abort();</span>
+<span class="nc" id="L143">    fetchLargeStorageDataPipeline.abort();</span>
+<span class="nc" id="L144">    fetchCodePipeline.abort();</span>
+<span class="nc" id="L145">    trieHealingPipeline.abort();</span>
+<span class="nc" id="L146">    flatAccountHealingPipeline.abort();</span>
+<span class="nc" id="L147">    flatStorageHealingPipeline.abort();</span>
+<span class="nc" id="L148">    completionPipeline.abort();</span>
+<span class="nc" id="L149">  }</span>
+
+<span class="nc" id="L151">  public static class Builder {</span>
+
+    private SnapSyncConfiguration snapSyncConfiguration;
+    private int maxOutstandingRequests;
+    private SnapWorldDownloadState downloadState;
+    private MetricsSystem metricsSystem;
+    private LoadLocalDataStep loadLocalDataStep;
+    private RequestDataStep requestDataStep;
+    private SnapSyncProcessState snapSyncState;
+    private PersistDataStep persistDataStep;
+    private CompleteTaskStep completeTaskStep;
+    private DynamicPivotBlockSelector pivotBlockManager;
+
+    public Builder configuration(final SnapSyncConfiguration snapSyncConfiguration) {
+<span class="nc" id="L165">      this.snapSyncConfiguration = snapSyncConfiguration;</span>
+<span class="nc" id="L166">      return this;</span>
+    }
+
+    public Builder dynamicPivotBlockSelector(
+        final DynamicPivotBlockSelector dynamicPivotBlockSelector) {
+<span class="nc" id="L171">      this.pivotBlockManager = dynamicPivotBlockSelector;</span>
+<span class="nc" id="L172">      return this;</span>
+    }
+
+    public Builder maxOutstandingRequests(final int maxOutstandingRequests) {
+<span class="nc" id="L176">      this.maxOutstandingRequests = maxOutstandingRequests;</span>
+<span class="nc" id="L177">      return this;</span>
+    }
+
+    public Builder loadLocalDataStep(final LoadLocalDataStep loadLocalDataStep) {
+<span class="nc" id="L181">      this.loadLocalDataStep = loadLocalDataStep;</span>
+<span class="nc" id="L182">      return this;</span>
+    }
+
+    public Builder requestDataStep(final RequestDataStep requestDataStep) {
+<span class="nc" id="L186">      this.requestDataStep = requestDataStep;</span>
+<span class="nc" id="L187">      return this;</span>
+    }
+
+    public Builder persistDataStep(final PersistDataStep persistDataStep) {
+<span class="nc" id="L191">      this.persistDataStep = persistDataStep;</span>
+<span class="nc" id="L192">      return this;</span>
+    }
+
+    public Builder completeTaskStep(final CompleteTaskStep completeTaskStep) {
+<span class="nc" id="L196">      this.completeTaskStep = completeTaskStep;</span>
+<span class="nc" id="L197">      return this;</span>
+    }
+
+    public Builder downloadState(final SnapWorldDownloadState downloadState) {
+<span class="nc" id="L201">      this.downloadState = downloadState;</span>
+<span class="nc" id="L202">      return this;</span>
+    }
+
+    public Builder fastSyncState(final SnapSyncProcessState fastSyncState) {
+<span class="nc" id="L206">      this.snapSyncState = fastSyncState;</span>
+<span class="nc" id="L207">      return this;</span>
+    }
+
+    public Builder metricsSystem(final MetricsSystem metricsSystem) {
+<span class="nc" id="L211">      this.metricsSystem = metricsSystem;</span>
+<span class="nc" id="L212">      return this;</span>
+    }
+
+    public SnapWorldStateDownloadProcess build() {
+<span class="nc" id="L216">      checkNotNull(loadLocalDataStep);</span>
+<span class="nc" id="L217">      checkNotNull(requestDataStep);</span>
+<span class="nc" id="L218">      checkNotNull(persistDataStep);</span>
+<span class="nc" id="L219">      checkNotNull(completeTaskStep);</span>
+<span class="nc" id="L220">      checkNotNull(downloadState);</span>
+<span class="nc" id="L221">      checkNotNull(snapSyncState);</span>
+<span class="nc" id="L222">      checkNotNull(metricsSystem);</span>
+
+      // Room for the requests we expect to do in parallel plus some buffer but not unlimited.
+<span class="nc" id="L225">      final int bufferCapacity = snapSyncConfiguration.getTrienodeCountPerRequest() * 2;</span>
+<span class="nc" id="L226">      final LabelledMetric&lt;Counter&gt; outputCounter =</span>
+<span class="nc" id="L227">          metricsSystem.createLabelledCounter(</span>
+              BesuMetricCategory.SYNCHRONIZER,
+              &quot;snap_world_state_pipeline_processed_total&quot;,
+              &quot;Number of entries processed by each world state download pipeline stage&quot;,
+              &quot;step&quot;,
+              &quot;action&quot;);
+
+      /*
+      The logic and intercommunication of different pipelines can be summarized as follows:
+
+      1. Account Data Pipeline (fetchAccountDataPipeline): This process starts with downloading the leaves of the account tree in ranges, with multiple ranges being processed simultaneously.
+         If the downloaded accounts are smart contracts, tasks are created in the storage pipeline to download the storage tree of the smart contract, and in the code download pipeline for the smart contract.
+
+      2. Storage Data Pipeline (fetchStorageDataPipeline): Running parallel to the account data pipeline, this pipeline downloads the storage of smart contracts.
+          If all slots cannot be downloaded at once, tasks are created in the fetchLargeStorageDataPipeline to download the storage by range, allowing parallelization of large account downloads.
+
+      3. Code Data Pipeline (fetchCodePipeline): This pipeline, running concurrently with the account and storage data pipelines, is responsible for downloading the code of the smart contracts.
+
+      4. Large Storage Data Pipeline (fetchLargeStorageDataPipeline): This pipeline is used when the storage data for a smart contract is too large to be downloaded at once.
+          It enables the storage data to be downloaded in ranges, similar to the account data.
+
+      5. Healing Phase: Initiated after all other pipelines have completed their tasks, this phase ensures the integrity and completeness of the downloaded data.
+      */
+<span class="nc" id="L250">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; completionPipeline =</span>
+<span class="nc" id="L251">          PipelineBuilder.&lt;Task&lt;SnapDataRequest&gt;&gt;createPipeline(</span>
+                  &quot;requestDataAvailable&quot;, bufferCapacity, outputCounter, true, &quot;node_data_request&quot;)
+<span class="nc" id="L253">              .andFinishWith(</span>
+                  &quot;requestCompleteTask&quot;,
+<span class="nc" id="L255">                  task -&gt; completeTaskStep.markAsCompleteOrFailed(downloadState, task));</span>
+
+<span class="nc" id="L257">      final Pipe&lt;Task&lt;SnapDataRequest&gt;&gt; requestsToComplete = completionPipeline.getInputPipe();</span>
+
+<span class="nc" id="L259">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchAccountDataPipeline =</span>
+<span class="nc" id="L260">          createPipelineFrom(</span>
+                  &quot;dequeueAccountRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+<span class="nc" id="L263">                      downloadState, () -&gt; downloadState.dequeueAccountRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_download&quot;)
+<span class="nc" id="L268">              .thenProcess(</span>
+                  &quot;checkNewPivotBlock-Account&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L271">                    pivotBlockManager.check(doNothingOnPivotChange);</span>
+<span class="nc" id="L272">                    return tasks;</span>
+                  })
+<span class="nc" id="L274">              .thenProcessAsync(</span>
+                  &quot;batchDownloadAccountData&quot;,
+<span class="nc" id="L276">                  requestTask -&gt; requestDataStep.requestAccount(requestTask),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L278">              .thenProcess(&quot;batchPersistAccountData&quot;, task -&gt; persistDataStep.persist(task))</span>
+<span class="nc" id="L279">              .andFinishWith(&quot;batchAccountDataDownloaded&quot;, requestsToComplete::put);</span>
+
+<span class="nc" id="L281">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchStorageDataPipeline =</span>
+<span class="nc" id="L282">          createPipelineFrom(</span>
+                  &quot;dequeueStorageRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+<span class="nc" id="L285">                      downloadState, () -&gt; downloadState.dequeueStorageRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_download&quot;)
+<span class="nc" id="L290">              .inBatches(snapSyncConfiguration.getStorageCountPerRequest())</span>
+<span class="nc" id="L291">              .thenProcess(</span>
+                  &quot;checkNewPivotBlock-Storage&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L294">                    pivotBlockManager.check(doNothingOnPivotChange);</span>
+<span class="nc" id="L295">                    return tasks;</span>
+                  })
+<span class="nc" id="L297">              .thenProcessAsyncOrdered(</span>
+                  &quot;batchDownloadStorageData&quot;,
+<span class="nc" id="L299">                  requestTask -&gt; requestDataStep.requestStorage(requestTask),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L301">              .thenProcess(&quot;batchPersistStorageData&quot;, task -&gt; persistDataStep.persist(task))</span>
+<span class="nc" id="L302">              .andFinishWith(</span>
+                  &quot;batchStorageDataDownloaded&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L305">                    tasks.forEach(requestsToComplete::put);</span>
+<span class="nc" id="L306">                  });</span>
+
+<span class="nc" id="L308">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchLargeStorageDataPipeline =</span>
+<span class="nc" id="L309">          createPipelineFrom(</span>
+                  &quot;dequeueLargeStorageRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+<span class="nc" id="L312">                      downloadState, () -&gt; downloadState.dequeueLargeStorageRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_download&quot;)
+<span class="nc" id="L317">              .thenProcess(</span>
+                  &quot;checkNewPivotBlock-LargeStorage&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L320">                    pivotBlockManager.check(doNothingOnPivotChange);</span>
+<span class="nc" id="L321">                    return tasks;</span>
+                  })
+<span class="nc" id="L323">              .thenProcessAsyncOrdered(</span>
+                  &quot;batchDownloadLargeStorageData&quot;,
+<span class="nc" id="L325">                  requestTask -&gt; requestDataStep.requestStorage(List.of(requestTask)),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L327">              .thenProcess(</span>
+                  &quot;batchPersistLargeStorageData&quot;,
+                  task -&gt; {
+<span class="nc" id="L330">                    persistDataStep.persist(task);</span>
+<span class="nc" id="L331">                    return task;</span>
+                  })
+<span class="nc" id="L333">              .andFinishWith(</span>
+                  &quot;batchLargeStorageDataDownloaded&quot;,
+<span class="nc" id="L335">                  tasks -&gt; tasks.forEach(requestsToComplete::put));</span>
+
+<span class="nc" id="L337">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; fetchCodePipeline =</span>
+<span class="nc" id="L338">          createPipelineFrom(</span>
+                  &quot;dequeueCodeRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+<span class="nc" id="L341">                      downloadState, () -&gt; downloadState.dequeueCodeRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;code_blocks_download_pipeline&quot;)
+<span class="nc" id="L346">              .inBatches(</span>
+<span class="nc" id="L347">                  snapSyncConfiguration.getBytecodeCountPerRequest() * 2,</span>
+                  tasks -&gt;
+<span class="nc" id="L349">                      snapSyncConfiguration.getBytecodeCountPerRequest()</span>
+                          - (int)
+<span class="nc" id="L351">                              tasks.stream()</span>
+<span class="nc" id="L352">                                  .map(Task::getData)</span>
+<span class="nc" id="L353">                                  .map(BytecodeRequest.class::cast)</span>
+<span class="nc" id="L354">                                  .map(BytecodeRequest::getCodeHash)</span>
+<span class="nc" id="L355">                                  .distinct()</span>
+<span class="nc" id="L356">                                  .count())</span>
+<span class="nc" id="L357">              .thenProcess(</span>
+                  &quot;checkNewPivotBlock-Code&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L360">                    pivotBlockManager.check(</span>
+                        (blockHeader, newBlockFound) -&gt;
+<span class="nc" id="L362">                            reloadHealWhenNeeded(snapSyncState, downloadState, newBlockFound));</span>
+<span class="nc" id="L363">                    return tasks;</span>
+                  })
+<span class="nc" id="L365">              .thenProcessAsyncOrdered(</span>
+                  &quot;batchDownloadCodeData&quot;,
+<span class="nc" id="L367">                  tasks -&gt; requestDataStep.requestCode(tasks),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L369">              .thenProcess(</span>
+                  &quot;batchPersistCodeData&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L372">                    persistDataStep.persist(tasks);</span>
+<span class="nc" id="L373">                    return tasks;</span>
+                  })
+<span class="nc" id="L375">              .andFinishWith(</span>
+<span class="nc" id="L376">                  &quot;batchCodeDataDownloaded&quot;, tasks -&gt; tasks.forEach(requestsToComplete::put));</span>
+
+<span class="nc" id="L378">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; trieHealingPipeline =</span>
+<span class="nc" id="L379">          createPipelineFrom(</span>
+                  &quot;requestTrieNodeDequeued&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+<span class="nc" id="L382">                      downloadState, () -&gt; downloadState.dequeueTrieNodeRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_heal&quot;)
+<span class="nc" id="L387">              .thenFlatMapInParallel(</span>
+                  &quot;requestLoadLocalTrieNodeData&quot;,
+<span class="nc" id="L389">                  task -&gt; loadLocalDataStep.loadLocalDataTrieNode(task, requestsToComplete),</span>
+                  3,
+                  bufferCapacity)
+<span class="nc" id="L392">              .inBatches(snapSyncConfiguration.getTrienodeCountPerRequest())</span>
+<span class="nc" id="L393">              .thenProcess(</span>
+                  &quot;checkNewPivotBlock-TrieNode&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L396">                    pivotBlockManager.check(</span>
+                        (blockHeader, newBlockFound) -&gt;
+<span class="nc" id="L398">                            reloadHealWhenNeeded(snapSyncState, downloadState, newBlockFound));</span>
+<span class="nc" id="L399">                    return tasks;</span>
+                  })
+<span class="nc" id="L401">              .thenProcessAsync(</span>
+                  &quot;batchDownloadTrieNodeData&quot;,
+<span class="nc" id="L403">                  tasks -&gt; requestDataStep.requestTrieNodeByPath(tasks),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L405">              .thenProcess(</span>
+                  &quot;batchPersistTrieNodeData&quot;,
+                  tasks -&gt; {
+<span class="nc" id="L408">                    persistDataStep.persist(tasks);</span>
+<span class="nc" id="L409">                    return tasks;</span>
+                  })
+<span class="nc" id="L411">              .andFinishWith(</span>
+<span class="nc" id="L412">                  &quot;batchTrieNodeDataDownloaded&quot;, tasks -&gt; tasks.forEach(requestsToComplete::put));</span>
+
+<span class="nc" id="L414">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; accountFlatDatabaseHealingPipeline =</span>
+<span class="nc" id="L415">          createPipelineFrom(</span>
+                  &quot;dequeueFlatAccountRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+                      downloadState,
+<span class="nc" id="L419">                      () -&gt; downloadState.dequeueAccountFlatDatabaseHealingRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_heal&quot;)
+<span class="nc" id="L424">              .thenProcessAsync(</span>
+                  &quot;batchDownloadFlatAccountData&quot;,
+<span class="nc" id="L426">                  requestTask -&gt; requestDataStep.requestLocalFlatAccounts(requestTask),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L428">              .thenProcess(</span>
+                  &quot;batchHealAndPersistFlatAccountData&quot;,
+<span class="nc" id="L430">                  task -&gt; persistDataStep.healFlatDatabase(task))</span>
+<span class="nc" id="L431">              .andFinishWith(&quot;batchFlatAccountDataDownloaded&quot;, requestsToComplete::put);</span>
+
+<span class="nc" id="L433">      final Pipeline&lt;Task&lt;SnapDataRequest&gt;&gt; storageFlatDatabaseHealingPipeline =</span>
+<span class="nc" id="L434">          createPipelineFrom(</span>
+                  &quot;dequeueFlatStorageRequestBlocking&quot;,
+                  new TaskQueueIterator&lt;&gt;(
+                      downloadState,
+<span class="nc" id="L438">                      () -&gt; downloadState.dequeueStorageFlatDatabaseHealingRequestBlocking()),</span>
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_heal&quot;)
+<span class="nc" id="L443">              .thenProcessAsyncOrdered(</span>
+                  &quot;batchDownloadFlatStorageData&quot;,
+<span class="nc" id="L445">                  requestTask -&gt; requestDataStep.requestLocalFlatStorages(requestTask),</span>
+                  maxOutstandingRequests)
+<span class="nc" id="L447">              .thenProcess(</span>
+                  &quot;batchHealAndPersistFlatStorageData&quot;,
+<span class="nc" id="L449">                  task -&gt; persistDataStep.healFlatDatabase(task))</span>
+<span class="nc" id="L450">              .andFinishWith(&quot;batchFlatStorageDataDownloaded&quot;, requestsToComplete::put);</span>
+
+<span class="nc" id="L452">      return new SnapWorldStateDownloadProcess(</span>
+          fetchAccountDataPipeline,
+          fetchStorageDataPipeline,
+          fetchLargeStorageDataPipeline,
+          fetchCodePipeline,
+          trieHealingPipeline,
+          accountFlatDatabaseHealingPipeline,
+          storageFlatDatabaseHealingPipeline,
+          completionPipeline,
+          requestsToComplete);
+    }
+  }
+
+  private static void reloadHealWhenNeeded(
+      final SnapSyncProcessState snapSyncState,
+      final SnapWorldDownloadState downloadState,
+      final boolean newBlockFound) {
+<span class="nc bnc" id="L469" title="All 4 branches missed.">    if (snapSyncState.isHealTrieInProgress() &amp;&amp; newBlockFound) {</span>
+<span class="nc" id="L470">      downloadState.reloadTrieHeal();</span>
+    }
+<span class="nc" id="L472">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

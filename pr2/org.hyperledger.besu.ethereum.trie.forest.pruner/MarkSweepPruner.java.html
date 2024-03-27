@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MarkSweepPruner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.forest.pruner</a> &gt; <span class="el_source">MarkSweepPruner.java</span></div><h1>MarkSweepPruner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.forest.pruner;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Stopwatch;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MarkSweepPruner {
+
+<span class="fc" id="L54">  private static final Logger LOG = LoggerFactory.getLogger(MarkSweepPruner.class);</span>
+<span class="fc" id="L55">  private static final byte[] IN_USE = Bytes.of(1).toArrayUnsafe();</span>
+
+  private static final int DEFAULT_OPS_PER_TRANSACTION = 10_000;
+  private static final int MAX_MARKING_THREAD_POOL_SIZE = 2;
+
+  private final int operationsPerTransaction;
+  private final ForestWorldStateKeyValueStorage worldStateKeyValueStorage;
+  private final MutableBlockchain blockchain;
+  private final KeyValueStorage markStorage;
+  private final Counter markedNodesCounter;
+  private final Counter markOperationCounter;
+  private final Counter sweepOperationCounter;
+  private final Counter sweptNodesCounter;
+  private final Stopwatch markStopwatch;
+  private volatile long nodeAddedListenerId;
+<span class="fc" id="L70">  private final ReadWriteLock pendingMarksLock = new ReentrantReadWriteLock();</span>
+<span class="fc" id="L71">  private final Set&lt;Bytes32&gt; pendingMarks = Collections.newSetFromMap(new ConcurrentHashMap&lt;&gt;());</span>
+
+  public MarkSweepPruner(
+      final ForestWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final MutableBlockchain blockchain,
+      final KeyValueStorage markStorage,
+      final ObservableMetricsSystem metricsSystem) {
+<span class="fc" id="L78">    this(</span>
+        worldStateKeyValueStorage,
+        blockchain,
+        markStorage,
+        metricsSystem,
+        DEFAULT_OPS_PER_TRANSACTION);
+<span class="fc" id="L84">  }</span>
+
+  public MarkSweepPruner(
+      final ForestWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final MutableBlockchain blockchain,
+      final KeyValueStorage markStorage,
+      final ObservableMetricsSystem metricsSystem,
+<span class="fc" id="L91">      final int operationsPerTransaction) {</span>
+<span class="fc" id="L92">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L93">    this.markStorage = markStorage;</span>
+<span class="fc" id="L94">    this.blockchain = blockchain;</span>
+<span class="fc" id="L95">    this.operationsPerTransaction = operationsPerTransaction;</span>
+
+<span class="fc" id="L97">    markedNodesCounter =</span>
+<span class="fc" id="L98">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PRUNER,
+            &quot;marked_nodes_total&quot;,
+            &quot;Total number of nodes marked as in use&quot;);
+<span class="fc" id="L102">    markOperationCounter =</span>
+<span class="fc" id="L103">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PRUNER,
+            &quot;mark_operations_total&quot;,
+            &quot;Total number of mark operations performed&quot;);
+
+<span class="fc" id="L108">    sweptNodesCounter =</span>
+<span class="fc" id="L109">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PRUNER, &quot;swept_nodes_total&quot;, &quot;Total number of unused nodes removed&quot;);
+<span class="fc" id="L111">    sweepOperationCounter =</span>
+<span class="fc" id="L112">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PRUNER,
+            &quot;sweep_operations_total&quot;,
+            &quot;Total number of sweep operations performed&quot;);
+
+<span class="fc" id="L117">    markStopwatch = Stopwatch.createUnstarted();</span>
+<span class="fc" id="L118">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.PRUNER,
+        &quot;mark_time_duration&quot;,
+        &quot;Cumulative number of seconds spent marking the state trie across all pruning cycles&quot;,
+<span class="nc" id="L122">        () -&gt; markStopwatch.elapsed(TimeUnit.SECONDS));</span>
+
+<span class="fc" id="L124">    LOG.debug(&quot;Using {} pruner threads&quot;, MAX_MARKING_THREAD_POOL_SIZE);</span>
+<span class="fc" id="L125">  }</span>
+
+  public void prepare() {
+    // Optimization for the case where the previous cycle was interrupted (like the node was shut
+    // down). If the previous cycle was interrupted, there will be marks in the mark storage from
+    // last time, causing the first sweep to be smaller than it needs to be.
+<span class="nc" id="L131">    clearMarks();</span>
+
+<span class="nc" id="L133">    nodeAddedListenerId = worldStateKeyValueStorage.addNodeAddedListener(this::markNodes);</span>
+<span class="nc" id="L134">  }</span>
+
+  /**
+   * This is a parallel mark implementation.
+   *
+   * &lt;p&gt;The parallel task production is by sub-trie, so calling `visitAll` on a root node will
+   * eventually spawn up to 16 tasks (for a hexary trie).
+   *
+   * &lt;p&gt;If we marked each sub-trie in its own thread, with no common queue of tasks, our mark speed
+   * would be limited by the sub-trie with the maximum number of nodes. In practice for the Ethereum
+   * mainnet, we see a large imbalance in sub-trie size so without a common task pool the time in
+   * which there is only 1 thread left marking its big sub-trie would be substantial.
+   *
+   * &lt;p&gt;If we were to leave all threads to produce mark tasks before starting to mark, we would run
+   * out of memory quickly.
+   *
+   * &lt;p&gt;If we were to have a constant number of threads producing the mark tasks with the others
+   * consuming them, we would have to optimize the production/consumption balance.
+   *
+   * &lt;p&gt;To get the best of both worlds, the marking executor has a {@link
+   * ThreadPoolExecutor.CallerRunsPolicy} which causes the producing tasks to essentially consume
+   * their own mark task immediately when the task queue is full. The resulting behavior is threads
+   * that mark their own sub-trie until they finish that sub-trie, at which point they switch to
+   * marking the sub-trie tasks produced by another thread.
+   *
+   * @param rootHash The root hash of the whole state trie. Roots of storage tries will be
+   *     discovered though traversal.
+   */
+  public void mark(final Hash rootHash) {
+<span class="fc" id="L163">    markOperationCounter.inc();</span>
+<span class="fc" id="L164">    markStopwatch.start();</span>
+<span class="fc" id="L165">    final ExecutorService markingExecutorService =</span>
+        new ThreadPoolExecutor(
+            0,
+            MAX_MARKING_THREAD_POOL_SIZE,
+            5L,
+            TimeUnit.SECONDS,
+            new LinkedBlockingDeque&lt;&gt;(16),
+            new ThreadFactoryBuilder()
+<span class="fc" id="L173">                .setDaemon(true)</span>
+<span class="fc" id="L174">                .setPriority(Thread.MIN_PRIORITY)</span>
+<span class="fc" id="L175">                .setNameFormat(this.getClass().getSimpleName() + &quot;-%d&quot;)</span>
+<span class="fc" id="L176">                .build(),</span>
+            new ThreadPoolExecutor.CallerRunsPolicy());
+<span class="fc" id="L178">    createStateTrie(rootHash)</span>
+<span class="fc" id="L179">        .visitAll(</span>
+            node -&gt; {
+<span class="fc" id="L181">              markNode(node.getHash());</span>
+<span class="fc" id="L182">              node.getValue()</span>
+<span class="fc" id="L183">                  .ifPresent(value -&gt; processAccountState(value, markingExecutorService));</span>
+<span class="fc" id="L184">            },</span>
+            markingExecutorService)
+<span class="fc" id="L186">        .join() /* This will block on all the marking tasks to be _produced_ but doesn't guarantee that the marking tasks have been completed. */;</span>
+<span class="fc" id="L187">    markingExecutorService.shutdown();</span>
+    try {
+      // This ensures that the marking tasks complete.
+<span class="fc" id="L190">      markingExecutorService.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);</span>
+<span class="nc" id="L191">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L192">      LOG.info(&quot;Interrupted while marking&quot;, e);</span>
+<span class="fc" id="L193">    }</span>
+<span class="fc" id="L194">    markStopwatch.stop();</span>
+<span class="fc" id="L195">    LOG.debug(&quot;Completed marking used nodes for pruning&quot;);</span>
+<span class="fc" id="L196">  }</span>
+
+  public void sweepBefore(final long markedBlockNumber) {
+<span class="fc" id="L199">    sweepOperationCounter.inc();</span>
+<span class="fc" id="L200">    LOG.debug(&quot;Sweeping unused nodes&quot;);</span>
+    // Sweep state roots first, walking backwards until we get to a state root that isn't in the
+    // storage
+<span class="fc" id="L203">    long prunedNodeCount = 0;</span>
+<span class="fc" id="L204">    ForestWorldStateKeyValueStorage.Updater updater = worldStateKeyValueStorage.updater();</span>
+<span class="fc bfc" id="L205" title="All 2 branches covered.">    for (long blockNumber = markedBlockNumber - 1; blockNumber &gt;= 0; blockNumber--) {</span>
+<span class="fc" id="L206">      final BlockHeader blockHeader = blockchain.getBlockHeader(blockNumber).get();</span>
+<span class="fc" id="L207">      final Hash candidateStateRootHash = blockHeader.getStateRoot();</span>
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">      if (!worldStateKeyValueStorage.isWorldStateAvailable(candidateStateRootHash)) {</span>
+<span class="nc" id="L209">        break;</span>
+      }
+
+<span class="fc bfc" id="L212" title="All 2 branches covered.">      if (!isMarked(candidateStateRootHash)) {</span>
+<span class="fc" id="L213">        updater.removeAccountStateTrieNode(candidateStateRootHash);</span>
+<span class="fc" id="L214">        prunedNodeCount++;</span>
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">        if (prunedNodeCount % operationsPerTransaction == 0) {</span>
+<span class="nc" id="L216">          updater.commit();</span>
+<span class="nc" id="L217">          updater = worldStateKeyValueStorage.updater();</span>
+        }
+      }
+    }
+
+<span class="fc" id="L222">    updater.commit();</span>
+    // Sweep non-state-root nodes
+<span class="fc" id="L224">    prunedNodeCount += worldStateKeyValueStorage.prune(this::isMarked);</span>
+<span class="fc" id="L225">    sweptNodesCounter.inc(prunedNodeCount);</span>
+<span class="fc" id="L226">    clearMarks();</span>
+<span class="fc" id="L227">    LOG.debug(&quot;Completed sweeping unused nodes&quot;);</span>
+<span class="fc" id="L228">  }</span>
+
+  public void cleanup() {
+<span class="nc" id="L231">    worldStateKeyValueStorage.removeNodeAddedListener(nodeAddedListenerId);</span>
+<span class="nc" id="L232">    clearMarks();</span>
+<span class="nc" id="L233">  }</span>
+
+  public void clearMarks() {
+<span class="fc" id="L236">    markStorage.clear();</span>
+<span class="fc" id="L237">    pendingMarks.clear();</span>
+<span class="fc" id="L238">  }</span>
+
+  private boolean isMarked(final Bytes32 key) {
+<span class="pc bpc" id="L241" title="1 of 4 branches missed.">    return pendingMarks.contains(key) || markStorage.containsKey(key.toArrayUnsafe());</span>
+  }
+
+  private boolean isMarked(final byte[] key) {
+<span class="pc bpc" id="L245" title="1 of 4 branches missed.">    return pendingMarks.contains(Bytes32.wrap(key)) || markStorage.containsKey(key);</span>
+  }
+
+  private MerkleTrie&lt;Bytes32, Bytes&gt; createStateTrie(final Bytes32 rootHash) {
+<span class="fc" id="L249">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L250">        (location, hash) -&gt; worldStateKeyValueStorage.getAccountStateTrieNode(hash),</span>
+        rootHash,
+<span class="fc" id="L252">        Function.identity(),</span>
+<span class="fc" id="L253">        Function.identity());</span>
+  }
+
+  private MerkleTrie&lt;Bytes32, Bytes&gt; createStorageTrie(final Bytes32 rootHash) {
+<span class="fc" id="L257">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L258">        (location, hash) -&gt; worldStateKeyValueStorage.getAccountStorageTrieNode(hash),</span>
+        rootHash,
+<span class="fc" id="L260">        Function.identity(),</span>
+<span class="fc" id="L261">        Function.identity());</span>
+  }
+
+  private void processAccountState(final Bytes value, final ExecutorService executorService) {
+<span class="fc" id="L265">    final StateTrieAccountValue accountValue = StateTrieAccountValue.readFrom(RLP.input(value));</span>
+<span class="fc" id="L266">    markNode(accountValue.getCodeHash());</span>
+
+<span class="fc" id="L268">    createStorageTrie(accountValue.getStorageRoot())</span>
+<span class="fc" id="L269">        .visitAll(storageNode -&gt; markNode(storageNode.getHash()), executorService);</span>
+<span class="fc" id="L270">  }</span>
+
+  @VisibleForTesting
+  public void markNode(final Bytes32 hash) {
+<span class="fc" id="L274">    markThenMaybeFlush(() -&gt; pendingMarks.add(hash), 1);</span>
+<span class="fc" id="L275">  }</span>
+
+  private void markNodes(final Collection&lt;Bytes32&gt; nodeHashes) {
+<span class="nc" id="L278">    markThenMaybeFlush(() -&gt; pendingMarks.addAll(nodeHashes), nodeHashes.size());</span>
+<span class="nc" id="L279">  }</span>
+
+  private void markThenMaybeFlush(final Runnable nodeMarker, final int numberOfNodes) {
+    // We use the read lock here because pendingMarks is threadsafe and we want to allow all the
+    // marking threads access simultaneously.
+<span class="fc" id="L284">    final Lock markLock = pendingMarksLock.readLock();</span>
+<span class="fc" id="L285">    markLock.lock();</span>
+    try {
+<span class="fc" id="L287">      nodeMarker.run();</span>
+    } finally {
+<span class="fc" id="L289">      markLock.unlock();</span>
+    }
+<span class="fc" id="L291">    markedNodesCounter.inc(numberOfNodes);</span>
+
+    // However, when the size of pendingMarks grows too large, we want all the threads to stop
+    // adding because we're going to clear the set.
+    // Therefore, we need to take out a write lock.
+<span class="pc bpc" id="L296" title="1 of 2 branches missed.">    if (pendingMarks.size() &gt;= operationsPerTransaction) {</span>
+<span class="nc" id="L297">      final Lock flushLock = pendingMarksLock.writeLock();</span>
+<span class="nc" id="L298">      flushLock.lock();</span>
+      try {
+        // Check once again that the condition holds. If it doesn't, that means another thread
+        // already flushed them.
+<span class="nc bnc" id="L302" title="All 2 branches missed.">        if (pendingMarks.size() &gt;= operationsPerTransaction) {</span>
+<span class="nc" id="L303">          flushPendingMarks();</span>
+        }
+      } finally {
+<span class="nc" id="L306">        flushLock.unlock();</span>
+      }
+    }
+<span class="fc" id="L309">  }</span>
+
+  private void flushPendingMarks() {
+<span class="nc" id="L312">    final KeyValueStorageTransaction transaction = markStorage.startTransaction();</span>
+<span class="nc" id="L313">    pendingMarks.forEach(node -&gt; transaction.put(node.toArrayUnsafe(), IN_USE));</span>
+<span class="nc" id="L314">    transaction.commit();</span>
+<span class="nc" id="L315">    pendingMarks.clear();</span>
+<span class="nc" id="L316">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

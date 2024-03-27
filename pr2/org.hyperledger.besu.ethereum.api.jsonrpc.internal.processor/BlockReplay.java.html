@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockReplay.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor</a> &gt; <span class="el_source">BlockReplay.java</span></div><h1>BlockReplay.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor;
+
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.Tracer.TraceableState;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.vm.BlockHashLookup;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+
+import java.util.List;
+import java.util.Optional;
+
+public class BlockReplay {
+
+  private final ProtocolSchedule protocolSchedule;
+  private final Blockchain blockchain;
+  private final ProtocolContext protocolContext;
+
+  public BlockReplay(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+<span class="fc" id="L48">      final Blockchain blockchain) {</span>
+<span class="fc" id="L49">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L50">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L51">    this.blockchain = blockchain;</span>
+<span class="fc" id="L52">  }</span>
+
+  public Optional&lt;BlockTrace&gt; block(
+      final Block block, final TransactionAction&lt;TransactionTrace&gt; action) {
+<span class="fc" id="L56">    return performActionWithBlock(</span>
+<span class="fc" id="L57">        block.getHeader(),</span>
+<span class="fc" id="L58">        block.getBody(),</span>
+        (body, header, blockchain, transactionProcessor, protocolSpec) -&gt; {
+<span class="fc" id="L60">          final Wei blobGasPrice =</span>
+              protocolSpec
+<span class="fc" id="L62">                  .getFeeMarket()</span>
+<span class="fc" id="L63">                  .blobGasPricePerGas(</span>
+                      blockchain
+<span class="fc" id="L65">                          .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L66">                          .map(parent -&gt; calculateExcessBlobGasForParent(protocolSpec, parent))</span>
+<span class="fc" id="L67">                          .orElse(BlobGas.ZERO));</span>
+
+<span class="fc" id="L69">          final List&lt;TransactionTrace&gt; transactionTraces =</span>
+<span class="fc" id="L70">              body.getTransactions().stream()</span>
+<span class="fc" id="L71">                  .map(</span>
+                      transaction -&gt;
+<span class="fc" id="L73">                          action.performAction(</span>
+                              transaction, header, blockchain, transactionProcessor, blobGasPrice))
+<span class="fc" id="L75">                  .toList();</span>
+<span class="fc" id="L76">          return Optional.of(new BlockTrace(transactionTraces));</span>
+        });
+  }
+
+  public Optional&lt;BlockTrace&gt; block(
+      final Hash blockHash, final TransactionAction&lt;TransactionTrace&gt; action) {
+<span class="fc" id="L82">    return getBlock(blockHash).flatMap(block -&gt; block(block, action));</span>
+  }
+
+  public &lt;T&gt; Optional&lt;T&gt; beforeTransactionInBlock(
+      final TraceableState mutableWorldState,
+      final Hash blockHash,
+      final Hash transactionHash,
+      final TransactionAction&lt;T&gt; action) {
+<span class="fc" id="L90">    return performActionWithBlock(</span>
+        blockHash,
+        (body, header, blockchain, transactionProcessor, protocolSpec) -&gt; {
+<span class="fc" id="L93">          final BlockHashLookup blockHashLookup = new CachingBlockHashLookup(header, blockchain);</span>
+<span class="fc" id="L94">          final Wei blobGasPrice =</span>
+              protocolSpec
+<span class="fc" id="L96">                  .getFeeMarket()</span>
+<span class="fc" id="L97">                  .blobGasPricePerGas(</span>
+                      blockchain
+<span class="fc" id="L99">                          .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L100">                          .map(parent -&gt; calculateExcessBlobGasForParent(protocolSpec, parent))</span>
+<span class="fc" id="L101">                          .orElse(BlobGas.ZERO));</span>
+
+<span class="fc bfc" id="L103" title="All 2 branches covered.">          for (final Transaction transaction : body.getTransactions()) {</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">            if (transaction.getHash().equals(transactionHash)) {</span>
+<span class="fc" id="L105">              return Optional.of(</span>
+<span class="fc" id="L106">                  action.performAction(</span>
+                      transaction, header, blockchain, transactionProcessor, blobGasPrice));
+            } else {
+<span class="fc" id="L109">              transactionProcessor.processTransaction(</span>
+                  blockchain,
+<span class="fc" id="L111">                  mutableWorldState.updater(),</span>
+                  header,
+                  transaction,
+<span class="fc" id="L114">                  protocolSpec.getMiningBeneficiaryCalculator().calculateBeneficiary(header),</span>
+                  blockHashLookup,
+<span class="fc" id="L116">                  false,</span>
+<span class="fc" id="L117">                  TransactionValidationParams.blockReplay(),</span>
+                  blobGasPrice);
+            }
+<span class="fc" id="L120">          }</span>
+<span class="fc" id="L121">          return Optional.empty();</span>
+        });
+  }
+
+  public &lt;T&gt; Optional&lt;T&gt; afterTransactionInBlock(
+      final TraceableState mutableWorldState,
+      final Hash blockHash,
+      final Hash transactionHash,
+      final TransactionAction&lt;T&gt; action) {
+<span class="fc" id="L130">    return beforeTransactionInBlock(</span>
+        mutableWorldState,
+        blockHash,
+        transactionHash,
+        (transaction, blockHeader, blockchain, transactionProcessor, blobGasPrice) -&gt; {
+<span class="fc" id="L135">          final ProtocolSpec spec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+<span class="fc" id="L136">          transactionProcessor.processTransaction(</span>
+              blockchain,
+<span class="fc" id="L138">              mutableWorldState.updater(),</span>
+              blockHeader,
+              transaction,
+<span class="fc" id="L141">              spec.getMiningBeneficiaryCalculator().calculateBeneficiary(blockHeader),</span>
+              new CachingBlockHashLookup(blockHeader, blockchain),
+<span class="fc" id="L143">              false,</span>
+<span class="fc" id="L144">              TransactionValidationParams.blockReplay(),</span>
+              blobGasPrice);
+<span class="fc" id="L146">          return action.performAction(</span>
+              transaction, blockHeader, blockchain, transactionProcessor, blobGasPrice);
+        });
+  }
+
+  public &lt;T&gt; Optional&lt;T&gt; performActionWithBlock(final Hash blockHash, final BlockAction&lt;T&gt; action) {
+<span class="fc" id="L152">    Optional&lt;Block&gt; maybeBlock = getBlock(blockHash);</span>
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (maybeBlock.isEmpty()) {</span>
+<span class="fc" id="L154">      maybeBlock = protocolContext.getBadBlockManager().getBadBlock(blockHash);</span>
+    }
+<span class="fc" id="L156">    return maybeBlock.flatMap(</span>
+<span class="fc" id="L157">        block -&gt; performActionWithBlock(block.getHeader(), block.getBody(), action));</span>
+  }
+
+  private &lt;T&gt; Optional&lt;T&gt; performActionWithBlock(
+      final BlockHeader header, final BlockBody body, final BlockAction&lt;T&gt; action) {
+<span class="pc bpc" id="L162" title="1 of 2 branches missed.">    if (header == null) {</span>
+<span class="nc" id="L163">      return Optional.empty();</span>
+    }
+<span class="pc bpc" id="L165" title="1 of 2 branches missed.">    if (body == null) {</span>
+<span class="nc" id="L166">      return Optional.empty();</span>
+    }
+<span class="fc" id="L168">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+<span class="fc" id="L169">    final MainnetTransactionProcessor transactionProcessor = protocolSpec.getTransactionProcessor();</span>
+
+<span class="fc" id="L171">    return action.perform(body, header, blockchain, transactionProcessor, protocolSpec);</span>
+  }
+
+  private Optional&lt;Block&gt; getBlock(final Hash blockHash) {
+<span class="fc" id="L175">    final BlockHeader blockHeader = blockchain.getBlockHeader(blockHash).orElse(null);</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">    if (blockHeader != null) {</span>
+<span class="fc" id="L177">      final BlockBody blockBody = blockchain.getBlockBody(blockHeader.getHash()).orElse(null);</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">      if (blockBody != null) {</span>
+<span class="fc" id="L179">        return Optional.of(new Block(blockHeader, blockBody));</span>
+      }
+    }
+<span class="fc" id="L182">    return Optional.empty();</span>
+  }
+
+  @FunctionalInterface
+  public interface BlockAction&lt;T&gt; {
+    Optional&lt;T&gt; perform(
+        BlockBody body,
+        BlockHeader blockHeader,
+        Blockchain blockchain,
+        MainnetTransactionProcessor transactionProcessor,
+        ProtocolSpec protocolSpec);
+  }
+
+  @FunctionalInterface
+  public interface TransactionAction&lt;T&gt; {
+    T performAction(
+        Transaction transaction,
+        BlockHeader blockHeader,
+        Blockchain blockchain,
+        MainnetTransactionProcessor transactionProcessor,
+        Wei blobGasPrice);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

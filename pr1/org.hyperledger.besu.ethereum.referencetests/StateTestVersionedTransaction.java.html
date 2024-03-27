@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StateTestVersionedTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.referencetests</a> &gt; <span class="el_source">StateTestVersionedTransaction.java</span></div><h1>StateTestVersionedTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.referencetests;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.AccessListEntry;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.Transaction;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+import javax.annotation.Nullable;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/**
+ * Represents the &quot;transaction&quot; part of the JSON of a general state tests.
+ *
+ * &lt;p&gt;This contains information for a transaction, indirectly versioned by milestone. More
+ * precisely, this there is 2 steps to transform this class (which again, represent what is in the
+ * JSON) to an actual transaction to test:
+ *
+ * &lt;ul&gt;
+ *   &lt;li&gt;in the state test json, gas, value and data for the transaction are arrays. This is how
+ *       state tests deal with milestone versioning: for a given milestone, the actual value to use
+ *       is defined by the indexes of the &quot;post&quot; section of the json. Those indexes are passed to
+ *       this class in {@link #get(GeneralStateTestCaseSpec.Indexes)}.
+ *   &lt;li&gt;the signature of the transaction is not provided in the json directly. Instead, the private
+ *       key of the sender is provided, and the transaction must thus be signed (also in {@link
+ *       #get(GeneralStateTestCaseSpec.Indexes)}) through {@link
+ *       Transaction.Builder#signAndBuild(KeyPair)}.
+ * &lt;/ul&gt;
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class StateTestVersionedTransaction {
+
+  private final long nonce;
+  @Nullable private final Wei maxFeePerGas;
+  @Nullable private final Wei maxPriorityFeePerGas;
+  @Nullable private final Wei gasPrice;
+  @Nullable private final Address to;
+
+  private final KeyPair keys;
+
+  private final List&lt;Long&gt; gasLimits;
+  private final List&lt;Wei&gt; values;
+  private final List&lt;Bytes&gt; payloads;
+  private final Optional&lt;List&lt;List&lt;AccessListEntry&gt;&gt;&gt; maybeAccessLists;
+  private final Wei maxFeePerBlobGas;
+  // String instead of VersionedHash because reference tests intentionally use bad hashes.
+  private final List&lt;String&gt; blobVersionedHashes;
+
+  /**
+   * Constructor for populating a mock transaction with json data.
+   *
+   * @param nonce Nonce of the mock transaction.
+   * @param gasPrice Gas price of the mock transaction, if not 1559 transaction.
+   * @param maxFeePerGas Wei fee cap of the mock transaction, if a 1559 transaction.
+   * @param maxPriorityFeePerGas Wei tip cap of the mock transaction, if a 1559 transaction.
+   * @param gasLimit Gas Limit of the mock transaction.
+   * @param to Recipient account of the mock transaction.
+   * @param value Amount of ether transferred in the mock transaction.
+   * @param secretKey Secret Key of the mock transaction.
+   * @param data Call data of the mock transaction.
+   * @param maybeAccessLists List of access lists of the mock transaction. Can be null.
+   */
+  @JsonCreator
+  public StateTestVersionedTransaction(
+      @JsonProperty(&quot;nonce&quot;) final String nonce,
+      @JsonProperty(&quot;gasPrice&quot;) final String gasPrice,
+      @JsonProperty(&quot;maxFeePerGas&quot;) final String maxFeePerGas,
+      @JsonProperty(&quot;maxPriorityFeePerGas&quot;) final String maxPriorityFeePerGas,
+      @JsonProperty(&quot;gasLimit&quot;) final String[] gasLimit,
+      @JsonProperty(&quot;to&quot;) final String to,
+      @JsonProperty(&quot;value&quot;) final String[] value,
+      @JsonProperty(&quot;secretKey&quot;) final String secretKey,
+      @JsonProperty(&quot;data&quot;) final String[] data,
+      @JsonDeserialize(using = StateTestAccessListDeserializer.class) @JsonProperty(&quot;accessLists&quot;)
+          final List&lt;List&lt;AccessListEntry&gt;&gt; maybeAccessLists,
+      @JsonProperty(&quot;maxFeePerBlobGas&quot;) final String maxFeePerBlobGas,
+      @JsonProperty(&quot;maxFeePerDataGas&quot;) final String maxFeePerDataGas,
+<span class="fc" id="L108">      @JsonProperty(&quot;blobVersionedHashes&quot;) final List&lt;String&gt; blobVersionedHashes) {</span>
+
+<span class="fc" id="L110">    this.nonce = Bytes.fromHexStringLenient(nonce).toLong();</span>
+<span class="fc" id="L111">    this.gasPrice = Optional.ofNullable(gasPrice).map(Wei::fromHexString).orElse(null);</span>
+<span class="fc" id="L112">    this.maxFeePerGas = Optional.ofNullable(maxFeePerGas).map(Wei::fromHexString).orElse(null);</span>
+<span class="fc" id="L113">    this.maxPriorityFeePerGas =</span>
+<span class="fc" id="L114">        Optional.ofNullable(maxPriorityFeePerGas).map(Wei::fromHexString).orElse(null);</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    this.to = to.isEmpty() ? null : Address.fromHexString(to);</span>
+
+<span class="fc" id="L117">    SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+<span class="fc" id="L118">    this.keys =</span>
+<span class="fc" id="L119">        signatureAlgorithm.createKeyPair(</span>
+<span class="fc" id="L120">            signatureAlgorithm.createPrivateKey(Bytes32.fromHexString(secretKey)));</span>
+
+<span class="fc" id="L122">    this.gasLimits = parseArray(gasLimit, s -&gt; UInt256.fromHexString(s).toLong());</span>
+<span class="fc" id="L123">    this.values = parseArray(value, Wei::fromHexString);</span>
+<span class="fc" id="L124">    this.payloads = parseArray(data, Bytes::fromHexString);</span>
+<span class="fc" id="L125">    this.maybeAccessLists = Optional.ofNullable(maybeAccessLists);</span>
+<span class="fc" id="L126">    this.maxFeePerBlobGas =</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">        Optional.ofNullable(maxFeePerBlobGas == null ? maxFeePerDataGas : maxFeePerBlobGas)</span>
+<span class="fc" id="L128">            .map(Wei::fromHexString)</span>
+<span class="fc" id="L129">            .orElse(null);</span>
+<span class="fc" id="L130">    this.blobVersionedHashes = blobVersionedHashes;</span>
+<span class="fc" id="L131">  }</span>
+
+  private static &lt;T&gt; List&lt;T&gt; parseArray(final String[] array, final Function&lt;String, T&gt; parseFct) {
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">    if (array == null) {</span>
+<span class="nc" id="L135">      return null;</span>
+    }
+
+<span class="fc" id="L138">    final List&lt;T&gt; res = new ArrayList&lt;&gt;(array.length);</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    for (final String str : array) {</span>
+      try {
+<span class="fc" id="L141">        res.add(parseFct.apply(str));</span>
+<span class="fc" id="L142">      } catch (RuntimeException re) {</span>
+        // the reference tests may be testing a boundary violation
+<span class="fc" id="L144">        res.add(null);</span>
+<span class="fc" id="L145">      }</span>
+    }
+<span class="fc" id="L147">    return res;</span>
+  }
+
+  public Transaction get(final GeneralStateTestCaseSpec.Indexes indexes) {
+<span class="fc" id="L151">    Long gasLimit = gasLimits.get(indexes.gas);</span>
+<span class="fc" id="L152">    Wei value = values.get(indexes.value);</span>
+<span class="fc" id="L153">    Bytes data = payloads.get(indexes.data);</span>
+<span class="pc bpc" id="L154" title="1 of 4 branches missed.">    if (value == null || gasLimit == null) {</span>
+      // this means one of the params is an out-of-bounds value. Don't generate the transaction.
+<span class="fc" id="L156">      return null;</span>
+    }
+
+    final Transaction.Builder transactionBuilder =
+<span class="fc" id="L160">        Transaction.builder().nonce(nonce).gasLimit(gasLimit).to(to).value(value).payload(data);</span>
+
+<span class="fc" id="L162">    Optional.ofNullable(gasPrice).ifPresent(transactionBuilder::gasPrice);</span>
+<span class="fc" id="L163">    Optional.ofNullable(maxFeePerGas).ifPresent(transactionBuilder::maxFeePerGas);</span>
+<span class="fc" id="L164">    Optional.ofNullable(maxPriorityFeePerGas).ifPresent(transactionBuilder::maxPriorityFeePerGas);</span>
+<span class="fc" id="L165">    maybeAccessLists.ifPresent(</span>
+<span class="fc" id="L166">        accessLists -&gt; transactionBuilder.accessList(accessLists.get(indexes.data)));</span>
+<span class="fc" id="L167">    Optional.ofNullable(maxFeePerBlobGas).ifPresent(transactionBuilder::maxFeePerBlobGas);</span>
+    try {
+<span class="fc" id="L169">      transactionBuilder.versionedHashes(</span>
+<span class="fc bfc" id="L170" title="All 2 branches covered.">          blobVersionedHashes == null</span>
+<span class="fc" id="L171">              ? null</span>
+<span class="fc" id="L172">              : blobVersionedHashes.stream().map(VersionedHash::fromHexString).toList());</span>
+<span class="fc" id="L173">    } catch (IllegalArgumentException iae) {</span>
+      // versioned hash string was bad, so this is an invalid transaction
+<span class="fc" id="L175">      return null;</span>
+<span class="fc" id="L176">    }</span>
+
+<span class="fc" id="L178">    transactionBuilder.guessType();</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">    if (transactionBuilder.getTransactionType().requiresChainId()) {</span>
+<span class="fc" id="L180">      transactionBuilder.chainId(BigInteger.ONE);</span>
+    }
+
+<span class="fc" id="L183">    return transactionBuilder.signAndBuild(keys);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

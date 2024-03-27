@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastSyncDownloader.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">FastSyncDownloader.java</span></div><h1>FastSyncDownloader.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import static org.hyperledger.besu.util.FutureUtils.exceptionallyCompose;
+
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.MaxRetriesReachedException;
+import org.hyperledger.besu.ethereum.eth.sync.ChainDownloader;
+import org.hyperledger.besu.ethereum.eth.sync.TrailingPeerRequirements;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.StalledDownloadException;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloader;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.services.tasks.TaskCollection;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+
+import com.google.common.io.MoreFiles;
+import com.google.common.io.RecursiveDeleteOption;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FastSyncDownloader&lt;REQUEST&gt; {
+
+<span class="fc" id="L46">  private static final Duration FAST_SYNC_RETRY_DELAY = Duration.ofSeconds(5);</span>
+
+<span class="fc" id="L48">  @SuppressWarnings(&quot;PrivateStaticFinalLoggers&quot;)</span>
+<span class="fc" id="L49">  protected final Logger LOG = LoggerFactory.getLogger(getClass());</span>
+
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  private final WorldStateDownloader worldStateDownloader;
+  private final TaskCollection&lt;REQUEST&gt; taskCollection;
+  private final Path fastSyncDataDirectory;
+<span class="fc" id="L55">  private volatile Optional&lt;TrailingPeerRequirements&gt; trailingPeerRequirements = Optional.empty();</span>
+<span class="fc" id="L56">  private final AtomicBoolean running = new AtomicBoolean(false);</span>
+
+  protected final FastSyncActions fastSyncActions;
+  protected final FastSyncStateStorage fastSyncStateStorage;
+  protected FastSyncState initialFastSyncState;
+
+  public FastSyncDownloader(
+      final FastSyncActions fastSyncActions,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateDownloader worldStateDownloader,
+      final FastSyncStateStorage fastSyncStateStorage,
+      final TaskCollection&lt;REQUEST&gt; taskCollection,
+      final Path fastSyncDataDirectory,
+<span class="fc" id="L69">      final FastSyncState initialFastSyncState) {</span>
+<span class="fc" id="L70">    this.fastSyncActions = fastSyncActions;</span>
+<span class="fc" id="L71">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L72">    this.worldStateDownloader = worldStateDownloader;</span>
+<span class="fc" id="L73">    this.fastSyncStateStorage = fastSyncStateStorage;</span>
+<span class="fc" id="L74">    this.taskCollection = taskCollection;</span>
+<span class="fc" id="L75">    this.fastSyncDataDirectory = fastSyncDataDirectory;</span>
+<span class="fc" id="L76">    this.initialFastSyncState = initialFastSyncState;</span>
+<span class="fc" id="L77">  }</span>
+
+  public CompletableFuture&lt;FastSyncState&gt; start() {
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">    if (!running.compareAndSet(false, true)) {</span>
+<span class="nc" id="L81">      throw new IllegalStateException(&quot;SyncDownloader already running&quot;);</span>
+    }
+<span class="fc" id="L83">    LOG.info(&quot;Starting sync&quot;);</span>
+<span class="fc" id="L84">    return start(initialFastSyncState);</span>
+  }
+
+  protected CompletableFuture&lt;FastSyncState&gt; start(final FastSyncState fastSyncState) {
+<span class="fc" id="L88">    worldStateStorageCoordinator.applyOnMatchingStrategy(</span>
+        DataStorageFormat.BONSAI,
+        worldStateKeyValueStorage -&gt; {
+<span class="fc" id="L91">          BonsaiWorldStateKeyValueStorage onBonsai =</span>
+              (BonsaiWorldStateKeyValueStorage) worldStateKeyValueStorage;
+<span class="fc" id="L93">          LOG.info(&quot;Clearing bonsai flat account db&quot;);</span>
+<span class="fc" id="L94">          onBonsai.clearFlatDatabase();</span>
+<span class="fc" id="L95">          onBonsai.clearTrieLog();</span>
+<span class="fc" id="L96">        });</span>
+<span class="fc" id="L97">    LOG.debug(&quot;Start sync with initial sync state {}&quot;, fastSyncState);</span>
+<span class="fc" id="L98">    return findPivotBlock(fastSyncState, fss -&gt; downloadChainAndWorldState(fastSyncActions, fss));</span>
+  }
+
+  public CompletableFuture&lt;FastSyncState&gt; findPivotBlock(
+      final FastSyncState fastSyncState,
+      final Function&lt;FastSyncState, CompletableFuture&lt;FastSyncState&gt;&gt; onNewPivotBlock) {
+<span class="fc" id="L104">    return exceptionallyCompose(</span>
+<span class="fc" id="L105">        CompletableFuture.completedFuture(fastSyncState)</span>
+<span class="fc" id="L106">            .thenCompose(fastSyncActions::selectPivotBlock)</span>
+<span class="fc" id="L107">            .thenCompose(fastSyncActions::downloadPivotBlockHeader)</span>
+<span class="fc" id="L108">            .thenApply(this::updateMaxTrailingPeers)</span>
+<span class="fc" id="L109">            .thenApply(this::storeState)</span>
+<span class="fc" id="L110">            .thenCompose(onNewPivotBlock),</span>
+        this::handleFailure);
+  }
+
+  protected CompletableFuture&lt;FastSyncState&gt; handleFailure(final Throwable error) {
+<span class="fc" id="L115">    trailingPeerRequirements = Optional.empty();</span>
+<span class="fc" id="L116">    Throwable rootCause = ExceptionUtils.rootCause(error);</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    if (rootCause instanceof SyncException) {</span>
+<span class="fc" id="L118">      return CompletableFuture.failedFuture(error);</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    } else if (rootCause instanceof StalledDownloadException) {</span>
+<span class="fc" id="L120">      LOG.debug(&quot;Stalled sync re-pivoting to newer block.&quot;);</span>
+<span class="fc" id="L121">      return start(FastSyncState.EMPTY_SYNC_STATE);</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">    } else if (rootCause instanceof CancellationException) {</span>
+<span class="fc" id="L123">      return CompletableFuture.failedFuture(error);</span>
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">    } else if (rootCause instanceof MaxRetriesReachedException) {</span>
+<span class="nc" id="L125">      LOG.debug(</span>
+          &quot;A download operation reached the max number of retries, re-pivoting to newer block&quot;);
+<span class="nc" id="L127">      return start(FastSyncState.EMPTY_SYNC_STATE);</span>
+    } else {
+<span class="fc" id="L129">      LOG.error(</span>
+          &quot;Encountered an unexpected error during sync. Restarting sync in &quot;
+<span class="fc" id="L131">              + FAST_SYNC_RETRY_DELAY.getSeconds()</span>
+              + &quot; seconds.&quot;,
+          error);
+<span class="fc" id="L134">      return fastSyncActions.scheduleFutureTask(</span>
+<span class="fc" id="L135">          () -&gt; start(FastSyncState.EMPTY_SYNC_STATE), FAST_SYNC_RETRY_DELAY);</span>
+    }
+  }
+
+  public void stop() {
+<span class="fc" id="L140">    synchronized (this) {</span>
+<span class="pc bpc" id="L141" title="1 of 2 branches missed.">      if (running.compareAndSet(true, false)) {</span>
+<span class="fc" id="L142">        LOG.info(&quot;Stopping sync&quot;);</span>
+        // Cancelling the world state download will also cause the chain download to be cancelled.
+<span class="fc" id="L144">        worldStateDownloader.cancel();</span>
+      }
+<span class="fc" id="L146">    }</span>
+<span class="fc" id="L147">  }</span>
+
+  public void deleteFastSyncState() {
+    // Make sure downloader is stopped before we start cleaning up its dependencies
+<span class="fc" id="L151">    worldStateDownloader.cancel();</span>
+    try {
+<span class="fc" id="L153">      taskCollection.close();</span>
+<span class="pc bpc" id="L154" title="1 of 2 branches missed.">      if (fastSyncDataDirectory.toFile().exists()) {</span>
+        // Clean up this data for now (until fast sync resume functionality is in place)
+<span class="fc" id="L156">        MoreFiles.deleteRecursively(fastSyncDataDirectory, RecursiveDeleteOption.ALLOW_INSECURE);</span>
+      }
+<span class="nc" id="L158">    } catch (final IOException e) {</span>
+<span class="nc" id="L159">      LOG.error(&quot;Unable to clean up sync state&quot;, e);</span>
+<span class="fc" id="L160">    }</span>
+<span class="fc" id="L161">  }</span>
+
+  protected FastSyncState updateMaxTrailingPeers(final FastSyncState state) {
+<span class="pc bpc" id="L164" title="1 of 2 branches missed.">    if (state.getPivotBlockNumber().isPresent()) {</span>
+<span class="fc" id="L165">      trailingPeerRequirements =</span>
+<span class="fc" id="L166">          Optional.of(new TrailingPeerRequirements(state.getPivotBlockNumber().getAsLong(), 0));</span>
+    } else {
+<span class="nc" id="L168">      trailingPeerRequirements = Optional.empty();</span>
+    }
+<span class="fc" id="L170">    return state;</span>
+  }
+
+  protected FastSyncState storeState(final FastSyncState state) {
+<span class="fc" id="L174">    fastSyncStateStorage.storeState(state);</span>
+<span class="fc" id="L175">    return state;</span>
+  }
+
+  protected CompletableFuture&lt;FastSyncState&gt; downloadChainAndWorldState(
+      final FastSyncActions fastSyncActions, final FastSyncState currentState) {
+    // Synchronized ensures that stop isn't called while we're in the process of starting a
+    // world state and chain download. If it did we might wind up starting a new download
+    // after the stop method had called cancel.
+<span class="fc" id="L183">    synchronized (this) {</span>
+<span class="fc bfc" id="L184" title="All 2 branches covered.">      if (!running.get()) {</span>
+<span class="fc" id="L185">        return CompletableFuture.failedFuture(</span>
+            new CancellationException(&quot;FastSyncDownloader stopped&quot;));
+      }
+<span class="fc" id="L188">      final CompletableFuture&lt;Void&gt; worldStateFuture =</span>
+<span class="fc" id="L189">          worldStateDownloader.run(fastSyncActions, currentState);</span>
+<span class="fc" id="L190">      final ChainDownloader chainDownloader = fastSyncActions.createChainDownloader(currentState);</span>
+<span class="fc" id="L191">      final CompletableFuture&lt;Void&gt; chainFuture = chainDownloader.start();</span>
+
+      // If either download fails, cancel the other one.
+<span class="fc" id="L194">      chainFuture.exceptionally(</span>
+          error -&gt; {
+<span class="fc" id="L196">            worldStateFuture.cancel(true);</span>
+<span class="fc" id="L197">            return null;</span>
+          });
+<span class="fc" id="L199">      worldStateFuture.exceptionally(</span>
+          error -&gt; {
+<span class="fc" id="L201">            chainDownloader.cancel();</span>
+<span class="fc" id="L202">            return null;</span>
+          });
+
+<span class="fc" id="L205">      return CompletableFuture.allOf(worldStateFuture, chainFuture)</span>
+<span class="fc" id="L206">          .thenApply(</span>
+              complete -&gt; {
+<span class="fc" id="L208">                trailingPeerRequirements = Optional.empty();</span>
+<span class="fc" id="L209">                return currentState;</span>
+              });
+    }
+  }
+
+  public Optional&lt;TrailingPeerRequirements&gt; calculateTrailingPeerRequirements() {
+<span class="fc" id="L215">    return trailingPeerRequirements;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

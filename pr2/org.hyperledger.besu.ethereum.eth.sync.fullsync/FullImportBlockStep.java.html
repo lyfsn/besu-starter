@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FullImportBlockStep.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fullsync</a> &gt; <span class="el_source">FullImportBlockStep.java</span></div><h1>FullImportBlockStep.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fullsync;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.exceptions.InvalidBlockException;
+import org.hyperledger.besu.ethereum.mainnet.BlockImportResult;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+
+import java.time.Instant;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FullImportBlockStep implements Consumer&lt;Block&gt; {
+<span class="fc" id="L33">  private static final Logger LOG = LoggerFactory.getLogger(FullImportBlockStep.class);</span>
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+<span class="fc" id="L37">  private long gasAccumulator = 0;</span>
+<span class="fc" id="L38">  private long lastReportMillis = 0;</span>
+  private final SyncTerminationCondition fullSyncTerminationCondition;
+
+  public FullImportBlockStep(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+<span class="fc" id="L45">      final SyncTerminationCondition syncTerminationCondition) {</span>
+<span class="fc" id="L46">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L47">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L48">    this.ethContext = ethContext;</span>
+<span class="fc" id="L49">    this.fullSyncTerminationCondition = syncTerminationCondition;</span>
+<span class="fc" id="L50">  }</span>
+
+  @Override
+  public void accept(final Block block) {
+<span class="fc bfc" id="L54" title="All 2 branches covered.">    if (fullSyncTerminationCondition.shouldStopDownload()) {</span>
+<span class="fc" id="L55">      LOG.debug(&quot;Not importing another block, because terminal condition was reached.&quot;);</span>
+<span class="fc" id="L56">      return;</span>
+    }
+<span class="fc" id="L58">    final long blockNumber = block.getHeader().getNumber();</span>
+<span class="fc" id="L59">    final String blockHash = block.getHash().toHexString();</span>
+<span class="fc" id="L60">    final BlockImporter importer =</span>
+<span class="fc" id="L61">        protocolSchedule.getByBlockHeader(block.getHeader()).getBlockImporter();</span>
+<span class="fc" id="L62">    final BlockImportResult blockImportResult =</span>
+<span class="fc" id="L63">        importer.importBlock(protocolContext, block, HeaderValidationMode.SKIP_DETACHED);</span>
+<span class="fc bfc" id="L64" title="All 2 branches covered.">    if (!blockImportResult.isImported()) {</span>
+<span class="fc" id="L65">      throw InvalidBlockException.fromInvalidBlock(block.getHeader());</span>
+    }
+<span class="fc" id="L67">    gasAccumulator += block.getHeader().getGasUsed();</span>
+<span class="fc" id="L68">    int peerCount = -1; // ethContext is not available in tests</span>
+<span class="pc bpc" id="L69" title="1 of 4 branches missed.">    if (ethContext != null &amp;&amp; ethContext.getEthPeers().peerCount() &gt;= 0) {</span>
+<span class="fc" id="L70">      peerCount = ethContext.getEthPeers().peerCount();</span>
+    }
+<span class="pc bpc" id="L72" title="1 of 4 branches missed.">    if (blockNumber % 200 == 0 || LOG.isTraceEnabled()) {</span>
+<span class="fc" id="L73">      final long nowMilli = Instant.now().toEpochMilli();</span>
+<span class="fc" id="L74">      final long deltaMilli = nowMilli - lastReportMillis;</span>
+      final String mgps =
+<span class="pc bpc" id="L76" title="1 of 4 branches missed.">          (lastReportMillis == 0 || gasAccumulator == 0)</span>
+<span class="fc" id="L77">              ? &quot;-&quot;</span>
+<span class="pc" id="L78">              : String.format(&quot;%.3f&quot;, gasAccumulator / 1000.0 / deltaMilli);</span>
+<span class="fc" id="L79">      LOG.info(</span>
+          &quot;Import reached block {} ({}), {} Mg/s, Peers: {}&quot;,
+<span class="fc" id="L81">          blockNumber,</span>
+          blockHash,
+          mgps,
+<span class="fc" id="L84">          peerCount);</span>
+<span class="fc" id="L85">      lastReportMillis = nowMilli;</span>
+<span class="fc" id="L86">      gasAccumulator = 0;</span>
+    }
+<span class="fc" id="L88">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

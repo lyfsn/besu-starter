@@ -1,0 +1,408 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetTransactionValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">MainnetTransactionValidator.java</span></div><h1>MainnetTransactionValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static org.hyperledger.besu.evm.account.Account.MAX_NONCE;
+
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Blob;
+import org.hyperledger.besu.datatypes.BlobsWithCommitments;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.KZGCommitment;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.GasLimitCalculator;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+
+import java.math.BigInteger;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import ethereum.ckzg4844.CKZG4844JNI;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+
+/**
+ * Validates a transaction based on Frontier protocol runtime requirements.
+ *
+ * &lt;p&gt;The {@link MainnetTransactionValidator} performs the intrinsic gas cost check on the given
+ * {@link Transaction}.
+ */
+public class MainnetTransactionValidator implements TransactionValidator {
+
+  private final GasCalculator gasCalculator;
+  private final GasLimitCalculator gasLimitCalculator;
+  private final FeeMarket feeMarket;
+
+  private final boolean disallowSignatureMalleability;
+
+  private final Optional&lt;BigInteger&gt; chainId;
+
+  private final Set&lt;TransactionType&gt; acceptedTransactionTypes;
+
+  private final int maxInitcodeSize;
+
+  public MainnetTransactionValidator(
+      final GasCalculator gasCalculator,
+      final GasLimitCalculator gasLimitCalculator,
+      final FeeMarket feeMarket,
+      final boolean checkSignatureMalleability,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Set&lt;TransactionType&gt; acceptedTransactionTypes,
+<span class="fc" id="L72">      final int maxInitcodeSize) {</span>
+<span class="fc" id="L73">    this.gasCalculator = gasCalculator;</span>
+<span class="fc" id="L74">    this.gasLimitCalculator = gasLimitCalculator;</span>
+<span class="fc" id="L75">    this.feeMarket = feeMarket;</span>
+<span class="fc" id="L76">    this.disallowSignatureMalleability = checkSignatureMalleability;</span>
+<span class="fc" id="L77">    this.chainId = chainId;</span>
+<span class="fc" id="L78">    this.acceptedTransactionTypes = acceptedTransactionTypes;</span>
+<span class="fc" id="L79">    this.maxInitcodeSize = maxInitcodeSize;</span>
+<span class="fc" id="L80">  }</span>
+
+  @Override
+  public ValidationResult&lt;TransactionInvalidReason&gt; validate(
+      final Transaction transaction,
+      final Optional&lt;Wei&gt; baseFee,
+      final Optional&lt;Wei&gt; blobFee,
+      final TransactionValidationParams transactionValidationParams) {
+<span class="fc" id="L88">    final ValidationResult&lt;TransactionInvalidReason&gt; signatureResult =</span>
+<span class="fc" id="L89">        validateTransactionSignature(transaction);</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (!signatureResult.isValid()) {</span>
+<span class="fc" id="L91">      return signatureResult;</span>
+    }
+
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    if (transaction.getType().supportsBlob()) {</span>
+<span class="fc" id="L95">      final ValidationResult&lt;TransactionInvalidReason&gt; blobTransactionResult =</span>
+<span class="fc" id="L96">          validateBlobTransaction(transaction);</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">      if (!blobTransactionResult.isValid()) {</span>
+<span class="fc" id="L98">        return blobTransactionResult;</span>
+      }
+
+<span class="fc bfc" id="L101" title="All 2 branches covered.">      if (transaction.getBlobsWithCommitments().isPresent()) {</span>
+<span class="fc" id="L102">        final ValidationResult&lt;TransactionInvalidReason&gt; blobsResult =</span>
+<span class="fc" id="L103">            validateTransactionsBlobs(transaction);</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        if (!blobsResult.isValid()) {</span>
+<span class="nc" id="L105">          return blobsResult;</span>
+        }
+      }
+    }
+
+<span class="fc" id="L110">    final TransactionType transactionType = transaction.getType();</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (!acceptedTransactionTypes.contains(transactionType)) {</span>
+<span class="fc" id="L112">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_TRANSACTION_FORMAT,
+<span class="fc" id="L114">          String.format(</span>
+              &quot;Transaction type %s is invalid, accepted transaction types are %s&quot;,
+              transactionType, acceptedTransactionTypes));
+    }
+
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    if (transaction.getNonce() == MAX_NONCE) {</span>
+<span class="fc" id="L120">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.NONCE_OVERFLOW, &quot;Nonce must be less than 2^64-1&quot;);
+    }
+
+<span class="fc bfc" id="L124" title="All 4 branches covered.">    if (transaction.isContractCreation() &amp;&amp; transaction.getPayload().size() &gt; maxInitcodeSize) {</span>
+<span class="fc" id="L125">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INITCODE_TOO_LARGE,
+<span class="fc" id="L127">          String.format(</span>
+              &quot;Initcode size of %d exceeds maximum size of %s&quot;,
+<span class="fc" id="L129">              transaction.getPayload().size(), maxInitcodeSize));</span>
+    }
+
+<span class="fc" id="L132">    return validateCostAndFee(transaction, baseFee, blobFee, transactionValidationParams);</span>
+  }
+
+  private ValidationResult&lt;TransactionInvalidReason&gt; validateCostAndFee(
+      final Transaction transaction,
+      final Optional&lt;Wei&gt; maybeBaseFee,
+      final Optional&lt;Wei&gt; maybeBlobFee,
+      final TransactionValidationParams transactionValidationParams) {
+
+<span class="fc bfc" id="L141" title="All 2 branches covered.">    if (maybeBaseFee.isPresent()) {</span>
+<span class="fc" id="L142">      final Wei price = feeMarket.getTransactionPriceCalculator().price(transaction, maybeBaseFee);</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">      if (!transactionValidationParams.allowUnderpriced()</span>
+<span class="fc bfc" id="L144" title="All 2 branches covered.">          &amp;&amp; price.compareTo(maybeBaseFee.orElseThrow()) &lt; 0) {</span>
+<span class="fc" id="L145">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.GAS_PRICE_BELOW_CURRENT_BASE_FEE,
+            &quot;gasPrice is less than the current BaseFee&quot;);
+      }
+
+      // assert transaction.max_fee_per_gas &gt;= transaction.max_priority_fee_per_gas
+<span class="fc bfc" id="L151" title="All 2 branches covered.">      if (transaction.getType().supports1559FeeMarket()</span>
+          &amp;&amp; transaction
+<span class="fc" id="L153">                  .getMaxPriorityFeePerGas()</span>
+<span class="fc" id="L154">                  .get()</span>
+<span class="fc" id="L155">                  .getAsBigInteger()</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">                  .compareTo(transaction.getMaxFeePerGas().get().getAsBigInteger())</span>
+              &gt; 0) {
+<span class="fc" id="L158">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.MAX_PRIORITY_FEE_PER_GAS_EXCEEDS_MAX_FEE_PER_GAS,
+            &quot;max priority fee per gas cannot be greater than max fee per gas&quot;);
+      }
+    }
+
+<span class="fc bfc" id="L164" title="All 2 branches covered.">    if (transaction.getType().supportsBlob()) {</span>
+<span class="fc" id="L165">      final long txTotalBlobGas = gasCalculator.blobGasCost(transaction.getBlobCount());</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">      if (txTotalBlobGas &gt; gasLimitCalculator.currentBlobGasLimit()) {</span>
+<span class="fc" id="L167">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.TOTAL_BLOB_GAS_TOO_HIGH,
+<span class="fc" id="L169">            String.format(</span>
+                &quot;total blob gas %d exceeds max blob gas per block %d&quot;,
+<span class="fc" id="L171">                txTotalBlobGas, gasLimitCalculator.currentBlobGasLimit()));</span>
+      }
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">      if (maybeBlobFee.isEmpty()) {</span>
+<span class="nc" id="L174">        throw new IllegalArgumentException(</span>
+            &quot;blob fee must be provided from blocks containing blobs&quot;);
+        // tx.getMaxFeePerBlobGas can be empty for eth_call
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">      } else if (!transactionValidationParams.allowUnderpriced()</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">          &amp;&amp; maybeBlobFee.get().compareTo(transaction.getMaxFeePerBlobGas().get()) &gt; 0) {</span>
+<span class="fc" id="L179">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.BLOB_GAS_PRICE_BELOW_CURRENT_BLOB_BASE_FEE,
+<span class="fc" id="L181">            String.format(</span>
+                &quot;tx max fee per blob gas less than block blob gas fee: address %s blobGasFeeCap: %s, blobBaseFee: %s&quot;,
+<span class="fc" id="L183">                transaction.getSender().toHexString(),</span>
+<span class="fc" id="L184">                transaction.getMaxFeePerBlobGas().get().toHumanReadableString(),</span>
+<span class="fc" id="L185">                maybeBlobFee.get().toHumanReadableString()));</span>
+      }
+    }
+
+<span class="fc" id="L189">    final long intrinsicGasCost =</span>
+<span class="fc" id="L190">        gasCalculator.transactionIntrinsicGasCost(</span>
+<span class="fc" id="L191">                transaction.getPayload(), transaction.isContractCreation())</span>
+<span class="fc" id="L192">            + (transaction.getAccessList().map(gasCalculator::accessListGasCost).orElse(0L));</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">    if (Long.compareUnsigned(intrinsicGasCost, transaction.getGasLimit()) &gt; 0) {</span>
+<span class="fc" id="L194">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INTRINSIC_GAS_EXCEEDS_GAS_LIMIT,
+<span class="fc" id="L196">          String.format(</span>
+              &quot;intrinsic gas cost %s exceeds gas limit %s&quot;,
+<span class="fc" id="L198">              intrinsicGasCost, transaction.getGasLimit()));</span>
+    }
+
+<span class="fc bfc" id="L201" title="All 2 branches covered.">    if (transaction.calculateUpfrontGasCost(transaction.getMaxGasPrice(), Wei.ZERO, 0).bitLength()</span>
+        &gt; 256) {
+<span class="fc" id="L203">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.UPFRONT_COST_EXCEEDS_UINT256,
+          &quot;Upfront gas cost cannot exceed 2^256 Wei&quot;);
+    }
+
+<span class="fc" id="L208">    return ValidationResult.valid();</span>
+  }
+
+  @Override
+  public ValidationResult&lt;TransactionInvalidReason&gt; validateForSender(
+      final Transaction transaction,
+      final Account sender,
+      final TransactionValidationParams validationParams) {
+<span class="fc" id="L216">    Wei senderBalance = Account.DEFAULT_BALANCE;</span>
+<span class="fc" id="L217">    long senderNonce = Account.DEFAULT_NONCE;</span>
+<span class="fc" id="L218">    Hash codeHash = Hash.EMPTY;</span>
+
+<span class="fc bfc" id="L220" title="All 2 branches covered.">    if (sender != null) {</span>
+<span class="fc" id="L221">      senderBalance = sender.getBalance();</span>
+<span class="fc" id="L222">      senderNonce = sender.getNonce();</span>
+<span class="fc bfc" id="L223" title="All 2 branches covered.">      if (sender.getCodeHash() != null) codeHash = sender.getCodeHash();</span>
+    }
+
+<span class="fc" id="L226">    final Wei upfrontCost =</span>
+<span class="fc" id="L227">        transaction.getUpfrontCost(gasCalculator.blobGasCost(transaction.getBlobCount()));</span>
+<span class="fc bfc" id="L228" title="All 2 branches covered.">    if (upfrontCost.compareTo(senderBalance) &gt; 0) {</span>
+<span class="fc" id="L229">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.UPFRONT_COST_EXCEEDS_BALANCE,
+<span class="fc" id="L231">          String.format(</span>
+              &quot;transaction up-front cost %s exceeds transaction sender account balance %s&quot;,
+<span class="fc" id="L233">              upfrontCost.toQuantityHexString(), senderBalance.toQuantityHexString()));</span>
+    }
+
+<span class="fc bfc" id="L236" title="All 2 branches covered.">    if (transaction.getNonce() &lt; senderNonce) {</span>
+<span class="fc" id="L237">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.NONCE_TOO_LOW,
+<span class="fc" id="L239">          String.format(</span>
+              &quot;transaction nonce %s below sender account nonce %s&quot;,
+<span class="fc" id="L241">              transaction.getNonce(), senderNonce));</span>
+    }
+
+<span class="fc bfc" id="L244" title="All 4 branches covered.">    if (!validationParams.isAllowFutureNonce() &amp;&amp; senderNonce != transaction.getNonce()) {</span>
+<span class="fc" id="L245">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.NONCE_TOO_HIGH,
+<span class="fc" id="L247">          String.format(</span>
+              &quot;transaction nonce %s does not match sender account nonce %s.&quot;,
+<span class="fc" id="L249">              transaction.getNonce(), senderNonce));</span>
+    }
+
+<span class="fc bfc" id="L252" title="All 4 branches covered.">    if (!validationParams.isAllowContractAddressAsSender() &amp;&amp; !codeHash.equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L253">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.TX_SENDER_NOT_AUTHORIZED,
+<span class="fc" id="L255">          String.format(</span>
+              &quot;Sender %s has deployed code and so is not authorized to send transactions&quot;,
+<span class="fc" id="L257">              transaction.getSender()));</span>
+    }
+
+<span class="fc" id="L260">    return ValidationResult.valid();</span>
+  }
+
+  private ValidationResult&lt;TransactionInvalidReason&gt; validateTransactionSignature(
+      final Transaction transaction) {
+<span class="fc bfc" id="L265" title="All 2 branches covered.">    if (chainId.isPresent()</span>
+<span class="fc bfc" id="L266" title="All 4 branches covered.">        &amp;&amp; (transaction.getChainId().isPresent() &amp;&amp; !transaction.getChainId().equals(chainId))) {</span>
+<span class="fc" id="L267">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.WRONG_CHAIN_ID,
+<span class="fc" id="L269">          String.format(</span>
+              &quot;transaction was meant for chain id %s and not this chain id %s&quot;,
+<span class="fc" id="L271">              transaction.getChainId().get(), chainId.get()));</span>
+    }
+
+<span class="fc bfc" id="L274" title="All 4 branches covered.">    if (chainId.isEmpty() &amp;&amp; transaction.getChainId().isPresent()) {</span>
+<span class="fc" id="L275">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.REPLAY_PROTECTED_SIGNATURES_NOT_SUPPORTED,
+          &quot;replay protected signatures is not supported&quot;);
+    }
+
+<span class="fc" id="L280">    final SECPSignature signature = transaction.getSignature();</span>
+<span class="fc" id="L281">    final BigInteger halfCurveOrder = SignatureAlgorithmFactory.getInstance().getHalfCurveOrder();</span>
+<span class="fc bfc" id="L282" title="All 4 branches covered.">    if (disallowSignatureMalleability &amp;&amp; signature.getS().compareTo(halfCurveOrder) &gt; 0) {</span>
+<span class="fc" id="L283">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_SIGNATURE,
+<span class="fc" id="L285">          String.format(</span>
+              &quot;Signature s value should be less than %s, but got %s&quot;,
+<span class="fc" id="L287">              halfCurveOrder, signature.getS()));</span>
+    }
+
+    // org.bouncycastle.math.ec.ECCurve.AbstractFp.decompressPoint throws an
+    // IllegalArgumentException for &quot;Invalid point compression&quot; for bad signatures.
+    try {
+<span class="fc" id="L293">      transaction.getSender();</span>
+<span class="fc" id="L294">    } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L295">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_SIGNATURE,
+          &quot;sender could not be extracted from transaction signature&quot;);
+<span class="fc" id="L298">    }</span>
+<span class="fc" id="L299">    return ValidationResult.valid();</span>
+  }
+
+  public ValidationResult&lt;TransactionInvalidReason&gt; validateBlobTransaction(
+      final Transaction transaction) {
+
+<span class="pc bpc" id="L305" title="1 of 4 branches missed.">    if (transaction.getType().supportsBlob() &amp;&amp; transaction.getTo().isEmpty()) {</span>
+<span class="fc" id="L306">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_TRANSACTION_FORMAT,
+          &quot;transaction blob transactions must have a to address&quot;);
+    }
+
+<span class="pc bpc" id="L311" title="1 of 2 branches missed.">    if (transaction.getVersionedHashes().isEmpty()) {</span>
+<span class="nc" id="L312">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS,
+          &quot;transaction blob transactions must specify one or more versioned hashes&quot;);
+    }
+
+<span class="fc" id="L317">    return ValidationResult.valid();</span>
+  }
+
+  public ValidationResult&lt;TransactionInvalidReason&gt; validateTransactionsBlobs(
+      final Transaction transaction) {
+
+<span class="pc bpc" id="L323" title="1 of 2 branches missed.">    if (transaction.getBlobsWithCommitments().isEmpty()) {</span>
+<span class="nc" id="L324">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS,
+          &quot;transaction blobs are empty, cannot verify without blobs&quot;);
+    }
+
+<span class="fc" id="L329">    BlobsWithCommitments blobsWithCommitments = transaction.getBlobsWithCommitments().get();</span>
+
+<span class="pc bpc" id="L331" title="1 of 2 branches missed.">    if (blobsWithCommitments.getBlobs().size() != blobsWithCommitments.getKzgCommitments().size()) {</span>
+<span class="nc" id="L332">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS,
+          &quot;transaction blobs and commitments are not the same size&quot;);
+    }
+
+<span class="pc bpc" id="L337" title="1 of 2 branches missed.">    if (transaction.getVersionedHashes().isEmpty()) {</span>
+<span class="nc" id="L338">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS,
+          &quot;transaction versioned hashes are empty, cannot verify without versioned hashes&quot;);
+    }
+<span class="fc" id="L342">    final List&lt;VersionedHash&gt; versionedHashes = transaction.getVersionedHashes().get();</span>
+
+<span class="fc bfc" id="L344" title="All 2 branches covered.">    for (int i = 0; i &lt; versionedHashes.size(); i++) {</span>
+<span class="fc" id="L345">      final KZGCommitment commitment = blobsWithCommitments.getKzgCommitments().get(i);</span>
+<span class="fc" id="L346">      final VersionedHash versionedHash = versionedHashes.get(i);</span>
+
+<span class="pc bpc" id="L348" title="1 of 2 branches missed.">      if (versionedHash.getVersionId() != VersionedHash.SHA256_VERSION_ID) {</span>
+<span class="nc" id="L349">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.INVALID_BLOBS,
+            &quot;transaction blobs commitment version is not supported. Expected &quot;
+                + VersionedHash.SHA256_VERSION_ID
+                + &quot;, found &quot;
+<span class="nc" id="L354">                + versionedHash.getVersionId());</span>
+      }
+
+<span class="fc" id="L357">      final VersionedHash calculatedVersionedHash = hashCommitment(commitment);</span>
+<span class="pc bpc" id="L358" title="1 of 2 branches missed.">      if (!calculatedVersionedHash.equals(versionedHash)) {</span>
+<span class="nc" id="L359">        return ValidationResult.invalid(</span>
+            TransactionInvalidReason.INVALID_BLOBS,
+            &quot;transaction blobs commitment hash does not match commitment&quot;);
+      }
+    }
+
+<span class="fc" id="L365">    final byte[] blobs =</span>
+<span class="fc" id="L366">        Bytes.wrap(blobsWithCommitments.getBlobs().stream().map(Blob::getData).toList())</span>
+<span class="fc" id="L367">            .toArrayUnsafe();</span>
+
+<span class="fc" id="L369">    final byte[] kzgCommitments =</span>
+<span class="fc" id="L370">        Bytes.wrap(</span>
+<span class="fc" id="L371">                blobsWithCommitments.getKzgCommitments().stream()</span>
+<span class="fc" id="L372">                    .map(kc -&gt; (Bytes) kc.getData())</span>
+<span class="fc" id="L373">                    .toList())</span>
+<span class="fc" id="L374">            .toArrayUnsafe();</span>
+
+<span class="fc" id="L376">    final byte[] kzgProofs =</span>
+<span class="fc" id="L377">        Bytes.wrap(</span>
+<span class="fc" id="L378">                blobsWithCommitments.getKzgProofs().stream()</span>
+<span class="fc" id="L379">                    .map(kp -&gt; (Bytes) kp.getData())</span>
+<span class="fc" id="L380">                    .toList())</span>
+<span class="fc" id="L381">            .toArrayUnsafe();</span>
+
+<span class="fc" id="L383">    final boolean kzgVerification =</span>
+<span class="fc" id="L384">        CKZG4844JNI.verifyBlobKzgProofBatch(</span>
+<span class="fc" id="L385">            blobs, kzgCommitments, kzgProofs, blobsWithCommitments.getBlobs().size());</span>
+
+<span class="pc bpc" id="L387" title="1 of 2 branches missed.">    if (!kzgVerification) {</span>
+<span class="nc" id="L388">      return ValidationResult.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS,
+          &quot;transaction blobs kzg proof verification failed&quot;);
+    }
+
+<span class="fc" id="L393">    return ValidationResult.valid();</span>
+  }
+
+  private VersionedHash hashCommitment(final KZGCommitment commitment) {
+<span class="fc" id="L397">    final SHA256Digest digest = new SHA256Digest();</span>
+<span class="fc" id="L398">    digest.update(commitment.getData().toArrayUnsafe(), 0, commitment.getData().size());</span>
+
+<span class="fc" id="L400">    final byte[] dig = new byte[digest.getDigestSize()];</span>
+
+<span class="fc" id="L402">    digest.doFinal(dig, 0);</span>
+
+<span class="fc" id="L404">    dig[0] = VersionedHash.SHA256_VERSION_ID;</span>
+<span class="fc" id="L405">    return new VersionedHash(Bytes32.wrap(dig));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,392 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiWorldStateProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai</a> &gt; <span class="el_source">BonsaiWorldStateProvider.java</span></div><h1>BonsaiWorldStateProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.bonsai;
+
+import static org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedWorldStorageManager.RETAINED_LAYERS;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.proof.WorldStateProof;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedMerkleTrieLoader;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+import org.hyperledger.besu.plugin.BesuContext;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BonsaiWorldStateProvider implements WorldStateArchive {
+
+<span class="fc" id="L60">  private static final Logger LOG = LoggerFactory.getLogger(BonsaiWorldStateProvider.class);</span>
+
+  private final Blockchain blockchain;
+
+  private final CachedWorldStorageManager cachedWorldStorageManager;
+  private final TrieLogManager trieLogManager;
+  private final BonsaiWorldState persistedState;
+  private final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage;
+  private final CachedMerkleTrieLoader cachedMerkleTrieLoader;
+
+  public BonsaiWorldStateProvider(
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+      final Optional&lt;Long&gt; maxLayersToLoad,
+      final CachedMerkleTrieLoader cachedMerkleTrieLoader,
+      final BesuContext pluginContext,
+<span class="fc" id="L76">      final EvmConfiguration evmConfiguration) {</span>
+
+<span class="fc" id="L78">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L79">    this.cachedWorldStorageManager = new CachedWorldStorageManager(this, worldStateKeyValueStorage);</span>
+
+    // TODO: de-dup constructors
+<span class="fc" id="L82">    this.trieLogManager =</span>
+        new TrieLogManager(
+            blockchain,
+            worldStateKeyValueStorage,
+<span class="fc" id="L86">            maxLayersToLoad.orElse(RETAINED_LAYERS),</span>
+            pluginContext);
+<span class="fc" id="L88">    this.blockchain = blockchain;</span>
+<span class="fc" id="L89">    this.cachedMerkleTrieLoader = cachedMerkleTrieLoader;</span>
+<span class="fc" id="L90">    this.persistedState = new BonsaiWorldState(this, worldStateKeyValueStorage, evmConfiguration);</span>
+<span class="fc" id="L91">    blockchain</span>
+<span class="fc" id="L92">        .getBlockHeader(persistedState.getWorldStateBlockHash())</span>
+<span class="fc" id="L93">        .ifPresent(</span>
+            blockHeader -&gt;
+<span class="nc" id="L95">                this.cachedWorldStorageManager.addCachedLayer(</span>
+<span class="nc" id="L96">                    blockHeader, persistedState.getWorldStateRootHash(), persistedState));</span>
+<span class="fc" id="L97">  }</span>
+
+  @VisibleForTesting
+  BonsaiWorldStateProvider(
+      final CachedWorldStorageManager cachedWorldStorageManager,
+      final TrieLogManager trieLogManager,
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+      final CachedMerkleTrieLoader cachedMerkleTrieLoader,
+<span class="fc" id="L106">      final EvmConfiguration evmConfiguration) {</span>
+<span class="fc" id="L107">    this.cachedWorldStorageManager = cachedWorldStorageManager;</span>
+<span class="fc" id="L108">    this.trieLogManager = trieLogManager;</span>
+<span class="fc" id="L109">    this.blockchain = blockchain;</span>
+<span class="fc" id="L110">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L111">    this.persistedState = new BonsaiWorldState(this, worldStateKeyValueStorage, evmConfiguration);</span>
+<span class="fc" id="L112">    this.cachedMerkleTrieLoader = cachedMerkleTrieLoader;</span>
+<span class="fc" id="L113">    blockchain</span>
+<span class="fc" id="L114">        .getBlockHeader(persistedState.getWorldStateBlockHash())</span>
+<span class="fc" id="L115">        .ifPresent(</span>
+            blockHeader -&gt;
+<span class="nc" id="L117">                this.cachedWorldStorageManager.addCachedLayer(</span>
+<span class="nc" id="L118">                    blockHeader, persistedState.getWorldStateRootHash(), persistedState));</span>
+<span class="fc" id="L119">  }</span>
+
+  @Override
+  public Optional&lt;WorldState&gt; get(final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L123">    return cachedWorldStorageManager</span>
+<span class="fc" id="L124">        .getWorldState(blockHash)</span>
+<span class="fc" id="L125">        .or(</span>
+            () -&gt; {
+<span class="nc bnc" id="L127" title="All 2 branches missed.">              if (blockHash.equals(persistedState.blockHash())) {</span>
+<span class="nc" id="L128">                return Optional.of(persistedState);</span>
+              } else {
+<span class="nc" id="L130">                return Optional.empty();</span>
+              }
+            })
+<span class="fc" id="L133">        .map(WorldState.class::cast);</span>
+  }
+
+  @Override
+  public boolean isWorldStateAvailable(final Hash rootHash, final Hash blockHash) {
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">    return cachedWorldStorageManager.containWorldStateStorage(blockHash)</span>
+<span class="nc bnc" id="L139" title="All 2 branches missed.">        || persistedState.blockHash().equals(blockHash)</span>
+<span class="pc bnc" id="L140" title="All 2 branches missed.">        || worldStateKeyValueStorage.isWorldStateAvailable(rootHash, blockHash);</span>
+  }
+
+  @Override
+  public Optional&lt;MutableWorldState&gt; getMutable(
+      final BlockHeader blockHeader, final boolean shouldPersistState) {
+<span class="fc bfc" id="L146" title="All 2 branches covered.">    if (shouldPersistState) {</span>
+<span class="fc" id="L147">      return getMutable(blockHeader.getStateRoot(), blockHeader.getHash());</span>
+    } else {
+<span class="fc" id="L149">      final BlockHeader chainHeadBlockHeader = blockchain.getChainHeadHeader();</span>
+<span class="fc" id="L150">      if (chainHeadBlockHeader.getNumber() - blockHeader.getNumber()</span>
+<span class="fc bfc" id="L151" title="All 2 branches covered.">          &gt;= trieLogManager.getMaxLayersToLoad()) {</span>
+<span class="fc" id="L152">        LOG.warn(</span>
+            &quot;Exceeded the limit of back layers that can be loaded ({})&quot;,
+<span class="fc" id="L154">            trieLogManager.getMaxLayersToLoad());</span>
+<span class="fc" id="L155">        return Optional.empty();</span>
+      }
+<span class="fc" id="L157">      return cachedWorldStorageManager</span>
+<span class="fc" id="L158">          .getWorldState(blockHeader.getHash())</span>
+<span class="fc" id="L159">          .or(() -&gt; cachedWorldStorageManager.getNearestWorldState(blockHeader))</span>
+<span class="fc" id="L160">          .or(() -&gt; cachedWorldStorageManager.getHeadWorldState(blockchain::getBlockHeader))</span>
+<span class="fc" id="L161">          .flatMap(</span>
+              bonsaiWorldState -&gt;
+<span class="fc" id="L163">                  rollMutableStateToBlockHash(bonsaiWorldState, blockHeader.getHash()))</span>
+<span class="fc" id="L164">          .map(MutableWorldState::freeze);</span>
+    }
+  }
+
+  @Override
+  public synchronized Optional&lt;MutableWorldState&gt; getMutable(
+      final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L171">    return rollMutableStateToBlockHash(persistedState, blockHash);</span>
+  }
+
+  Optional&lt;MutableWorldState&gt; rollMutableStateToBlockHash(
+      final BonsaiWorldState mutableState, final Hash blockHash) {
+<span class="fc bfc" id="L176" title="All 2 branches covered.">    if (blockHash.equals(mutableState.blockHash())) {</span>
+<span class="fc" id="L177">      return Optional.of(mutableState);</span>
+    } else {
+      try {
+
+<span class="fc" id="L181">        final Optional&lt;BlockHeader&gt; maybePersistedHeader =</span>
+<span class="fc" id="L182">            blockchain.getBlockHeader(mutableState.blockHash()).map(BlockHeader.class::cast);</span>
+
+<span class="fc" id="L184">        final List&lt;TrieLog&gt; rollBacks = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L185">        final List&lt;TrieLog&gt; rollForwards = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L186" title="All 2 branches covered.">        if (maybePersistedHeader.isEmpty()) {</span>
+<span class="fc" id="L187">          trieLogManager.getTrieLogLayer(mutableState.blockHash()).ifPresent(rollBacks::add);</span>
+        } else {
+<span class="fc" id="L189">          BlockHeader targetHeader = blockchain.getBlockHeader(blockHash).get();</span>
+<span class="fc" id="L190">          BlockHeader persistedHeader = maybePersistedHeader.get();</span>
+          // roll back from persisted to even with target
+<span class="fc" id="L192">          Hash persistedBlockHash = persistedHeader.getBlockHash();</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">          while (persistedHeader.getNumber() &gt; targetHeader.getNumber()) {</span>
+<span class="fc" id="L194">            LOG.debug(&quot;Rollback {}&quot;, persistedBlockHash);</span>
+<span class="fc" id="L195">            rollBacks.add(trieLogManager.getTrieLogLayer(persistedBlockHash).get());</span>
+<span class="fc" id="L196">            persistedHeader = blockchain.getBlockHeader(persistedHeader.getParentHash()).get();</span>
+<span class="fc" id="L197">            persistedBlockHash = persistedHeader.getBlockHash();</span>
+          }
+          // roll forward to target
+<span class="fc" id="L200">          Hash targetBlockHash = targetHeader.getBlockHash();</span>
+<span class="pc bpc" id="L201" title="1 of 2 branches missed.">          while (persistedHeader.getNumber() &lt; targetHeader.getNumber()) {</span>
+<span class="nc" id="L202">            LOG.debug(&quot;Rollforward {}&quot;, targetBlockHash);</span>
+<span class="nc" id="L203">            rollForwards.add(trieLogManager.getTrieLogLayer(targetBlockHash).get());</span>
+<span class="nc" id="L204">            targetHeader = blockchain.getBlockHeader(targetHeader.getParentHash()).get();</span>
+<span class="nc" id="L205">            targetBlockHash = targetHeader.getBlockHash();</span>
+          }
+
+          // roll back in tandem until we hit a shared state
+<span class="fc bfc" id="L209" title="All 2 branches covered.">          while (!persistedBlockHash.equals(targetBlockHash)) {</span>
+<span class="fc" id="L210">            LOG.debug(&quot;Paired Rollback {}&quot;, persistedBlockHash);</span>
+<span class="fc" id="L211">            LOG.debug(&quot;Paired Rollforward {}&quot;, targetBlockHash);</span>
+<span class="fc" id="L212">            rollForwards.add(trieLogManager.getTrieLogLayer(targetBlockHash).get());</span>
+<span class="fc" id="L213">            targetHeader = blockchain.getBlockHeader(targetHeader.getParentHash()).get();</span>
+
+<span class="fc" id="L215">            rollBacks.add(trieLogManager.getTrieLogLayer(persistedBlockHash).get());</span>
+<span class="fc" id="L216">            persistedHeader = blockchain.getBlockHeader(persistedHeader.getParentHash()).get();</span>
+
+<span class="fc" id="L218">            targetBlockHash = targetHeader.getBlockHash();</span>
+<span class="fc" id="L219">            persistedBlockHash = persistedHeader.getBlockHash();</span>
+          }
+        }
+
+        // attempt the state rolling
+<span class="fc" id="L224">        final BonsaiWorldStateUpdateAccumulator bonsaiUpdater =</span>
+<span class="fc" id="L225">            (BonsaiWorldStateUpdateAccumulator) mutableState.updater();</span>
+        try {
+<span class="fc bfc" id="L227" title="All 2 branches covered.">          for (final TrieLog rollBack : rollBacks) {</span>
+<span class="fc" id="L228">            LOG.debug(&quot;Attempting Rollback of {}&quot;, rollBack.getBlockHash());</span>
+<span class="fc" id="L229">            bonsaiUpdater.rollBack(rollBack);</span>
+<span class="fc" id="L230">          }</span>
+<span class="fc bfc" id="L231" title="All 2 branches covered.">          for (int i = rollForwards.size() - 1; i &gt;= 0; i--) {</span>
+<span class="fc" id="L232">            final var forward = rollForwards.get(i);</span>
+<span class="fc" id="L233">            LOG.debug(&quot;Attempting Rollforward of {}&quot;, rollForwards.get(i).getBlockHash());</span>
+<span class="fc" id="L234">            bonsaiUpdater.rollForward(forward);</span>
+          }
+<span class="fc" id="L236">          bonsaiUpdater.commit();</span>
+
+<span class="fc" id="L238">          mutableState.persist(blockchain.getBlockHeader(blockHash).get());</span>
+
+<span class="fc" id="L240">          LOG.debug(</span>
+              &quot;Archive rolling finished, {} now at {}&quot;,
+<span class="fc" id="L242">              mutableState.getWorldStateStorage().getClass().getSimpleName(),</span>
+              blockHash);
+<span class="fc" id="L244">          return Optional.of(mutableState);</span>
+<span class="nc" id="L245">        } catch (final MerkleTrieException re) {</span>
+          // need to throw to trigger the heal
+<span class="nc" id="L247">          throw re;</span>
+<span class="nc" id="L248">        } catch (final Exception e) {</span>
+          // if we fail we must clean up the updater
+<span class="nc" id="L250">          bonsaiUpdater.reset();</span>
+<span class="nc" id="L251">          LOG.debug(</span>
+              &quot;State rolling failed on &quot;
+<span class="nc" id="L253">                  + mutableState.getWorldStateStorage().getClass().getSimpleName()</span>
+                  + &quot; for block hash &quot;
+                  + blockHash,
+              e);
+
+<span class="nc" id="L258">          return Optional.empty();</span>
+        }
+<span class="nc" id="L260">      } catch (final RuntimeException re) {</span>
+<span class="nc" id="L261">        LOG.info(&quot;Archive rolling failed for block hash &quot; + blockHash, re);</span>
+<span class="nc bnc" id="L262" title="All 2 branches missed.">        if (re instanceof MerkleTrieException) {</span>
+          // need to throw to trigger the heal
+<span class="nc" id="L264">          throw re;</span>
+        }
+<span class="nc" id="L266">        throw new MerkleTrieException(</span>
+<span class="nc" id="L267">            &quot;invalid&quot;, Optional.of(Address.ZERO), Hash.EMPTY, Bytes.EMPTY);</span>
+      }
+    }
+  }
+
+  public CachedMerkleTrieLoader getCachedMerkleTrieLoader() {
+<span class="fc" id="L273">    return cachedMerkleTrieLoader;</span>
+  }
+
+  @Override
+  public MutableWorldState getMutable() {
+<span class="fc" id="L278">    return persistedState;</span>
+  }
+
+  /**
+   * Prepares the state healing process for a given address and location. It prepares the state
+   * healing, including retrieving data from storage, identifying invalid slots or nodes, removing
+   * account and slot from the state trie, and committing the changes. Finally, it downgrades the
+   * world state storage to partial flat database mode.
+   */
+  public void prepareStateHealing(final Address address, final Bytes location) {
+<span class="nc" id="L288">    final Set&lt;Bytes&gt; keysToDelete = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L289">    final BonsaiWorldStateKeyValueStorage.Updater updater = worldStateKeyValueStorage.updater();</span>
+<span class="nc" id="L290">    final Hash accountHash = address.addressHash();</span>
+<span class="nc" id="L291">    final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; accountTrie =</span>
+        new StoredMerklePatriciaTrie&lt;&gt;(
+            (l, h) -&gt; {
+<span class="nc" id="L294">              final Optional&lt;Bytes&gt; node = worldStateKeyValueStorage.getAccountStateTrieNode(l, h);</span>
+<span class="nc bnc" id="L295" title="All 2 branches missed.">              if (node.isPresent()) {</span>
+<span class="nc" id="L296">                keysToDelete.add(l);</span>
+              }
+<span class="nc" id="L298">              return node;</span>
+            },
+<span class="nc" id="L300">            persistedState.getWorldStateRootHash(),</span>
+<span class="nc" id="L301">            Function.identity(),</span>
+<span class="nc" id="L302">            Function.identity());</span>
+    try {
+<span class="nc" id="L304">      accountTrie</span>
+<span class="nc" id="L305">          .get(accountHash)</span>
+<span class="nc" id="L306">          .map(RLP::input)</span>
+<span class="nc" id="L307">          .map(StateTrieAccountValue::readFrom)</span>
+<span class="nc" id="L308">          .ifPresent(</span>
+              account -&gt; {
+<span class="nc" id="L310">                final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+                    new StoredMerklePatriciaTrie&lt;&gt;(
+                        (l, h) -&gt; {
+<span class="nc" id="L313">                          Optional&lt;Bytes&gt; node =</span>
+<span class="nc" id="L314">                              worldStateKeyValueStorage.getAccountStorageTrieNode(</span>
+                                  accountHash, l, h);
+<span class="nc bnc" id="L316" title="All 2 branches missed.">                          if (node.isPresent()) {</span>
+<span class="nc" id="L317">                            keysToDelete.add(Bytes.concatenate(accountHash, l));</span>
+                          }
+<span class="nc" id="L319">                          return node;</span>
+                        },
+<span class="nc" id="L321">                        account.getStorageRoot(),</span>
+<span class="nc" id="L322">                        Function.identity(),</span>
+<span class="nc" id="L323">                        Function.identity());</span>
+                try {
+<span class="nc" id="L325">                  storageTrie.getPath(location);</span>
+<span class="nc" id="L326">                } catch (Exception eA) {</span>
+<span class="nc" id="L327">                  LOG.warn(&quot;Invalid slot found for account {} at location {}&quot;, address, location);</span>
+                  // ignore
+<span class="nc" id="L329">                }</span>
+<span class="nc" id="L330">              });</span>
+<span class="nc" id="L331">    } catch (Exception eA) {</span>
+<span class="nc" id="L332">      LOG.warn(&quot;Invalid node for account {} at location {}&quot;, address, location);</span>
+      // ignore
+<span class="nc" id="L334">    }</span>
+<span class="nc" id="L335">    keysToDelete.forEach(bytes -&gt; updater.removeAccountStateTrieNode(bytes));</span>
+<span class="nc" id="L336">    updater.commit();</span>
+
+<span class="nc" id="L338">    worldStateKeyValueStorage.downgradeToPartialFlatDbMode();</span>
+<span class="nc" id="L339">  }</span>
+
+  public TrieLogManager getTrieLogManager() {
+<span class="fc" id="L342">    return trieLogManager;</span>
+  }
+
+  public CachedWorldStorageManager getCachedWorldStorageManager() {
+<span class="fc" id="L346">    return cachedWorldStorageManager;</span>
+  }
+
+  @Override
+  public void resetArchiveStateTo(final BlockHeader blockHeader) {
+<span class="nc" id="L351">    persistedState.resetWorldStateTo(blockHeader);</span>
+<span class="nc" id="L352">    this.cachedWorldStorageManager.reset();</span>
+<span class="nc" id="L353">    this.cachedWorldStorageManager.addCachedLayer(</span>
+<span class="nc" id="L354">        blockHeader, persistedState.getWorldStateRootHash(), persistedState);</span>
+<span class="nc" id="L355">  }</span>
+
+  @Override
+  public &lt;U&gt; Optional&lt;U&gt; getAccountProof(
+      final BlockHeader blockHeader,
+      final Address accountAddress,
+      final List&lt;UInt256&gt; accountStorageKeys,
+      final Function&lt;Optional&lt;WorldStateProof&gt;, ? extends Optional&lt;U&gt;&gt; mapper) {
+<span class="fc" id="L363">    try (BonsaiWorldState ws = (BonsaiWorldState) getMutable(blockHeader, false).orElse(null)) {</span>
+<span class="pc bpc" id="L364" title="1 of 2 branches missed.">      if (ws != null) {</span>
+<span class="fc" id="L365">        final WorldStateProofProvider worldStateProofProvider =</span>
+            new WorldStateProofProvider(
+<span class="fc" id="L367">                new WorldStateStorageCoordinator(ws.getWorldStateStorage()));</span>
+<span class="fc" id="L368">        return mapper.apply(</span>
+<span class="fc" id="L369">            worldStateProofProvider.getAccountProof(</span>
+<span class="fc" id="L370">                ws.getWorldStateRootHash(), accountAddress, accountStorageKeys));</span>
+      }
+<span class="pc bpc" id="L372" title="1 of 2 branches missed.">    } catch (Exception ex) {</span>
+<span class="nc" id="L373">      LOG.error(&quot;failed proof query for &quot; + blockHeader.getBlockHash().toShortHexString(), ex);</span>
+<span class="nc" id="L374">    }</span>
+<span class="nc" id="L375">    return Optional.empty();</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getNodeData(final Hash hash) {
+<span class="nc" id="L380">    return Optional.empty();</span>
+  }
+
+  @Override
+  public void close() {
+    try {
+<span class="nc" id="L386">      worldStateKeyValueStorage.close();</span>
+<span class="nc" id="L387">    } catch (Exception e) {</span>
+      // no op
+<span class="nc" id="L389">    }</span>
+<span class="nc" id="L390">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

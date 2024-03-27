@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyPairSecurityModule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cryptoservices</a> &gt; <span class="el_source">KeyPairSecurityModule.java</span></div><h1>KeyPairSecurityModule.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cryptoservices;
+
+import org.hyperledger.besu.crypto.ECPointUtil;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModule;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModuleException;
+import org.hyperledger.besu.plugin.services.securitymodule.data.PublicKey;
+import org.hyperledger.besu.plugin.services.securitymodule.data.Signature;
+
+import java.math.BigInteger;
+import java.security.spec.ECPoint;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/**
+ * Implementation of SecurityModule wrapping SECP256K1.KeyPair and performing cryptographic
+ * operations via SECP256K1 class
+ */
+public class KeyPairSecurityModule implements SecurityModule {
+  private final KeyPair keyPair;
+  private final PublicKey publicKey;
+<span class="fc" id="L41">  private final SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+
+  /**
+   * Instantiates a new Key pair security module.
+   *
+   * @param keyPair the key pair
+   */
+<span class="fc" id="L48">  public KeyPairSecurityModule(final KeyPair keyPair) {</span>
+<span class="fc" id="L49">    this.keyPair = keyPair;</span>
+<span class="fc" id="L50">    this.publicKey = convertPublicKey(keyPair.getPublicKey());</span>
+<span class="fc" id="L51">  }</span>
+
+  private PublicKey convertPublicKey(final SECPPublicKey publicKey) {
+    try {
+<span class="fc" id="L55">      return new PublicKeyImpl(</span>
+<span class="fc" id="L56">          ECPointUtil.fromBouncyCastleECPoint(signatureAlgorithm.publicKeyAsEcPoint(publicKey)));</span>
+<span class="nc" id="L57">    } catch (final Exception e) {</span>
+<span class="nc" id="L58">      throw new SecurityModuleException(</span>
+<span class="nc" id="L59">          &quot;Unexpected error while converting ECPoint: &quot; + e.getMessage(), e);</span>
+    }
+  }
+
+  @Override
+  public Signature sign(final Bytes32 dataHash) throws SecurityModuleException {
+    try {
+<span class="fc" id="L66">      final SECPSignature signature = signatureAlgorithm.sign(dataHash, keyPair);</span>
+<span class="fc" id="L67">      return new SignatureImpl(signature);</span>
+<span class="nc" id="L68">    } catch (final Exception e) {</span>
+<span class="nc" id="L69">      throw new SecurityModuleException(&quot;Unexpected error while signing: &quot; + e.getMessage(), e);</span>
+    }
+  }
+
+  @Override
+  public PublicKey getPublicKey() throws SecurityModuleException {
+<span class="fc" id="L75">    return publicKey;</span>
+  }
+
+  @Override
+  public Bytes32 calculateECDHKeyAgreement(final PublicKey partyKey)
+      throws SecurityModuleException {
+    try {
+<span class="fc" id="L82">      final Bytes encodedECPoint = ECPointUtil.getEncodedBytes(partyKey.getW());</span>
+<span class="fc" id="L83">      final SECPPublicKey secp256KPartyKey = signatureAlgorithm.createPublicKey(encodedECPoint);</span>
+<span class="fc" id="L84">      return signatureAlgorithm.calculateECDHKeyAgreement(</span>
+<span class="fc" id="L85">          keyPair.getPrivateKey(), secp256KPartyKey);</span>
+<span class="nc" id="L86">    } catch (final Exception e) {</span>
+<span class="nc" id="L87">      throw new SecurityModuleException(</span>
+<span class="nc" id="L88">          &quot;Unexpected error while calculating ECDH Key Agreement: &quot; + e.getMessage(), e);</span>
+    }
+  }
+
+  private static class SignatureImpl implements Signature {
+
+    private final SECPSignature signature;
+
+    /**
+     * Instantiates a new Signature.
+     *
+     * @param signature the signature
+     */
+<span class="fc" id="L101">    SignatureImpl(final SECPSignature signature) {</span>
+<span class="fc" id="L102">      this.signature = signature;</span>
+<span class="fc" id="L103">    }</span>
+
+    @Override
+    public BigInteger getR() {
+<span class="fc" id="L107">      return signature.getR();</span>
+    }
+
+    @Override
+    public BigInteger getS() {
+<span class="fc" id="L112">      return signature.getS();</span>
+    }
+  }
+
+  private static class PublicKeyImpl implements PublicKey {
+    private final ECPoint w;
+
+    /**
+     * Instantiates a new Public key.
+     *
+     * @param w the w ECPoint
+     */
+<span class="fc" id="L124">    PublicKeyImpl(final ECPoint w) {</span>
+<span class="fc" id="L125">      this.w = w;</span>
+<span class="fc" id="L126">    }</span>
+
+    @Override
+    public ECPoint getW() {
+<span class="fc" id="L130">      return w;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

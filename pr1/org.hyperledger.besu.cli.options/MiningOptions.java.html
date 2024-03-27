@@ -1,0 +1,383 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MiningOptions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.options</a> &gt; <span class="el_source">MiningOptions.java</span></div><h1>MiningOptions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.options;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Arrays.asList;
+import static java.util.Collections.singletonList;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.DEFAULT_NON_POA_BLOCK_TXS_SELECTION_MAX_TIME;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.DEFAULT_POA_BLOCK_TXS_SELECTION_MAX_TIME;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.MutableInitValues.DEFAULT_EXTRA_DATA;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.MutableInitValues.DEFAULT_MIN_BLOCK_OCCUPANCY_RATIO;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.MutableInitValues.DEFAULT_MIN_PRIORITY_FEE_PER_GAS;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.MutableInitValues.DEFAULT_MIN_TRANSACTION_GAS_PRICE;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_MAX_OMMERS_DEPTH;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_POS_BLOCK_CREATION_MAX_TIME;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_POS_BLOCK_CREATION_REPETITION_MIN_DURATION;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_POW_JOB_TTL;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_REMOTE_SEALERS_LIMIT;
+import static org.hyperledger.besu.ethereum.core.MiningParameters.Unstable.DEFAULT_REMOTE_SEALERS_TTL;
+
+import org.hyperledger.besu.cli.converter.PositiveNumberConverter;
+import org.hyperledger.besu.cli.util.CommandLineUtils;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters.MutableInitValues;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.plugin.services.TransactionSelectionService;
+import org.hyperledger.besu.util.number.PositiveNumber;
+
+import java.util.List;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import picocli.CommandLine;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParameterException;
+
+/** The Mining CLI options. */
+public class MiningOptions implements CLIOptions&lt;MiningParameters&gt; {
+
+<span class="fc" id="L55">  @Option(</span>
+      names = {&quot;--miner-enabled&quot;},
+      description = &quot;Set if node will perform mining (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L58">  private Boolean isMiningEnabled = false;</span>
+
+<span class="fc" id="L60">  @Option(</span>
+      names = {&quot;--miner-stratum-enabled&quot;},
+      description = &quot;Set if node will perform Stratum mining (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L63">  private Boolean iStratumMiningEnabled = false;</span>
+
+<span class="fc" id="L65">  @Option(</span>
+      names = {&quot;--miner-stratum-host&quot;},
+      description = &quot;Host for Stratum network mining service (default: ${DEFAULT-VALUE})&quot;)
+  private String stratumNetworkInterface = &quot;0.0.0.0&quot;;
+
+<span class="fc" id="L70">  @Option(</span>
+      names = {&quot;--miner-stratum-port&quot;},
+      description = &quot;Stratum port binding (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L73">  private Integer stratumPort = 8008;</span>
+
+<span class="fc" id="L75">  @Option(</span>
+      names = {&quot;--miner-coinbase&quot;},
+      description =
+          &quot;Account to which mining rewards are paid. You must specify a valid coinbase if &quot;
+              + &quot;mining is enabled using --miner-enabled option&quot;,
+      arity = &quot;1&quot;)
+  private Address coinbase = null;
+
+<span class="fc" id="L83">  @Option(</span>
+      names = {&quot;--miner-extra-data&quot;},
+      description =
+          &quot;A hex string representing the (32) bytes to be included in the extra data &quot;
+              + &quot;field of a mined block (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Bytes extraData = DEFAULT_EXTRA_DATA;
+
+<span class="fc" id="L91">  @Option(</span>
+      names = {&quot;--min-block-occupancy-ratio&quot;},
+      description = &quot;Minimum occupancy ratio for a mined block (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L95">  private Double minBlockOccupancyRatio = DEFAULT_MIN_BLOCK_OCCUPANCY_RATIO;</span>
+
+<span class="fc" id="L97">  @Option(</span>
+      names = {&quot;--min-gas-price&quot;},
+      description =
+          &quot;Minimum price (in Wei) offered by a transaction for it to be included in a mined &quot;
+              + &quot;block (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Wei minTransactionGasPrice = DEFAULT_MIN_TRANSACTION_GAS_PRICE;
+
+<span class="fc" id="L105">  @Option(</span>
+      names = {&quot;--min-priority-fee&quot;},
+      description =
+          &quot;Minimum priority fee per gas (in Wei) offered by a transaction for it to be included in a &quot;
+              + &quot;block (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Wei minPriorityFeePerGas = DEFAULT_MIN_PRIORITY_FEE_PER_GAS;
+
+<span class="fc" id="L113">  @Option(</span>
+      names = {&quot;--target-gas-limit&quot;},
+      description =
+          &quot;Sets target gas limit per block.&quot;
+              + &quot; If set, each block's gas limit will approach this setting over time.&quot;)
+  private Long targetGasLimit = null;
+
+<span class="fc" id="L120">  @Option(</span>
+      names = {&quot;--block-txs-selection-max-time&quot;},
+      converter = PositiveNumberConverter.class,
+      description =
+          &quot;Specifies the maximum time, in milliseconds, that could be spent selecting transactions to be included in the block.&quot;
+              + &quot; Not compatible with PoA networks, see poa-block-txs-selection-max-time. (default: ${DEFAULT-VALUE})&quot;)
+  private PositiveNumber nonPoaBlockTxsSelectionMaxTime =
+      DEFAULT_NON_POA_BLOCK_TXS_SELECTION_MAX_TIME;
+
+<span class="fc" id="L129">  @Option(</span>
+      names = {&quot;--poa-block-txs-selection-max-time&quot;},
+      converter = PositiveNumberConverter.class,
+      description =
+          &quot;Specifies the maximum time that could be spent selecting transactions to be included in the block, as a percentage of the fixed block time of the PoA network.&quot;
+              + &quot; To be only used on PoA networks, for other networks see block-txs-selection-max-time.&quot;
+              + &quot; (default: ${DEFAULT-VALUE})&quot;)
+  private PositiveNumber poaBlockTxsSelectionMaxTime = DEFAULT_POA_BLOCK_TXS_SELECTION_MAX_TIME;
+
+<span class="fc" id="L138">  @CommandLine.ArgGroup(validate = false)</span>
+  private final Unstable unstableOptions = new Unstable();
+
+<span class="fc" id="L141">  static class Unstable {</span>
+<span class="fc" id="L142">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xminer-remote-sealers-limit&quot;},
+        description =
+            &quot;Limits the number of remote sealers that can submit their hashrates (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L147">    private Integer remoteSealersLimit = DEFAULT_REMOTE_SEALERS_LIMIT;</span>
+
+<span class="fc" id="L149">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xminer-remote-sealers-hashrate-ttl&quot;},
+        description =
+            &quot;Specifies the lifetime of each entry in the cache. An entry will be automatically deleted if no update has been received before the deadline (default: ${DEFAULT-VALUE} minutes)&quot;)
+<span class="fc" id="L154">    private Long remoteSealersTimeToLive = DEFAULT_REMOTE_SEALERS_TTL;</span>
+
+<span class="fc" id="L156">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xminer-pow-job-ttl&quot;},
+        description =
+            &quot;Specifies the time PoW jobs are kept in cache and will accept a solution from miners (default: ${DEFAULT-VALUE} milliseconds)&quot;)
+<span class="fc" id="L161">    private Long powJobTimeToLive = DEFAULT_POW_JOB_TTL;</span>
+
+<span class="fc" id="L163">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xmax-ommers-depth&quot;},
+        description =
+            &quot;Specifies the depth of ommer blocks to accept when receiving solutions (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L168">    private Integer maxOmmersDepth = DEFAULT_MAX_OMMERS_DEPTH;</span>
+
+<span class="fc" id="L170">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xminer-stratum-extranonce&quot;},
+        description = &quot;Extranonce for Stratum network miners (default: ${DEFAULT-VALUE})&quot;)
+    private String stratumExtranonce = &quot;080c&quot;;
+
+<span class="fc" id="L176">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xpos-block-creation-max-time&quot;},
+        description =
+            &quot;Specifies the maximum time, in milliseconds, a PoS block creation jobs is allowed to run. Must be positive and ≤ 12000 (default: ${DEFAULT-VALUE} milliseconds)&quot;)
+<span class="fc" id="L181">    private Long posBlockCreationMaxTime = DEFAULT_POS_BLOCK_CREATION_MAX_TIME;</span>
+
+<span class="fc" id="L183">    @CommandLine.Option(</span>
+        hidden = true,
+        names = {&quot;--Xpos-block-creation-repetition-min-duration&quot;},
+        description =
+            &quot;If a PoS block creation repetition takes less than this duration, in milliseconds,&quot;
+                + &quot; then it waits before next repetition. Must be positive and ≤ 2000 (default: ${DEFAULT-VALUE} milliseconds)&quot;)
+    private Long posBlockCreationRepetitionMinDuration =
+<span class="fc" id="L190">        DEFAULT_POS_BLOCK_CREATION_REPETITION_MIN_DURATION;</span>
+  }
+
+  private TransactionSelectionService transactionSelectionService;
+
+<span class="fc" id="L195">  private MiningOptions() {}</span>
+
+  /**
+   * Create mining options.
+   *
+   * @return the mining options
+   */
+  public static MiningOptions create() {
+<span class="fc" id="L203">    return new MiningOptions();</span>
+  }
+
+  /**
+   * Set the transaction selection service
+   *
+   * @param transactionSelectionService the transaction selection service
+   */
+  public void setTransactionSelectionService(
+      final TransactionSelectionService transactionSelectionService) {
+<span class="fc" id="L213">    this.transactionSelectionService = transactionSelectionService;</span>
+<span class="fc" id="L214">  }</span>
+
+  /**
+   * Validate that there are no inconsistencies in the specified options. For example that the
+   * options are valid for the selected implementation.
+   *
+   * @param commandLine the full commandLine to check all the options specified by the user
+   * @param genesisConfigOptions is EthHash?
+   * @param isMergeEnabled is the Merge enabled?
+   * @param logger the logger
+   */
+  public void validate(
+      final CommandLine commandLine,
+      final GenesisConfigOptions genesisConfigOptions,
+      final boolean isMergeEnabled,
+      final Logger logger) {
+<span class="fc bfc" id="L230" title="All 4 branches covered.">    if (Boolean.TRUE.equals(isMiningEnabled) &amp;&amp; coinbase == null) {</span>
+<span class="fc" id="L231">      throw new ParameterException(</span>
+          commandLine,
+          &quot;Unable to mine without a valid coinbase. Either disable mining (remove --miner-enabled) &quot;
+              + &quot;or specify the beneficiary of mining (via --miner-coinbase &lt;Address&gt;)&quot;);
+    }
+<span class="fc bfc" id="L236" title="All 4 branches covered.">    if (Boolean.FALSE.equals(isMiningEnabled) &amp;&amp; Boolean.TRUE.equals(iStratumMiningEnabled)) {</span>
+<span class="fc" id="L237">      throw new ParameterException(</span>
+          commandLine,
+          &quot;Unable to mine with Stratum if mining is disabled. Either disable Stratum mining (remove --miner-stratum-enabled) &quot;
+              + &quot;or specify mining is enabled (--miner-enabled)&quot;);
+    }
+
+    // Check that block producer options work
+<span class="fc bfc" id="L244" title="All 4 branches covered.">    if (!isMergeEnabled &amp;&amp; genesisConfigOptions.isEthHash()) {</span>
+<span class="fc" id="L245">      CommandLineUtils.checkOptionDependencies(</span>
+          logger,
+          commandLine,
+          &quot;--miner-enabled&quot;,
+<span class="pc bpc" id="L249" title="1 of 2 branches missed.">          !isMiningEnabled,</span>
+<span class="fc" id="L250">          asList(</span>
+              &quot;--miner-coinbase&quot;,
+              &quot;--min-gas-price&quot;,
+              &quot;--min-priority-fee&quot;,
+              &quot;--min-block-occupancy-ratio&quot;,
+              &quot;--miner-extra-data&quot;));
+
+      // Check that mining options are able to work
+<span class="fc" id="L258">      CommandLineUtils.checkOptionDependencies(</span>
+          logger,
+          commandLine,
+          &quot;--miner-enabled&quot;,
+<span class="pc bpc" id="L262" title="1 of 2 branches missed.">          !isMiningEnabled,</span>
+<span class="fc" id="L263">          asList(</span>
+              &quot;--miner-stratum-enabled&quot;,
+              &quot;--Xminer-remote-sealers-limit&quot;,
+              &quot;--Xminer-remote-sealers-hashrate-ttl&quot;));
+    }
+
+<span class="pc bpc" id="L269" title="1 of 2 branches missed.">    if (unstableOptions.posBlockCreationMaxTime &lt;= 0</span>
+<span class="fc bfc" id="L270" title="All 2 branches covered.">        || unstableOptions.posBlockCreationMaxTime &gt; DEFAULT_POS_BLOCK_CREATION_MAX_TIME) {</span>
+<span class="fc" id="L271">      throw new ParameterException(</span>
+          commandLine,
+          &quot;--Xpos-block-creation-max-time must be positive and ≤ &quot;
+              + DEFAULT_POS_BLOCK_CREATION_MAX_TIME);
+    }
+
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">    if (unstableOptions.posBlockCreationRepetitionMinDuration &lt;= 0</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">        || unstableOptions.posBlockCreationRepetitionMinDuration &gt; 2000) {</span>
+<span class="nc" id="L279">      throw new ParameterException(</span>
+          commandLine, &quot;--Xpos-block-creation-repetition-min-duration must be positive and ≤ 2000&quot;);
+    }
+
+<span class="fc bfc" id="L283" title="All 2 branches covered.">    if (genesisConfigOptions.isPoa()) {</span>
+<span class="fc" id="L284">      CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+          commandLine,
+          &quot;--block-txs-selection-max-time can't be used with PoA networks,&quot;
+              + &quot; see poa-block-txs-selection-max-time instead&quot;,
+          false,
+<span class="fc" id="L289">          singletonList(&quot;--block-txs-selection-max-time&quot;));</span>
+    } else {
+<span class="fc" id="L291">      CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+          commandLine,
+          &quot;--poa-block-txs-selection-max-time can be only used with PoA networks,&quot;
+              + &quot; see --block-txs-selection-max-time instead&quot;,
+          false,
+<span class="fc" id="L296">          singletonList(&quot;--poa-block-txs-selection-max-time&quot;));</span>
+    }
+<span class="fc" id="L298">  }</span>
+
+  static MiningOptions fromConfig(final MiningParameters miningParameters) {
+<span class="fc" id="L301">    final MiningOptions miningOptions = MiningOptions.create();</span>
+<span class="fc" id="L302">    miningOptions.setTransactionSelectionService(miningParameters.getTransactionSelectionService());</span>
+<span class="fc" id="L303">    miningOptions.isMiningEnabled = miningParameters.isMiningEnabled();</span>
+<span class="fc" id="L304">    miningOptions.iStratumMiningEnabled = miningParameters.isStratumMiningEnabled();</span>
+<span class="fc" id="L305">    miningOptions.stratumNetworkInterface = miningParameters.getStratumNetworkInterface();</span>
+<span class="fc" id="L306">    miningOptions.stratumPort = miningParameters.getStratumPort();</span>
+<span class="fc" id="L307">    miningOptions.extraData = miningParameters.getExtraData();</span>
+<span class="fc" id="L308">    miningOptions.minTransactionGasPrice = miningParameters.getMinTransactionGasPrice();</span>
+<span class="fc" id="L309">    miningOptions.minPriorityFeePerGas = miningParameters.getMinPriorityFeePerGas();</span>
+<span class="fc" id="L310">    miningOptions.minBlockOccupancyRatio = miningParameters.getMinBlockOccupancyRatio();</span>
+<span class="fc" id="L311">    miningOptions.nonPoaBlockTxsSelectionMaxTime =</span>
+<span class="fc" id="L312">        miningParameters.getNonPoaBlockTxsSelectionMaxTime();</span>
+<span class="fc" id="L313">    miningOptions.poaBlockTxsSelectionMaxTime = miningParameters.getPoaBlockTxsSelectionMaxTime();</span>
+
+<span class="fc" id="L315">    miningOptions.unstableOptions.remoteSealersLimit =</span>
+<span class="fc" id="L316">        miningParameters.getUnstable().getRemoteSealersLimit();</span>
+<span class="fc" id="L317">    miningOptions.unstableOptions.remoteSealersTimeToLive =</span>
+<span class="fc" id="L318">        miningParameters.getUnstable().getRemoteSealersTimeToLive();</span>
+<span class="fc" id="L319">    miningOptions.unstableOptions.powJobTimeToLive =</span>
+<span class="fc" id="L320">        miningParameters.getUnstable().getPowJobTimeToLive();</span>
+<span class="fc" id="L321">    miningOptions.unstableOptions.maxOmmersDepth =</span>
+<span class="fc" id="L322">        miningParameters.getUnstable().getMaxOmmerDepth();</span>
+<span class="fc" id="L323">    miningOptions.unstableOptions.stratumExtranonce =</span>
+<span class="fc" id="L324">        miningParameters.getUnstable().getStratumExtranonce();</span>
+<span class="fc" id="L325">    miningOptions.unstableOptions.posBlockCreationMaxTime =</span>
+<span class="fc" id="L326">        miningParameters.getUnstable().getPosBlockCreationMaxTime();</span>
+<span class="fc" id="L327">    miningOptions.unstableOptions.posBlockCreationRepetitionMinDuration =</span>
+<span class="fc" id="L328">        miningParameters.getUnstable().getPosBlockCreationRepetitionMinDuration();</span>
+
+<span class="fc" id="L330">    miningParameters.getCoinbase().ifPresent(coinbase -&gt; miningOptions.coinbase = coinbase);</span>
+<span class="pc" id="L331">    miningParameters.getTargetGasLimit().ifPresent(tgl -&gt; miningOptions.targetGasLimit = tgl);</span>
+<span class="fc" id="L332">    return miningOptions;</span>
+  }
+
+  @Override
+  public MiningParameters toDomainObject() {
+<span class="fc" id="L337">    checkNotNull(</span>
+        transactionSelectionService,
+        &quot;transactionSelectionService must be set before using this object&quot;);
+
+    final var updatableInitValuesBuilder =
+<span class="fc" id="L342">        MutableInitValues.builder()</span>
+<span class="fc" id="L343">            .isMiningEnabled(isMiningEnabled)</span>
+<span class="fc" id="L344">            .extraData(extraData)</span>
+<span class="fc" id="L345">            .minTransactionGasPrice(minTransactionGasPrice)</span>
+<span class="fc" id="L346">            .minPriorityFeePerGas(minPriorityFeePerGas)</span>
+<span class="fc" id="L347">            .minBlockOccupancyRatio(minBlockOccupancyRatio);</span>
+
+<span class="fc bfc" id="L349" title="All 2 branches covered.">    if (targetGasLimit != null) {</span>
+<span class="fc" id="L350">      updatableInitValuesBuilder.targetGasLimit(targetGasLimit);</span>
+    }
+<span class="fc bfc" id="L352" title="All 2 branches covered.">    if (coinbase != null) {</span>
+<span class="fc" id="L353">      updatableInitValuesBuilder.coinbase(coinbase);</span>
+    }
+
+<span class="fc" id="L356">    return ImmutableMiningParameters.builder()</span>
+<span class="fc" id="L357">        .transactionSelectionService(transactionSelectionService)</span>
+<span class="fc" id="L358">        .mutableInitValues(updatableInitValuesBuilder.build())</span>
+<span class="fc" id="L359">        .isStratumMiningEnabled(iStratumMiningEnabled)</span>
+<span class="fc" id="L360">        .stratumNetworkInterface(stratumNetworkInterface)</span>
+<span class="fc" id="L361">        .stratumPort(stratumPort)</span>
+<span class="fc" id="L362">        .nonPoaBlockTxsSelectionMaxTime(nonPoaBlockTxsSelectionMaxTime)</span>
+<span class="fc" id="L363">        .poaBlockTxsSelectionMaxTime(poaBlockTxsSelectionMaxTime)</span>
+<span class="fc" id="L364">        .unstable(</span>
+<span class="fc" id="L365">            ImmutableMiningParameters.Unstable.builder()</span>
+<span class="fc" id="L366">                .remoteSealersLimit(unstableOptions.remoteSealersLimit)</span>
+<span class="fc" id="L367">                .remoteSealersTimeToLive(unstableOptions.remoteSealersTimeToLive)</span>
+<span class="fc" id="L368">                .powJobTimeToLive(unstableOptions.powJobTimeToLive)</span>
+<span class="fc" id="L369">                .maxOmmerDepth(unstableOptions.maxOmmersDepth)</span>
+<span class="fc" id="L370">                .stratumExtranonce(unstableOptions.stratumExtranonce)</span>
+<span class="fc" id="L371">                .posBlockCreationMaxTime(unstableOptions.posBlockCreationMaxTime)</span>
+<span class="fc" id="L372">                .posBlockCreationRepetitionMinDuration(</span>
+<span class="fc" id="L373">                    unstableOptions.posBlockCreationRepetitionMinDuration)</span>
+<span class="fc" id="L374">                .build())</span>
+<span class="fc" id="L375">        .build();</span>
+  }
+
+  @Override
+  public List&lt;String&gt; getCLIOptions() {
+<span class="fc" id="L380">    return CommandLineUtils.getCLIOptions(this, new MiningOptions());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

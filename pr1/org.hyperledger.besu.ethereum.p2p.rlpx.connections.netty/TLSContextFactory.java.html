@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TLSContextFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty</a> &gt; <span class="el_source">TLSContextFactory.java</span></div><h1>TLSContextFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty;
+
+import org.hyperledger.besu.pki.keystore.HardwareKeyStoreWrapper;
+import org.hyperledger.besu.pki.keystore.KeyStoreWrapper;
+import org.hyperledger.besu.pki.keystore.SoftwareKeyStoreWrapper;
+
+import java.io.IOException;
+import java.security.GeneralSecurityException;
+import java.security.KeyManagementException;
+import java.security.KeyStore;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.security.cert.X509CRL;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
+
+import io.netty.handler.ssl.ClientAuth;
+import io.netty.handler.ssl.IdentityCipherSuiteFilter;
+import io.netty.handler.ssl.JdkSslContext;
+import io.netty.handler.ssl.SslContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TLSContextFactory {
+
+<span class="fc" id="L48">  private static final Logger LOG = LoggerFactory.getLogger(TLSContextFactory.class);</span>
+
+<span class="fc" id="L50">  private static final String[] ALLOWED_PROTOCOLS = {&quot;TLSv1.3&quot;};</span>
+  private static final String KEYMANAGER_FACTORY_ALGORITHM = &quot;PKIX&quot;;
+  private static final String TRUSTMANAGER_FACTORY_ALGORITHM = &quot;PKIX&quot;;
+
+<span class="pc" id="L54">  private List&lt;String&gt; enabledCipherSuites = null;</span>
+  private KeyManagerFactory kmf;
+  private TrustManagerFactory tmf;
+  private Collection&lt;X509CRL&gt; crls;
+  private String[] allowedProtocols;
+
+<span class="nc" id="L60">  protected TLSContextFactory() {}</span>
+
+  protected TLSContextFactory(
+      final String keystorePass,
+      final KeyStoreWrapper keystoreWrapper,
+      final List&lt;String&gt; configuredCipherSuites,
+      final String[] allowedProtocols)
+<span class="fc" id="L67">      throws GeneralSecurityException, IOException {</span>
+<span class="fc" id="L68">    kmf = getKeyManagerFactory(keystoreWrapper.getKeyStore(), keystorePass);</span>
+<span class="fc" id="L69">    tmf = getTrustManagerFactory(keystoreWrapper.getTrustStore());</span>
+<span class="fc" id="L70">    crls = keystoreWrapper.getCRLs();</span>
+<span class="pc bpc" id="L71" title="3 of 4 branches missed.">    if (configuredCipherSuites != null &amp;&amp; !configuredCipherSuites.isEmpty()) {</span>
+<span class="nc" id="L72">      enabledCipherSuites = configuredCipherSuites;</span>
+    }
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">    this.allowedProtocols = null == allowedProtocols ? ALLOWED_PROTOCOLS : allowedProtocols;</span>
+<span class="fc" id="L75">  }</span>
+
+  public static TLSContextFactory getInstance(
+      final String keyStorePassword, final KeyStoreWrapper wrapper, final String[] allowedProtocols)
+      throws GeneralSecurityException, IOException {
+<span class="fc" id="L80">    return new TLSContextFactory(keyStorePassword, wrapper, null, allowedProtocols);</span>
+  }
+
+  public static TLSContextFactory getInstance(
+      final String keyStorePassword, final KeyStoreWrapper wrapper)
+      throws GeneralSecurityException, IOException {
+<span class="nc" id="L86">    return new TLSContextFactory(keyStorePassword, wrapper, null, null);</span>
+  }
+
+  public SslContext createNettyServerSslContext()
+      throws NoSuchAlgorithmException, KeyManagementException {
+<span class="fc" id="L91">    final List&lt;String&gt; enabledCipherSuites = getEnabledCipherSuites();</span>
+
+<span class="fc" id="L93">    return new JdkSslContext(</span>
+<span class="fc" id="L94">        createJavaSslContext(),</span>
+        false,
+        enabledCipherSuites,
+        IdentityCipherSuiteFilter.INSTANCE,
+        null,
+        ClientAuth.REQUIRE,
+        null,
+        false);
+  }
+
+  public SslContext createNettyClientSslContext()
+      throws NoSuchAlgorithmException, KeyManagementException {
+<span class="fc" id="L106">    final List&lt;String&gt; enabledCipherSuites = getEnabledCipherSuites();</span>
+
+<span class="fc" id="L108">    return new JdkSslContext(</span>
+<span class="fc" id="L109">        createJavaSslContext(),</span>
+        true,
+        enabledCipherSuites,
+        IdentityCipherSuiteFilter.INSTANCE,
+        null,
+        ClientAuth.NONE,
+        null,
+        false);
+  }
+
+  public SSLContext createJavaSslContext() throws NoSuchAlgorithmException, KeyManagementException {
+<span class="fc" id="L120">    final SSLContext context = SSLContext.getInstance(getTlsProtocol());</span>
+<span class="fc" id="L121">    context.init(</span>
+<span class="fc" id="L122">        kmf.getKeyManagers(),</span>
+<span class="pc bpc" id="L123" title="2 of 4 branches missed.">        null == crls || crls.isEmpty() ? tmf.getTrustManagers() : wrap(tmf.getTrustManagers()),</span>
+        null);
+<span class="fc" id="L125">    return context;</span>
+  }
+
+  protected TrustManager[] wrap(final TrustManager[] trustMgrs) {
+<span class="fc" id="L129">    final TrustManager[] ret = trustMgrs.clone();</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    for (int i = 0; i &lt; ret.length; i++) {</span>
+<span class="fc" id="L131">      TrustManager trustMgr = ret[i];</span>
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">      if (trustMgr instanceof X509TrustManager) {</span>
+<span class="fc" id="L133">        X509TrustManager x509TrustManager = (X509TrustManager) trustMgr;</span>
+<span class="fc" id="L134">        ret[i] =</span>
+<span class="fc" id="L135">            new X509TrustManager() {</span>
+              @Override
+              public void checkClientTrusted(
+                  final X509Certificate[] x509Certificates, final String s)
+                  throws CertificateException {
+<span class="fc" id="L140">                checkRevoked(x509Certificates);</span>
+<span class="fc" id="L141">                x509TrustManager.checkClientTrusted(x509Certificates, s);</span>
+<span class="fc" id="L142">              }</span>
+
+              @Override
+              public void checkServerTrusted(
+                  final X509Certificate[] x509Certificates, final String s)
+                  throws CertificateException {
+<span class="fc" id="L148">                checkRevoked(x509Certificates);</span>
+<span class="fc" id="L149">                x509TrustManager.checkServerTrusted(x509Certificates, s);</span>
+<span class="fc" id="L150">              }</span>
+
+              private void checkRevoked(final X509Certificate[] x509Certificates)
+                  throws CertificateException {
+<span class="fc bfc" id="L154" title="All 2 branches covered.">                for (X509CRL crl : crls) {</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">                  for (X509Certificate cert : x509Certificates) {</span>
+<span class="pc bpc" id="L156" title="1 of 2 branches missed.">                    if (crl.isRevoked(cert)) {</span>
+<span class="nc" id="L157">                      throw new CertificateException(&quot;Certificate revoked&quot;);</span>
+                    }
+                  }
+<span class="fc" id="L160">                }</span>
+<span class="fc" id="L161">              }</span>
+
+              @Override
+              public X509Certificate[] getAcceptedIssuers() {
+<span class="fc" id="L165">                return x509TrustManager.getAcceptedIssuers();</span>
+              }
+            };
+      }
+    }
+<span class="fc" id="L170">    return ret;</span>
+  }
+
+  protected TrustManagerFactory getTrustManagerFactory(final KeyStore truststore)
+      throws GeneralSecurityException {
+<span class="fc" id="L175">    final TrustManagerFactory tmf = TrustManagerFactory.getInstance(TRUSTMANAGER_FACTORY_ALGORITHM);</span>
+<span class="fc" id="L176">    tmf.init(truststore);</span>
+<span class="fc" id="L177">    return tmf;</span>
+  }
+
+  protected KeyManagerFactory getKeyManagerFactory(
+      final KeyStore keystore, final String keystorePassword) throws GeneralSecurityException {
+<span class="fc" id="L182">    final KeyManagerFactory kmf = KeyManagerFactory.getInstance(KEYMANAGER_FACTORY_ALGORITHM);</span>
+<span class="fc" id="L183">    kmf.init(keystore, keystorePassword.toCharArray());</span>
+<span class="fc" id="L184">    return kmf;</span>
+  }
+
+  private List&lt;String&gt; getEnabledCipherSuites() {
+<span class="fc" id="L188">    final String protocol = getTlsProtocol();</span>
+    try {
+<span class="pc bpc" id="L190" title="3 of 4 branches missed.">      if (enabledCipherSuites == null || enabledCipherSuites.isEmpty()) {</span>
+<span class="fc" id="L191">        final SSLContext sslcontext = SSLContext.getInstance(protocol);</span>
+<span class="fc" id="L192">        sslcontext.init(null, null, null);</span>
+<span class="fc" id="L193">        enabledCipherSuites = Arrays.asList(sslcontext.createSSLEngine().getEnabledCipherSuites());</span>
+      }
+<span class="nc" id="L195">    } catch (final NoSuchAlgorithmException | KeyManagementException e) {</span>
+<span class="nc" id="L196">      LOG.warn(</span>
+          &quot;Could not get list of enabled (JDK) cipher suites for protocol:{}, reverting to Netty's default ones.&quot;,
+          protocol);
+<span class="fc" id="L199">    }</span>
+<span class="fc" id="L200">    return enabledCipherSuites;</span>
+  }
+
+  private String getTlsProtocol() {
+<span class="fc" id="L204">    return Arrays.stream(allowedProtocols).max(Comparator.naturalOrder()).orElse(null);</span>
+  }
+
+  public static TLSContextFactory buildFrom(final TLSConfiguration config)
+      throws GeneralSecurityException, IOException {
+<span class="fc" id="L209">    TLSContextFactory ret = null;</span>
+<span class="pc bpc" id="L210" title="1 of 2 branches missed.">    if (null != config) {</span>
+<span class="fc" id="L211">      LOG.info(&quot;Initializing SSL Context using {} keystore.&quot;, config.getKeyStoreType());</span>
+      KeyStoreWrapper wrapper =
+<span class="pc bpc" id="L213" title="1 of 2 branches missed.">          KeyStoreWrapper.KEYSTORE_TYPE_PKCS11.equalsIgnoreCase(config.getKeyStoreType())</span>
+<span class="nc" id="L214">              ? new HardwareKeyStoreWrapper(</span>
+<span class="nc" id="L215">                  config.getKeyStorePassword(), config.getKeyStorePath(), config.getCrlPath())</span>
+<span class="fc" id="L216">              : new SoftwareKeyStoreWrapper(</span>
+<span class="fc" id="L217">                  config.getKeyStoreType(),</span>
+<span class="fc" id="L218">                  config.getKeyStorePath(),</span>
+<span class="fc" id="L219">                  config.getKeyStorePassword(),</span>
+<span class="fc" id="L220">                  config.getTrustStoreType(),</span>
+<span class="fc" id="L221">                  config.getTrustStorePath(),</span>
+<span class="fc" id="L222">                  config.getTrustStorePassword(),</span>
+<span class="fc" id="L223">                  config.getCrlPath());</span>
+<span class="fc" id="L224">      ret =</span>
+<span class="fc" id="L225">          TLSContextFactory.getInstance(</span>
+<span class="fc" id="L226">              config.getKeyStorePassword(), wrapper, config.getAllowedProtocols());</span>
+    }
+<span class="fc" id="L228">    return ret;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

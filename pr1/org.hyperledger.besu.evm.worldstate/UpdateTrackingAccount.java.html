@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>UpdateTrackingAccount.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.worldstate</a> &gt; <span class="el_source">UpdateTrackingAccount.java</span></div><h1>UpdateTrackingAccount.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evm.worldstate;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.evm.account.MutableAccount;
+
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import javax.annotation.Nullable;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/**
+ * An implementation of {@link MutableAccount} that tracks updates made to the account since the
+ * creation of the updater this is linked to.
+ *
+ * &lt;p&gt;Note that in practice this only track the modified value of the nonce and balance, but doesn't
+ * remind if those were modified or not (the reason being that any modification of an account imply
+ * the underlying trie node will have to be updated, and so knowing if the nonce and balance where
+ * updated or not doesn't matter, we just need their new value).
+ *
+ * @param &lt;A&gt; the type parameter
+ */
+public class UpdateTrackingAccount&lt;A extends Account&gt; implements MutableAccount {
+  private final Address address;
+  private final Hash addressHash;
+
+  @Nullable private A account; // null if this is a new account.
+
+  private boolean immutable;
+
+  private long nonce;
+  private Wei balance;
+
+  @Nullable private Bytes updatedCode; // Null if the underlying code has not been updated.
+  private final Bytes oldCode;
+  @Nullable private Hash updatedCodeHash;
+  private final Hash oldCodeHash;
+
+  // Only contains updated storage entries, but may contain entry with a value of 0 to signify
+  // deletion.
+  private final NavigableMap&lt;UInt256, UInt256&gt; updatedStorage;
+<span class="fc" id="L68">  private boolean storageWasCleared = false;</span>
+<span class="fc" id="L69">  private boolean transactionBoundary = false;</span>
+
+  /**
+   * Instantiates a new Update tracking account.
+   *
+   * @param address the address
+   */
+<span class="fc" id="L76">  UpdateTrackingAccount(final Address address) {</span>
+<span class="fc" id="L77">    checkNotNull(address);</span>
+<span class="fc" id="L78">    this.address = address;</span>
+<span class="fc" id="L79">    this.addressHash = this.address.addressHash();</span>
+<span class="fc" id="L80">    this.account = null;</span>
+
+<span class="fc" id="L82">    this.nonce = 0;</span>
+<span class="fc" id="L83">    this.balance = Wei.ZERO;</span>
+
+<span class="fc" id="L85">    this.updatedCode = Bytes.EMPTY;</span>
+<span class="fc" id="L86">    this.oldCode = Bytes.EMPTY;</span>
+<span class="fc" id="L87">    this.oldCodeHash = Hash.EMPTY;</span>
+<span class="fc" id="L88">    this.updatedStorage = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L89">  }</span>
+
+  /**
+   * Instantiates a new Update tracking account.
+   *
+   * @param account the account
+   */
+<span class="fc" id="L96">  public UpdateTrackingAccount(final A account) {</span>
+<span class="fc" id="L97">    checkNotNull(account);</span>
+
+<span class="fc" id="L99">    this.address = account.getAddress();</span>
+<span class="fc" id="L100">    this.addressHash =</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">        (account instanceof UpdateTrackingAccount)</span>
+<span class="fc" id="L102">            ? ((UpdateTrackingAccount&lt;?&gt;) account).addressHash</span>
+<span class="fc" id="L103">            : this.address.addressHash();</span>
+<span class="fc" id="L104">    this.account = account;</span>
+
+<span class="fc" id="L106">    this.nonce = account.getNonce();</span>
+<span class="fc" id="L107">    this.balance = account.getBalance();</span>
+
+<span class="fc" id="L109">    this.oldCode = account.getCode();</span>
+<span class="fc" id="L110">    this.oldCodeHash = account.getCodeHash();</span>
+
+<span class="fc" id="L112">    this.updatedStorage = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L113">  }</span>
+
+  /**
+   * The original account over which this tracks updates.
+   *
+   * @return The original account over which this tracks updates, or {@code null} if this is a newly
+   *     created account.
+   */
+  public A getWrappedAccount() {
+<span class="fc" id="L122">    return account;</span>
+  }
+
+  /**
+   * Sets wrapped account.
+   *
+   * @param account the account
+   */
+  public void setWrappedAccount(final A account) {
+<span class="pc bpc" id="L131" title="1 of 2 branches missed.">    if (this.account == null) {</span>
+<span class="fc" id="L132">      this.account = account;</span>
+<span class="fc" id="L133">      storageWasCleared = false;</span>
+    } else {
+<span class="nc" id="L135">      throw new IllegalStateException(&quot;Already tracking a wrapped account&quot;);</span>
+    }
+<span class="fc" id="L137">  }</span>
+
+  /**
+   * Whether the code of the account was modified.
+   *
+   * @return {@code true} if the code was updated.
+   */
+  public boolean codeWasUpdated() {
+<span class="fc bfc" id="L145" title="All 2 branches covered.">    return updatedCode != null;</span>
+  }
+
+  /**
+   * A map of the storage entries that were modified.
+   *
+   * @return a map containing all entries that have been modified. This &lt;b&gt;may&lt;/b&gt; contain entries
+   *     with a value of 0 to signify deletion.
+   */
+  @Override
+  public Map&lt;UInt256, UInt256&gt; getUpdatedStorage() {
+<span class="fc" id="L156">    return updatedStorage;</span>
+  }
+
+  @Override
+  public Address getAddress() {
+<span class="fc" id="L161">    return address;</span>
+  }
+
+  @Override
+  public Hash getAddressHash() {
+<span class="fc" id="L166">    return addressHash;</span>
+  }
+
+  @Override
+  public long getNonce() {
+<span class="fc" id="L171">    return nonce;</span>
+  }
+
+  @Override
+  public void setNonce(final long value) {
+<span class="pc bpc" id="L176" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L177">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L179">    this.nonce = value;</span>
+<span class="fc" id="L180">  }</span>
+
+  @Override
+  public Wei getBalance() {
+<span class="fc" id="L184">    return balance;</span>
+  }
+
+  @Override
+  public void setBalance(final Wei value) {
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L190">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L192">    this.balance = value;</span>
+<span class="fc" id="L193">  }</span>
+
+  @Override
+  public Bytes getCode() {
+    // Note that we set code for new account, so it's only null if account isn't.
+<span class="fc bfc" id="L198" title="All 2 branches covered.">    return updatedCode == null ? oldCode : updatedCode;</span>
+  }
+
+  @Override
+  public Hash getCodeHash() {
+<span class="fc bfc" id="L203" title="All 2 branches covered.">    if (updatedCode == null) {</span>
+      // Note that we set code for new account, so it's only null if account isn't.
+<span class="fc" id="L205">      return oldCodeHash;</span>
+    } else {
+      // Cache the hash of updated code to avoid DOS attacks which repeatedly request hash
+      // of updated code and cause us to regenerate it.
+<span class="fc bfc" id="L209" title="All 2 branches covered.">      if (updatedCodeHash == null) {</span>
+<span class="fc" id="L210">        updatedCodeHash = Hash.hash(updatedCode);</span>
+      }
+<span class="fc" id="L212">      return updatedCodeHash;</span>
+    }
+  }
+
+  @Override
+  public boolean hasCode() {
+    // Note that we set code for new account, so it's only null if account isn't.
+<span class="pc bpc" id="L219" title="1 of 6 branches missed.">    return updatedCode == null ? !oldCode.isEmpty() : !updatedCode.isEmpty();</span>
+  }
+
+  @Override
+  public void setCode(final Bytes code) {
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L225">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L227">    this.updatedCode = code;</span>
+<span class="fc" id="L228">    this.updatedCodeHash = null;</span>
+<span class="fc" id="L229">  }</span>
+
+  /** Mark transaction boundary. */
+  void markTransactionBoundary() {
+<span class="fc" id="L233">    this.transactionBoundary = true;</span>
+<span class="fc" id="L234">  }</span>
+
+  @Override
+  public UInt256 getStorageValue(final UInt256 key) {
+<span class="fc" id="L238">    final UInt256 value = updatedStorage.get(key);</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">    if (value != null) {</span>
+<span class="fc" id="L240">      return value;</span>
+    }
+<span class="fc bfc" id="L242" title="All 2 branches covered.">    if (storageWasCleared) {</span>
+<span class="fc" id="L243">      return UInt256.ZERO;</span>
+    }
+
+    // We haven't updated the key-value yet, so either it's a new account, and it doesn't have the
+    // key, or we should query the underlying storage for its existing value (which might be 0).
+<span class="fc bfc" id="L248" title="All 2 branches covered.">    return account == null ? UInt256.ZERO : account.getStorageValue(key);</span>
+  }
+
+  @Override
+  public UInt256 getOriginalStorageValue(final UInt256 key) {
+<span class="fc bfc" id="L253" title="All 2 branches covered.">    if (transactionBoundary) {</span>
+<span class="fc" id="L254">      return getStorageValue(key);</span>
+<span class="fc bfc" id="L255" title="All 4 branches covered.">    } else if (storageWasCleared || account == null) {</span>
+<span class="fc" id="L256">      return UInt256.ZERO;</span>
+    } else {
+<span class="fc" id="L258">      return account.getOriginalStorageValue(key);</span>
+    }
+  }
+
+  @Override
+  public NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntriesFrom(
+      final Bytes32 startKeyHash, final int limit) {
+    final NavigableMap&lt;Bytes32, AccountStorageEntry&gt; entries;
+<span class="pc bpc" id="L266" title="1 of 2 branches missed.">    if (account != null) {</span>
+<span class="fc" id="L267">      entries = account.storageEntriesFrom(startKeyHash, limit);</span>
+    } else {
+<span class="nc" id="L269">      entries = new TreeMap&lt;&gt;();</span>
+    }
+<span class="fc" id="L271">    updatedStorage.entrySet().stream()</span>
+<span class="fc" id="L272">        .map(entry -&gt; AccountStorageEntry.forKeyAndValue(entry.getKey(), entry.getValue()))</span>
+<span class="pc bpc" id="L273" title="1 of 2 branches missed.">        .filter(entry -&gt; entry.getKeyHash().compareTo(startKeyHash) &gt;= 0)</span>
+<span class="fc" id="L274">        .forEach(entry -&gt; entries.put(entry.getKeyHash(), entry));</span>
+
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">    while (entries.size() &gt; limit) {</span>
+<span class="nc" id="L277">      entries.remove(entries.lastKey());</span>
+    }
+<span class="fc" id="L279">    return entries;</span>
+  }
+
+  @Override
+  public void setStorageValue(final UInt256 key, final UInt256 value) {
+<span class="pc bpc" id="L284" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L285">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L287">    updatedStorage.put(key, value);</span>
+<span class="fc" id="L288">  }</span>
+
+  @Override
+  public void clearStorage() {
+<span class="pc bpc" id="L292" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L293">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L295">    storageWasCleared = true;</span>
+<span class="fc" id="L296">    updatedStorage.clear();</span>
+<span class="fc" id="L297">  }</span>
+
+  @Override
+  public void becomeImmutable() {
+<span class="nc" id="L301">    immutable = true;</span>
+<span class="nc" id="L302">  }</span>
+
+  /**
+   * Gets storage was cleared.
+   *
+   * @return boolean if storage was cleared
+   */
+  public boolean getStorageWasCleared() {
+<span class="fc" id="L310">    return storageWasCleared;</span>
+  }
+
+  /**
+   * Sets storage was cleared.
+   *
+   * @param storageWasCleared the storage was cleared
+   */
+  public void setStorageWasCleared(final boolean storageWasCleared) {
+<span class="fc" id="L319">    this.storageWasCleared = storageWasCleared;</span>
+<span class="fc" id="L320">  }</span>
+
+  @Override
+  public String toString() {
+<span class="nc bnc" id="L324" title="All 2 branches missed.">    String storage = updatedStorage.isEmpty() ? &quot;[not updated]&quot; : updatedStorage.toString();</span>
+<span class="nc bnc" id="L325" title="All 4 branches missed.">    if (updatedStorage.isEmpty() &amp;&amp; storageWasCleared) {</span>
+<span class="nc" id="L326">      storage = &quot;[cleared]&quot;;</span>
+    }
+<span class="nc" id="L328">    return String.format(</span>
+        &quot;%s -&gt; {nonce: %s, balance:%s, code:%s, storage:%s }&quot;,
+<span class="nc bnc" id="L330" title="All 2 branches missed.">        address, nonce, balance, updatedCode == null ? &quot;[not updated]&quot; : updatedCode, storage);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ForestWorldStateArchive.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.forest</a> &gt; <span class="el_source">ForestWorldStateArchive.java</span></div><h1>ForestWorldStateArchive.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.forest;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.proof.WorldStateProof;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.forest.worldview.ForestMutableWorldState;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStatePreimageStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class ForestWorldStateArchive implements WorldStateArchive {
+  private final ForestWorldStateKeyValueStorage worldStateKeyValueStorage;
+  private final WorldStatePreimageStorage preimageStorage;
+  private final WorldStateProofProvider worldStateProof;
+  private final EvmConfiguration evmConfiguration;
+
+<span class="fc" id="L46">  private static final Hash EMPTY_ROOT_HASH = Hash.wrap(MerkleTrie.EMPTY_TRIE_NODE_HASH);</span>
+
+  public ForestWorldStateArchive(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStatePreimageStorage preimageStorage,
+<span class="fc" id="L51">      final EvmConfiguration evmConfiguration) {</span>
+<span class="fc" id="L52">    this.worldStateKeyValueStorage =</span>
+<span class="fc" id="L53">        worldStateStorageCoordinator.getStrategy(ForestWorldStateKeyValueStorage.class);</span>
+<span class="fc" id="L54">    this.preimageStorage = preimageStorage;</span>
+<span class="fc" id="L55">    this.worldStateProof = new WorldStateProofProvider(worldStateStorageCoordinator);</span>
+<span class="fc" id="L56">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L57">  }</span>
+
+  @Override
+  public Optional&lt;WorldState&gt; get(final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L61">    return getMutable(rootHash, blockHash).map(state -&gt; state);</span>
+  }
+
+  @Override
+  public boolean isWorldStateAvailable(final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L66">    return worldStateKeyValueStorage.isWorldStateAvailable(rootHash);</span>
+  }
+
+  @Override
+  public Optional&lt;MutableWorldState&gt; getMutable(
+      final BlockHeader blockHeader, final boolean isPersistingState) {
+<span class="fc" id="L72">    return getMutable(blockHeader.getStateRoot(), blockHeader.getHash());</span>
+  }
+
+  @Override
+  public Optional&lt;MutableWorldState&gt; getMutable(final Hash rootHash, final Hash blockHash) {
+<span class="fc bfc" id="L77" title="All 2 branches covered.">    if (!worldStateKeyValueStorage.isWorldStateAvailable(rootHash)) {</span>
+<span class="fc" id="L78">      return Optional.empty();</span>
+    }
+<span class="fc" id="L80">    return Optional.of(</span>
+        new ForestMutableWorldState(
+            rootHash, worldStateKeyValueStorage, preimageStorage, evmConfiguration));
+  }
+
+  @Override
+  public MutableWorldState getMutable() {
+<span class="fc" id="L87">    return getMutable(EMPTY_ROOT_HASH, null).get();</span>
+  }
+
+  @Override
+  public void resetArchiveStateTo(final BlockHeader blockHeader) {
+    // ignore for forest
+<span class="fc" id="L93">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getNodeData(final Hash hash) {
+    // query by location is not supported, only query by content
+<span class="fc" id="L98">    return worldStateKeyValueStorage.getNodeData(hash);</span>
+  }
+
+  public ForestWorldStateKeyValueStorage getWorldStateStorage() {
+<span class="fc" id="L102">    return worldStateKeyValueStorage;</span>
+  }
+
+  @Override
+  public &lt;U&gt; Optional&lt;U&gt; getAccountProof(
+      final BlockHeader blockHeader,
+      final Address accountAddress,
+      final List&lt;UInt256&gt; accountStorageKeys,
+      final Function&lt;Optional&lt;WorldStateProof&gt;, ? extends Optional&lt;U&gt;&gt; mapper) {
+<span class="fc" id="L111">    return mapper.apply(</span>
+<span class="fc" id="L112">        worldStateProof.getAccountProof(</span>
+<span class="fc" id="L113">            blockHeader.getStateRoot(), accountAddress, accountStorageKeys));</span>
+  }
+
+  @Override
+  public void close() {
+    // no op
+<span class="fc" id="L119">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

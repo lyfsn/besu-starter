@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PivotSelectorFromPeers.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">PivotSelectorFromPeers.java</span></div><h1>PivotSelectorFromPeers.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.WaitForPeersTask;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.TrailingPeerLimiter;
+import org.hyperledger.besu.ethereum.eth.sync.TrailingPeerRequirements;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PivotSelectorFromPeers implements PivotBlockSelector {
+
+<span class="fc" id="L36">  private static final Logger LOG = LoggerFactory.getLogger(PivotSelectorFromPeers.class);</span>
+
+  private final EthContext ethContext;
+  private final SynchronizerConfiguration syncConfig;
+  private final SyncState syncState;
+  private final MetricsSystem metricsSystem;
+
+  public PivotSelectorFromPeers(
+      final EthContext ethContext,
+      final SynchronizerConfiguration syncConfig,
+      final SyncState syncState,
+<span class="fc" id="L47">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L48">    this.ethContext = ethContext;</span>
+<span class="fc" id="L49">    this.syncConfig = syncConfig;</span>
+<span class="fc" id="L50">    this.syncState = syncState;</span>
+<span class="fc" id="L51">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L52">  }</span>
+
+  @Override
+  public Optional&lt;FastSyncState&gt; selectNewPivotBlock() {
+<span class="fc" id="L56">    return selectBestPeer().flatMap(this::fromBestPeer);</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; prepareRetry() {
+<span class="fc" id="L61">    final TrailingPeerLimiter trailingPeerLimiter =</span>
+        new TrailingPeerLimiter(
+<span class="fc" id="L63">            ethContext.getEthPeers(),</span>
+            () -&gt;
+<span class="fc" id="L65">                new TrailingPeerRequirements(</span>
+<span class="fc" id="L66">                    conservativelyEstimatedPivotBlock(), syncConfig.getMaxTrailingPeers()));</span>
+<span class="fc" id="L67">    trailingPeerLimiter.enforceTrailingPeerLimit();</span>
+
+<span class="fc" id="L69">    return waitForPeers(syncConfig.getFastSyncMinimumPeerCount());</span>
+  }
+
+  @Override
+  public long getBestChainHeight() {
+<span class="nc" id="L74">    return syncState.bestChainHeight();</span>
+  }
+
+  private Optional&lt;FastSyncState&gt; fromBestPeer(final EthPeer peer) {
+<span class="fc" id="L78">    final long pivotBlockNumber =</span>
+<span class="fc" id="L79">        peer.chainState().getEstimatedHeight() - syncConfig.getFastSyncPivotDistance();</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (pivotBlockNumber &lt;= BlockHeader.GENESIS_BLOCK_NUMBER) {</span>
+      // Peer's chain isn't long enough, return an empty value, so we can try again.
+<span class="fc" id="L82">      LOG.info(&quot;Waiting for peers with sufficient chain height&quot;);</span>
+<span class="fc" id="L83">      return Optional.empty();</span>
+    }
+<span class="fc" id="L85">    LOG.info(&quot;Selecting block number {} as fast sync pivot block.&quot;, pivotBlockNumber);</span>
+<span class="fc" id="L86">    return Optional.of(new FastSyncState(pivotBlockNumber));</span>
+  }
+
+  private Optional&lt;EthPeer&gt; selectBestPeer() {
+<span class="fc" id="L90">    return ethContext</span>
+<span class="fc" id="L91">        .getEthPeers()</span>
+<span class="fc" id="L92">        .bestPeerMatchingCriteria(this::canPeerDeterminePivotBlock)</span>
+        // Only select a pivot block number when we have a minimum number of height estimates
+<span class="fc" id="L94">        .filter(unused -&gt; enoughFastSyncPeersArePresent());</span>
+  }
+
+  private boolean enoughFastSyncPeersArePresent() {
+<span class="fc" id="L98">    final long peerCount = countPeersThatCanDeterminePivotBlock();</span>
+<span class="fc" id="L99">    final int minPeerCount = syncConfig.getFastSyncMinimumPeerCount();</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    if (peerCount &lt; minPeerCount) {</span>
+<span class="fc" id="L101">      LOG.info(</span>
+          &quot;Waiting for valid peers with chain height information.  {} / {} required peers currently available.&quot;,
+<span class="fc" id="L103">          peerCount,</span>
+<span class="fc" id="L104">          minPeerCount);</span>
+<span class="fc" id="L105">      return false;</span>
+    }
+<span class="fc" id="L107">    return true;</span>
+  }
+
+  private long countPeersThatCanDeterminePivotBlock() {
+<span class="fc" id="L111">    return ethContext</span>
+<span class="fc" id="L112">        .getEthPeers()</span>
+<span class="fc" id="L113">        .streamAvailablePeers()</span>
+<span class="fc" id="L114">        .filter(this::canPeerDeterminePivotBlock)</span>
+<span class="fc" id="L115">        .count();</span>
+  }
+
+  private boolean canPeerDeterminePivotBlock(final EthPeer peer) {
+<span class="fc" id="L119">    LOG.debug(</span>
+        &quot;peer {} hasEstimatedHeight {} isFullyValidated? {}&quot;,
+<span class="fc" id="L121">        peer.getLoggableId(),</span>
+<span class="fc" id="L122">        peer.chainState().hasEstimatedHeight(),</span>
+<span class="fc" id="L123">        peer.isFullyValidated());</span>
+<span class="fc bfc" id="L124" title="All 4 branches covered.">    return peer.chainState().hasEstimatedHeight() &amp;&amp; peer.isFullyValidated();</span>
+  }
+
+  private long conservativelyEstimatedPivotBlock() {
+<span class="fc" id="L128">    final long estimatedNextPivot =</span>
+<span class="fc" id="L129">        syncState.getLocalChainHeight() + syncConfig.getFastSyncPivotDistance();</span>
+<span class="fc" id="L130">    return Math.min(syncState.bestChainHeight(), estimatedNextPivot);</span>
+  }
+
+  private CompletableFuture&lt;Void&gt; waitForPeers(final int count) {
+<span class="fc" id="L134">    final WaitForPeersTask waitForPeersTask =</span>
+<span class="fc" id="L135">        WaitForPeersTask.create(ethContext, count, metricsSystem);</span>
+<span class="fc" id="L136">    return waitForPeersTask.run();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

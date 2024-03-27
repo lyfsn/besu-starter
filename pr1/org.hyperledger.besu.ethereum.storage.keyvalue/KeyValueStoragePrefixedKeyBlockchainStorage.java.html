@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyValueStoragePrefixedKeyBlockchainStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.storage.keyvalue</a> &gt; <span class="el_source">KeyValueStoragePrefixedKeyBlockchainStorage.java</span></div><h1>KeyValueStoragePrefixedKeyBlockchainStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.storage.keyvalue;
+
+import static org.hyperledger.besu.ethereum.chain.VariablesStorage.Keys.CHAIN_HEAD_HASH;
+import static org.hyperledger.besu.ethereum.chain.VariablesStorage.Keys.FINALIZED_BLOCK_HASH;
+import static org.hyperledger.besu.ethereum.chain.VariablesStorage.Keys.FORK_HEADS;
+import static org.hyperledger.besu.ethereum.chain.VariablesStorage.Keys.SAFE_BLOCK_HASH;
+import static org.hyperledger.besu.ethereum.chain.VariablesStorage.Keys.SEQ_NO_STORE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.BlockchainStorage;
+import org.hyperledger.besu.ethereum.chain.TransactionLocation;
+import org.hyperledger.besu.ethereum.chain.VariablesStorage;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class KeyValueStoragePrefixedKeyBlockchainStorage implements BlockchainStorage {
+<span class="fc" id="L47">  private static final Logger LOG =</span>
+<span class="fc" id="L48">      LoggerFactory.getLogger(KeyValueStoragePrefixedKeyBlockchainStorage.class);</span>
+
+  @Deprecated(since = &quot;23.4.2&quot;, forRemoval = true)
+<span class="fc" id="L51">  private static final Bytes VARIABLES_PREFIX = Bytes.of(1);</span>
+
+<span class="fc" id="L53">  private static final Bytes BLOCK_HEADER_PREFIX = Bytes.of(2);</span>
+<span class="fc" id="L54">  private static final Bytes BLOCK_BODY_PREFIX = Bytes.of(3);</span>
+<span class="fc" id="L55">  private static final Bytes TRANSACTION_RECEIPTS_PREFIX = Bytes.of(4);</span>
+<span class="fc" id="L56">  private static final Bytes BLOCK_HASH_PREFIX = Bytes.of(5);</span>
+<span class="fc" id="L57">  private static final Bytes TOTAL_DIFFICULTY_PREFIX = Bytes.of(6);</span>
+<span class="fc" id="L58">  private static final Bytes TRANSACTION_LOCATION_PREFIX = Bytes.of(7);</span>
+  final KeyValueStorage blockchainStorage;
+  final VariablesStorage variablesStorage;
+  final BlockHeaderFunctions blockHeaderFunctions;
+
+  public KeyValueStoragePrefixedKeyBlockchainStorage(
+      final KeyValueStorage blockchainStorage,
+      final VariablesStorage variablesStorage,
+<span class="fc" id="L66">      final BlockHeaderFunctions blockHeaderFunctions) {</span>
+<span class="fc" id="L67">    this.blockchainStorage = blockchainStorage;</span>
+<span class="fc" id="L68">    this.variablesStorage = variablesStorage;</span>
+<span class="fc" id="L69">    this.blockHeaderFunctions = blockHeaderFunctions;</span>
+<span class="fc" id="L70">    migrateVariables();</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public Optional&lt;Hash&gt; getChainHead() {
+<span class="fc" id="L75">    return variablesStorage.getChainHead();</span>
+  }
+
+  @Override
+  public Collection&lt;Hash&gt; getForkHeads() {
+<span class="fc" id="L80">    return variablesStorage.getForkHeads();</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getFinalized() {
+<span class="fc" id="L85">    return variablesStorage.getFinalized();</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getSafeBlock() {
+<span class="fc" id="L90">    return variablesStorage.getSafeBlock();</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getBlockHeader(final Hash blockHash) {
+<span class="fc" id="L95">    return get(BLOCK_HEADER_PREFIX, blockHash)</span>
+<span class="fc" id="L96">        .map(b -&gt; BlockHeader.readFrom(RLP.input(b), blockHeaderFunctions));</span>
+  }
+
+  @Override
+  public Optional&lt;BlockBody&gt; getBlockBody(final Hash blockHash) {
+<span class="fc" id="L101">    return get(BLOCK_BODY_PREFIX, blockHash)</span>
+<span class="fc" id="L102">        .map(bytes -&gt; BlockBody.readWrappedBodyFrom(RLP.input(bytes), blockHeaderFunctions));</span>
+  }
+
+  @Override
+  public Optional&lt;List&lt;TransactionReceipt&gt;&gt; getTransactionReceipts(final Hash blockHash) {
+<span class="fc" id="L107">    return get(TRANSACTION_RECEIPTS_PREFIX, blockHash).map(this::rlpDecodeTransactionReceipts);</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getBlockHash(final long blockNumber) {
+<span class="fc" id="L112">    return get(BLOCK_HASH_PREFIX, UInt256.valueOf(blockNumber)).map(this::bytesToHash);</span>
+  }
+
+  @Override
+  public Optional&lt;Difficulty&gt; getTotalDifficulty(final Hash blockHash) {
+<span class="fc" id="L117">    return get(TOTAL_DIFFICULTY_PREFIX, blockHash).map(b -&gt; Difficulty.wrap(Bytes32.wrap(b, 0)));</span>
+  }
+
+  @Override
+  public Optional&lt;TransactionLocation&gt; getTransactionLocation(final Hash transactionHash) {
+<span class="fc" id="L122">    return get(TRANSACTION_LOCATION_PREFIX, transactionHash)</span>
+<span class="fc" id="L123">        .map(bytes -&gt; TransactionLocation.readFrom(RLP.input(bytes)));</span>
+  }
+
+  @Override
+  public Updater updater() {
+<span class="fc" id="L128">    return new Updater(blockchainStorage.startTransaction(), variablesStorage.updater());</span>
+  }
+
+  private List&lt;TransactionReceipt&gt; rlpDecodeTransactionReceipts(final Bytes bytes) {
+<span class="fc" id="L132">    return RLP.input(bytes).readList(TransactionReceipt::readFrom);</span>
+  }
+
+  private Hash bytesToHash(final Bytes bytes) {
+<span class="fc" id="L136">    return Hash.wrap(Bytes32.wrap(bytes, 0));</span>
+  }
+
+  Optional&lt;Bytes&gt; get(final Bytes prefix, final Bytes key) {
+<span class="fc" id="L140">    return blockchainStorage.get(Bytes.concatenate(prefix, key).toArrayUnsafe()).map(Bytes::wrap);</span>
+  }
+
+  /**
+   * One time migration of variables from the blockchain storage to the dedicated variable storage.
+   * To avoid state inconsistency in case of a downgrade done without running the storage
+   * revert-variables subcommand it fails giving the possibility to retry the downgrade procedure.
+   */
+  private void migrateVariables() {
+<span class="fc" id="L149">    final var blockchainUpdater = updater();</span>
+<span class="fc" id="L150">    final var variablesUpdater = variablesStorage.updater();</span>
+
+<span class="fc" id="L152">    get(VARIABLES_PREFIX, CHAIN_HEAD_HASH.getBytes())</span>
+<span class="fc" id="L153">        .map(this::bytesToHash)</span>
+<span class="fc" id="L154">        .ifPresent(</span>
+            bch -&gt;
+<span class="fc" id="L156">                variablesStorage</span>
+<span class="fc" id="L157">                    .getChainHead()</span>
+<span class="fc" id="L158">                    .ifPresentOrElse(</span>
+                        vch -&gt; {
+<span class="pc bpc" id="L160" title="1 of 2 branches missed.">                          if (!vch.equals(bch)) {</span>
+<span class="nc" id="L161">                            logInconsistencyAndFail(CHAIN_HEAD_HASH, bch, vch);</span>
+                          }
+<span class="nc" id="L163">                        },</span>
+                        () -&gt; {
+<span class="fc" id="L165">                          variablesUpdater.setChainHead(bch);</span>
+<span class="fc" id="L166">                          LOG.info(&quot;Migrated key {} to variables storage&quot;, CHAIN_HEAD_HASH);</span>
+<span class="fc" id="L167">                        }));</span>
+
+<span class="fc" id="L169">    get(VARIABLES_PREFIX, FINALIZED_BLOCK_HASH.getBytes())</span>
+<span class="fc" id="L170">        .map(this::bytesToHash)</span>
+<span class="fc" id="L171">        .ifPresent(</span>
+            bfh -&gt; {
+<span class="fc" id="L173">              variablesStorage</span>
+<span class="fc" id="L174">                  .getFinalized()</span>
+<span class="fc" id="L175">                  .ifPresentOrElse(</span>
+                      vfh -&gt; {
+<span class="nc bnc" id="L177" title="All 2 branches missed.">                        if (!vfh.equals(bfh)) {</span>
+<span class="nc" id="L178">                          logInconsistencyAndFail(FINALIZED_BLOCK_HASH, bfh, vfh);</span>
+                        }
+<span class="nc" id="L180">                      },</span>
+                      () -&gt; {
+<span class="fc" id="L182">                        variablesUpdater.setFinalized(bfh);</span>
+<span class="fc" id="L183">                        LOG.info(&quot;Migrated key {} to variables storage&quot;, FINALIZED_BLOCK_HASH);</span>
+<span class="fc" id="L184">                      });</span>
+<span class="fc" id="L185">            });</span>
+
+<span class="fc" id="L187">    get(VARIABLES_PREFIX, SAFE_BLOCK_HASH.getBytes())</span>
+<span class="fc" id="L188">        .map(this::bytesToHash)</span>
+<span class="fc" id="L189">        .ifPresent(</span>
+            bsh -&gt; {
+<span class="fc" id="L191">              variablesStorage</span>
+<span class="fc" id="L192">                  .getSafeBlock()</span>
+<span class="fc" id="L193">                  .ifPresentOrElse(</span>
+                      vsh -&gt; {
+<span class="nc bnc" id="L195" title="All 2 branches missed.">                        if (!vsh.equals(bsh)) {</span>
+<span class="nc" id="L196">                          logInconsistencyAndFail(SAFE_BLOCK_HASH, bsh, vsh);</span>
+                        }
+<span class="nc" id="L198">                      },</span>
+                      () -&gt; {
+<span class="fc" id="L200">                        variablesUpdater.setSafeBlock(bsh);</span>
+<span class="fc" id="L201">                        LOG.info(&quot;Migrated key {} to variables storage&quot;, SAFE_BLOCK_HASH);</span>
+<span class="fc" id="L202">                      });</span>
+<span class="fc" id="L203">            });</span>
+
+<span class="fc" id="L205">    get(VARIABLES_PREFIX, FORK_HEADS.getBytes())</span>
+<span class="fc" id="L206">        .map(bytes -&gt; RLP.input(bytes).readList(in -&gt; this.bytesToHash(in.readBytes32())))</span>
+<span class="fc" id="L207">        .ifPresent(</span>
+            bfh -&gt; {
+<span class="fc" id="L209">              final var vfh = variablesStorage.getForkHeads();</span>
+<span class="pc bpc" id="L210" title="1 of 2 branches missed.">              if (vfh.isEmpty()) {</span>
+<span class="fc" id="L211">                variablesUpdater.setForkHeads(bfh);</span>
+<span class="fc" id="L212">                LOG.info(&quot;Migrated key {} to variables storage&quot;, FORK_HEADS);</span>
+<span class="nc bnc" id="L213" title="All 2 branches missed.">              } else if (!List.copyOf(vfh).equals(bfh)) {</span>
+<span class="nc" id="L214">                logInconsistencyAndFail(FORK_HEADS, bfh, vfh);</span>
+              }
+<span class="fc" id="L216">            });</span>
+
+<span class="fc" id="L218">    get(Bytes.EMPTY, SEQ_NO_STORE.getBytes())</span>
+<span class="fc" id="L219">        .ifPresent(</span>
+            bsns -&gt; {
+<span class="fc" id="L221">              variablesStorage</span>
+<span class="fc" id="L222">                  .getLocalEnrSeqno()</span>
+<span class="fc" id="L223">                  .ifPresentOrElse(</span>
+                      vsns -&gt; {
+<span class="nc bnc" id="L225" title="All 2 branches missed.">                        if (!vsns.equals(bsns)) {</span>
+<span class="nc" id="L226">                          logInconsistencyAndFail(SEQ_NO_STORE, bsns, vsns);</span>
+                        }
+<span class="nc" id="L228">                      },</span>
+                      () -&gt; {
+<span class="fc" id="L230">                        variablesUpdater.setLocalEnrSeqno(bsns);</span>
+<span class="fc" id="L231">                        LOG.info(&quot;Migrated key {} to variables storage&quot;, SEQ_NO_STORE);</span>
+<span class="fc" id="L232">                      });</span>
+<span class="fc" id="L233">            });</span>
+
+<span class="fc" id="L235">    blockchainUpdater.removeVariables();</span>
+
+<span class="fc" id="L237">    variablesUpdater.commit();</span>
+<span class="fc" id="L238">    blockchainUpdater.commit();</span>
+<span class="fc" id="L239">  }</span>
+
+  private static void logInconsistencyAndFail(
+      final VariablesStorage.Keys key, final Object bch, final Object vch) {
+<span class="fc" id="L243">    LOG.error(</span>
+        &quot;Inconsistency found when migrating {} to variables storage,&quot;
+            + &quot; probably this is due to a downgrade done without running the `storage revert-variables`&quot;
+            + &quot; subcommand first, see https://github.com/hyperledger/besu/pull/5471&quot;,
+        key);
+<span class="fc" id="L248">    throw new IllegalStateException(</span>
+        key + &quot; mismatch: blockchain storage value=&quot; + bch + &quot;, variables storage value=&quot; + vch);
+  }
+
+  public static class Updater implements BlockchainStorage.Updater {
+
+    private final KeyValueStorageTransaction blockchainTransaction;
+    private final VariablesStorage.Updater variablesUpdater;
+
+    Updater(
+        final KeyValueStorageTransaction blockchainTransaction,
+<span class="fc" id="L259">        final VariablesStorage.Updater variablesUpdater) {</span>
+<span class="fc" id="L260">      this.blockchainTransaction = blockchainTransaction;</span>
+<span class="fc" id="L261">      this.variablesUpdater = variablesUpdater;</span>
+<span class="fc" id="L262">    }</span>
+
+    @Override
+    public void putBlockHeader(final Hash blockHash, final BlockHeader blockHeader) {
+<span class="fc" id="L266">      set(BLOCK_HEADER_PREFIX, blockHash, RLP.encode(blockHeader::writeTo));</span>
+<span class="fc" id="L267">    }</span>
+
+    @Override
+    public void putBlockBody(final Hash blockHash, final BlockBody blockBody) {
+<span class="fc" id="L271">      set(BLOCK_BODY_PREFIX, blockHash, RLP.encode(blockBody::writeWrappedBodyTo));</span>
+<span class="fc" id="L272">    }</span>
+
+    @Override
+    public void putTransactionLocation(
+        final Hash transactionHash, final TransactionLocation transactionLocation) {
+<span class="fc" id="L277">      set(TRANSACTION_LOCATION_PREFIX, transactionHash, RLP.encode(transactionLocation::writeTo));</span>
+<span class="fc" id="L278">    }</span>
+
+    @Override
+    public void putTransactionReceipts(
+        final Hash blockHash, final List&lt;TransactionReceipt&gt; transactionReceipts) {
+<span class="fc" id="L283">      set(TRANSACTION_RECEIPTS_PREFIX, blockHash, rlpEncode(transactionReceipts));</span>
+<span class="fc" id="L284">    }</span>
+
+    @Override
+    public void putBlockHash(final long blockNumber, final Hash blockHash) {
+<span class="fc" id="L288">      set(BLOCK_HASH_PREFIX, UInt256.valueOf(blockNumber), blockHash);</span>
+<span class="fc" id="L289">    }</span>
+
+    @Override
+    public void putTotalDifficulty(final Hash blockHash, final Difficulty totalDifficulty) {
+<span class="fc" id="L293">      set(TOTAL_DIFFICULTY_PREFIX, blockHash, totalDifficulty);</span>
+<span class="fc" id="L294">    }</span>
+
+    @Override
+    public void setChainHead(final Hash blockHash) {
+<span class="fc" id="L298">      variablesUpdater.setChainHead(blockHash);</span>
+<span class="fc" id="L299">    }</span>
+
+    @Override
+    public void setForkHeads(final Collection&lt;Hash&gt; forkHeadHashes) {
+<span class="fc" id="L303">      variablesUpdater.setForkHeads(forkHeadHashes);</span>
+<span class="fc" id="L304">    }</span>
+
+    @Override
+    public void setFinalized(final Hash blockHash) {
+<span class="fc" id="L308">      variablesUpdater.setFinalized(blockHash);</span>
+<span class="fc" id="L309">    }</span>
+
+    @Override
+    public void setSafeBlock(final Hash blockHash) {
+<span class="fc" id="L313">      variablesUpdater.setSafeBlock(blockHash);</span>
+<span class="fc" id="L314">    }</span>
+
+    @Override
+    public void removeBlockHash(final long blockNumber) {
+<span class="fc" id="L318">      remove(BLOCK_HASH_PREFIX, UInt256.valueOf(blockNumber));</span>
+<span class="fc" id="L319">    }</span>
+
+    @Override
+    public void removeBlockHeader(final Hash blockHash) {
+<span class="fc" id="L323">      remove(BLOCK_HEADER_PREFIX, blockHash);</span>
+<span class="fc" id="L324">    }</span>
+
+    @Override
+    public void removeBlockBody(final Hash blockHash) {
+<span class="fc" id="L328">      remove(BLOCK_BODY_PREFIX, blockHash);</span>
+<span class="fc" id="L329">    }</span>
+
+    @Override
+    public void removeTransactionReceipts(final Hash blockHash) {
+<span class="fc" id="L333">      remove(TRANSACTION_RECEIPTS_PREFIX, blockHash);</span>
+<span class="fc" id="L334">    }</span>
+
+    @Override
+    public void removeTransactionLocation(final Hash transactionHash) {
+<span class="fc" id="L338">      remove(TRANSACTION_LOCATION_PREFIX, transactionHash);</span>
+<span class="fc" id="L339">    }</span>
+
+    @Override
+    public void removeTotalDifficulty(final Hash blockHash) {
+<span class="fc" id="L343">      remove(TOTAL_DIFFICULTY_PREFIX, blockHash);</span>
+<span class="fc" id="L344">    }</span>
+
+    @Override
+    public void commit() {
+<span class="fc" id="L348">      blockchainTransaction.commit();</span>
+<span class="fc" id="L349">      variablesUpdater.commit();</span>
+<span class="fc" id="L350">    }</span>
+
+    @Override
+    public void rollback() {
+<span class="nc" id="L354">      variablesUpdater.rollback();</span>
+<span class="nc" id="L355">      blockchainTransaction.rollback();</span>
+<span class="nc" id="L356">    }</span>
+
+    void set(final Bytes prefix, final Bytes key, final Bytes value) {
+<span class="fc" id="L359">      blockchainTransaction.put(</span>
+<span class="fc" id="L360">          Bytes.concatenate(prefix, key).toArrayUnsafe(), value.toArrayUnsafe());</span>
+<span class="fc" id="L361">    }</span>
+
+    private void remove(final Bytes prefix, final Bytes key) {
+<span class="fc" id="L364">      blockchainTransaction.remove(Bytes.concatenate(prefix, key).toArrayUnsafe());</span>
+<span class="fc" id="L365">    }</span>
+
+    private Bytes rlpEncode(final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc" id="L368">      return RLP.encode(o -&gt; o.writeList(receipts, TransactionReceipt::writeToWithRevertReason));</span>
+    }
+
+    private void removeVariables() {
+<span class="fc" id="L372">      remove(VARIABLES_PREFIX, CHAIN_HEAD_HASH.getBytes());</span>
+<span class="fc" id="L373">      remove(VARIABLES_PREFIX, FINALIZED_BLOCK_HASH.getBytes());</span>
+<span class="fc" id="L374">      remove(VARIABLES_PREFIX, SAFE_BLOCK_HASH.getBytes());</span>
+<span class="fc" id="L375">      remove(VARIABLES_PREFIX, FORK_HEADS.getBytes());</span>
+<span class="fc" id="L376">      remove(Bytes.EMPTY, SEQ_NO_STORE.getBytes());</span>
+<span class="fc" id="L377">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

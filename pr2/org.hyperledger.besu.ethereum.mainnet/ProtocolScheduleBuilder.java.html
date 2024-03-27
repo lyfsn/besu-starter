@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ProtocolScheduleBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">ProtocolScheduleBuilder.java</span></div><h1>ProtocolScheduleBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionValidator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+
+import java.math.BigInteger;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.TreeMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ProtocolScheduleBuilder {
+
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(ProtocolScheduleBuilder.class);</span>
+  private final GenesisConfigOptions config;
+  private final Optional&lt;BigInteger&gt; defaultChainId;
+  private final ProtocolSpecAdapters protocolSpecAdapters;
+  private final PrivacyParameters privacyParameters;
+  private final boolean isRevertReasonEnabled;
+  private final EvmConfiguration evmConfiguration;
+  private final MiningParameters miningParameters;
+  private final BadBlockManager badBlockManager;
+
+  private DefaultProtocolSchedule protocolSchedule;
+
+  public ProtocolScheduleBuilder(
+      final GenesisConfigOptions config,
+      final BigInteger defaultChainId,
+      final ProtocolSpecAdapters protocolSpecAdapters,
+      final PrivacyParameters privacyParameters,
+      final boolean isRevertReasonEnabled,
+      final EvmConfiguration evmConfiguration,
+      final MiningParameters miningParameters,
+      final BadBlockManager badBlockManager) {
+<span class="fc" id="L58">    this(</span>
+        config,
+<span class="fc" id="L60">        Optional.of(defaultChainId),</span>
+        protocolSpecAdapters,
+        privacyParameters,
+        isRevertReasonEnabled,
+        evmConfiguration,
+        miningParameters,
+        badBlockManager);
+<span class="fc" id="L67">  }</span>
+
+  public ProtocolScheduleBuilder(
+      final GenesisConfigOptions config,
+      final ProtocolSpecAdapters protocolSpecAdapters,
+      final PrivacyParameters privacyParameters,
+      final boolean isRevertReasonEnabled,
+      final EvmConfiguration evmConfiguration,
+      final MiningParameters miningParameters,
+      final BadBlockManager badBlockManager) {
+<span class="fc" id="L77">    this(</span>
+        config,
+<span class="fc" id="L79">        Optional.empty(),</span>
+        protocolSpecAdapters,
+        privacyParameters,
+        isRevertReasonEnabled,
+        evmConfiguration,
+        miningParameters,
+        badBlockManager);
+<span class="fc" id="L86">  }</span>
+
+  private ProtocolScheduleBuilder(
+      final GenesisConfigOptions config,
+      final Optional&lt;BigInteger&gt; defaultChainId,
+      final ProtocolSpecAdapters protocolSpecAdapters,
+      final PrivacyParameters privacyParameters,
+      final boolean isRevertReasonEnabled,
+      final EvmConfiguration evmConfiguration,
+      final MiningParameters miningParameters,
+<span class="fc" id="L96">      final BadBlockManager badBlockManager) {</span>
+<span class="fc" id="L97">    this.config = config;</span>
+<span class="fc" id="L98">    this.protocolSpecAdapters = protocolSpecAdapters;</span>
+<span class="fc" id="L99">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L100">    this.isRevertReasonEnabled = isRevertReasonEnabled;</span>
+<span class="fc" id="L101">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L102">    this.defaultChainId = defaultChainId;</span>
+<span class="fc" id="L103">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L104">    this.badBlockManager = badBlockManager;</span>
+<span class="fc" id="L105">  }</span>
+
+  public ProtocolSchedule createProtocolSchedule() {
+<span class="fc" id="L108">    final Optional&lt;BigInteger&gt; chainId = config.getChainId().or(() -&gt; defaultChainId);</span>
+<span class="fc" id="L109">    protocolSchedule = new DefaultProtocolSchedule(chainId);</span>
+<span class="fc" id="L110">    initSchedule(protocolSchedule, chainId);</span>
+<span class="fc" id="L111">    return protocolSchedule;</span>
+  }
+
+  private void initSchedule(
+      final ProtocolSchedule protocolSchedule, final Optional&lt;BigInteger&gt; chainId) {
+
+<span class="fc" id="L117">    final MainnetProtocolSpecFactory specFactory =</span>
+        new MainnetProtocolSpecFactory(
+            chainId,
+<span class="fc" id="L120">            config.getContractSizeLimit(),</span>
+<span class="fc" id="L121">            config.getEvmStackSize(),</span>
+            isRevertReasonEnabled,
+<span class="fc" id="L123">            config.getEcip1017EraRounds(),</span>
+            evmConfiguration,
+            miningParameters);
+
+<span class="fc" id="L127">    validateForkOrdering();</span>
+
+<span class="fc" id="L129">    final TreeMap&lt;Long, BuilderMapEntry&gt; builders = buildMilestoneMap(specFactory);</span>
+
+    // At this stage, all milestones are flagged with correct modifier, but ProtocolSpecs must be
+    // inserted _AT_ the modifier block entry.
+<span class="pc bpc" id="L133" title="1 of 2 branches missed.">    if (!builders.isEmpty()) {</span>
+<span class="fc" id="L134">      protocolSpecAdapters.stream()</span>
+<span class="fc" id="L135">          .forEach(</span>
+              entry -&gt; {
+<span class="fc" id="L137">                final long modifierBlock = entry.getKey();</span>
+<span class="fc" id="L138">                final BuilderMapEntry parent =</span>
+<span class="fc" id="L139">                    Optional.ofNullable(builders.floorEntry(modifierBlock))</span>
+<span class="fc" id="L140">                        .orElse(builders.firstEntry())</span>
+<span class="fc" id="L141">                        .getValue();</span>
+<span class="fc" id="L142">                builders.put(</span>
+<span class="fc" id="L143">                    modifierBlock,</span>
+                    new BuilderMapEntry(
+                        parent.milestoneType,
+                        modifierBlock,
+<span class="fc" id="L147">                        parent.getBuilder(),</span>
+<span class="fc" id="L148">                        entry.getValue()));</span>
+<span class="fc" id="L149">              });</span>
+    }
+
+    // Create the ProtocolSchedule, such that the Dao/fork milestones can be inserted
+<span class="fc" id="L153">    builders</span>
+<span class="fc" id="L154">        .values()</span>
+<span class="fc" id="L155">        .forEach(</span>
+            e -&gt;
+<span class="fc" id="L157">                addProtocolSpec(</span>
+                    protocolSchedule,
+                    e.milestoneType,
+<span class="fc" id="L160">                    e.getBlockIdentifier(),</span>
+<span class="fc" id="L161">                    e.getBuilder(),</span>
+                    e.modifier));
+
+    // NOTE: It is assumed that Daofork blocks will not be used for private networks
+    // as too many risks exist around inserting a protocol-spec between daoBlock and daoBlock+10.
+<span class="fc" id="L166">    config</span>
+<span class="fc" id="L167">        .getDaoForkBlock()</span>
+<span class="fc" id="L168">        .ifPresent(</span>
+            daoBlockNumber -&gt; {
+<span class="fc" id="L170">              final BuilderMapEntry previousSpecBuilder =</span>
+<span class="fc" id="L171">                  builders.floorEntry(daoBlockNumber).getValue();</span>
+<span class="fc" id="L172">              final ProtocolSpec originalProtocolSpec =</span>
+<span class="fc" id="L173">                  getProtocolSpec(</span>
+                      protocolSchedule,
+<span class="fc" id="L175">                      previousSpecBuilder.getBuilder(),</span>
+<span class="fc" id="L176">                      previousSpecBuilder.getModifier());</span>
+<span class="fc" id="L177">              addProtocolSpec(</span>
+                  protocolSchedule,
+                  BuilderMapEntry.MilestoneType.BLOCK_NUMBER,
+                  daoBlockNumber,
+<span class="fc" id="L181">                  specFactory.daoRecoveryInitDefinition(),</span>
+<span class="fc" id="L182">                  protocolSpecAdapters.getModifierForBlock(daoBlockNumber));</span>
+<span class="fc" id="L183">              addProtocolSpec(</span>
+                  protocolSchedule,
+                  BuilderMapEntry.MilestoneType.BLOCK_NUMBER,
+                  daoBlockNumber + 1L,
+<span class="fc" id="L187">                  specFactory.daoRecoveryTransitionDefinition(),</span>
+<span class="fc" id="L188">                  protocolSpecAdapters.getModifierForBlock(daoBlockNumber + 1L));</span>
+              // Return to the previous protocol spec after the dao fork has completed.
+<span class="fc" id="L190">              protocolSchedule.putBlockNumberMilestone(daoBlockNumber + 10, originalProtocolSpec);</span>
+<span class="fc" id="L191">            });</span>
+
+    // specs for classic network
+<span class="fc" id="L194">    config</span>
+<span class="fc" id="L195">        .getClassicForkBlock()</span>
+<span class="fc" id="L196">        .ifPresent(</span>
+            classicBlockNumber -&gt; {
+<span class="fc" id="L198">              final BuilderMapEntry previousSpecBuilder =</span>
+<span class="fc" id="L199">                  builders.floorEntry(classicBlockNumber).getValue();</span>
+<span class="fc" id="L200">              final ProtocolSpec originalProtocolSpec =</span>
+<span class="fc" id="L201">                  getProtocolSpec(</span>
+                      protocolSchedule,
+<span class="fc" id="L203">                      previousSpecBuilder.getBuilder(),</span>
+<span class="fc" id="L204">                      previousSpecBuilder.getModifier());</span>
+<span class="fc" id="L205">              addProtocolSpec(</span>
+                  protocolSchedule,
+                  BuilderMapEntry.MilestoneType.BLOCK_NUMBER,
+                  classicBlockNumber,
+<span class="fc" id="L209">                  ClassicProtocolSpecs.classicRecoveryInitDefinition(</span>
+<span class="fc" id="L210">                      config.getContractSizeLimit(), config.getEvmStackSize(), evmConfiguration),</span>
+<span class="fc" id="L211">                  Function.identity());</span>
+<span class="fc" id="L212">              protocolSchedule.putBlockNumberMilestone(</span>
+                  classicBlockNumber + 1, originalProtocolSpec);
+<span class="fc" id="L214">            });</span>
+
+<span class="fc" id="L216">    LOG.info(&quot;Protocol schedule created with milestones: {}&quot;, protocolSchedule.listMilestones());</span>
+<span class="fc" id="L217">  }</span>
+
+  private void validateForkOrdering() {
+<span class="fc bfc" id="L220" title="All 2 branches covered.">    if (config.getDaoForkBlock().isEmpty()) {</span>
+<span class="fc" id="L221">      validateClassicForkOrdering();</span>
+    } else {
+<span class="fc" id="L223">      validateEthereumForkOrdering();</span>
+    }
+<span class="fc" id="L225">  }</span>
+
+  private void validateEthereumForkOrdering() {
+<span class="fc" id="L228">    long lastForkBlock = 0;</span>
+<span class="fc" id="L229">    lastForkBlock = validateForkOrder(&quot;Homestead&quot;, config.getHomesteadBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L230">    lastForkBlock = validateForkOrder(&quot;DaoFork&quot;, config.getDaoForkBlock(), lastForkBlock);</span>
+<span class="fc" id="L231">    lastForkBlock =</span>
+<span class="fc" id="L232">        validateForkOrder(</span>
+<span class="fc" id="L233">            &quot;TangerineWhistle&quot;, config.getTangerineWhistleBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L234">    lastForkBlock =</span>
+<span class="fc" id="L235">        validateForkOrder(&quot;SpuriousDragon&quot;, config.getSpuriousDragonBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L236">    lastForkBlock = validateForkOrder(&quot;Byzantium&quot;, config.getByzantiumBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L237">    lastForkBlock =</span>
+<span class="fc" id="L238">        validateForkOrder(&quot;Constantinople&quot;, config.getConstantinopleBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L239">    lastForkBlock =</span>
+<span class="fc" id="L240">        validateForkOrder(&quot;Petersburg&quot;, config.getPetersburgBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L241">    lastForkBlock = validateForkOrder(&quot;Istanbul&quot;, config.getIstanbulBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L242">    lastForkBlock =</span>
+<span class="fc" id="L243">        validateForkOrder(&quot;MuirGlacier&quot;, config.getMuirGlacierBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L244">    lastForkBlock = validateForkOrder(&quot;Berlin&quot;, config.getBerlinBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L245">    lastForkBlock = validateForkOrder(&quot;London&quot;, config.getLondonBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L246">    lastForkBlock =</span>
+<span class="fc" id="L247">        validateForkOrder(&quot;ArrowGlacier&quot;, config.getArrowGlacierBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L248">    lastForkBlock =</span>
+<span class="fc" id="L249">        validateForkOrder(&quot;GrayGlacier&quot;, config.getGrayGlacierBlockNumber(), lastForkBlock);</span>
+    // Begin timestamp forks
+<span class="fc" id="L251">    lastForkBlock = validateForkOrder(&quot;Shanghai&quot;, config.getShanghaiTime(), lastForkBlock);</span>
+<span class="fc" id="L252">    lastForkBlock = validateForkOrder(&quot;Cancun&quot;, config.getCancunTime(), lastForkBlock);</span>
+<span class="fc" id="L253">    lastForkBlock = validateForkOrder(&quot;Prague&quot;, config.getPragueTime(), lastForkBlock);</span>
+<span class="fc" id="L254">    lastForkBlock = validateForkOrder(&quot;FutureEips&quot;, config.getFutureEipsTime(), lastForkBlock);</span>
+<span class="fc" id="L255">    lastForkBlock =</span>
+<span class="fc" id="L256">        validateForkOrder(&quot;ExperimentalEips&quot;, config.getExperimentalEipsTime(), lastForkBlock);</span>
+<span class="pc bpc" id="L257" title="1 of 2 branches missed.">    assert (lastForkBlock &gt;= 0);</span>
+<span class="fc" id="L258">  }</span>
+
+  private void validateClassicForkOrdering() {
+<span class="fc" id="L261">    long lastForkBlock = 0;</span>
+<span class="fc" id="L262">    lastForkBlock = validateForkOrder(&quot;Homestead&quot;, config.getHomesteadBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L263">    lastForkBlock =</span>
+<span class="fc" id="L264">        validateForkOrder(</span>
+<span class="fc" id="L265">            &quot;ClassicTangerineWhistle&quot;, config.getEcip1015BlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L266">    lastForkBlock = validateForkOrder(&quot;DieHard&quot;, config.getDieHardBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L267">    lastForkBlock = validateForkOrder(&quot;Gotham&quot;, config.getGothamBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L268">    lastForkBlock =</span>
+<span class="fc" id="L269">        validateForkOrder(</span>
+<span class="fc" id="L270">            &quot;DefuseDifficultyBomb&quot;, config.getDefuseDifficultyBombBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L271">    lastForkBlock = validateForkOrder(&quot;Atlantis&quot;, config.getAtlantisBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L272">    lastForkBlock = validateForkOrder(&quot;Agharta&quot;, config.getAghartaBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L273">    lastForkBlock = validateForkOrder(&quot;Phoenix&quot;, config.getPhoenixBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L274">    lastForkBlock = validateForkOrder(&quot;Thanos&quot;, config.getThanosBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L275">    lastForkBlock = validateForkOrder(&quot;Magneto&quot;, config.getMagnetoBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L276">    lastForkBlock = validateForkOrder(&quot;Mystique&quot;, config.getMystiqueBlockNumber(), lastForkBlock);</span>
+<span class="fc" id="L277">    lastForkBlock = validateForkOrder(&quot;Spiral&quot;, config.getSpiralBlockNumber(), lastForkBlock);</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">    assert (lastForkBlock &gt;= 0);</span>
+<span class="fc" id="L279">  }</span>
+
+  private long validateForkOrder(
+      final String forkName, final OptionalLong thisForkBlock, final long lastForkBlock) {
+<span class="fc" id="L283">    final long referenceForkBlock = thisForkBlock.orElse(lastForkBlock);</span>
+<span class="fc bfc" id="L284" title="All 2 branches covered.">    if (lastForkBlock &gt; referenceForkBlock) {</span>
+<span class="fc" id="L285">      throw new RuntimeException(</span>
+<span class="fc" id="L286">          String.format(</span>
+              &quot;Genesis Config Error: '%s' is scheduled for milestone %d but it must be on or after milestone %d.&quot;,
+<span class="fc" id="L288">              forkName, thisForkBlock.getAsLong(), lastForkBlock));</span>
+    }
+<span class="fc" id="L290">    return referenceForkBlock;</span>
+  }
+
+  private TreeMap&lt;Long, BuilderMapEntry&gt; buildMilestoneMap(
+      final MainnetProtocolSpecFactory specFactory) {
+<span class="fc" id="L295">    return createMilestones(specFactory)</span>
+<span class="fc" id="L296">        .flatMap(Optional::stream)</span>
+<span class="fc" id="L297">        .collect(</span>
+<span class="fc" id="L298">            Collectors.toMap(</span>
+                BuilderMapEntry::getBlockIdentifier,
+<span class="fc" id="L300">                b -&gt; b,</span>
+<span class="fc" id="L301">                (existing, replacement) -&gt; replacement,</span>
+                TreeMap::new));
+  }
+
+  private Stream&lt;Optional&lt;BuilderMapEntry&gt;&gt; createMilestones(
+      final MainnetProtocolSpecFactory specFactory) {
+<span class="fc" id="L307">    return Stream.of(</span>
+<span class="fc" id="L308">        blockNumberMilestone(OptionalLong.of(0), specFactory.frontierDefinition()),</span>
+<span class="fc" id="L309">        blockNumberMilestone(config.getHomesteadBlockNumber(), specFactory.homesteadDefinition()),</span>
+<span class="fc" id="L310">        blockNumberMilestone(</span>
+<span class="fc" id="L311">            config.getTangerineWhistleBlockNumber(), specFactory.tangerineWhistleDefinition()),</span>
+<span class="fc" id="L312">        blockNumberMilestone(</span>
+<span class="fc" id="L313">            config.getSpuriousDragonBlockNumber(), specFactory.spuriousDragonDefinition()),</span>
+<span class="fc" id="L314">        blockNumberMilestone(config.getByzantiumBlockNumber(), specFactory.byzantiumDefinition()),</span>
+<span class="fc" id="L315">        blockNumberMilestone(</span>
+<span class="fc" id="L316">            config.getConstantinopleBlockNumber(), specFactory.constantinopleDefinition()),</span>
+<span class="fc" id="L317">        blockNumberMilestone(config.getPetersburgBlockNumber(), specFactory.petersburgDefinition()),</span>
+<span class="fc" id="L318">        blockNumberMilestone(config.getIstanbulBlockNumber(), specFactory.istanbulDefinition()),</span>
+<span class="fc" id="L319">        blockNumberMilestone(</span>
+<span class="fc" id="L320">            config.getMuirGlacierBlockNumber(), specFactory.muirGlacierDefinition()),</span>
+<span class="fc" id="L321">        blockNumberMilestone(config.getBerlinBlockNumber(), specFactory.berlinDefinition()),</span>
+<span class="fc" id="L322">        blockNumberMilestone(config.getLondonBlockNumber(), specFactory.londonDefinition(config)),</span>
+<span class="fc" id="L323">        blockNumberMilestone(</span>
+<span class="fc" id="L324">            config.getArrowGlacierBlockNumber(), specFactory.arrowGlacierDefinition(config)),</span>
+<span class="fc" id="L325">        blockNumberMilestone(</span>
+<span class="fc" id="L326">            config.getGrayGlacierBlockNumber(), specFactory.grayGlacierDefinition(config)),</span>
+<span class="fc" id="L327">        blockNumberMilestone(</span>
+<span class="fc" id="L328">            config.getMergeNetSplitBlockNumber(), specFactory.parisDefinition(config)),</span>
+        // Timestamp Forks
+<span class="fc" id="L330">        timestampMilestone(config.getShanghaiTime(), specFactory.shanghaiDefinition(config)),</span>
+<span class="fc" id="L331">        timestampMilestone(config.getCancunTime(), specFactory.cancunDefinition(config)),</span>
+<span class="fc" id="L332">        timestampMilestone(config.getPragueTime(), specFactory.pragueDefinition(config)),</span>
+<span class="fc" id="L333">        timestampMilestone(config.getFutureEipsTime(), specFactory.futureEipsDefinition(config)),</span>
+<span class="fc" id="L334">        timestampMilestone(</span>
+<span class="fc" id="L335">            config.getExperimentalEipsTime(), specFactory.experimentalEipsDefinition(config)),</span>
+
+        // Classic Milestones
+<span class="fc" id="L338">        blockNumberMilestone(</span>
+<span class="fc" id="L339">            config.getEcip1015BlockNumber(), specFactory.tangerineWhistleDefinition()),</span>
+<span class="fc" id="L340">        blockNumberMilestone(config.getDieHardBlockNumber(), specFactory.dieHardDefinition()),</span>
+<span class="fc" id="L341">        blockNumberMilestone(config.getGothamBlockNumber(), specFactory.gothamDefinition()),</span>
+<span class="fc" id="L342">        blockNumberMilestone(</span>
+<span class="fc" id="L343">            config.getDefuseDifficultyBombBlockNumber(),</span>
+<span class="fc" id="L344">            specFactory.defuseDifficultyBombDefinition()),</span>
+<span class="fc" id="L345">        blockNumberMilestone(config.getAtlantisBlockNumber(), specFactory.atlantisDefinition()),</span>
+<span class="fc" id="L346">        blockNumberMilestone(config.getAghartaBlockNumber(), specFactory.aghartaDefinition()),</span>
+<span class="fc" id="L347">        blockNumberMilestone(config.getPhoenixBlockNumber(), specFactory.phoenixDefinition()),</span>
+<span class="fc" id="L348">        blockNumberMilestone(config.getThanosBlockNumber(), specFactory.thanosDefinition()),</span>
+<span class="fc" id="L349">        blockNumberMilestone(config.getMagnetoBlockNumber(), specFactory.magnetoDefinition()),</span>
+<span class="fc" id="L350">        blockNumberMilestone(config.getMystiqueBlockNumber(), specFactory.mystiqueDefinition()),</span>
+<span class="fc" id="L351">        blockNumberMilestone(config.getSpiralBlockNumber(), specFactory.spiralDefinition()));</span>
+  }
+
+  private Optional&lt;BuilderMapEntry&gt; timestampMilestone(
+      final OptionalLong blockIdentifier, final ProtocolSpecBuilder builder) {
+<span class="fc" id="L356">    return createMilestone(blockIdentifier, builder, BuilderMapEntry.MilestoneType.TIMESTAMP);</span>
+  }
+
+  private Optional&lt;BuilderMapEntry&gt; blockNumberMilestone(
+      final OptionalLong blockIdentifier, final ProtocolSpecBuilder builder) {
+<span class="fc" id="L361">    return createMilestone(blockIdentifier, builder, BuilderMapEntry.MilestoneType.BLOCK_NUMBER);</span>
+  }
+
+  private Optional&lt;BuilderMapEntry&gt; createMilestone(
+      final OptionalLong blockIdentifier,
+      final ProtocolSpecBuilder builder,
+      final BuilderMapEntry.MilestoneType milestoneType) {
+<span class="fc bfc" id="L368" title="All 2 branches covered.">    if (blockIdentifier.isEmpty()) {</span>
+<span class="fc" id="L369">      return Optional.empty();</span>
+    }
+<span class="fc" id="L371">    final long blockVal = blockIdentifier.getAsLong();</span>
+<span class="fc" id="L372">    return Optional.of(</span>
+        new BuilderMapEntry(
+<span class="fc" id="L374">            milestoneType, blockVal, builder, protocolSpecAdapters.getModifierForBlock(blockVal)));</span>
+  }
+
+  private ProtocolSpec getProtocolSpec(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolSpecBuilder definition,
+      final Function&lt;ProtocolSpecBuilder, ProtocolSpecBuilder&gt; modifier) {
+<span class="fc" id="L381">    definition</span>
+<span class="fc" id="L382">        .badBlocksManager(badBlockManager)</span>
+<span class="fc" id="L383">        .privacyParameters(privacyParameters)</span>
+<span class="fc" id="L384">        .privateTransactionValidatorBuilder(</span>
+<span class="fc" id="L385">            () -&gt; new PrivateTransactionValidator(protocolSchedule.getChainId()));</span>
+
+<span class="fc" id="L387">    return modifier.apply(definition).build(protocolSchedule);</span>
+  }
+
+  private void addProtocolSpec(
+      final ProtocolSchedule protocolSchedule,
+      final BuilderMapEntry.MilestoneType milestoneType,
+      final long blockNumberOrTimestamp,
+      final ProtocolSpecBuilder definition,
+      final Function&lt;ProtocolSpecBuilder, ProtocolSpecBuilder&gt; modifier) {
+
+<span class="pc bpc" id="L397" title="1 of 3 branches missed.">    switch (milestoneType) {</span>
+<span class="fc" id="L398">      case BLOCK_NUMBER -&gt; protocolSchedule.putBlockNumberMilestone(</span>
+<span class="fc" id="L399">          blockNumberOrTimestamp, getProtocolSpec(protocolSchedule, definition, modifier));</span>
+<span class="fc" id="L400">      case TIMESTAMP -&gt; protocolSchedule.putTimestampMilestone(</span>
+<span class="fc" id="L401">          blockNumberOrTimestamp, getProtocolSpec(protocolSchedule, definition, modifier));</span>
+<span class="nc" id="L402">      default -&gt; throw new IllegalStateException(</span>
+          &quot;Unexpected milestoneType: &quot;
+              + milestoneType
+              + &quot; for milestone: &quot;
+              + blockNumberOrTimestamp);
+    }
+<span class="fc" id="L408">  }</span>
+
+  private static class BuilderMapEntry {
+    private final MilestoneType milestoneType;
+    private final long blockIdentifier;
+    private final ProtocolSpecBuilder builder;
+    private final Function&lt;ProtocolSpecBuilder, ProtocolSpecBuilder&gt; modifier;
+
+    public BuilderMapEntry(
+        final MilestoneType milestoneType,
+        final long blockIdentifier,
+        final ProtocolSpecBuilder builder,
+<span class="fc" id="L420">        final Function&lt;ProtocolSpecBuilder, ProtocolSpecBuilder&gt; modifier) {</span>
+<span class="fc" id="L421">      this.milestoneType = milestoneType;</span>
+<span class="fc" id="L422">      this.blockIdentifier = blockIdentifier;</span>
+<span class="fc" id="L423">      this.builder = builder;</span>
+<span class="fc" id="L424">      this.modifier = modifier;</span>
+<span class="fc" id="L425">    }</span>
+
+    public long getBlockIdentifier() {
+<span class="fc" id="L428">      return blockIdentifier;</span>
+    }
+
+    public ProtocolSpecBuilder getBuilder() {
+<span class="fc" id="L432">      return builder;</span>
+    }
+
+    public Function&lt;ProtocolSpecBuilder, ProtocolSpecBuilder&gt; getModifier() {
+<span class="fc" id="L436">      return modifier;</span>
+    }
+
+<span class="fc" id="L439">    private enum MilestoneType {</span>
+<span class="fc" id="L440">      BLOCK_NUMBER,</span>
+<span class="fc" id="L441">      TIMESTAMP</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

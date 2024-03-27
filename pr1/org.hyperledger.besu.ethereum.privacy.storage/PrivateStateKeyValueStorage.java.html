@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateStateKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy.storage</a> &gt; <span class="el_source">PrivateStateKeyValueStorage.java</span></div><h1>PrivateStateKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy.storage;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionReceipt;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+
+import java.util.Arrays;
+import java.util.Optional;
+import java.util.function.Predicate;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class PrivateStateKeyValueStorage implements PrivateStateStorage {
+
+  public static final int SCHEMA_VERSION_1_0_0 = 1;
+  public static final int SCHEMA_VERSION_1_4_0 = 2;
+
+<span class="fc" id="L37">  private static final Bytes DB_VERSION_KEY = Bytes.of(&quot;DBVERSION&quot;.getBytes(UTF_8));</span>
+<span class="fc" id="L38">  private static final Bytes TX_RECEIPT_SUFFIX = Bytes.of(&quot;RECEIPT&quot;.getBytes(UTF_8));</span>
+<span class="fc" id="L39">  private static final Bytes METADATA_KEY_SUFFIX = Bytes.of(&quot;METADATA&quot;.getBytes(UTF_8));</span>
+<span class="fc" id="L40">  private static final Bytes PRIVACY_GROUP_HEAD_BLOCK_MAP_SUFFIX =</span>
+<span class="fc" id="L41">      Bytes.of(&quot;PGHEADMAP&quot;.getBytes(UTF_8));</span>
+<span class="fc" id="L42">  private static final Bytes LEGACY_STATUS_KEY_SUFFIX = Bytes.of(&quot;STATUS&quot;.getBytes(UTF_8));</span>
+<span class="fc" id="L43">  private static final Bytes ADD_DATA_KEY = Bytes.of(&quot;ADDKEY&quot;.getBytes(UTF_8));</span>
+
+  private final KeyValueStorage keyValueStorage;
+
+<span class="fc" id="L47">  public PrivateStateKeyValueStorage(final KeyValueStorage keyValueStorage) {</span>
+<span class="fc" id="L48">    this.keyValueStorage = keyValueStorage;</span>
+<span class="fc" id="L49">  }</span>
+
+  @Override
+  public Optional&lt;PrivateTransactionReceipt&gt; getTransactionReceipt(
+      final Bytes32 blockHash, final Bytes32 pmtHash) {
+<span class="nc" id="L54">    final Bytes blockHashTxHash = Bytes.concatenate(blockHash, pmtHash);</span>
+<span class="nc" id="L55">    return get(blockHashTxHash, TX_RECEIPT_SUFFIX)</span>
+<span class="nc" id="L56">        .map(b -&gt; PrivateTransactionReceipt.readFrom(new BytesValueRLPInput(b, false)));</span>
+  }
+
+  @Override
+  public Optional&lt;PrivateBlockMetadata&gt; getPrivateBlockMetadata(
+      final Bytes32 blockHash, final Bytes32 privacyGroupId) {
+<span class="fc" id="L62">    return get(Bytes.concatenate(blockHash, privacyGroupId), METADATA_KEY_SUFFIX)</span>
+<span class="fc" id="L63">        .map(this::rlpDecodePrivateBlockMetadata);</span>
+  }
+
+  @Override
+  public Optional&lt;PrivacyGroupHeadBlockMap&gt; getPrivacyGroupHeadBlockMap(final Bytes32 blockHash) {
+<span class="fc" id="L68">    return get(blockHash, PRIVACY_GROUP_HEAD_BLOCK_MAP_SUFFIX)</span>
+<span class="fc" id="L69">        .map(b -&gt; PrivacyGroupHeadBlockMap.readFrom(new BytesValueRLPInput(b, false)));</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes32&gt; getAddDataKey(final Bytes32 privacyGroupId) {
+<span class="nc" id="L74">    return get(privacyGroupId, ADD_DATA_KEY).map(Bytes32::wrap);</span>
+  }
+
+  @Override
+  public int getSchemaVersion() {
+<span class="fc" id="L79">    return get(Bytes.EMPTY, DB_VERSION_KEY).map(Bytes::toInt).orElse(SCHEMA_VERSION_1_0_0);</span>
+  }
+
+  @Override
+  public boolean isEmpty() {
+<span class="fc" id="L84">    return keyValueStorage</span>
+<span class="fc" id="L85">        .getAllKeysThat(</span>
+<span class="fc" id="L86">            containsSuffix(LEGACY_STATUS_KEY_SUFFIX)</span>
+<span class="fc" id="L87">                .or(containsSuffix(TX_RECEIPT_SUFFIX))</span>
+<span class="fc" id="L88">                .or(containsSuffix(METADATA_KEY_SUFFIX)))</span>
+<span class="fc" id="L89">        .isEmpty();</span>
+  }
+
+  private Predicate&lt;byte[]&gt; containsSuffix(final Bytes suffix) {
+<span class="fc" id="L93">    final byte[] suffixArray = suffix.toArrayUnsafe();</span>
+<span class="fc" id="L94">    return key -&gt;</span>
+<span class="nc bnc" id="L95" title="All 2 branches missed.">        key.length &gt; suffixArray.length</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">            &amp;&amp; Arrays.equals(</span>
+<span class="nc" id="L97">                Arrays.copyOfRange(key, key.length - suffixArray.length, key.length), suffixArray);</span>
+  }
+
+  private Optional&lt;Bytes&gt; get(final Bytes key, final Bytes keySuffix) {
+<span class="fc" id="L101">    return keyValueStorage.get(Bytes.concatenate(key, keySuffix).toArrayUnsafe()).map(Bytes::wrap);</span>
+  }
+
+  private PrivateBlockMetadata rlpDecodePrivateBlockMetadata(final Bytes bytes) {
+<span class="fc" id="L105">    return PrivateBlockMetadata.readFrom(RLP.input(bytes));</span>
+  }
+
+  @Override
+  public PrivateStateStorage.Updater updater() {
+<span class="fc" id="L110">    return new PrivateStateKeyValueStorage.Updater(keyValueStorage.startTransaction());</span>
+  }
+
+  public static class Updater implements PrivateStateStorage.Updater {
+
+    private final KeyValueStorageTransaction transaction;
+
+<span class="fc" id="L117">    private Updater(final KeyValueStorageTransaction transaction) {</span>
+<span class="fc" id="L118">      this.transaction = transaction;</span>
+<span class="fc" id="L119">    }</span>
+
+    @Override
+    public PrivateStateStorage.Updater putTransactionReceipt(
+        final Bytes32 blockHash,
+        final Bytes32 transactionHash,
+        final PrivateTransactionReceipt receipt) {
+<span class="fc" id="L126">      final Bytes blockHashTxHash = Bytes.concatenate(blockHash, transactionHash);</span>
+<span class="fc" id="L127">      set(blockHashTxHash, TX_RECEIPT_SUFFIX, RLP.encode(receipt::writeTo));</span>
+<span class="fc" id="L128">      return this;</span>
+    }
+
+    @Override
+    public PrivateStateStorage.Updater putPrivateBlockMetadata(
+        final Bytes32 blockHash,
+        final Bytes32 privacyGroupId,
+        final PrivateBlockMetadata metadata) {
+<span class="fc" id="L136">      set(</span>
+<span class="fc" id="L137">          Bytes.concatenate(blockHash, privacyGroupId),</span>
+          METADATA_KEY_SUFFIX,
+<span class="fc" id="L139">          RLP.encode(metadata::writeTo));</span>
+<span class="fc" id="L140">      return this;</span>
+    }
+
+    @Override
+    public PrivateStateStorage.Updater putPrivacyGroupHeadBlockMap(
+        final Bytes32 blockHash, final PrivacyGroupHeadBlockMap map) {
+<span class="fc" id="L146">      set(blockHash, PRIVACY_GROUP_HEAD_BLOCK_MAP_SUFFIX, RLP.encode(map::writeTo));</span>
+<span class="fc" id="L147">      return this;</span>
+    }
+
+    @Override
+    public PrivateStateStorage.Updater putDatabaseVersion(final int version) {
+<span class="fc" id="L152">      set(Bytes.EMPTY, DB_VERSION_KEY, Bytes.ofUnsignedInt(version));</span>
+<span class="fc" id="L153">      return this;</span>
+    }
+
+    @Override
+    public PrivateStateStorage.Updater putAddDataKey(
+        final Bytes32 privacyGroupId, final Bytes32 addDataKey) {
+<span class="fc" id="L159">      set(privacyGroupId, ADD_DATA_KEY, addDataKey);</span>
+<span class="fc" id="L160">      return this;</span>
+    }
+
+    @Override
+    public void commit() {
+<span class="fc" id="L165">      transaction.commit();</span>
+<span class="fc" id="L166">    }</span>
+
+    @Override
+    public void rollback() {
+<span class="nc" id="L170">      transaction.rollback();</span>
+<span class="nc" id="L171">    }</span>
+
+    private void set(final Bytes key, final Bytes keySuffix, final Bytes value) {
+<span class="fc" id="L174">      transaction.put(Bytes.concatenate(key, keySuffix).toArrayUnsafe(), value.toArrayUnsafe());</span>
+<span class="fc" id="L175">    }</span>
+
+    @Override
+    public void remove(final Bytes key, final Bytes keySuffix) {
+<span class="nc" id="L179">      transaction.remove(Bytes.concatenate(key, keySuffix).toArrayUnsafe());</span>
+<span class="nc" id="L180">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GetPooledTransactionsFromPeerTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">GetPooledTransactionsFromPeerTask.java</span></div><h1>GetPooledTransactionsFromPeerTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import static java.util.Collections.emptyList;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.PendingPeerRequest;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV65;
+import org.hyperledger.besu.ethereum.eth.messages.PooledTransactionsMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class GetPooledTransactionsFromPeerTask extends AbstractPeerRequestTask&lt;List&lt;Transaction&gt;&gt; {
+
+<span class="fc" id="L40">  private static final Logger LOG =</span>
+<span class="fc" id="L41">      LoggerFactory.getLogger(GetPooledTransactionsFromPeerTask.class);</span>
+
+  private final Set&lt;Hash&gt; hashes;
+
+  private GetPooledTransactionsFromPeerTask(
+      final EthContext ethContext, final List&lt;Hash&gt; hashes, final MetricsSystem metricsSystem) {
+<span class="fc" id="L47">    super(ethContext, EthPV65.GET_POOLED_TRANSACTIONS, metricsSystem);</span>
+<span class="fc" id="L48">    this.hashes = new HashSet&lt;&gt;(hashes);</span>
+<span class="fc" id="L49">  }</span>
+
+  public static GetPooledTransactionsFromPeerTask forHashes(
+      final EthContext ethContext, final List&lt;Hash&gt; hashes, final MetricsSystem metricsSystem) {
+<span class="fc" id="L53">    return new GetPooledTransactionsFromPeerTask(ethContext, hashes, metricsSystem);</span>
+  }
+
+  public Set&lt;Hash&gt; getTransactionHashes() {
+<span class="fc" id="L57">    return hashes;</span>
+  }
+
+  @Override
+  protected PendingPeerRequest sendRequest() {
+<span class="fc" id="L62">    return sendRequestToPeer(</span>
+        peer -&gt; {
+<span class="fc" id="L64">          LOG.atTrace()</span>
+<span class="fc" id="L65">              .setMessage(&quot;Requesting {} transaction pool entries from peer {}...&quot;)</span>
+<span class="fc" id="L66">              .addArgument(hashes::size)</span>
+<span class="fc" id="L67">              .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L68">              .log();</span>
+<span class="fc" id="L69">          return peer.getPooledTransactions(new ArrayList&lt;&gt;(hashes));</span>
+        },
+        0);
+  }
+
+  @Override
+  protected Optional&lt;List&lt;Transaction&gt;&gt; processResponse(
+      final boolean streamClosed, final MessageData message, final EthPeer peer) {
+<span class="fc bfc" id="L77" title="All 2 branches covered.">    if (streamClosed) {</span>
+      // We don't record this as a useless response because it's impossible to know if a peer has
+      // the data we're requesting.
+<span class="fc" id="L80">      return Optional.of(emptyList());</span>
+    }
+<span class="fc" id="L82">    final PooledTransactionsMessage pooledTransactionsMessage =</span>
+<span class="fc" id="L83">        PooledTransactionsMessage.readFrom(message);</span>
+<span class="fc" id="L84">    final List&lt;Transaction&gt; tx = pooledTransactionsMessage.transactions();</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (tx.size() &gt; hashes.size()) {</span>
+      // Can't be the response to our request
+<span class="nc" id="L87">      return Optional.empty();</span>
+    }
+<span class="fc" id="L89">    return mapNodeDataByHash(tx);</span>
+  }
+
+  private Optional&lt;List&lt;Transaction&gt;&gt; mapNodeDataByHash(final List&lt;Transaction&gt; transactions) {
+<span class="fc" id="L93">    final List&lt;Transaction&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    for (final Transaction tx : transactions) {</span>
+<span class="fc" id="L95">      final Hash hash = tx.getHash();</span>
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">      if (!hashes.contains(hash)) {</span>
+<span class="nc" id="L97">        return Optional.empty();</span>
+      }
+<span class="fc" id="L99">      result.add(tx);</span>
+<span class="fc" id="L100">    }</span>
+<span class="fc" id="L101">    return Optional.of(result);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

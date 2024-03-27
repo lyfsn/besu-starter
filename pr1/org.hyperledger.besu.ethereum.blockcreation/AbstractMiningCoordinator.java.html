@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractMiningCoordinator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation</a> &gt; <span class="el_source">AbstractMiningCoordinator.java</span></div><h1>AbstractMiningCoordinator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.chain.BlockAddedObserver;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MinedBlockObserver;
+import org.hyperledger.besu.ethereum.chain.PoWObserver;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.tuweni.bytes.Bytes;
+
+public abstract class AbstractMiningCoordinator&lt;
+        M extends BlockMiner&lt;? extends AbstractBlockCreator&gt;&gt;
+    implements BlockAddedObserver, MiningCoordinator {
+
+<span class="fc" id="L41">  private enum State {</span>
+<span class="fc" id="L42">    IDLE,</span>
+<span class="fc" id="L43">    RUNNING,</span>
+<span class="fc" id="L44">    STOPPED</span>
+  }
+
+<span class="fc" id="L47">  private final Subscribers&lt;MinedBlockObserver&gt; minedBlockObservers = Subscribers.create();</span>
+<span class="fc" id="L48">  private final Subscribers&lt;PoWObserver&gt; ethHashObservers = Subscribers.create();</span>
+  private final AbstractMinerExecutor&lt;M&gt; executor;
+  private final SyncState syncState;
+<span class="fc" id="L51">  private final AtomicReference&lt;Optional&lt;Long&gt;&gt; remineOnNewHeadListenerId =</span>
+<span class="fc" id="L52">      new AtomicReference&lt;&gt;(Optional.empty());</span>
+  protected final Blockchain blockchain;
+
+<span class="fc" id="L55">  private State state = State.IDLE;</span>
+<span class="fc" id="L56">  private boolean isEnabled = false;</span>
+<span class="fc" id="L57">  protected Optional&lt;M&gt; currentRunningMiner = Optional.empty();</span>
+
+  protected AbstractMiningCoordinator(
+      final Blockchain blockchain,
+      final AbstractMinerExecutor&lt;M&gt; executor,
+<span class="fc" id="L62">      final SyncState syncState) {</span>
+<span class="fc" id="L63">    this.executor = executor;</span>
+<span class="fc" id="L64">    this.blockchain = blockchain;</span>
+<span class="fc" id="L65">    this.syncState = syncState;</span>
+<span class="fc" id="L66">    syncState.subscribeInSync(this::inSyncChanged);</span>
+<span class="fc" id="L67">  }</span>
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(
+      final BlockHeader parentHeader,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;BlockHeader&gt; ommers) {
+<span class="fc" id="L74">    final M miner = executor.createMiner(minedBlockObservers, ethHashObservers, parentHeader);</span>
+<span class="fc" id="L75">    return Optional.of(miner.createBlock(parentHeader, transactions, ommers).getBlock());</span>
+  }
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(final BlockHeader parentHeader, final long timestamp) {
+<span class="nc" id="L80">    final M miner = executor.createMiner(minedBlockObservers, ethHashObservers, parentHeader);</span>
+<span class="nc" id="L81">    return Optional.of(miner.createBlock(parentHeader, timestamp).getBlock());</span>
+  }
+
+  @Override
+  public void start() {
+<span class="fc" id="L86">    synchronized (this) {</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">      if (state != State.IDLE) {</span>
+<span class="fc" id="L88">        return;</span>
+      }
+<span class="fc" id="L90">      state = State.RUNNING;</span>
+<span class="fc" id="L91">      startMiningIfPossible();</span>
+<span class="fc" id="L92">    }</span>
+<span class="fc" id="L93">  }</span>
+
+  @Override
+  public void stop() {
+<span class="fc" id="L97">    synchronized (this) {</span>
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">      if (state == State.RUNNING) {</span>
+<span class="fc" id="L99">        haltCurrentMiningOperation();</span>
+      }
+<span class="fc" id="L101">      state = State.STOPPED;</span>
+<span class="fc" id="L102">      executor.shutDown();</span>
+<span class="fc" id="L103">    }</span>
+<span class="fc" id="L104">  }</span>
+
+  @Override
+  public void awaitStop() throws InterruptedException {
+<span class="fc" id="L108">    executor.awaitShutdown();</span>
+<span class="fc" id="L109">  }</span>
+
+  @Override
+  public boolean enable() {
+<span class="fc" id="L113">    synchronized (this) {</span>
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">      if (isEnabled) {</span>
+<span class="nc" id="L115">        return true;</span>
+      }
+<span class="fc" id="L117">      isEnabled = true;</span>
+<span class="fc" id="L118">      remineOnNewHeadListenerId.set(Optional.of(blockchain.observeBlockAdded(this)));</span>
+<span class="fc" id="L119">      startMiningIfPossible();</span>
+<span class="fc" id="L120">    }</span>
+<span class="fc" id="L121">    return true;</span>
+  }
+
+  @Override
+  public boolean disable() {
+<span class="fc" id="L126">    synchronized (this) {</span>
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">      if (!isEnabled) {</span>
+<span class="fc" id="L128">        return false;</span>
+      }
+<span class="nc" id="L130">      isEnabled = false;</span>
+<span class="nc" id="L131">      remineOnNewHeadListenerId.get().ifPresent(blockchain::removeObserver);</span>
+<span class="nc" id="L132">      haltCurrentMiningOperation();</span>
+<span class="nc" id="L133">    }</span>
+<span class="nc" id="L134">    return false;</span>
+  }
+
+  @Override
+  public boolean isMining() {
+<span class="fc" id="L139">    synchronized (this) {</span>
+<span class="fc" id="L140">      return currentRunningMiner.isPresent();</span>
+    }
+  }
+
+  private synchronized boolean startMiningIfPossible() {
+<span class="pc bpc" id="L145" title="1 of 8 branches missed.">    if ((state != State.RUNNING) || !isEnabled || !syncState.isInSync() || isMining()) {</span>
+<span class="fc" id="L146">      return false;</span>
+    }
+
+<span class="fc" id="L149">    startAsyncMiningOperation();</span>
+<span class="fc" id="L150">    return true;</span>
+  }
+
+  private void startAsyncMiningOperation() {
+<span class="fc" id="L154">    final BlockHeader parentHeader = blockchain.getChainHeadHeader();</span>
+<span class="fc" id="L155">    currentRunningMiner =</span>
+<span class="fc" id="L156">        executor.startAsyncMining(minedBlockObservers, ethHashObservers, parentHeader);</span>
+<span class="fc" id="L157">  }</span>
+
+  private synchronized boolean haltCurrentMiningOperation() {
+<span class="fc" id="L160">    final AtomicBoolean wasHalted = new AtomicBoolean(false);</span>
+<span class="fc" id="L161">    currentRunningMiner.ifPresent(</span>
+        (miner) -&gt; {
+<span class="fc" id="L163">          haltMiner(miner);</span>
+<span class="fc" id="L164">          wasHalted.set(true);</span>
+<span class="fc" id="L165">        });</span>
+<span class="fc" id="L166">    currentRunningMiner = Optional.empty();</span>
+<span class="fc" id="L167">    return wasHalted.get();</span>
+  }
+
+  protected void haltMiner(final M miner) {
+<span class="fc" id="L171">    miner.cancel();</span>
+<span class="fc" id="L172">  }</span>
+
+  @Override
+  public void onBlockAdded(final BlockAddedEvent event) {
+<span class="fc" id="L176">    synchronized (this) {</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">      if (event.isNewCanonicalHead()</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">          &amp;&amp; newChainHeadInvalidatesMiningOperation(event.getBlock().getHeader())) {</span>
+<span class="fc" id="L179">        haltCurrentMiningOperation();</span>
+<span class="fc" id="L180">        startMiningIfPossible();</span>
+      }
+<span class="fc" id="L182">    }</span>
+<span class="fc" id="L183">  }</span>
+
+  void inSyncChanged(final boolean inSync) {
+<span class="fc" id="L186">    synchronized (this) {</span>
+<span class="fc bfc" id="L187" title="All 4 branches covered.">      if (inSync &amp;&amp; startMiningIfPossible()) {</span>
+<span class="fc" id="L188">        onResumeMining();</span>
+      }
+<span class="fc bfc" id="L190" title="All 4 branches covered.">      if (!inSync &amp;&amp; haltCurrentMiningOperation()) {</span>
+<span class="fc" id="L191">        onPauseMining();</span>
+      }
+<span class="fc" id="L193">    }</span>
+<span class="fc" id="L194">  }</span>
+
+  public void addMinedBlockObserver(final MinedBlockObserver obs) {
+<span class="fc" id="L197">    minedBlockObservers.subscribe(obs);</span>
+<span class="fc" id="L198">  }</span>
+
+  @Override
+  public void addEthHashObserver(final PoWObserver obs) {
+<span class="nc" id="L202">    ethHashObservers.subscribe(obs);</span>
+<span class="nc" id="L203">  }</span>
+
+  @Override
+  public Wei getMinTransactionGasPrice() {
+<span class="nc" id="L207">    return executor.getMinTransactionGasPrice();</span>
+  }
+
+  @Override
+  public Wei getMinPriorityFeePerGas() {
+<span class="nc" id="L212">    return executor.getMinPriorityFeePerGas();</span>
+  }
+
+  @Override
+  public void setExtraData(final Bytes extraData) {
+<span class="fc" id="L217">    executor.setExtraData(extraData);</span>
+<span class="fc" id="L218">  }</span>
+
+  @Override
+  public Optional&lt;Address&gt; getCoinbase() {
+<span class="nc" id="L222">    return executor.getCoinbase();</span>
+  }
+
+  protected abstract boolean newChainHeadInvalidatesMiningOperation(
+      final BlockHeader newChainHeadHeader);
+
+  @Override
+  public void changeTargetGasLimit(final Long targetGasLimit) {
+<span class="nc" id="L230">    executor.changeTargetGasLimit(targetGasLimit);</span>
+<span class="nc" id="L231">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

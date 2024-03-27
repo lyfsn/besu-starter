@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NodeDataRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate</a> &gt; <span class="el_source">NodeDataRequest.java</span></div><h1>NodeDataRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloaderException;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.services.tasks.TasksPriorityProvider;
+
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class NodeDataRequest implements TasksPriorityProvider {
+<span class="fc" id="L36">  private static final Logger LOG = LoggerFactory.getLogger(NodeDataRequest.class);</span>
+  public static final int MAX_CHILDREN = 16;
+
+  private final RequestType requestType;
+  private final Hash hash;
+  private Bytes data;
+<span class="fc" id="L42">  private boolean requiresPersisting = true;</span>
+  private final Optional&lt;Bytes&gt; location;
+<span class="fc" id="L44">  private Optional&lt;NodeDataRequest&gt; possibleParent = Optional.empty();</span>
+<span class="fc" id="L45">  private final AtomicInteger pendingChildren = new AtomicInteger(0);</span>
+<span class="fc" id="L46">  private int depth = 0;</span>
+  private long priority;
+
+  protected NodeDataRequest(
+<span class="fc" id="L50">      final RequestType requestType, final Hash hash, final Optional&lt;Bytes&gt; location) {</span>
+<span class="fc" id="L51">    this.requestType = requestType;</span>
+<span class="fc" id="L52">    this.hash = hash;</span>
+<span class="fc" id="L53">    this.location = location;</span>
+<span class="fc" id="L54">  }</span>
+
+<span class="fc" id="L56">  protected NodeDataRequest(final RequestType requestType, final Hash hash) {</span>
+<span class="fc" id="L57">    this.requestType = requestType;</span>
+<span class="fc" id="L58">    this.hash = hash;</span>
+<span class="fc" id="L59">    this.location = Optional.empty();</span>
+<span class="fc" id="L60">  }</span>
+
+  public static AccountTrieNodeDataRequest createAccountDataRequest(
+      final Hash hash, final Optional&lt;Bytes&gt; location) {
+<span class="fc" id="L64">    return new AccountTrieNodeDataRequest(hash, location);</span>
+  }
+
+  public static StorageTrieNodeDataRequest createStorageDataRequest(
+      final Hash hash, final Optional&lt;Hash&gt; accountHash, final Optional&lt;Bytes&gt; location) {
+<span class="nc" id="L69">    return new StorageTrieNodeDataRequest(hash, accountHash, location);</span>
+  }
+
+  public static CodeNodeDataRequest createCodeRequest(
+      final Hash hash, final Optional&lt;Hash&gt; accountHash) {
+<span class="fc" id="L74">    return new CodeNodeDataRequest(hash, accountHash);</span>
+  }
+
+  public static Bytes serialize(final NodeDataRequest request) {
+<span class="nc" id="L78">    return RLP.encode(request::writeTo);</span>
+  }
+
+  public RequestType getRequestType() {
+<span class="nc" id="L82">    return requestType;</span>
+  }
+
+  public Hash getHash() {
+<span class="fc" id="L86">    return hash;</span>
+  }
+
+  public Bytes getData() {
+<span class="fc" id="L90">    return data;</span>
+  }
+
+  public NodeDataRequest setData(final Bytes data) {
+<span class="fc" id="L94">    this.data = data;</span>
+<span class="fc" id="L95">    return this;</span>
+  }
+
+  public Optional&lt;Bytes&gt; getLocation() {
+<span class="fc" id="L99">    return location;</span>
+  }
+
+  public NodeDataRequest setRequiresPersisting(final boolean requiresPersisting) {
+<span class="fc" id="L103">    this.requiresPersisting = requiresPersisting;</span>
+<span class="fc" id="L104">    return this;</span>
+  }
+
+  public final void persist(final WorldStateKeyValueStorage.Updater updater) {
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    if (pendingChildren.get() &gt; 0) {</span>
+<span class="fc" id="L109">      return; // we do nothing. Our last child will eventually persist us.</span>
+    }
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (requiresPersisting) {</span>
+<span class="fc" id="L112">      checkNotNull(getData(), &quot;Must set data before node can be persisted.&quot;);</span>
+<span class="fc" id="L113">      doPersist(updater);</span>
+    }
+<span class="fc" id="L115">    possibleParent.ifPresentOrElse(</span>
+<span class="fc" id="L116">        parent -&gt; parent.saveParent(updater), () -&gt; LOG.warn(&quot;Missing a parent for {}&quot;, this.hash));</span>
+<span class="fc" id="L117">  }</span>
+
+  private void saveParent(final WorldStateKeyValueStorage.Updater updater) {
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (pendingChildren.decrementAndGet() == 0) {</span>
+<span class="fc" id="L121">      persist(updater);</span>
+    }
+<span class="fc" id="L123">  }</span>
+
+  private int incrementChildren() {
+<span class="fc" id="L126">    return pendingChildren.incrementAndGet();</span>
+  }
+
+  protected abstract void writeTo(final RLPOutput out);
+
+  protected abstract void doPersist(final WorldStateKeyValueStorage.Updater updater);
+
+  public abstract Stream&lt;NodeDataRequest&gt; getChildRequests(
+      WorldStateStorageCoordinator worldStateStorageCoordinator);
+
+  public abstract Optional&lt;Bytes&gt; getExistingData(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator);
+
+  protected void registerParent(final NodeDataRequest parent) {
+<span class="fc bfc" id="L140" title="All 2 branches covered.">    if (this.possibleParent.isPresent()) {</span>
+<span class="fc" id="L141">      throw new WorldStateDownloaderException(&quot;Cannot set parent twice&quot;);</span>
+    }
+<span class="fc" id="L143">    this.possibleParent = Optional.of(parent);</span>
+<span class="fc" id="L144">    this.depth = parent.depth + 1;</span>
+<span class="fc" id="L145">    this.priority = parent.priority * MAX_CHILDREN + parent.incrementChildren();</span>
+<span class="fc" id="L146">  }</span>
+
+  @Override
+  public long getPriority() {
+<span class="fc" id="L150">    return priority;</span>
+  }
+
+  @Override
+  public int getDepth() {
+<span class="fc" id="L155">    return depth;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

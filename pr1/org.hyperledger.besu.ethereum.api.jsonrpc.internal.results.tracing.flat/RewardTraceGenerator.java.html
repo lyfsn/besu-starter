@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RewardTraceGenerator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat</a> &gt; <span class="el_source">RewardTraceGenerator.java</span></div><h1>RewardTraceGenerator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.Trace;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.MiningBeneficiaryCalculator;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
+
+<span class="nc" id="L29">public class RewardTraceGenerator {</span>
+
+  private static final String REWARD_LABEL = &quot;reward&quot;;
+  private static final String BLOCK_LABEL = &quot;block&quot;;
+  private static final String UNCLE_LABEL = &quot;uncle&quot;;
+
+  /**
+   * Generates a stream of reward {@link Trace} from the passed {@link Block} data.
+   *
+   * @param protocolSchedule the {@link ProtocolSchedule} to use
+   * @param block the current {@link Block} to use
+   * @return a stream of generated reward traces {@link Trace}
+   */
+  public static Stream&lt;Trace&gt; generateFromBlock(
+      final ProtocolSchedule protocolSchedule, final Block block) {
+
+<span class="fc" id="L45">    final List&lt;Trace&gt; flatTraces = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L47">    final BlockHeader blockHeader = block.getHeader();</span>
+<span class="fc" id="L48">    final List&lt;BlockHeader&gt; ommers = block.getBody().getOmmers();</span>
+<span class="fc" id="L49">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+<span class="fc" id="L50">    final Wei blockReward = protocolSpec.getBlockReward();</span>
+<span class="fc" id="L51">    final MiningBeneficiaryCalculator miningBeneficiaryCalculator =</span>
+<span class="fc" id="L52">        protocolSpec.getMiningBeneficiaryCalculator();</span>
+
+<span class="fc" id="L54">    final Wei coinbaseReward =</span>
+        protocolSpec
+<span class="fc" id="L56">            .getBlockProcessor()</span>
+<span class="fc" id="L57">            .getCoinbaseReward(blockReward, blockHeader.getNumber(), ommers.size());</span>
+
+    // add uncle reward traces
+<span class="fc" id="L60">    ommers.forEach(</span>
+        ommerBlockHeader -&gt; {
+<span class="fc" id="L62">          final Wei ommerReward =</span>
+              protocolSpec
+<span class="fc" id="L64">                  .getBlockProcessor()</span>
+<span class="fc" id="L65">                  .getOmmerReward(</span>
+<span class="fc" id="L66">                      blockReward, blockHeader.getNumber(), ommerBlockHeader.getNumber());</span>
+          final Action.Builder uncleActionBuilder =
+<span class="fc" id="L68">              Action.builder()</span>
+<span class="fc" id="L69">                  .author(</span>
+                      miningBeneficiaryCalculator
+<span class="fc" id="L71">                          .calculateBeneficiary(ommerBlockHeader)</span>
+<span class="fc" id="L72">                          .toHexString())</span>
+<span class="fc" id="L73">                  .rewardType(UNCLE_LABEL)</span>
+<span class="fc" id="L74">                  .value(ommerReward.toShortHexString());</span>
+<span class="fc" id="L75">          flatTraces.add(</span>
+<span class="fc" id="L76">              RewardTrace.builder()</span>
+<span class="fc" id="L77">                  .actionBuilder(uncleActionBuilder)</span>
+<span class="fc" id="L78">                  .blockHash(block.getHash().toHexString())</span>
+<span class="fc" id="L79">                  .blockNumber(blockHeader.getNumber())</span>
+<span class="fc" id="L80">                  .type(REWARD_LABEL)</span>
+<span class="fc" id="L81">                  .build());</span>
+<span class="fc" id="L82">        });</span>
+
+    // add block reward trace
+    final Action.Builder blockActionBuilder =
+<span class="fc" id="L86">        Action.builder()</span>
+<span class="fc" id="L87">            .author(miningBeneficiaryCalculator.calculateBeneficiary(blockHeader).toHexString())</span>
+<span class="fc" id="L88">            .rewardType(BLOCK_LABEL)</span>
+<span class="fc" id="L89">            .value(coinbaseReward.toShortHexString());</span>
+<span class="fc" id="L90">    flatTraces.add(</span>
+        0,
+<span class="fc" id="L92">        RewardTrace.builder()</span>
+<span class="fc" id="L93">            .actionBuilder(blockActionBuilder)</span>
+<span class="fc" id="L94">            .blockHash(block.getHash().toHexString())</span>
+<span class="fc" id="L95">            .blockNumber(blockHeader.getNumber())</span>
+<span class="fc" id="L96">            .type(REWARD_LABEL)</span>
+<span class="fc" id="L97">            .build());</span>
+
+<span class="fc" id="L99">    return flatTraces.stream();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

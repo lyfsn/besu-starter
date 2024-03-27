@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>UndoMap.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.collections.undo</a> &gt; <span class="el_source">UndoMap.java</span></div><h1>UndoMap.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.collections.undo;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import javax.annotation.Nonnull;
+
+/**
+ * A map that supports rolling back the map to a prior state.
+ *
+ * &lt;p&gt;To register a prior state you want to roll back to call `mark()`. Then use that value in a
+ * subsequent call to `undo(mark)`. Every mutation operation across all undoable collections
+ * increases the global mark, so a mark set in once collection is usable across all
+ * UndoableCollection instances.
+ *
+ * @param &lt;V&gt; The type of the collection.
+ */
+public class UndoMap&lt;K, V&gt; implements Map&lt;K, V&gt;, Undoable {
+
+<span class="pc" id="L39">  record UndoEntry&lt;K, V&gt;(K key, V value, long level) {</span>
+    UndoEntry(final K key, final V value) {
+<span class="fc" id="L41">      this(key, value, Undoable.incrementMarkStatic());</span>
+<span class="fc" id="L42">    }</span>
+  }
+
+  Map&lt;K, V&gt; delegate;
+  List&lt;UndoEntry&lt;K, V&gt;&gt; undoLog;
+
+  /**
+   * Create an UndoMap backed by another Map instance.
+   *
+   * @param delegate The Map instance to use for backing storage
+   */
+<span class="fc" id="L53">  public UndoMap(final Map&lt;K, V&gt; delegate) {</span>
+<span class="fc" id="L54">    this.delegate = delegate;</span>
+<span class="fc" id="L55">    undoLog = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L56">  }</span>
+
+  @Override
+  public void undo(final long mark) {
+<span class="fc" id="L60">    int pos = undoLog.size() - 1;</span>
+<span class="fc bfc" id="L61" title="All 4 branches covered.">    while (pos &gt;= 0 &amp;&amp; undoLog.get(pos).level &gt; mark) {</span>
+<span class="fc" id="L62">      final var entry = undoLog.get(pos);</span>
+<span class="fc" id="L63">      undoLog.remove(pos);</span>
+<span class="fc bfc" id="L64" title="All 2 branches covered.">      if (entry.value() == null) {</span>
+<span class="fc" id="L65">        delegate.remove(entry.key());</span>
+      } else {
+<span class="fc" id="L67">        delegate.put(entry.key(), entry.value());</span>
+      }
+<span class="fc" id="L69">      pos--;</span>
+<span class="fc" id="L70">    }</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public long lastUpdate() {
+<span class="nc bnc" id="L75" title="All 2 branches missed.">    return undoLog.isEmpty() ? 0L : undoLog.get(undoLog.size() - 1).level;</span>
+  }
+
+  /**
+   * Has the map been changed
+   *
+   * @return true if there are any undo entries in the log
+   */
+  public boolean updated() {
+<span class="nc bnc" id="L84" title="All 2 branches missed.">    return !undoLog.isEmpty();</span>
+  }
+
+  @Override
+  public int size() {
+<span class="fc" id="L89">    return delegate.size();</span>
+  }
+
+  @Override
+  public boolean isEmpty() {
+<span class="fc" id="L94">    return delegate.isEmpty();</span>
+  }
+
+  @Override
+  public boolean containsKey(final Object key) {
+<span class="fc" id="L99">    return delegate.containsKey(key);</span>
+  }
+
+  @Override
+  public boolean containsValue(final Object value) {
+<span class="fc" id="L104">    return delegate.containsValue(value);</span>
+  }
+
+  @Override
+  public V get(final Object key) {
+<span class="fc" id="L109">    return delegate.get(key);</span>
+  }
+
+  @Override
+  public V put(final @Nonnull K key, final @Nonnull V value) {
+<span class="fc" id="L114">    Objects.requireNonNull(value);</span>
+<span class="fc" id="L115">    final V oldValue = delegate.put(key, value);</span>
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">    if (!value.equals(oldValue)) {</span>
+<span class="fc" id="L117">      undoLog.add(new UndoEntry&lt;&gt;(key, oldValue));</span>
+    }
+<span class="fc" id="L119">    return oldValue;</span>
+  }
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  @Override
+  public V remove(final Object key) {
+<span class="fc" id="L125">    final V oldValue = delegate.remove(key);</span>
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">    if (oldValue != null) {</span>
+<span class="fc" id="L127">      undoLog.add(new UndoEntry&lt;&gt;((K) key, oldValue));</span>
+    }
+<span class="fc" id="L129">    return oldValue;</span>
+  }
+
+  @Override
+  public void putAll(@Nonnull final Map&lt;? extends K, ? extends V&gt; m) {
+<span class="fc" id="L134">    m.forEach(this::put);</span>
+<span class="fc" id="L135">  }</span>
+
+  @Override
+  public void clear() {
+<span class="fc" id="L139">    delegate.forEach((k, v) -&gt; undoLog.add(new UndoEntry&lt;&gt;(k, v)));</span>
+<span class="fc" id="L140">    delegate.clear();</span>
+<span class="fc" id="L141">  }</span>
+
+  @Nonnull
+  @Override
+  public Set&lt;K&gt; keySet() {
+<span class="fc" id="L146">    return Collections.unmodifiableSet(delegate.keySet());</span>
+  }
+
+  @Nonnull
+  @Override
+  public Collection&lt;V&gt; values() {
+<span class="fc" id="L152">    return Collections.unmodifiableCollection(delegate.values());</span>
+  }
+
+  @Nonnull
+  @Override
+  public Set&lt;Entry&lt;K, V&gt;&gt; entrySet() {
+<span class="fc" id="L158">    return Collections.unmodifiableSet(delegate.entrySet());</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="pc bpc" id="L163" title="2 of 4 branches missed.">    return o instanceof UndoMap &amp;&amp; delegate.equals(o);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L168">    return delegate.hashCode() ^ 0xde1e647e;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

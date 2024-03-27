@@ -1,0 +1,800 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionPool.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">TransactionPool.java</span></div><h1>TransactionPool.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import static org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason.CHAIN_HEAD_NOT_AVAILABLE;
+import static org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason.CHAIN_HEAD_WORLD_STATE_NOT_AVAILABLE;
+import static org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason.INTERNAL_ERROR;
+import static org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason.TRANSACTION_ALREADY_KNOWN;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.chain.BlockAddedObserver;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidator;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.fluent.SimpleAccount;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.IntSummaryStatistics;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Maintains the set of pending transactions received from JSON-RPC or other nodes. Transactions are
+ * removed automatically when they are included in a block on the canonical chain and re-added if a
+ * re-org removes them from the canonical chain again.
+ *
+ * &lt;p&gt;This class is safe for use across multiple threads.
+ */
+public class TransactionPool implements BlockAddedObserver {
+<span class="fc" id="L89">  private static final Logger LOG = LoggerFactory.getLogger(TransactionPool.class);</span>
+<span class="fc" id="L90">  private static final Logger LOG_FOR_REPLAY = LoggerFactory.getLogger(&quot;LOG_FOR_REPLAY&quot;);</span>
+  private final Supplier&lt;PendingTransactions&gt; pendingTransactionsSupplier;
+  private volatile PendingTransactions pendingTransactions;
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final TransactionBroadcaster transactionBroadcaster;
+  private final TransactionPoolMetrics metrics;
+  private final TransactionPoolConfiguration configuration;
+<span class="fc" id="L99">  private final AtomicBoolean isPoolEnabled = new AtomicBoolean(false);</span>
+<span class="fc" id="L100">  private final PendingTransactionsListenersProxy pendingTransactionsListenersProxy =</span>
+      new PendingTransactionsListenersProxy();
+<span class="fc" id="L102">  private volatile OptionalLong subscribeConnectId = OptionalLong.empty();</span>
+<span class="fc" id="L103">  private final SaveRestoreManager saveRestoreManager = new SaveRestoreManager();</span>
+<span class="fc" id="L104">  private final Set&lt;Address&gt; localSenders = ConcurrentHashMap.newKeySet();</span>
+  private final EthScheduler.OrderedProcessor&lt;BlockAddedEvent&gt; blockAddedEventOrderedProcessor;
+
+  public TransactionPool(
+      final Supplier&lt;PendingTransactions&gt; pendingTransactionsSupplier,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionBroadcaster transactionBroadcaster,
+      final EthContext ethContext,
+      final TransactionPoolMetrics metrics,
+<span class="fc" id="L114">      final TransactionPoolConfiguration configuration) {</span>
+<span class="fc" id="L115">    this.pendingTransactionsSupplier = pendingTransactionsSupplier;</span>
+<span class="fc" id="L116">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L117">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L118">    this.ethContext = ethContext;</span>
+<span class="fc" id="L119">    this.transactionBroadcaster = transactionBroadcaster;</span>
+<span class="fc" id="L120">    this.metrics = metrics;</span>
+<span class="fc" id="L121">    this.configuration = configuration;</span>
+<span class="fc" id="L122">    this.blockAddedEventOrderedProcessor =</span>
+<span class="fc" id="L123">        ethContext.getScheduler().createOrderedProcessor(this::processBlockAddedEvent);</span>
+<span class="fc" id="L124">    initLogForReplay();</span>
+<span class="fc" id="L125">  }</span>
+
+  private void initLogForReplay() {
+    // log the initial block header data
+<span class="fc" id="L129">    LOG_FOR_REPLAY</span>
+<span class="fc" id="L130">        .atTrace()</span>
+<span class="fc" id="L131">        .setMessage(&quot;{},{},{},{}&quot;)</span>
+<span class="pc" id="L132">        .addArgument(() -&gt; getChainHeadBlockHeader().map(BlockHeader::getNumber).orElse(0L))</span>
+<span class="fc" id="L133">        .addArgument(</span>
+            () -&gt;
+<span class="nc" id="L135">                getChainHeadBlockHeader()</span>
+<span class="nc" id="L136">                    .flatMap(BlockHeader::getBaseFee)</span>
+<span class="nc" id="L137">                    .map(Wei::getAsBigInteger)</span>
+<span class="nc" id="L138">                    .orElse(BigInteger.ZERO))</span>
+<span class="pc" id="L139">        .addArgument(() -&gt; getChainHeadBlockHeader().map(BlockHeader::getGasUsed).orElse(0L))</span>
+<span class="pc" id="L140">        .addArgument(() -&gt; getChainHeadBlockHeader().map(BlockHeader::getGasLimit).orElse(0L))</span>
+<span class="fc" id="L141">        .log();</span>
+    // log the priority senders
+<span class="fc" id="L143">    LOG_FOR_REPLAY</span>
+<span class="fc" id="L144">        .atTrace()</span>
+<span class="fc" id="L145">        .setMessage(&quot;{}&quot;)</span>
+<span class="fc" id="L146">        .addArgument(</span>
+            () -&gt;
+<span class="nc" id="L148">                configuration.getPrioritySenders().stream()</span>
+<span class="nc" id="L149">                    .map(Address::toHexString)</span>
+<span class="nc" id="L150">                    .collect(Collectors.joining(&quot;,&quot;)))</span>
+<span class="fc" id="L151">        .log();</span>
+<span class="fc" id="L152">  }</span>
+
+  @VisibleForTesting
+  void handleConnect(final EthPeer peer) {
+<span class="fc" id="L156">    transactionBroadcaster.relayTransactionPoolTo(</span>
+<span class="fc" id="L157">        peer, pendingTransactions.getPendingTransactions());</span>
+<span class="fc" id="L158">  }</span>
+
+  public ValidationResult&lt;TransactionInvalidReason&gt; addTransactionViaApi(
+      final Transaction transaction) {
+
+<span class="fc" id="L163">    final var result = addTransaction(transaction, true);</span>
+<span class="fc bfc" id="L164" title="All 2 branches covered.">    if (result.isValid()) {</span>
+<span class="fc" id="L165">      localSenders.add(transaction.getSender());</span>
+<span class="fc" id="L166">      transactionBroadcaster.onTransactionsAdded(List.of(transaction));</span>
+    }
+<span class="fc" id="L168">    return result;</span>
+  }
+
+  public Map&lt;Hash, ValidationResult&lt;TransactionInvalidReason&gt;&gt; addRemoteTransactions(
+      final Collection&lt;Transaction&gt; transactions) {
+<span class="fc" id="L173">    final long started = System.currentTimeMillis();</span>
+<span class="fc" id="L174">    final int initialCount = transactions.size();</span>
+<span class="fc" id="L175">    final List&lt;Transaction&gt; addedTransactions = new ArrayList&lt;&gt;(initialCount);</span>
+<span class="fc" id="L176">    LOG.trace(&quot;Adding {} remote transactions&quot;, initialCount);</span>
+
+<span class="fc" id="L178">    final var validationResults =</span>
+<span class="fc" id="L179">        sortedBySenderAndNonce(transactions)</span>
+<span class="fc" id="L180">            .collect(</span>
+<span class="fc" id="L181">                Collectors.toMap(</span>
+                    Transaction::getHash,
+                    transaction -&gt; {
+<span class="fc" id="L184">                      final var result = addTransaction(transaction, false);</span>
+<span class="fc bfc" id="L185" title="All 2 branches covered.">                      if (result.isValid()) {</span>
+<span class="fc" id="L186">                        addedTransactions.add(transaction);</span>
+                      }
+<span class="fc" id="L188">                      return result;</span>
+                    },
+<span class="fc" id="L190">                    (transaction1, transaction2) -&gt; transaction1));</span>
+
+<span class="fc" id="L192">    LOG_FOR_REPLAY</span>
+<span class="fc" id="L193">        .atTrace()</span>
+<span class="fc" id="L194">        .setMessage(&quot;S,{}&quot;)</span>
+<span class="pc" id="L195">        .addArgument(() -&gt; pendingTransactions.logStats())</span>
+<span class="fc" id="L196">        .log();</span>
+
+<span class="fc" id="L198">    LOG.atTrace()</span>
+<span class="fc" id="L199">        .setMessage(</span>
+            &quot;Added {} transactions to the pool in {}ms, {} not added, current pool stats {}&quot;)
+<span class="fc" id="L201">        .addArgument(addedTransactions::size)</span>
+<span class="pc" id="L202">        .addArgument(() -&gt; System.currentTimeMillis() - started)</span>
+<span class="pc" id="L203">        .addArgument(() -&gt; initialCount - addedTransactions.size())</span>
+<span class="fc" id="L204">        .addArgument(pendingTransactions::logStats)</span>
+<span class="fc" id="L205">        .log();</span>
+
+<span class="fc bfc" id="L207" title="All 2 branches covered.">    if (!addedTransactions.isEmpty()) {</span>
+<span class="fc" id="L208">      transactionBroadcaster.onTransactionsAdded(addedTransactions);</span>
+    }
+<span class="fc" id="L210">    return validationResults;</span>
+  }
+
+  private ValidationResult&lt;TransactionInvalidReason&gt; addTransaction(
+      final Transaction transaction, final boolean isLocal) {
+
+<span class="fc" id="L216">    final boolean hasPriority = isPriorityTransaction(transaction, isLocal);</span>
+
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    if (pendingTransactions.containsTransaction(transaction)) {</span>
+<span class="fc" id="L219">      LOG.atTrace()</span>
+<span class="fc" id="L220">          .setMessage(&quot;Discard already present transaction {}&quot;)</span>
+<span class="fc" id="L221">          .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L222">          .log();</span>
+      // We already have this transaction, don't even validate it.
+<span class="fc" id="L224">      metrics.incrementRejected(isLocal, hasPriority, TRANSACTION_ALREADY_KNOWN, &quot;txpool&quot;);</span>
+<span class="fc" id="L225">      return ValidationResult.invalid(TRANSACTION_ALREADY_KNOWN);</span>
+    }
+
+<span class="fc" id="L228">    final ValidationResultAndAccount validationResult =</span>
+<span class="fc" id="L229">        validateTransaction(transaction, isLocal, hasPriority);</span>
+
+<span class="fc bfc" id="L231" title="All 2 branches covered.">    if (validationResult.result.isValid()) {</span>
+<span class="fc" id="L232">      final TransactionAddedResult status =</span>
+<span class="fc" id="L233">          pendingTransactions.addTransaction(</span>
+<span class="fc" id="L234">              PendingTransaction.newPendingTransaction(transaction, isLocal, hasPriority),</span>
+              validationResult.maybeAccount);
+<span class="fc bfc" id="L236" title="All 2 branches covered.">      if (status.isSuccess()) {</span>
+<span class="fc" id="L237">        LOG.atTrace()</span>
+<span class="fc" id="L238">            .setMessage(&quot;Added {} transaction {}&quot;)</span>
+<span class="pc bnc" id="L239" title="All 2 branches missed.">            .addArgument(() -&gt; isLocal ? &quot;local&quot; : &quot;remote&quot;)</span>
+<span class="fc" id="L240">            .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L241">            .log();</span>
+      } else {
+<span class="fc" id="L243">        final var rejectReason =</span>
+            status
+<span class="fc" id="L245">                .maybeInvalidReason()</span>
+<span class="fc" id="L246">                .orElseGet(</span>
+                    () -&gt; {
+<span class="nc" id="L248">                      LOG.warn(&quot;Missing invalid reason for status {}&quot;, status);</span>
+<span class="nc" id="L249">                      return INTERNAL_ERROR;</span>
+                    });
+<span class="fc" id="L251">        LOG.atTrace()</span>
+<span class="fc" id="L252">            .setMessage(&quot;Transaction {} rejected reason {}&quot;)</span>
+<span class="fc" id="L253">            .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L254">            .addArgument(rejectReason)</span>
+<span class="fc" id="L255">            .log();</span>
+<span class="fc" id="L256">        metrics.incrementRejected(isLocal, hasPriority, rejectReason, &quot;txpool&quot;);</span>
+<span class="fc" id="L257">        return ValidationResult.invalid(rejectReason);</span>
+      }
+<span class="fc" id="L259">    } else {</span>
+<span class="fc" id="L260">      LOG.atTrace()</span>
+<span class="fc" id="L261">          .setMessage(&quot;Discard invalid transaction {}, reason {}, because {}&quot;)</span>
+<span class="fc" id="L262">          .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L263">          .addArgument(validationResult.result::getInvalidReason)</span>
+<span class="fc" id="L264">          .addArgument(validationResult.result::getErrorMessage)</span>
+<span class="fc" id="L265">          .log();</span>
+<span class="fc" id="L266">      metrics.incrementRejected(</span>
+<span class="fc" id="L267">          isLocal, hasPriority, validationResult.result.getInvalidReason(), &quot;txpool&quot;);</span>
+    }
+
+<span class="fc" id="L270">    return validationResult.result;</span>
+  }
+
+  private Optional&lt;Wei&gt; getMaxGasPrice(final Transaction transaction) {
+<span class="fc" id="L274">    return transaction.getGasPrice().map(Optional::of).orElse(transaction.getMaxFeePerGas());</span>
+  }
+
+  private boolean isMaxGasPriceBelowConfiguredMinGasPrice(final Transaction transaction) {
+<span class="fc" id="L278">    return getMaxGasPrice(transaction)</span>
+<span class="fc" id="L279">        .map(g -&gt; g.lessThan(configuration.getMinGasPrice()))</span>
+<span class="fc" id="L280">        .orElse(true);</span>
+  }
+
+  private Stream&lt;Transaction&gt; sortedBySenderAndNonce(final Collection&lt;Transaction&gt; transactions) {
+<span class="fc" id="L284">    return transactions.stream()</span>
+<span class="fc" id="L285">        .sorted(Comparator.comparing(Transaction::getSender).thenComparing(Transaction::getNonce));</span>
+  }
+
+  private boolean isPriorityTransaction(final Transaction transaction, final boolean isLocal) {
+<span class="fc bfc" id="L289" title="All 4 branches covered.">    if (isLocal &amp;&amp; !configuration.getNoLocalPriority()) {</span>
+      // unless no-local-priority option is specified, senders of local sent txs are prioritized
+<span class="fc" id="L291">      return true;</span>
+    }
+    // otherwise check if the sender belongs to the priority list
+<span class="fc" id="L294">    return configuration.getPrioritySenders().contains(transaction.getSender());</span>
+  }
+
+  public long subscribePendingTransactions(final PendingTransactionAddedListener listener) {
+<span class="fc" id="L298">    return pendingTransactionsListenersProxy.onAddedListeners.subscribe(listener);</span>
+  }
+
+  public void unsubscribePendingTransactions(final long id) {
+<span class="fc" id="L302">    pendingTransactionsListenersProxy.onAddedListeners.unsubscribe(id);</span>
+<span class="fc" id="L303">  }</span>
+
+  public long subscribeDroppedTransactions(final PendingTransactionDroppedListener listener) {
+<span class="fc" id="L306">    return pendingTransactionsListenersProxy.onDroppedListeners.subscribe(listener);</span>
+  }
+
+  public void unsubscribeDroppedTransactions(final long id) {
+<span class="fc" id="L310">    pendingTransactionsListenersProxy.onDroppedListeners.unsubscribe(id);</span>
+<span class="fc" id="L311">  }</span>
+
+  @Override
+  public void onBlockAdded(final BlockAddedEvent event) {
+<span class="fc bfc" id="L315" title="All 2 branches covered.">    if (isPoolEnabled.get()) {</span>
+<span class="fc bfc" id="L316" title="All 2 branches covered.">      if (event.getEventType().equals(BlockAddedEvent.EventType.HEAD_ADVANCED)</span>
+<span class="fc bfc" id="L317" title="All 2 branches covered.">          || event.getEventType().equals(BlockAddedEvent.EventType.CHAIN_REORG)) {</span>
+
+<span class="fc" id="L319">        blockAddedEventOrderedProcessor.submit(event);</span>
+      }
+    }
+<span class="fc" id="L322">  }</span>
+
+  private void processBlockAddedEvent(final BlockAddedEvent e) {
+<span class="fc" id="L325">    final long started = System.currentTimeMillis();</span>
+<span class="fc" id="L326">    pendingTransactions.manageBlockAdded(</span>
+<span class="fc" id="L327">        e.getBlock().getHeader(),</span>
+<span class="fc" id="L328">        e.getAddedTransactions(),</span>
+<span class="fc" id="L329">        e.getRemovedTransactions(),</span>
+<span class="fc" id="L330">        protocolSchedule.getByBlockHeader(e.getBlock().getHeader()).getFeeMarket());</span>
+<span class="fc" id="L331">    reAddTransactions(e.getRemovedTransactions());</span>
+<span class="fc" id="L332">    LOG.atTrace()</span>
+<span class="fc" id="L333">        .setMessage(&quot;Block added event {} processed in {}ms&quot;)</span>
+<span class="fc" id="L334">        .addArgument(e)</span>
+<span class="pc" id="L335">        .addArgument(() -&gt; System.currentTimeMillis() - started)</span>
+<span class="fc" id="L336">        .log();</span>
+<span class="fc" id="L337">  }</span>
+
+  private void reAddTransactions(final List&lt;Transaction&gt; reAddTransactions) {
+<span class="fc bfc" id="L340" title="All 2 branches covered.">    if (!reAddTransactions.isEmpty()) {</span>
+      // if adding a blob tx, and it is missing its blob, is a re-org and we should restore the blob
+      // from cache.
+<span class="fc" id="L343">      var txsByOrigin =</span>
+<span class="fc" id="L344">          reAddTransactions.stream()</span>
+<span class="fc" id="L345">              .map(t -&gt; pendingTransactions.restoreBlob(t).orElse(t))</span>
+<span class="fc" id="L346">              .collect(Collectors.partitioningBy(tx -&gt; isLocalSender(tx.getSender())));</span>
+<span class="fc" id="L347">      var reAddLocalTxs = txsByOrigin.get(true);</span>
+<span class="fc" id="L348">      var reAddRemoteTxs = txsByOrigin.get(false);</span>
+<span class="fc bfc" id="L349" title="All 2 branches covered.">      if (!reAddLocalTxs.isEmpty()) {</span>
+<span class="fc" id="L350">        logReAddedTransactions(reAddLocalTxs, &quot;local&quot;);</span>
+<span class="fc" id="L351">        sortedBySenderAndNonce(reAddLocalTxs).forEach(this::addTransactionViaApi);</span>
+      }
+<span class="pc bpc" id="L353" title="1 of 2 branches missed.">      if (!reAddRemoteTxs.isEmpty()) {</span>
+<span class="fc" id="L354">        logReAddedTransactions(reAddRemoteTxs, &quot;remote&quot;);</span>
+<span class="fc" id="L355">        addRemoteTransactions(reAddRemoteTxs);</span>
+      }
+    }
+<span class="fc" id="L358">  }</span>
+
+  private static void logReAddedTransactions(
+      final List&lt;Transaction&gt; reAddedTxs, final String source) {
+<span class="fc" id="L362">    LOG.atTrace()</span>
+<span class="fc" id="L363">        .setMessage(&quot;Re-adding {} {} transactions from a block event: {}&quot;)</span>
+<span class="fc" id="L364">        .addArgument(reAddedTxs::size)</span>
+<span class="fc" id="L365">        .addArgument(source)</span>
+<span class="fc" id="L366">        .addArgument(</span>
+            () -&gt;
+<span class="nc" id="L368">                reAddedTxs.stream().map(Transaction::toTraceLog).collect(Collectors.joining(&quot;; &quot;)))</span>
+<span class="fc" id="L369">        .log();</span>
+<span class="fc" id="L370">  }</span>
+
+  private TransactionValidator getTransactionValidator() {
+<span class="fc" id="L373">    return protocolSchedule</span>
+<span class="fc" id="L374">        .getByBlockHeader(protocolContext.getBlockchain().getChainHeadHeader())</span>
+<span class="fc" id="L375">        .getTransactionValidatorFactory()</span>
+<span class="fc" id="L376">        .get();</span>
+  }
+
+  private ValidationResultAndAccount validateTransaction(
+      final Transaction transaction, final boolean isLocal, final boolean hasPriority) {
+
+<span class="fc" id="L382">    final BlockHeader chainHeadBlockHeader = getChainHeadBlockHeader().orElse(null);</span>
+<span class="pc bpc" id="L383" title="1 of 2 branches missed.">    if (chainHeadBlockHeader == null) {</span>
+<span class="nc" id="L384">      LOG.atWarn()</span>
+<span class="nc" id="L385">          .setMessage(&quot;rejecting transaction {} due to chain head not available yet&quot;)</span>
+<span class="nc" id="L386">          .addArgument(transaction::getHash)</span>
+<span class="nc" id="L387">          .log();</span>
+<span class="nc" id="L388">      return ValidationResultAndAccount.invalid(CHAIN_HEAD_NOT_AVAILABLE);</span>
+    }
+
+<span class="fc" id="L391">    final FeeMarket feeMarket =</span>
+<span class="fc" id="L392">        protocolSchedule.getByBlockHeader(chainHeadBlockHeader).getFeeMarket();</span>
+<span class="fc" id="L393">    final TransactionInvalidReason priceInvalidReason =</span>
+<span class="fc" id="L394">        validatePrice(transaction, isLocal, hasPriority, feeMarket);</span>
+<span class="fc bfc" id="L395" title="All 2 branches covered.">    if (priceInvalidReason != null) {</span>
+<span class="fc" id="L396">      return ValidationResultAndAccount.invalid(priceInvalidReason);</span>
+    }
+
+<span class="fc" id="L399">    final ValidationResult&lt;TransactionInvalidReason&gt; basicValidationResult =</span>
+<span class="fc" id="L400">        getTransactionValidator()</span>
+<span class="fc" id="L401">            .validate(</span>
+                transaction,
+<span class="fc" id="L403">                chainHeadBlockHeader.getBaseFee(),</span>
+<span class="fc" id="L404">                Optional.of(</span>
+                    Wei.ZERO), // TransactionValidationParams.transactionPool() allows underpriced
+                // txs
+<span class="fc" id="L407">                TransactionValidationParams.transactionPool());</span>
+<span class="pc bpc" id="L408" title="1 of 2 branches missed.">    if (!basicValidationResult.isValid()) {</span>
+<span class="nc" id="L409">      return new ValidationResultAndAccount(basicValidationResult);</span>
+    }
+
+<span class="fc bfc" id="L412" title="All 2 branches covered.">    if (hasPriority</span>
+<span class="fc bfc" id="L413" title="All 2 branches covered.">        &amp;&amp; strictReplayProtectionShouldBeEnforcedLocally(chainHeadBlockHeader)</span>
+<span class="fc bfc" id="L414" title="All 2 branches covered.">        &amp;&amp; transaction.getChainId().isEmpty()) {</span>
+      // Strict replay protection is enabled but the tx is not replay-protected
+<span class="fc" id="L416">      return ValidationResultAndAccount.invalid(</span>
+          TransactionInvalidReason.REPLAY_PROTECTED_SIGNATURE_REQUIRED);
+    }
+<span class="fc bfc" id="L419" title="All 2 branches covered.">    if (transaction.getGasLimit() &gt; chainHeadBlockHeader.getGasLimit()) {</span>
+<span class="fc" id="L420">      return ValidationResultAndAccount.invalid(</span>
+          TransactionInvalidReason.EXCEEDS_BLOCK_GAS_LIMIT,
+<span class="fc" id="L422">          String.format(</span>
+              &quot;Transaction gas limit of %s exceeds block gas limit of %s&quot;,
+<span class="fc" id="L424">              transaction.getGasLimit(), chainHeadBlockHeader.getGasLimit()));</span>
+    }
+<span class="fc bfc" id="L426" title="All 4 branches covered.">    if (transaction.getType().equals(TransactionType.EIP1559) &amp;&amp; !feeMarket.implementsBaseFee()) {</span>
+<span class="fc" id="L427">      return ValidationResultAndAccount.invalid(</span>
+          TransactionInvalidReason.INVALID_TRANSACTION_FORMAT,
+          &quot;EIP-1559 transaction are not allowed yet&quot;);
+<span class="fc bfc" id="L430" title="All 2 branches covered.">    } else if (transaction.getType().equals(TransactionType.BLOB)</span>
+<span class="pc bpc" id="L431" title="1 of 2 branches missed.">        &amp;&amp; transaction.getBlobsWithCommitments().isEmpty()) {</span>
+<span class="nc" id="L432">      return ValidationResultAndAccount.invalid(</span>
+          TransactionInvalidReason.INVALID_BLOBS, &quot;Blob transaction must have at least one blob&quot;);
+    }
+
+    // Call the transaction validator plugin
+<span class="fc" id="L437">    final Optional&lt;String&gt; maybePluginInvalid =</span>
+        configuration
+<span class="fc" id="L439">            .getTransactionPoolValidatorService()</span>
+<span class="fc" id="L440">            .createTransactionValidator()</span>
+<span class="fc" id="L441">            .validateTransaction(transaction, isLocal, hasPriority);</span>
+<span class="fc bfc" id="L442" title="All 2 branches covered.">    if (maybePluginInvalid.isPresent()) {</span>
+<span class="fc" id="L443">      return ValidationResultAndAccount.invalid(</span>
+<span class="fc" id="L444">          TransactionInvalidReason.PLUGIN_TX_POOL_VALIDATOR, maybePluginInvalid.get());</span>
+    }
+
+<span class="fc" id="L447">    try (final var worldState =</span>
+        protocolContext
+<span class="fc" id="L449">            .getWorldStateArchive()</span>
+<span class="fc" id="L450">            .getMutable(chainHeadBlockHeader, false)</span>
+<span class="fc" id="L451">            .orElseThrow()) {</span>
+<span class="fc" id="L452">      final Account senderAccount = worldState.get(transaction.getSender());</span>
+<span class="fc" id="L453">      return new ValidationResultAndAccount(</span>
+          senderAccount,
+<span class="fc" id="L455">          getTransactionValidator()</span>
+<span class="fc" id="L456">              .validateForSender(</span>
+<span class="fc" id="L457">                  transaction, senderAccount, TransactionValidationParams.transactionPool()));</span>
+<span class="nc" id="L458">    } catch (MerkleTrieException ex) {</span>
+<span class="nc" id="L459">      LOG.debug(</span>
+          &quot;MerkleTrieException while validating transaction for sender {}&quot;,
+<span class="nc" id="L461">          transaction.getSender());</span>
+<span class="nc" id="L462">      return ValidationResultAndAccount.invalid(CHAIN_HEAD_WORLD_STATE_NOT_AVAILABLE);</span>
+<span class="nc" id="L463">    } catch (Exception ex) {</span>
+<span class="nc" id="L464">      return ValidationResultAndAccount.invalid(CHAIN_HEAD_WORLD_STATE_NOT_AVAILABLE);</span>
+    }
+  }
+
+  private TransactionInvalidReason validatePrice(
+      final Transaction transaction,
+      final boolean isLocal,
+      final boolean hasPriority,
+      final FeeMarket feeMarket) {
+
+<span class="fc bfc" id="L474" title="All 2 branches covered.">    if (isLocal) {</span>
+<span class="fc bfc" id="L475" title="All 2 branches covered.">      if (!configuration.getTxFeeCap().isZero()</span>
+<span class="fc bfc" id="L476" title="All 2 branches covered.">          &amp;&amp; getMaxGasPrice(transaction).get().greaterThan(configuration.getTxFeeCap())) {</span>
+<span class="fc" id="L477">        return TransactionInvalidReason.TX_FEECAP_EXCEEDED;</span>
+      }
+    }
+<span class="fc bfc" id="L480" title="All 2 branches covered.">    if (hasPriority) {</span>
+      // allow priority transactions to be below minGas as long as the gas price is above the
+      // configured floor
+<span class="pc bpc" id="L483" title="1 of 2 branches missed.">      if (!feeMarket.satisfiesFloorTxFee(transaction)) {</span>
+<span class="nc" id="L484">        return TransactionInvalidReason.GAS_PRICE_TOO_LOW;</span>
+      }
+    } else {
+<span class="fc bfc" id="L487" title="All 2 branches covered.">      if (isMaxGasPriceBelowConfiguredMinGasPrice(transaction)) {</span>
+<span class="fc" id="L488">        LOG.atTrace()</span>
+<span class="fc" id="L489">            .setMessage(&quot;Discard transaction {} below min gas price {}&quot;)</span>
+<span class="fc" id="L490">            .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L491">            .addArgument(configuration::getMinGasPrice)</span>
+<span class="fc" id="L492">            .log();</span>
+<span class="fc" id="L493">        return TransactionInvalidReason.GAS_PRICE_TOO_LOW;</span>
+      }
+    }
+<span class="fc" id="L496">    return null;</span>
+  }
+
+  private boolean strictReplayProtectionShouldBeEnforcedLocally(
+      final BlockHeader chainHeadBlockHeader) {
+<span class="fc bfc" id="L501" title="All 2 branches covered.">    return configuration.getStrictTransactionReplayProtectionEnabled()</span>
+<span class="fc bfc" id="L502" title="All 2 branches covered.">        &amp;&amp; protocolSchedule.getChainId().isPresent()</span>
+<span class="fc bfc" id="L503" title="All 2 branches covered.">        &amp;&amp; transactionReplaySupportedAtBlock(chainHeadBlockHeader);</span>
+  }
+
+  private boolean transactionReplaySupportedAtBlock(final BlockHeader blockHeader) {
+<span class="fc" id="L507">    return protocolSchedule.getByBlockHeader(blockHeader).isReplayProtectionSupported();</span>
+  }
+
+  public Optional&lt;Transaction&gt; getTransactionByHash(final Hash hash) {
+<span class="fc" id="L511">    return pendingTransactions.getTransactionByHash(hash);</span>
+  }
+
+  private Optional&lt;BlockHeader&gt; getChainHeadBlockHeader() {
+<span class="fc" id="L515">    final MutableBlockchain blockchain = protocolContext.getBlockchain();</span>
+
+    // Optimistically get the block header for the chain head without taking a lock,
+    // but revert to the safe implementation if it returns an empty optional. (It's
+    // possible the chain head has been updated but the block is still being persisted
+    // to storage/cache under the lock).
+<span class="fc" id="L521">    return blockchain</span>
+<span class="fc" id="L522">        .getBlockHeader(blockchain.getChainHeadHash())</span>
+<span class="pc" id="L523">        .or(() -&gt; blockchain.getBlockHeaderSafe(blockchain.getChainHeadHash()));</span>
+  }
+
+  private boolean isLocalSender(final Address sender) {
+<span class="fc" id="L527">    return localSenders.contains(sender);</span>
+  }
+
+  public int count() {
+<span class="fc" id="L531">    return pendingTransactions.size();</span>
+  }
+
+  public Collection&lt;PendingTransaction&gt; getPendingTransactions() {
+<span class="fc" id="L535">    return pendingTransactions.getPendingTransactions();</span>
+  }
+
+  public OptionalLong getNextNonceForSender(final Address address) {
+<span class="nc" id="L539">    return pendingTransactions.getNextNonceForSender(address);</span>
+  }
+
+  public long maxSize() {
+<span class="nc" id="L543">    return pendingTransactions.maxSize();</span>
+  }
+
+  public void evictOldTransactions() {
+<span class="fc" id="L547">    pendingTransactions.evictOldTransactions();</span>
+<span class="fc" id="L548">  }</span>
+
+  public void selectTransactions(
+      final PendingTransactions.TransactionSelector transactionSelector) {
+<span class="fc" id="L552">    pendingTransactions.selectTransactions(transactionSelector);</span>
+<span class="fc" id="L553">  }</span>
+
+  public String logStats() {
+<span class="fc" id="L556">    return pendingTransactions.logStats();</span>
+  }
+
+  @VisibleForTesting
+  Class&lt;? extends PendingTransactions&gt; pendingTransactionsImplementation() {
+<span class="fc" id="L561">    return pendingTransactions.getClass();</span>
+  }
+
+  public interface TransactionBatchAddedListener {
+
+    void onTransactionsAdded(Collection&lt;Transaction&gt; transactions);
+  }
+
+  private static class ValidationResultAndAccount {
+    final ValidationResult&lt;TransactionInvalidReason&gt; result;
+    final Optional&lt;Account&gt; maybeAccount;
+
+    ValidationResultAndAccount(
+<span class="fc" id="L574">        final Account account, final ValidationResult&lt;TransactionInvalidReason&gt; result) {</span>
+<span class="fc" id="L575">      this.result = result;</span>
+<span class="fc" id="L576">      this.maybeAccount =</span>
+<span class="fc" id="L577">          Optional.ofNullable(account)</span>
+<span class="fc" id="L578">              .map(</span>
+<span class="fc" id="L579">                  acct -&gt; new SimpleAccount(acct.getAddress(), acct.getNonce(), acct.getBalance()));</span>
+<span class="fc" id="L580">    }</span>
+
+<span class="fc" id="L582">    ValidationResultAndAccount(final ValidationResult&lt;TransactionInvalidReason&gt; result) {</span>
+<span class="fc" id="L583">      this.result = result;</span>
+<span class="fc" id="L584">      this.maybeAccount = Optional.empty();</span>
+<span class="fc" id="L585">    }</span>
+
+    static ValidationResultAndAccount invalid(
+        final TransactionInvalidReason reason, final String message) {
+<span class="fc" id="L589">      return new ValidationResultAndAccount(ValidationResult.invalid(reason, message));</span>
+    }
+
+    static ValidationResultAndAccount invalid(final TransactionInvalidReason reason) {
+<span class="fc" id="L593">      return new ValidationResultAndAccount(ValidationResult.invalid(reason));</span>
+    }
+  }
+
+  public CompletableFuture&lt;Void&gt; setEnabled() {
+<span class="fc bfc" id="L598" title="All 2 branches covered.">    if (!isEnabled()) {</span>
+<span class="fc" id="L599">      pendingTransactions = pendingTransactionsSupplier.get();</span>
+<span class="fc" id="L600">      pendingTransactionsListenersProxy.subscribe();</span>
+<span class="fc" id="L601">      isPoolEnabled.set(true);</span>
+<span class="fc" id="L602">      subscribeConnectId =</span>
+<span class="fc" id="L603">          OptionalLong.of(ethContext.getEthPeers().subscribeConnect(this::handleConnect));</span>
+<span class="fc" id="L604">      return saveRestoreManager</span>
+<span class="fc" id="L605">          .loadFromDisk()</span>
+<span class="fc" id="L606">          .exceptionally(</span>
+              t -&gt; {
+<span class="nc" id="L608">                LOG.error(&quot;Error while restoring transaction pool from disk&quot;, t);</span>
+<span class="nc" id="L609">                return null;</span>
+              });
+    }
+<span class="fc" id="L612">    return CompletableFuture.completedFuture(null);</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; setDisabled() {
+<span class="pc bpc" id="L616" title="1 of 2 branches missed.">    if (isEnabled()) {</span>
+<span class="fc" id="L617">      isPoolEnabled.set(false);</span>
+<span class="fc" id="L618">      subscribeConnectId.ifPresent(ethContext.getEthPeers()::unsubscribeConnect);</span>
+<span class="fc" id="L619">      pendingTransactionsListenersProxy.unsubscribe();</span>
+<span class="fc" id="L620">      final PendingTransactions pendingTransactionsToSave = pendingTransactions;</span>
+<span class="fc" id="L621">      pendingTransactions = new DisabledPendingTransactions();</span>
+<span class="fc" id="L622">      return saveRestoreManager</span>
+<span class="fc" id="L623">          .saveToDisk(pendingTransactionsToSave)</span>
+<span class="fc" id="L624">          .exceptionally(</span>
+              t -&gt; {
+<span class="nc" id="L626">                LOG.error(&quot;Error while saving transaction pool to disk&quot;, t);</span>
+<span class="nc" id="L627">                return null;</span>
+              });
+    }
+<span class="nc" id="L630">    return CompletableFuture.completedFuture(null);</span>
+  }
+
+  public boolean isEnabled() {
+<span class="fc" id="L634">    return isPoolEnabled.get();</span>
+  }
+
+<span class="fc" id="L637">  class PendingTransactionsListenersProxy {</span>
+<span class="fc" id="L638">    private final Subscribers&lt;PendingTransactionAddedListener&gt; onAddedListeners =</span>
+<span class="fc" id="L639">        Subscribers.create();</span>
+<span class="fc" id="L640">    private final Subscribers&lt;PendingTransactionDroppedListener&gt; onDroppedListeners =</span>
+<span class="fc" id="L641">        Subscribers.create();</span>
+
+    private volatile long onAddedListenerId;
+    private volatile long onDroppedListenerId;
+
+    void subscribe() {
+<span class="fc" id="L647">      onAddedListenerId = pendingTransactions.subscribePendingTransactions(this::onAdded);</span>
+<span class="fc" id="L648">      onDroppedListenerId = pendingTransactions.subscribeDroppedTransactions(this::onDropped);</span>
+<span class="fc" id="L649">    }</span>
+
+    void unsubscribe() {
+<span class="fc" id="L652">      pendingTransactions.unsubscribePendingTransactions(onAddedListenerId);</span>
+<span class="fc" id="L653">      pendingTransactions.unsubscribeDroppedTransactions(onDroppedListenerId);</span>
+<span class="fc" id="L654">    }</span>
+
+    private void onDropped(final Transaction transaction) {
+<span class="fc" id="L657">      onDroppedListeners.forEach(listener -&gt; listener.onTransactionDropped(transaction));</span>
+<span class="fc" id="L658">    }</span>
+
+    private void onAdded(final Transaction transaction) {
+<span class="fc" id="L661">      onAddedListeners.forEach(listener -&gt; listener.onTransactionAdded(transaction));</span>
+<span class="fc" id="L662">    }</span>
+  }
+
+<span class="fc" id="L665">  class SaveRestoreManager {</span>
+<span class="fc" id="L666">    private final Semaphore diskAccessLock = new Semaphore(1, true);</span>
+<span class="fc" id="L667">    private final AtomicReference&lt;CompletableFuture&lt;Void&gt;&gt; writeInProgress =</span>
+<span class="fc" id="L668">        new AtomicReference&lt;&gt;(CompletableFuture.completedFuture(null));</span>
+<span class="fc" id="L669">    private final AtomicReference&lt;CompletableFuture&lt;Void&gt;&gt; readInProgress =</span>
+<span class="fc" id="L670">        new AtomicReference&lt;&gt;(CompletableFuture.completedFuture(null));</span>
+<span class="fc" id="L671">    private final AtomicBoolean isCancelled = new AtomicBoolean(false);</span>
+
+    CompletableFuture&lt;Void&gt; saveToDisk(final PendingTransactions pendingTransactionsToSave) {
+<span class="fc" id="L674">      return serializeAndDedupOperation(</span>
+<span class="nc" id="L675">          () -&gt; executeSaveToDisk(pendingTransactionsToSave), writeInProgress);</span>
+    }
+
+    CompletableFuture&lt;Void&gt; loadFromDisk() {
+<span class="fc" id="L679">      return serializeAndDedupOperation(this::executeLoadFromDisk, readInProgress);</span>
+    }
+
+    private CompletableFuture&lt;Void&gt; serializeAndDedupOperation(
+        final Runnable operation,
+        final AtomicReference&lt;CompletableFuture&lt;Void&gt;&gt; operationInProgress) {
+<span class="pc bpc" id="L685" title="1 of 2 branches missed.">      if (configuration.getEnableSaveRestore()) {</span>
+        try {
+<span class="nc bnc" id="L687" title="All 2 branches missed.">          if (diskAccessLock.tryAcquire(1, TimeUnit.MINUTES)) {</span>
+<span class="nc bnc" id="L688" title="All 2 branches missed.">            if (!operationInProgress.get().isDone()) {</span>
+<span class="nc" id="L689">              isCancelled.set(true);</span>
+              try {
+<span class="nc" id="L691">                operationInProgress.get().get();</span>
+<span class="nc" id="L692">              } catch (ExecutionException ee) {</span>
+                // nothing to do
+<span class="nc" id="L694">              }</span>
+            }
+
+<span class="nc" id="L697">            isCancelled.set(false);</span>
+<span class="nc" id="L698">            operationInProgress.set(</span>
+<span class="nc" id="L699">                CompletableFuture.runAsync(operation).thenRun(diskAccessLock::release));</span>
+<span class="nc" id="L700">            return operationInProgress.get();</span>
+          } else {
+<span class="nc" id="L702">            CompletableFuture.failedFuture(</span>
+                new TimeoutException(&quot;Timeout waiting for disk access lock&quot;));
+          }
+<span class="nc" id="L705">        } catch (InterruptedException ie) {</span>
+<span class="nc" id="L706">          return CompletableFuture.failedFuture(ie);</span>
+<span class="nc" id="L707">        }</span>
+      }
+<span class="fc" id="L709">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+    private void executeSaveToDisk(final PendingTransactions pendingTransactionsToSave) {
+<span class="nc" id="L713">      final File saveFile = configuration.getSaveFile();</span>
+<span class="nc" id="L714">      try (final BufferedWriter bw =</span>
+          new BufferedWriter(new FileWriter(saveFile, StandardCharsets.US_ASCII))) {
+<span class="nc" id="L716">        final var allTxs = pendingTransactionsToSave.getPendingTransactions();</span>
+<span class="nc" id="L717">        LOG.info(&quot;Saving {} transactions to file {}&quot;, allTxs.size(), saveFile);</span>
+
+<span class="nc" id="L719">        final long savedTxs =</span>
+<span class="nc" id="L720">            allTxs.parallelStream()</span>
+<span class="nc bnc" id="L721" title="All 2 branches missed.">                .takeWhile(unused -&gt; !isCancelled.get())</span>
+<span class="nc" id="L722">                .map(</span>
+                    ptx -&gt; {
+<span class="nc" id="L724">                      final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="nc" id="L725">                      ptx.getTransaction().writeTo(rlp);</span>
+<span class="nc bnc" id="L726" title="All 2 branches missed.">                      return (ptx.isReceivedFromLocalSource() ? &quot;l&quot; : &quot;r&quot;)</span>
+<span class="nc" id="L727">                          + rlp.encoded().toBase64String();</span>
+                    })
+<span class="nc" id="L729">                .mapToInt(</span>
+                    line -&gt; {
+<span class="nc" id="L731">                      synchronized (bw) {</span>
+                        try {
+<span class="nc" id="L733">                          bw.write(line);</span>
+<span class="nc" id="L734">                          bw.newLine();</span>
+<span class="nc" id="L735">                        } catch (IOException e) {</span>
+<span class="nc" id="L736">                          throw new RuntimeException(e);</span>
+<span class="nc" id="L737">                        }</span>
+<span class="nc" id="L738">                      }</span>
+<span class="nc" id="L739">                      return 1;</span>
+                    })
+<span class="nc" id="L741">                .sum();</span>
+<span class="nc bnc" id="L742" title="All 2 branches missed.">        if (isCancelled.get()) {</span>
+<span class="nc" id="L743">          LOG.info(</span>
+              &quot;Saved {} transactions to file {}, before operation was cancelled&quot;,
+<span class="nc" id="L745">              savedTxs,</span>
+              saveFile);
+        } else {
+<span class="nc" id="L748">          LOG.info(&quot;Saved {} transactions to file {}&quot;, savedTxs, saveFile);</span>
+        }
+<span class="nc" id="L750">      } catch (IOException e) {</span>
+<span class="nc" id="L751">        LOG.error(&quot;Error while saving txpool content to disk&quot;, e);</span>
+<span class="nc" id="L752">      }</span>
+<span class="nc" id="L753">    }</span>
+
+    private void executeLoadFromDisk() {
+<span class="nc bnc" id="L756" title="All 2 branches missed.">      if (configuration.getEnableSaveRestore()) {</span>
+<span class="nc" id="L757">        final File saveFile = configuration.getSaveFile();</span>
+<span class="nc bnc" id="L758" title="All 2 branches missed.">        if (saveFile.exists()) {</span>
+<span class="nc" id="L759">          LOG.info(&quot;Loading transaction pool content from file {}&quot;, saveFile);</span>
+<span class="nc" id="L760">          try (final BufferedReader br =</span>
+              new BufferedReader(new FileReader(saveFile, StandardCharsets.US_ASCII))) {
+<span class="nc" id="L762">            final IntSummaryStatistics stats =</span>
+<span class="nc" id="L763">                br.lines()</span>
+<span class="nc bnc" id="L764" title="All 2 branches missed.">                    .takeWhile(unused -&gt; !isCancelled.get())</span>
+<span class="nc" id="L765">                    .mapToInt(</span>
+                        line -&gt; {
+<span class="nc bnc" id="L767" title="All 2 branches missed.">                          final boolean isLocal = line.charAt(0) == 'l';</span>
+<span class="nc" id="L768">                          final Transaction tx =</span>
+<span class="nc" id="L769">                              Transaction.readFrom(Bytes.fromBase64String(line.substring(1)));</span>
+
+<span class="nc" id="L771">                          final ValidationResult&lt;TransactionInvalidReason&gt; result =</span>
+<span class="nc" id="L772">                              addTransaction(tx, isLocal);</span>
+
+<span class="nc bnc" id="L774" title="All 2 branches missed.">                          return result.isValid() ? 1 : 0;</span>
+                        })
+<span class="nc" id="L776">                    .summaryStatistics();</span>
+
+<span class="nc bnc" id="L778" title="All 2 branches missed.">            if (isCancelled.get()) {</span>
+<span class="nc" id="L779">              LOG.info(</span>
+                  &quot;Added {} transactions of {} loaded from file {}, before operation was cancelled&quot;,
+<span class="nc" id="L781">                  stats.getSum(),</span>
+<span class="nc" id="L782">                  stats.getCount(),</span>
+                  saveFile);
+            } else {
+<span class="nc" id="L785">              LOG.info(</span>
+                  &quot;Added {} transactions of {} loaded from file {}&quot;,
+<span class="nc" id="L787">                  stats.getSum(),</span>
+<span class="nc" id="L788">                  stats.getCount(),</span>
+                  saveFile);
+            }
+<span class="nc" id="L791">          } catch (IOException e) {</span>
+<span class="nc" id="L792">            LOG.error(&quot;Error while saving txpool content to disk&quot;, e);</span>
+<span class="nc" id="L793">          }</span>
+        }
+<span class="nc" id="L795">        saveFile.delete();</span>
+      }
+<span class="nc" id="L797">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

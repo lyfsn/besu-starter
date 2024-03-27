@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RollingFileReader.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.util.io</a> &gt; <span class="el_source">RollingFileReader.java</span></div><h1>RollingFileReader.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.util.io;
+
+import java.io.Closeable;
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.file.Path;
+import java.util.function.BiFunction;
+
+import org.xerial.snappy.Snappy;
+
+/** The Rolling file reader. */
+public class RollingFileReader implements Closeable {
+  private final BiFunction&lt;Integer, Boolean, Path&gt; filenameGenerator;
+  private final boolean compressed;
+  private int currentPosition;
+  private int fileNumber;
+  private RandomAccessFile in;
+  private final RandomAccessFile index;
+<span class="nc" id="L36">  private boolean done = false;</span>
+
+  /**
+   * Instantiates a new Rolling file reader.
+   *
+   * @param filenameGenerator the filename generator
+   * @param compressed the compressed
+   * @throws IOException the io exception
+   */
+  public RollingFileReader(
+      final BiFunction&lt;Integer, Boolean, Path&gt; filenameGenerator, final boolean compressed)
+<span class="nc" id="L47">      throws IOException {</span>
+<span class="nc" id="L48">    this.filenameGenerator = filenameGenerator;</span>
+<span class="nc" id="L49">    this.compressed = compressed;</span>
+<span class="nc" id="L50">    final Path firstInputFile = filenameGenerator.apply(fileNumber, compressed);</span>
+<span class="nc" id="L51">    in = new RandomAccessFile(firstInputFile.toFile(), &quot;r&quot;);</span>
+<span class="nc" id="L52">    index = new RandomAccessFile(RollingFileWriter.dataFileToIndex(firstInputFile).toFile(), &quot;r&quot;);</span>
+<span class="nc" id="L53">    fileNumber = index.readInt();</span>
+<span class="nc" id="L54">    currentPosition = index.readUnsignedShort();</span>
+<span class="nc" id="L55">  }</span>
+
+  /**
+   * Read bytes.
+   *
+   * @return the byte [ ]
+   * @throws IOException the io exception
+   */
+  public byte[] readBytes() throws IOException {
+    byte[] raw;
+    try {
+<span class="nc" id="L66">      final int start = currentPosition;</span>
+<span class="nc" id="L67">      final int nextFile = index.readUnsignedShort();</span>
+<span class="nc" id="L68">      currentPosition = index.readInt();</span>
+<span class="nc bnc" id="L69" title="All 2 branches missed.">      if (nextFile == fileNumber) {</span>
+<span class="nc" id="L70">        final int len = currentPosition - start;</span>
+<span class="nc" id="L71">        raw = new byte[len];</span>
+<span class="nc" id="L72">        in.read(raw);</span>
+<span class="nc" id="L73">      } else {</span>
+<span class="nc" id="L74">        raw = new byte[(int) (in.length() - in.getFilePointer())];</span>
+<span class="nc" id="L75">        in.read(raw);</span>
+<span class="nc" id="L76">        in.close();</span>
+<span class="nc" id="L77">        fileNumber = nextFile;</span>
+<span class="nc" id="L78">        in = new RandomAccessFile(filenameGenerator.apply(fileNumber, compressed).toFile(), &quot;r&quot;);</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">        if (currentPosition != 0) {</span>
+<span class="nc" id="L80">          in.seek(currentPosition);</span>
+        }
+      }
+<span class="nc" id="L83">    } catch (final EOFException e) {</span>
+      // this happens when we read the last value, where there is no next index.
+<span class="nc" id="L85">      raw = new byte[(int) (in.length() - in.getFilePointer())];</span>
+<span class="nc" id="L86">      in.read(raw);</span>
+<span class="nc" id="L87">      done = true;</span>
+<span class="nc" id="L88">    }</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">    return compressed ? Snappy.uncompress(raw) : raw;</span>
+  }
+
+  /**
+   * Seek.
+   *
+   * @param position the position
+   * @throws IOException the io exception
+   */
+  public void seek(final long position) throws IOException {
+<span class="nc" id="L99">    index.seek(position * 6);</span>
+<span class="nc" id="L100">    final int oldFile = fileNumber;</span>
+<span class="nc" id="L101">    fileNumber = index.readUnsignedShort();</span>
+<span class="nc" id="L102">    currentPosition = index.readInt();</span>
+<span class="nc bnc" id="L103" title="All 2 branches missed.">    if (oldFile != fileNumber) {</span>
+<span class="nc" id="L104">      in = new RandomAccessFile(filenameGenerator.apply(fileNumber, compressed).toFile(), &quot;r&quot;);</span>
+    }
+<span class="nc" id="L106">    in.seek(currentPosition);</span>
+<span class="nc" id="L107">  }</span>
+
+  @Override
+  public void close() throws IOException {
+<span class="nc" id="L111">    in.close();</span>
+<span class="nc" id="L112">    index.close();</span>
+<span class="nc" id="L113">  }</span>
+
+  /**
+   * Is done.
+   *
+   * @return the boolean
+   */
+  public boolean isDone() {
+<span class="nc" id="L121">    return done;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

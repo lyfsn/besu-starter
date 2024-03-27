@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SECP256K1.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.crypto</a> &gt; <span class="el_source">SECP256K1.java</span></div><h1>SECP256K1.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.crypto;
+
+import static org.hyperledger.besu.nativelib.secp256k1.LibSecp256k1.SECP256K1_EC_UNCOMPRESSED;
+
+import org.hyperledger.besu.nativelib.secp256k1.LibSecp256k1;
+import org.hyperledger.besu.nativelib.secp256k1.LibSecp256k1.secp256k1_ecdsa_recoverable_signature;
+import org.hyperledger.besu.nativelib.secp256k1.LibSecp256k1.secp256k1_ecdsa_signature;
+import org.hyperledger.besu.nativelib.secp256k1.LibSecp256k1.secp256k1_pubkey;
+
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.util.Optional;
+
+import com.sun.jna.ptr.IntByReference;
+import com.sun.jna.ptr.LongByReference;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.signers.DSAKCalculator;
+import org.bouncycastle.crypto.signers.HMacDSAKCalculator;
+import org.bouncycastle.math.ec.custom.sec.SecP256K1Curve;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The SECP256K1 implementation. */
+/*
+ * Adapted from the BitcoinJ ECKey (Apache 2 License) implementation:
+ * https://github.com/bitcoinj/bitcoinj/blob/master/core/src/main/java/org/bitcoinj/core/ECKey.java
+ *
+ *
+ * Adapted from the web3j (Apache 2 License) implementations:
+ * https://github.com/web3j/web3j/crypto/src/main/java/org/web3j/crypto/*.java
+ */
+public class SECP256K1 extends AbstractSECP256 {
+
+<span class="fc" id="L50">  private static final Logger LOG = LoggerFactory.getLogger(SECP256K1.class);</span>
+
+  private boolean useNative;
+
+  /** The constant CURVE_NAME. */
+  public static final String CURVE_NAME = &quot;secp256k1&quot;;
+
+  /** Instantiates a new SECP256K1. */
+  public SECP256K1() {
+<span class="fc" id="L59">    super(CURVE_NAME, SecP256K1Curve.q);</span>
+
+    // use the native library implementation, if it is available
+<span class="fc" id="L62">    maybeEnableNative();</span>
+<span class="fc" id="L63">  }</span>
+
+  @Override
+  public void disableNative() {
+<span class="fc" id="L67">    useNative = false;</span>
+<span class="fc" id="L68">  }</span>
+
+  /**
+   * Attempt to enable the native library for secp256k1
+   *
+   * @return true if the native library was enabled.
+   */
+  public boolean maybeEnableNative() {
+    try {
+<span class="pc bpc" id="L77" title="1 of 2 branches missed.">      useNative = LibSecp256k1.CONTEXT != null;</span>
+<span class="nc" id="L78">    } catch (UnsatisfiedLinkError | NoClassDefFoundError e) {</span>
+<span class="nc" id="L79">      LOG.info(&quot;Native secp256k1 not available - {}&quot;, e.getMessage());</span>
+<span class="nc" id="L80">      useNative = false;</span>
+<span class="fc" id="L81">    }</span>
+<span class="fc" id="L82">    return useNative;</span>
+  }
+
+  @Override
+  public boolean isNative() {
+<span class="fc" id="L87">    return useNative;</span>
+  }
+
+  /**
+   * SECP256K1 is using the deterministic implementation of K calculation (defined on RFC 6979
+   * section 3.2)
+   *
+   * @return an instance of HMacDSAKCalculator
+   * @see &lt;a href=&quot;https://datatracker.ietf.org/doc/html/rfc6979#section-3.2&quot;&gt;RFC 6979 Section
+   *     3.2&lt;/a&gt;
+   */
+  @Override
+  public DSAKCalculator getKCalculator() {
+<span class="nc" id="L100">    return new HMacDSAKCalculator(new SHA256Digest());</span>
+  }
+
+  @Override
+  public SECPSignature sign(final Bytes32 dataHash, final KeyPair keyPair) {
+<span class="pc bpc" id="L105" title="1 of 2 branches missed.">    if (useNative) {</span>
+<span class="fc" id="L106">      return signNative(dataHash, keyPair);</span>
+    } else {
+<span class="nc" id="L108">      return super.sign(dataHash, keyPair);</span>
+    }
+  }
+
+  /**
+   * Verifies the given ECDSA signature against the message bytes using the public key bytes.
+   *
+   * &lt;p&gt;When using native ECDSA verification, data must be 32 bytes, and no element may be larger
+   * than 520 bytes.
+   *
+   * @param data Hash of the data to verify.
+   * @param signature ASN.1 encoded signature.
+   * @param pub The public key bytes to use.
+   * @return True if the verification is successful.
+   */
+  @Override
+  public boolean verify(final Bytes data, final SECPSignature signature, final SECPPublicKey pub) {
+<span class="pc bpc" id="L125" title="1 of 2 branches missed.">    if (useNative) {</span>
+<span class="fc" id="L126">      return verifyNative(data, signature, pub);</span>
+    } else {
+<span class="nc" id="L128">      return super.verify(data, signature, pub);</span>
+    }
+  }
+
+  @Override
+  public Optional&lt;SECPPublicKey&gt; recoverPublicKeyFromSignature(
+      final Bytes32 dataHash, final SECPSignature signature) {
+<span class="pc bpc" id="L135" title="1 of 2 branches missed.">    if (useNative) {</span>
+<span class="fc" id="L136">      Optional&lt;SECPPublicKey&gt; result = recoverFromSignatureNative(dataHash, signature);</span>
+<span class="fc bfc" id="L137" title="All 2 branches covered.">      if (result.isEmpty()) {</span>
+<span class="fc" id="L138">        throw new IllegalArgumentException(&quot;Could not recover public key&quot;);</span>
+      } else {
+<span class="fc" id="L140">        return result;</span>
+      }
+    } else {
+<span class="nc" id="L143">      return super.recoverPublicKeyFromSignature(dataHash, signature);</span>
+    }
+  }
+
+  @Override
+  public String getCurveName() {
+<span class="fc" id="L149">    return CURVE_NAME;</span>
+  }
+
+  private SECPSignature signNative(final Bytes32 dataHash, final KeyPair keyPair) {
+<span class="fc" id="L153">    final LibSecp256k1.secp256k1_ecdsa_recoverable_signature signature =</span>
+        new secp256k1_ecdsa_recoverable_signature();
+    // sign in internal form
+<span class="pc bpc" id="L156" title="1 of 2 branches missed.">    if (LibSecp256k1.secp256k1_ecdsa_sign_recoverable(</span>
+            LibSecp256k1.CONTEXT,
+            signature,
+<span class="fc" id="L159">            dataHash.toArrayUnsafe(),</span>
+<span class="fc" id="L160">            keyPair.getPrivateKey().getEncoded(),</span>
+            null,
+            null)
+        == 0) {
+<span class="nc" id="L164">      throw new RuntimeException(</span>
+          &quot;Could not natively sign. Private Key is invalid or default nonce generation failed.&quot;);
+    }
+
+    // encode to compact form
+<span class="fc" id="L169">    final ByteBuffer compactSig = ByteBuffer.allocate(64);</span>
+<span class="fc" id="L170">    final IntByReference recId = new IntByReference(0);</span>
+<span class="fc" id="L171">    LibSecp256k1.secp256k1_ecdsa_recoverable_signature_serialize_compact(</span>
+        LibSecp256k1.CONTEXT, compactSig, recId, signature);
+<span class="fc" id="L173">    compactSig.flip();</span>
+<span class="fc" id="L174">    final byte[] sig = compactSig.array();</span>
+
+    // wrap in signature object
+<span class="fc" id="L177">    final Bytes32 r = Bytes32.wrap(sig, 0);</span>
+<span class="fc" id="L178">    final Bytes32 s = Bytes32.wrap(sig, 32);</span>
+<span class="fc" id="L179">    return SECPSignature.create(</span>
+<span class="fc" id="L180">        r.toUnsignedBigInteger(), s.toUnsignedBigInteger(), (byte) recId.getValue(), curveOrder);</span>
+  }
+
+  private boolean verifyNative(
+      final Bytes data, final SECPSignature signature, final SECPPublicKey pub) {
+
+    // translate signature
+<span class="fc" id="L187">    final LibSecp256k1.secp256k1_ecdsa_signature _signature = new secp256k1_ecdsa_signature();</span>
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">    if (LibSecp256k1.secp256k1_ecdsa_signature_parse_compact(</span>
+<span class="fc" id="L189">            LibSecp256k1.CONTEXT, _signature, signature.encodedBytes().toArrayUnsafe())</span>
+        == 0) {
+<span class="nc" id="L191">      throw new IllegalArgumentException(&quot;Could not parse signature&quot;);</span>
+    }
+
+    // translate key
+<span class="fc" id="L195">    final LibSecp256k1.secp256k1_pubkey _pub = new secp256k1_pubkey();</span>
+<span class="fc" id="L196">    final Bytes encodedPubKey = Bytes.concatenate(Bytes.of(0x04), pub.getEncodedBytes());</span>
+<span class="pc bpc" id="L197" title="1 of 2 branches missed.">    if (LibSecp256k1.secp256k1_ec_pubkey_parse(</span>
+<span class="fc" id="L198">            LibSecp256k1.CONTEXT, _pub, encodedPubKey.toArrayUnsafe(), encodedPubKey.size())</span>
+        == 0) {
+<span class="nc" id="L200">      throw new IllegalArgumentException(&quot;Could not parse public key&quot;);</span>
+    }
+
+<span class="pc bpc" id="L203" title="1 of 2 branches missed.">    return LibSecp256k1.secp256k1_ecdsa_verify(</span>
+<span class="fc" id="L204">            LibSecp256k1.CONTEXT, _signature, data.toArrayUnsafe(), _pub)</span>
+        != 0;
+  }
+
+  @Override
+  protected BigInteger recoverFromSignature(
+      final int recId, final BigInteger r, final BigInteger s, final Bytes32 dataHash) {
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">    if (useNative) {</span>
+<span class="fc" id="L212">      return recoverFromSignatureNative(dataHash, new SECPSignature(r, s, (byte) recId))</span>
+<span class="fc" id="L213">          .map(key -&gt; new BigInteger(1, key.getEncoded()))</span>
+<span class="fc" id="L214">          .orElse(null);</span>
+    } else {
+<span class="nc" id="L216">      return super.recoverFromSignature(recId, r, s, dataHash);</span>
+    }
+  }
+
+  private Optional&lt;SECPPublicKey&gt; recoverFromSignatureNative(
+      final Bytes32 dataHash, final SECPSignature signature) {
+
+    // parse the sig
+<span class="fc" id="L224">    final LibSecp256k1.secp256k1_ecdsa_recoverable_signature parsedSignature =</span>
+        new LibSecp256k1.secp256k1_ecdsa_recoverable_signature();
+<span class="fc" id="L226">    final Bytes encodedSig = signature.encodedBytes();</span>
+<span class="pc bpc" id="L227" title="1 of 2 branches missed.">    if (LibSecp256k1.secp256k1_ecdsa_recoverable_signature_parse_compact(</span>
+            LibSecp256k1.CONTEXT,
+            parsedSignature,
+<span class="fc" id="L230">            encodedSig.slice(0, 64).toArrayUnsafe(),</span>
+<span class="fc" id="L231">            encodedSig.get(64))</span>
+        == 0) {
+<span class="nc" id="L233">      throw new IllegalArgumentException(&quot;Could not parse signature&quot;);</span>
+    }
+
+    // recover the key
+<span class="fc" id="L237">    final LibSecp256k1.secp256k1_pubkey newPubKey = new LibSecp256k1.secp256k1_pubkey();</span>
+<span class="fc bfc" id="L238" title="All 2 branches covered.">    if (LibSecp256k1.secp256k1_ecdsa_recover(</span>
+<span class="fc" id="L239">            LibSecp256k1.CONTEXT, newPubKey, parsedSignature, dataHash.toArrayUnsafe())</span>
+        == 0) {
+<span class="fc" id="L241">      return Optional.empty();</span>
+    }
+
+    // parse the key
+<span class="fc" id="L245">    final ByteBuffer recoveredKey = ByteBuffer.allocate(65);</span>
+<span class="fc" id="L246">    final LongByReference keySize = new LongByReference(recoveredKey.limit());</span>
+<span class="fc" id="L247">    LibSecp256k1.secp256k1_ec_pubkey_serialize(</span>
+        LibSecp256k1.CONTEXT, recoveredKey, keySize, newPubKey, SECP256K1_EC_UNCOMPRESSED);
+
+<span class="fc" id="L250">    return Optional.of(</span>
+<span class="fc" id="L251">        SECPPublicKey.create(Bytes.wrapByteBuffer(recoveredKey).slice(1), ALGORITHM));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

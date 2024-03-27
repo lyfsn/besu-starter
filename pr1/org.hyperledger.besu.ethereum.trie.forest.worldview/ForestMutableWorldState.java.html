@@ -1,0 +1,450 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ForestMutableWorldState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.forest.worldview</a> &gt; <span class="el_source">ForestMutableWorldState.java</span></div><h1>ForestMutableWorldState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.forest.worldview;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStatePreimageStorage;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.AbstractWorldUpdater;
+import org.hyperledger.besu.evm.worldstate.UpdateTrackingAccount;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class ForestMutableWorldState implements MutableWorldState {
+
+  private final EvmConfiguration evmConfiguration;
+  private final ForestWorldStateKeyValueStorage worldStateKeyValueStorage;
+  private final WorldStatePreimageStorage preimageStorage;
+
+  private final MerkleTrie&lt;Bytes32, Bytes&gt; accountStateTrie;
+<span class="pc" id="L61">  private final Map&lt;Address, MerkleTrie&lt;Bytes32, Bytes&gt;&gt; updatedStorageTries = new HashMap&lt;&gt;();</span>
+<span class="pc" id="L62">  private final Map&lt;Address, Bytes&gt; updatedAccountCode = new HashMap&lt;&gt;();</span>
+<span class="pc" id="L63">  private final Map&lt;Bytes32, UInt256&gt; newStorageKeyPreimages = new HashMap&lt;&gt;();</span>
+<span class="pc" id="L64">  private final Map&lt;Bytes32, Address&gt; newAccountKeyPreimages = new HashMap&lt;&gt;();</span>
+
+  public ForestMutableWorldState(
+      final WorldStateKeyValueStorage worldStateKeyValueStorage,
+      final WorldStatePreimageStorage preimageStorage,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L70">    this(</span>
+        MerkleTrie.EMPTY_TRIE_NODE_HASH,
+        worldStateKeyValueStorage,
+        preimageStorage,
+        evmConfiguration);
+<span class="fc" id="L75">  }</span>
+
+  public ForestMutableWorldState(
+      final Bytes32 rootHash,
+      final WorldStateKeyValueStorage worldStateKeyValueStorage,
+      final WorldStatePreimageStorage preimageStorage,
+<span class="fc" id="L81">      final EvmConfiguration evmConfiguration) {</span>
+<span class="fc" id="L82">    this.worldStateKeyValueStorage = (ForestWorldStateKeyValueStorage) worldStateKeyValueStorage;</span>
+<span class="fc" id="L83">    this.accountStateTrie = newAccountStateTrie(rootHash);</span>
+<span class="fc" id="L84">    this.preimageStorage = preimageStorage;</span>
+<span class="fc" id="L85">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L86">  }</span>
+
+  public ForestMutableWorldState(
+<span class="nc" id="L89">      final WorldState worldState, final EvmConfiguration evmConfiguration) {</span>
+    // TODO: this is an abstraction leak (and kind of incorrect in that we reuse the underlying
+    // storage), but the reason for this is that the accounts() method is unimplemented below and
+    // can't be until NC-754.
+<span class="nc bnc" id="L93" title="All 2 branches missed.">    if (!(worldState instanceof ForestMutableWorldState other)) {</span>
+<span class="nc" id="L94">      throw new UnsupportedOperationException();</span>
+    }
+<span class="nc" id="L96">    this.worldStateKeyValueStorage = other.worldStateKeyValueStorage;</span>
+<span class="nc" id="L97">    this.preimageStorage = other.preimageStorage;</span>
+<span class="nc" id="L98">    this.accountStateTrie = newAccountStateTrie(other.accountStateTrie.getRootHash());</span>
+<span class="nc" id="L99">    this.evmConfiguration = evmConfiguration;</span>
+<span class="nc" id="L100">  }</span>
+
+  private MerkleTrie&lt;Bytes32, Bytes&gt; newAccountStateTrie(final Bytes32 rootHash) {
+<span class="fc" id="L103">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L104">        (location, hash) -&gt; worldStateKeyValueStorage.getAccountStateTrieNode(hash),</span>
+        rootHash,
+<span class="fc" id="L106">        b -&gt; b,</span>
+<span class="fc" id="L107">        b -&gt; b);</span>
+  }
+
+  private MerkleTrie&lt;Bytes32, Bytes&gt; newAccountStorageTrie(final Bytes32 rootHash) {
+<span class="fc" id="L111">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L112">        (location, hash) -&gt; worldStateKeyValueStorage.getAccountStorageTrieNode(hash),</span>
+        rootHash,
+<span class="fc" id="L114">        b -&gt; b,</span>
+<span class="fc" id="L115">        b -&gt; b);</span>
+  }
+
+  @Override
+  public Hash rootHash() {
+<span class="fc" id="L120">    return Hash.wrap(accountStateTrie.getRootHash());</span>
+  }
+
+  @Override
+  public Hash frontierRootHash() {
+<span class="fc" id="L125">    return rootHash();</span>
+  }
+
+  @Override
+  public Account get(final Address address) {
+<span class="fc" id="L130">    final Hash addressHash = address.addressHash();</span>
+<span class="fc" id="L131">    return accountStateTrie</span>
+<span class="fc" id="L132">        .get(addressHash)</span>
+<span class="fc" id="L133">        .map(bytes -&gt; deserializeAccount(address, addressHash, bytes))</span>
+<span class="fc" id="L134">        .orElse(null);</span>
+  }
+
+  private WorldStateAccount deserializeAccount(
+      final Address address, final Hash addressHash, final Bytes encoded) throws RLPException {
+<span class="fc" id="L139">    final RLPInput in = RLP.input(encoded);</span>
+<span class="fc" id="L140">    final StateTrieAccountValue accountValue = StateTrieAccountValue.readFrom(in);</span>
+<span class="fc" id="L141">    return new WorldStateAccount(address, addressHash, accountValue);</span>
+  }
+
+  @Override
+  public WorldUpdater updater() {
+<span class="fc" id="L146">    return new Updater(this, evmConfiguration);</span>
+  }
+
+  @Override
+  public Stream&lt;StreamableAccount&gt; streamAccounts(final Bytes32 startKeyHash, final int limit) {
+<span class="fc" id="L151">    return accountStateTrie.entriesFrom(startKeyHash, limit).entrySet().stream()</span>
+<span class="fc" id="L152">        .map(</span>
+            entry -&gt; {
+<span class="fc" id="L154">              final Optional&lt;Address&gt; address = getAccountTrieKeyPreimage(entry.getKey());</span>
+<span class="fc" id="L155">              final WorldStateAccount account =</span>
+<span class="fc" id="L156">                  deserializeAccount(</span>
+<span class="fc" id="L157">                      address.orElse(Address.ZERO), Hash.wrap(entry.getKey()), entry.getValue());</span>
+<span class="fc" id="L158">              return new StreamableAccount(address, account);</span>
+            });
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L164">    return Objects.hashCode(rootHash());</span>
+  }
+
+  @Override
+  public final boolean equals(final Object other) {
+<span class="pc bpc" id="L169" title="1 of 2 branches missed.">    if (!(other instanceof ForestMutableWorldState that)) {</span>
+<span class="nc" id="L170">      return false;</span>
+    }
+
+<span class="fc" id="L173">    return this.rootHash().equals(that.rootHash());</span>
+  }
+
+  @Override
+  public void persist(final BlockHeader blockHeader) {
+<span class="fc" id="L178">    final ForestWorldStateKeyValueStorage.Updater stateUpdater =</span>
+<span class="fc" id="L179">        worldStateKeyValueStorage.updater();</span>
+    // Store updated code
+<span class="fc bfc" id="L181" title="All 2 branches covered.">    for (final Bytes code : updatedAccountCode.values()) {</span>
+<span class="fc" id="L182">      stateUpdater.putCode(code);</span>
+<span class="fc" id="L183">    }</span>
+    // Commit account storage tries
+<span class="fc bfc" id="L185" title="All 2 branches covered.">    for (final MerkleTrie&lt;Bytes32, Bytes&gt; updatedStorage : updatedStorageTries.values()) {</span>
+<span class="fc" id="L186">      updatedStorage.commit(</span>
+<span class="fc" id="L187">          (location, hash, value) -&gt; stateUpdater.putAccountStorageTrieNode(hash, value));</span>
+<span class="fc" id="L188">    }</span>
+    // Commit account updates
+<span class="fc" id="L190">    accountStateTrie.commit(</span>
+<span class="fc" id="L191">        (location, hash, value) -&gt; stateUpdater.putAccountStateTrieNode(hash, value));</span>
+
+    // Persist preimages
+<span class="fc" id="L194">    final WorldStatePreimageStorage.Updater preimageUpdater = preimageStorage.updater();</span>
+<span class="fc" id="L195">    newStorageKeyPreimages.forEach(preimageUpdater::putStorageTrieKeyPreimage);</span>
+<span class="fc" id="L196">    newAccountKeyPreimages.forEach(preimageUpdater::putAccountTrieKeyPreimage);</span>
+
+    // Clear pending changes that we just flushed
+<span class="fc" id="L199">    updatedStorageTries.clear();</span>
+<span class="fc" id="L200">    updatedAccountCode.clear();</span>
+<span class="fc" id="L201">    newStorageKeyPreimages.clear();</span>
+
+    // Push changes to underlying storage
+<span class="fc" id="L204">    preimageUpdater.commit();</span>
+<span class="fc" id="L205">    stateUpdater.commit();</span>
+<span class="fc" id="L206">  }</span>
+
+  private static UInt256 convertToUInt256(final Bytes value) {
+    // TODO: we could probably have an optimized method to decode a single scalar since it's used
+    // pretty often.
+<span class="fc" id="L211">    final RLPInput in = RLP.input(value);</span>
+<span class="fc" id="L212">    return in.readUInt256Scalar();</span>
+  }
+
+  private Optional&lt;Address&gt; getAccountTrieKeyPreimage(final Bytes32 trieKey) {
+<span class="fc" id="L216">    return Optional.ofNullable(newAccountKeyPreimages.get(trieKey))</span>
+<span class="fc" id="L217">        .or(() -&gt; preimageStorage.getAccountTrieKeyPreimage(trieKey));</span>
+  }
+  // An immutable class that represents an individual account as stored in
+  // the world state's underlying merkle patricia trie.
+  protected class WorldStateAccount implements Account {
+
+    private final Address address;
+    private final Hash addressHash;
+
+    final StateTrieAccountValue accountValue;
+
+    // Lazily initialized since we don't always access storage.
+    private volatile MerkleTrie&lt;Bytes32, Bytes&gt; storageTrie;
+
+    private WorldStateAccount(
+<span class="fc" id="L232">        final Address address, final Hash addressHash, final StateTrieAccountValue accountValue) {</span>
+
+<span class="fc" id="L234">      this.address = address;</span>
+<span class="fc" id="L235">      this.addressHash = addressHash;</span>
+<span class="fc" id="L236">      this.accountValue = accountValue;</span>
+<span class="fc" id="L237">    }</span>
+
+    private MerkleTrie&lt;Bytes32, Bytes&gt; storageTrie() {
+<span class="fc" id="L240">      final MerkleTrie&lt;Bytes32, Bytes&gt; updatedTrie = updatedStorageTries.get(address);</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">      if (updatedTrie != null) {</span>
+<span class="fc" id="L242">        storageTrie = updatedTrie;</span>
+      }
+<span class="fc bfc" id="L244" title="All 2 branches covered.">      if (storageTrie == null) {</span>
+<span class="fc" id="L245">        storageTrie = newAccountStorageTrie(getStorageRoot());</span>
+      }
+<span class="fc" id="L247">      return storageTrie;</span>
+    }
+
+    @Override
+    public Address getAddress() {
+<span class="fc" id="L252">      return address;</span>
+    }
+
+    @Override
+    public Hash getAddressHash() {
+<span class="fc" id="L257">      return addressHash;</span>
+    }
+
+    @Override
+    public long getNonce() {
+<span class="fc" id="L262">      return accountValue.getNonce();</span>
+    }
+
+    @Override
+    public Wei getBalance() {
+<span class="fc" id="L267">      return accountValue.getBalance();</span>
+    }
+
+    Hash getStorageRoot() {
+<span class="fc" id="L271">      return accountValue.getStorageRoot();</span>
+    }
+
+    @Override
+    public Bytes getCode() {
+<span class="fc" id="L276">      final Bytes updatedCode = updatedAccountCode.get(address);</span>
+<span class="fc bfc" id="L277" title="All 2 branches covered.">      if (updatedCode != null) {</span>
+<span class="fc" id="L278">        return updatedCode;</span>
+      }
+      // No code is common, save the KV-store lookup.
+<span class="fc" id="L281">      final Hash codeHash = getCodeHash();</span>
+<span class="fc bfc" id="L282" title="All 2 branches covered.">      if (codeHash.equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L283">        return Bytes.EMPTY;</span>
+      }
+<span class="fc" id="L285">      return worldStateKeyValueStorage.getCode(codeHash).orElse(Bytes.EMPTY);</span>
+    }
+
+    @Override
+    public boolean hasCode() {
+<span class="nc bnc" id="L290" title="All 2 branches missed.">      return !getCode().isEmpty();</span>
+    }
+
+    @Override
+    public Hash getCodeHash() {
+<span class="fc" id="L295">      return accountValue.getCodeHash();</span>
+    }
+
+    @Override
+    public UInt256 getStorageValue(final UInt256 key) {
+<span class="fc" id="L300">      return storageTrie()</span>
+<span class="fc" id="L301">          .get(Hash.hash(key))</span>
+<span class="fc" id="L302">          .map(ForestMutableWorldState::convertToUInt256)</span>
+<span class="fc" id="L303">          .orElse(UInt256.ZERO);</span>
+    }
+
+    @Override
+    public UInt256 getOriginalStorageValue(final UInt256 key) {
+<span class="fc" id="L308">      return getStorageValue(key);</span>
+    }
+
+    @Override
+    public NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntriesFrom(
+        final Bytes32 startKeyHash, final int limit) {
+<span class="fc" id="L314">      final NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntries = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L315">      storageTrie()</span>
+<span class="fc" id="L316">          .entriesFrom(startKeyHash, limit)</span>
+<span class="fc" id="L317">          .forEach(</span>
+              (key, value) -&gt; {
+<span class="fc" id="L319">                final AccountStorageEntry entry =</span>
+<span class="fc" id="L320">                    AccountStorageEntry.create(</span>
+<span class="fc" id="L321">                        convertToUInt256(value), key, getStorageTrieKeyPreimage(key));</span>
+<span class="fc" id="L322">                storageEntries.put(key, entry);</span>
+<span class="fc" id="L323">              });</span>
+<span class="fc" id="L324">      return storageEntries;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L329">      final StringBuilder builder = new StringBuilder();</span>
+<span class="nc" id="L330">      builder.append(&quot;AccountState&quot;).append(&quot;{&quot;);</span>
+<span class="nc" id="L331">      builder.append(&quot;address=&quot;).append(getAddress()).append(&quot;, &quot;);</span>
+<span class="nc" id="L332">      builder.append(&quot;nonce=&quot;).append(getNonce()).append(&quot;, &quot;);</span>
+<span class="nc" id="L333">      builder.append(&quot;balance=&quot;).append(getBalance()).append(&quot;, &quot;);</span>
+<span class="nc" id="L334">      builder.append(&quot;storageRoot=&quot;).append(getStorageRoot()).append(&quot;, &quot;);</span>
+<span class="nc" id="L335">      builder.append(&quot;codeHash=&quot;).append(getCodeHash()).append(&quot;, &quot;);</span>
+<span class="nc" id="L336">      return builder.append(&quot;}&quot;).toString();</span>
+    }
+
+    private Optional&lt;UInt256&gt; getStorageTrieKeyPreimage(final Bytes32 trieKey) {
+<span class="fc" id="L340">      return Optional.ofNullable(newStorageKeyPreimages.get(trieKey))</span>
+<span class="fc" id="L341">          .or(() -&gt; preimageStorage.getStorageTrieKeyPreimage(trieKey));</span>
+    }
+  }
+
+  protected static class Updater
+      extends AbstractWorldUpdater&lt;ForestMutableWorldState, WorldStateAccount&gt; {
+
+    protected Updater(
+        final ForestMutableWorldState world, final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L350">      super(world, evmConfiguration);</span>
+<span class="fc" id="L351">    }</span>
+
+    @Override
+    protected WorldStateAccount getForMutation(final Address address) {
+<span class="fc" id="L355">      final ForestMutableWorldState wrapped = wrappedWorldView();</span>
+<span class="fc" id="L356">      final Hash addressHash = address.addressHash();</span>
+<span class="fc" id="L357">      return wrapped</span>
+          .accountStateTrie
+<span class="fc" id="L359">          .get(addressHash)</span>
+<span class="fc" id="L360">          .map(bytes -&gt; wrapped.deserializeAccount(address, addressHash, bytes))</span>
+<span class="fc" id="L361">          .orElse(null);</span>
+    }
+
+    @Override
+    public Collection&lt;? extends Account&gt; getTouchedAccounts() {
+<span class="fc" id="L366">      return new ArrayList&lt;&gt;(getUpdatedAccounts());</span>
+    }
+
+    @Override
+    public Collection&lt;Address&gt; getDeletedAccountAddresses() {
+<span class="nc" id="L371">      return new ArrayList&lt;&gt;(getDeletedAccounts());</span>
+    }
+
+    @Override
+    public void revert() {
+<span class="fc" id="L376">      getDeletedAccounts().clear();</span>
+<span class="fc" id="L377">      getUpdatedAccounts().clear();</span>
+<span class="fc" id="L378">    }</span>
+
+    @Override
+    public void commit() {
+<span class="fc" id="L382">      final ForestMutableWorldState wrapped = wrappedWorldView();</span>
+
+<span class="fc bfc" id="L384" title="All 2 branches covered.">      for (final Address address : getDeletedAccounts()) {</span>
+<span class="fc" id="L385">        final Hash addressHash = address.addressHash();</span>
+<span class="fc" id="L386">        wrapped.accountStateTrie.remove(addressHash);</span>
+<span class="fc" id="L387">        wrapped.updatedStorageTries.remove(address);</span>
+<span class="fc" id="L388">        wrapped.updatedAccountCode.remove(address);</span>
+<span class="fc" id="L389">      }</span>
+
+<span class="fc bfc" id="L391" title="All 2 branches covered.">      for (final UpdateTrackingAccount&lt;WorldStateAccount&gt; updated : getUpdatedAccounts()) {</span>
+<span class="fc" id="L392">        final WorldStateAccount origin = updated.getWrappedAccount();</span>
+
+        // Save the code in key-value storage ...
+<span class="fc bfc" id="L395" title="All 2 branches covered.">        Hash codeHash = origin == null ? Hash.EMPTY : origin.getCodeHash();</span>
+<span class="fc bfc" id="L396" title="All 2 branches covered.">        if (updated.codeWasUpdated()) {</span>
+<span class="fc" id="L397">          codeHash = Hash.hash(updated.getCode());</span>
+<span class="fc" id="L398">          wrapped.updatedAccountCode.put(updated.getAddress(), updated.getCode());</span>
+        }
+        // ...and storage in the account trie first.
+<span class="fc bfc" id="L401" title="All 4 branches covered.">        final boolean freshState = origin == null || updated.getStorageWasCleared();</span>
+<span class="fc bfc" id="L402" title="All 2 branches covered.">        Hash storageRoot = freshState ? Hash.EMPTY_TRIE_HASH : origin.getStorageRoot();</span>
+<span class="fc bfc" id="L403" title="All 2 branches covered.">        if (freshState) {</span>
+<span class="fc" id="L404">          wrapped.updatedStorageTries.remove(updated.getAddress());</span>
+        }
+<span class="fc" id="L406">        final Map&lt;UInt256, UInt256&gt; updatedStorage = updated.getUpdatedStorage();</span>
+<span class="fc bfc" id="L407" title="All 2 branches covered.">        if (!updatedStorage.isEmpty()) {</span>
+          // Apply any storage updates
+          final MerkleTrie&lt;Bytes32, Bytes&gt; storageTrie =
+<span class="fc bfc" id="L410" title="All 2 branches covered.">              freshState</span>
+<span class="fc" id="L411">                  ? wrapped.newAccountStorageTrie(Hash.EMPTY_TRIE_HASH)</span>
+<span class="fc" id="L412">                  : origin.storageTrie();</span>
+<span class="fc" id="L413">          wrapped.updatedStorageTries.put(updated.getAddress(), storageTrie);</span>
+<span class="fc" id="L414">          final TreeSet&lt;Map.Entry&lt;UInt256, UInt256&gt;&gt; entries =</span>
+<span class="fc" id="L415">              new TreeSet&lt;&gt;(Map.Entry.comparingByKey());</span>
+<span class="fc" id="L416">          entries.addAll(updatedStorage.entrySet());</span>
+
+<span class="fc bfc" id="L418" title="All 2 branches covered.">          for (final Map.Entry&lt;UInt256, UInt256&gt; entry : entries) {</span>
+<span class="fc" id="L419">            final UInt256 value = entry.getValue();</span>
+<span class="fc" id="L420">            final Hash keyHash = Hash.hash(entry.getKey());</span>
+<span class="fc bfc" id="L421" title="All 2 branches covered.">            if (value.isZero()) {</span>
+<span class="fc" id="L422">              storageTrie.remove(keyHash);</span>
+            } else {
+<span class="fc" id="L424">              wrapped.newStorageKeyPreimages.put(keyHash, entry.getKey());</span>
+<span class="fc" id="L425">              storageTrie.put(</span>
+<span class="fc" id="L426">                  keyHash, RLP.encode(out -&gt; out.writeBytes(entry.getValue().toMinimalBytes())));</span>
+            }
+<span class="fc" id="L428">          }</span>
+<span class="fc" id="L429">          storageRoot = Hash.wrap(storageTrie.getRootHash());</span>
+        }
+
+        // Save address preimage
+<span class="fc" id="L433">        wrapped.newAccountKeyPreimages.put(updated.getAddressHash(), updated.getAddress());</span>
+        // Lastly, save the new account.
+<span class="fc" id="L435">        final Bytes account =</span>
+<span class="fc" id="L436">            serializeAccount(updated.getNonce(), updated.getBalance(), storageRoot, codeHash);</span>
+
+<span class="fc" id="L438">        wrapped.accountStateTrie.put(updated.getAddressHash(), account);</span>
+<span class="fc" id="L439">      }</span>
+<span class="fc" id="L440">    }</span>
+
+    private static Bytes serializeAccount(
+        final long nonce, final Wei balance, final Hash storageRoot, final Hash codeHash) {
+<span class="fc" id="L444">      final StateTrieAccountValue accountValue =</span>
+          new StateTrieAccountValue(nonce, balance, storageRoot, codeHash);
+<span class="fc" id="L446">      return RLP.encode(accountValue::writeTo);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

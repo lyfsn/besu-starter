@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PendingPeerRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">PendingPeerRequest.java</span></div><h1>PendingPeerRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.ethereum.eth.manager.RequestManager.ResponseStream;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.NoAvailablePeersException;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.PeerDisconnectedException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection.PeerNotConnected;
+
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.function.Consumer;
+
+public class PendingPeerRequest {
+  private final EthPeers ethPeers;
+  private final PeerRequest request;
+<span class="fc" id="L31">  private final CompletableFuture&lt;ResponseStream&gt; result = new CompletableFuture&lt;&gt;();</span>
+  private final long minimumBlockNumber;
+  private final Optional&lt;EthPeer&gt; peer;
+
+  PendingPeerRequest(
+      final EthPeers ethPeers,
+      final PeerRequest request,
+      final long minimumBlockNumber,
+<span class="fc" id="L39">      final Optional&lt;EthPeer&gt; peer) {</span>
+<span class="fc" id="L40">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L41">    this.request = request;</span>
+<span class="fc" id="L42">    this.minimumBlockNumber = minimumBlockNumber;</span>
+<span class="fc" id="L43">    this.peer = peer;</span>
+<span class="fc" id="L44">  }</span>
+
+  /**
+   * Attempts to find an available peer and execute the peer request.
+   *
+   * @return true if the request should be removed from the pending list, otherwise false.
+   */
+  public boolean attemptExecution() {
+<span class="fc bfc" id="L52" title="All 2 branches covered.">    if (result.isDone()) {</span>
+<span class="fc" id="L53">      return true;</span>
+    }
+<span class="fc" id="L55">    final Optional&lt;EthPeer&gt; maybePeer = getPeerToUse();</span>
+<span class="fc bfc" id="L56" title="All 2 branches covered.">    if (maybePeer.isEmpty()) {</span>
+      // No peers have the required height.
+<span class="fc" id="L58">      result.completeExceptionally(new NoAvailablePeersException());</span>
+<span class="fc" id="L59">      return true;</span>
+    } else {
+      // At least one peer has the required height, but we are not able to use it if it's busy
+<span class="fc" id="L62">      final Optional&lt;EthPeer&gt; maybePeerWithCapacity =</span>
+<span class="fc" id="L63">          maybePeer.filter(EthPeer::hasAvailableRequestCapacity);</span>
+
+<span class="fc" id="L65">      maybePeerWithCapacity.ifPresent(this::sendRequest);</span>
+<span class="fc" id="L66">      return maybePeerWithCapacity.isPresent();</span>
+    }
+  }
+
+  private synchronized void sendRequest(final EthPeer peer) {
+    // Recheck if we should send the request now we're inside the synchronized block
+<span class="fc bfc" id="L72" title="All 2 branches covered.">    if (!result.isDone()) {</span>
+      try {
+<span class="fc" id="L74">        final ResponseStream responseStream = request.sendRequest(peer);</span>
+<span class="fc" id="L75">        result.complete(responseStream);</span>
+<span class="fc" id="L76">      } catch (final PeerNotConnected e) {</span>
+<span class="fc" id="L77">        result.completeExceptionally(new PeerDisconnectedException(peer));</span>
+<span class="fc" id="L78">      }</span>
+    }
+<span class="fc" id="L80">  }</span>
+
+  private Optional&lt;EthPeer&gt; getPeerToUse() {
+    // return the assigned peer if still valid, otherwise switch to another peer
+<span class="fc bfc" id="L84" title="All 4 branches covered.">    return peer.filter(p -&gt; !p.isDisconnected()).isPresent()</span>
+<span class="fc" id="L85">        ? peer</span>
+        : ethPeers
+<span class="fc" id="L87">            .streamAvailablePeers()</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">            .filter(peer -&gt; peer.chainState().getEstimatedHeight() &gt;= minimumBlockNumber)</span>
+<span class="fc" id="L89">            .min(EthPeers.LEAST_TO_MOST_BUSY);</span>
+  }
+
+  /**
+   * Register callbacks for when the request is made or
+   *
+   * @param onSuccess handler for when a peer becomes available and the request is sent
+   * @param onError handler for when there is no peer with sufficient height or the request fails to
+   *     send
+   */
+  public void then(final Consumer&lt;ResponseStream&gt; onSuccess, final Consumer&lt;Throwable&gt; onError) {
+<span class="fc" id="L100">    result.whenComplete(</span>
+        (result, error) -&gt; {
+<span class="fc bfc" id="L102" title="All 2 branches covered.">          if (error != null) {</span>
+<span class="fc" id="L103">            onError.accept(error);</span>
+          } else {
+<span class="fc" id="L105">            onSuccess.accept(result);</span>
+          }
+<span class="fc" id="L107">        });</span>
+<span class="fc" id="L108">  }</span>
+
+  /**
+   * Abort this request.
+   *
+   * @return the response stream if the request has already been sent, otherwise empty.
+   */
+  public synchronized Optional&lt;ResponseStream&gt; abort() {
+    try {
+<span class="fc" id="L117">      result.cancel(false);</span>
+<span class="fc" id="L118">      return Optional.ofNullable(result.getNow(null));</span>
+<span class="fc" id="L119">    } catch (final CancellationException | CompletionException e) {</span>
+<span class="fc" id="L120">      return Optional.empty();</span>
+    }
+  }
+
+  public Optional&lt;EthPeer&gt; getAssignedPeer() {
+<span class="fc" id="L125">    return peer;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,601 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractRLPInput.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.rlp</a> &gt; <span class="el_source">AbstractRLPInput.java</span></div><h1>AbstractRLPInput.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.rlp;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import java.math.BigInteger;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.Arrays;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.Bytes48;
+import org.apache.tuweni.bytes.MutableBytes;
+import org.apache.tuweni.bytes.MutableBytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.apache.tuweni.units.bigints.UInt64;
+
+abstract class AbstractRLPInput implements RLPInput {
+
+  private static final String errorMessageSuffix = &quot; (at bytes %d-%d: %s%s[%s]%s%s)&quot;;
+
+  private final boolean lenient;
+
+  protected long size; // The number of bytes in this rlp-encoded byte string
+
+  // Information on the item the input currently is at (next thing to read).
+  protected long
+      currentItem; // Offset in value to the beginning of the item (or value.size() if done)
+  private RLPDecodingHelpers.Kind currentKind; // Kind of the item.
+  private long currentPayloadOffset; // Offset to the beginning of the current item payload.
+  private int currentPayloadSize; // Size of the current item payload.
+
+  // Information regarding opened list. The depth is how many list deep we are, and endOfListOffset
+  // holds the offset in value at which each list ends (indexed by depth). Allows to know if we're
+  // at the end of our current list, and if there is any unfinished one.
+  private int depth;
+<span class="fc" id="L52">  private long[] endOfListOffset = new long[4];</span>
+
+<span class="fc" id="L54">  AbstractRLPInput(final boolean lenient) {</span>
+<span class="fc" id="L55">    this.lenient = lenient;</span>
+<span class="fc" id="L56">  }</span>
+
+  protected void init(final long inputSize, final boolean shouldFitInputSizeExactly) {
+<span class="fc bfc" id="L59" title="All 2 branches covered.">    if (inputSize == 0) {</span>
+<span class="fc" id="L60">      return;</span>
+    }
+
+<span class="fc" id="L63">    currentItem = 0;</span>
+    // Initially set the size to the input as prepareCurrentItem() needs it. Once we've prepared the
+    // top level item, we know where that item ends exactly and can update the size to that more
+    // precise value (which basically mean we'll throw errors on malformed inputs potentially
+    // sooner).
+<span class="fc" id="L68">    size = inputSize;</span>
+<span class="fc" id="L69">    prepareCurrentItem();</span>
+<span class="fc bfc" id="L70" title="All 2 branches covered.">    if (currentKind.isList()) {</span>
+<span class="fc" id="L71">      size = nextItem();</span>
+    }
+
+    // No matter what, if the first item advertise a payload ending after the end of the input, that
+    // input is corrupted.
+<span class="fc bfc" id="L76" title="All 2 branches covered.">    if (size &gt; inputSize) {</span>
+      // Our error message include a snippet of the input and that code assume size is not set
+      // outside the input, and that's exactly the case we're testing, so resetting the size
+      // simply for the sake of the error being properly generated.
+<span class="fc" id="L80">      final long itemEnd = size;</span>
+<span class="fc" id="L81">      size = inputSize;</span>
+<span class="pc" id="L82">      throw corrupted(</span>
+          &quot;Input doesn't have enough data for RLP encoding: encoding advertise a &quot;
+              + &quot;payload ending at byte %d but input has size %d&quot;,
+<span class="fc" id="L85">          itemEnd, inputSize);</span>
+    }
+
+<span class="pc bpc" id="L88" title="1 of 4 branches missed.">    if (shouldFitInputSizeExactly &amp;&amp; inputSize &gt; size) {</span>
+<span class="fc" id="L89">      throwMalformed(</span>
+          &quot;Input has extra data after RLP encoding: encoding ends at byte %d but &quot;
+              + &quot;input has size %d&quot;,
+<span class="fc" id="L92">          size, inputSize);</span>
+    }
+
+<span class="fc" id="L95">    validateCurrentItem();</span>
+<span class="fc" id="L96">  }</span>
+
+  protected abstract byte inputByte(long offset);
+
+  protected abstract Bytes inputSlice(long offset, int length);
+
+  protected abstract Bytes32 inputSlice32(long offset);
+
+  protected abstract Bytes48 inputSlice48(long offset);
+
+  protected abstract String inputHex(long offset, int length);
+
+  protected abstract BigInteger getUnsignedBigInteger(long offset, int length);
+
+  protected abstract int getInt(long offset);
+
+  protected abstract long getLong(long offset);
+
+  /**
+   * Sets the input to the item provided (an offset to the beginning of an item) and check this is
+   * valid.
+   *
+   * @param item the value to which the current item is to be set.
+   */
+  protected void setTo(final long item) {
+<span class="fc" id="L121">    currentItem = item;</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">    if (currentItem &gt;= size) {</span>
+      // Setting somewhat safe values so that multiple calls to setTo(nextItem()) don't do anything
+      // even when at the end.
+<span class="fc" id="L125">      currentKind = null;</span>
+<span class="fc" id="L126">      currentPayloadOffset = item;</span>
+<span class="fc" id="L127">      currentPayloadSize = 0;</span>
+<span class="fc" id="L128">      return;</span>
+    }
+<span class="fc" id="L130">    prepareCurrentItem();</span>
+<span class="fc" id="L131">    validateCurrentItem();</span>
+<span class="fc" id="L132">  }</span>
+
+  private void prepareCurrentItem() {
+    // Sets the kind of the item, the offset at which his payload starts and the size of this
+    // payload.
+    try {
+<span class="fc" id="L138">      final RLPDecodingHelpers.RLPElementMetadata elementMetadata =</span>
+<span class="fc" id="L139">          RLPDecodingHelpers.rlpElementMetadata(this::inputByte, size, currentItem);</span>
+<span class="fc" id="L140">      currentKind = elementMetadata.kind;</span>
+<span class="fc" id="L141">      currentPayloadOffset = elementMetadata.payloadStart;</span>
+<span class="fc" id="L142">      currentPayloadSize = elementMetadata.payloadSize;</span>
+<span class="fc" id="L143">    } catch (final RLPException exception) {</span>
+<span class="fc" id="L144">      final String message =</span>
+<span class="fc" id="L145">          String.format(exception.getMessage() + errorMessageSuffix, getErrorMessageSuffixParams());</span>
+<span class="fc" id="L146">      throw new RLPException(message, exception);</span>
+<span class="fc" id="L147">    }</span>
+<span class="fc" id="L148">  }</span>
+
+  private void validateCurrentItem() {
+    // Validate that a single byte SHORT_ELEMENT payload is not &lt;= 0x7F. If it is, it should have
+    // been written as a BYTE_ELEMENT.
+<span class="fc bfc" id="L153" title="All 6 branches covered.">    if (currentKind == RLPDecodingHelpers.Kind.SHORT_ELEMENT</span>
+        &amp;&amp; currentPayloadSize == 1
+        &amp;&amp; currentPayloadOffset &lt; size
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        &amp;&amp; (payloadByte(0) &amp; 0xFF) &lt;= 0x7F) {</span>
+<span class="pc" id="L157">      throwMalformed(</span>
+          &quot;Malformed RLP item: single byte value 0x%s should have been &quot;
+              + &quot;written without a prefix&quot;,
+<span class="fc" id="L160">          hex(currentPayloadOffset, currentPayloadOffset + 1));</span>
+    }
+
+<span class="fc bfc" id="L163" title="All 4 branches covered.">    if (currentPayloadSize &gt; 0 &amp;&amp; currentPayloadOffset &gt;= size) {</span>
+<span class="pc" id="L164">      throw corrupted(</span>
+          &quot;Invalid RLP item: payload should start at offset %d but input has only &quot; + &quot;%d bytes&quot;,
+<span class="fc" id="L166">          currentPayloadOffset, size);</span>
+    }
+<span class="fc bfc" id="L168" title="All 2 branches covered.">    if (size - currentPayloadOffset &lt; currentPayloadSize) {</span>
+<span class="pc" id="L169">      throw corrupted(</span>
+          &quot;Invalid RLP item: payload starting at byte %d should be %d bytes long, but input &quot;
+              + &quot;has only %d bytes from that offset&quot;,
+<span class="fc" id="L172">          currentPayloadOffset, currentPayloadSize, size - currentPayloadOffset);</span>
+    }
+<span class="fc" id="L174">  }</span>
+
+  private long nextItem() {
+<span class="fc" id="L177">    return currentPayloadOffset + currentPayloadSize;</span>
+  }
+
+  @Override
+  public boolean isDone() {
+    // The input is done if we're out of input, but also if we've called leaveList() an appropriate
+    // amount of times.
+<span class="fc bfc" id="L184" title="All 4 branches covered.">    return currentItem &gt;= size &amp;&amp; depth == 0;</span>
+  }
+
+  private String hex(final long start, final long taintedEnd) {
+<span class="fc" id="L188">    final long end = Math.min(taintedEnd, size);</span>
+<span class="fc" id="L189">    final long length = end - start;</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">    if (length &lt; 10) {</span>
+<span class="fc" id="L191">      return inputHex(start, Math.toIntExact(length));</span>
+    } else {
+<span class="fc" id="L193">      return String.format(&quot;%s...%s&quot;, inputHex(start, 4), inputHex(end - 4, 4));</span>
+    }
+  }
+
+  private void throwMalformed(final String msg, final Object... params) {
+<span class="fc bfc" id="L198" title="All 2 branches covered.">    if (!lenient) throw new MalformedRLPInputException(errorMsg(msg, params));</span>
+<span class="fc" id="L199">  }</span>
+
+  private CorruptedRLPInputException corrupted(final String msg, final Object... params) {
+<span class="fc" id="L202">    throw new CorruptedRLPInputException(errorMsg(msg, params));</span>
+  }
+
+  private RLPException error(final String msg, final Object... params) {
+<span class="fc" id="L206">    throw new RLPException(errorMsg(msg, params));</span>
+  }
+
+  private RLPException error(final Throwable cause, final String msg, final Object... params) {
+<span class="fc" id="L210">    throw new RLPException(errorMsg(msg, params), cause);</span>
+  }
+
+  private String errorMsg(final String message, final Object... params) {
+<span class="fc" id="L214">    return String.format(</span>
+<span class="fc" id="L215">        message + errorMessageSuffix, concatParams(params, getErrorMessageSuffixParams()));</span>
+  }
+
+  private Object[] getErrorMessageSuffixParams() {
+<span class="fc" id="L219">    final long start = currentItem;</span>
+<span class="fc" id="L220">    final long end = Math.min(size, nextItem());</span>
+<span class="fc" id="L221">    final long realStart = Math.max(0, start - 4);</span>
+<span class="fc" id="L222">    final long realEnd = Math.min(size, end + 4);</span>
+<span class="fc" id="L223">    return new Object[] {</span>
+<span class="fc" id="L224">      start,</span>
+<span class="fc" id="L225">      end,</span>
+<span class="fc bfc" id="L226" title="All 2 branches covered.">      realStart == 0 ? &quot;&quot; : &quot;...&quot;,</span>
+<span class="fc" id="L227">      hex(realStart, start),</span>
+<span class="fc" id="L228">      hex(start, end),</span>
+<span class="fc" id="L229">      hex(end, realEnd),</span>
+<span class="fc bfc" id="L230" title="All 2 branches covered.">      realEnd == size ? &quot;&quot; : &quot;...&quot;</span>
+    };
+  }
+
+  private static Object[] concatParams(final Object[] initial, final Object... others) {
+<span class="fc" id="L235">    final Object[] params = Arrays.copyOf(initial, initial.length + others.length);</span>
+<span class="fc" id="L236">    System.arraycopy(others, 0, params, initial.length, others.length);</span>
+<span class="fc" id="L237">    return params;</span>
+  }
+
+  private void checkElt(final String what) {
+<span class="fc bfc" id="L241" title="All 2 branches covered.">    if (currentItem &gt;= size) {</span>
+<span class="nc" id="L242">      throw error(&quot;Cannot read a %s, input is fully consumed&quot;, what);</span>
+    }
+<span class="fc bfc" id="L244" title="All 4 branches covered.">    if (depth &gt; 0 &amp;&amp; currentPayloadOffset + currentPayloadSize &gt; endOfListOffset[depth - 1]) {</span>
+<span class="nc" id="L245">      throw error(&quot;Cannot read a %s, too large for enclosing list&quot;, what);</span>
+    }
+<span class="pc bpc" id="L247" title="1 of 2 branches missed.">    if (isEndOfCurrentList()) {</span>
+<span class="nc" id="L248">      throw error(&quot;Cannot read a %s, reached end of current list&quot;, what);</span>
+    }
+<span class="fc bfc" id="L250" title="All 2 branches covered.">    if (currentKind.isList()) {</span>
+<span class="nc" id="L251">      throw error(&quot;Cannot read a %s, current item is a list&quot;, what);</span>
+    }
+<span class="fc" id="L253">  }</span>
+
+  private void checkElt(final String what, final int expectedSize) {
+<span class="fc" id="L256">    checkElt(what);</span>
+<span class="fc bfc" id="L257" title="All 2 branches covered.">    if (currentPayloadSize != expectedSize)</span>
+<span class="pc" id="L258">      throw error(</span>
+          &quot;Cannot read a %s, expecting %d bytes but current element is %d bytes long&quot;,
+<span class="fc" id="L260">          what, expectedSize, currentPayloadSize);</span>
+<span class="fc" id="L261">  }</span>
+
+  private void checkScalar(final String what) {
+<span class="fc" id="L264">    checkElt(what);</span>
+<span class="fc bfc" id="L265" title="All 4 branches covered.">    if (currentPayloadSize &gt; 0 &amp;&amp; payloadByte(0) == 0) {</span>
+<span class="nc" id="L266">      throwMalformed(&quot;Invalid scalar, has leading zeros bytes&quot;);</span>
+    }
+<span class="fc" id="L268">  }</span>
+
+  private void checkScalar(final String what, final int maxExpectedSize) {
+<span class="fc" id="L271">    checkScalar(what);</span>
+<span class="fc bfc" id="L272" title="All 2 branches covered.">    if (currentPayloadSize &gt; maxExpectedSize)</span>
+<span class="pc" id="L273">      throw error(</span>
+          &quot;Cannot read a %s, expecting a maximum of %d bytes but current element is %d bytes long&quot;,
+<span class="fc" id="L275">          what, maxExpectedSize, currentPayloadSize);</span>
+<span class="fc" id="L276">  }</span>
+
+  private byte payloadByte(final int offsetInPayload) {
+<span class="fc" id="L279">    return inputByte(currentPayloadOffset + offsetInPayload);</span>
+  }
+
+  private Bytes payloadSlice() {
+<span class="fc" id="L283">    return inputSlice(currentPayloadOffset, currentPayloadSize);</span>
+  }
+
+  @Override
+  public void skipNext() {
+<span class="fc" id="L288">    setTo(nextItem());</span>
+<span class="fc" id="L289">  }</span>
+
+  @Override
+  public long readLongScalar() {
+<span class="fc" id="L293">    checkScalar(&quot;long scalar&quot;, 8);</span>
+<span class="fc" id="L294">    long res = readGenericLongScalar();</span>
+<span class="fc" id="L295">    setTo(nextItem());</span>
+<span class="fc" id="L296">    return res;</span>
+  }
+
+  private long readGenericLongScalar() {
+<span class="fc" id="L300">    long res = 0;</span>
+<span class="fc" id="L301">    int shift = 0;</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">    for (int i = 0; i &lt; currentPayloadSize; i++) {</span>
+<span class="fc" id="L303">      res |= ((long) payloadByte(currentPayloadSize - i - 1) &amp; 0xFF) &lt;&lt; shift;</span>
+<span class="fc" id="L304">      shift += 8;</span>
+    }
+<span class="fc" id="L306">    return res;</span>
+  }
+
+  @Override
+  public int readIntScalar() {
+<span class="fc" id="L311">    checkScalar(&quot;int scalar&quot;, 4);</span>
+<span class="fc" id="L312">    int res = 0;</span>
+<span class="fc" id="L313">    int shift = 0;</span>
+<span class="fc bfc" id="L314" title="All 2 branches covered.">    for (int i = 0; i &lt; currentPayloadSize; i++) {</span>
+<span class="fc" id="L315">      res |= (payloadByte(currentPayloadSize - i - 1) &amp; 0xFF) &lt;&lt; shift;</span>
+<span class="fc" id="L316">      shift += 8;</span>
+    }
+<span class="fc" id="L318">    setTo(nextItem());</span>
+<span class="fc" id="L319">    return res;</span>
+  }
+
+  @Override
+  public long readUnsignedIntScalar() {
+<span class="fc" id="L324">    checkScalar(&quot;unsigned int scalar&quot;, 4);</span>
+<span class="fc" id="L325">    return readLongScalar();</span>
+  }
+
+  @Override
+  public int readUnsignedByteScalar() {
+<span class="fc" id="L330">    checkScalar(&quot;unsigned byte scalar&quot;, 1);</span>
+<span class="fc bfc" id="L331" title="All 2 branches covered.">    int result = (currentPayloadSize == 0) ? 0 : payloadByte(0) &amp; 0xff;</span>
+<span class="fc" id="L332">    setTo(nextItem());</span>
+<span class="fc" id="L333">    return result;</span>
+  }
+
+  @Override
+  public BigInteger readBigIntegerScalar() {
+<span class="fc" id="L338">    checkScalar(&quot;arbitrary precision scalar&quot;);</span>
+<span class="fc" id="L339">    final BigInteger res = getUnsignedBigInteger(currentPayloadOffset, currentPayloadSize);</span>
+<span class="fc" id="L340">    setTo(nextItem());</span>
+<span class="fc" id="L341">    return res;</span>
+  }
+
+  private Bytes readBytes8Scalar() {
+<span class="fc" id="L345">    checkScalar(&quot;8-bytes scalar&quot;, 8);</span>
+<span class="fc" id="L346">    final MutableBytes res = MutableBytes.create(8);</span>
+<span class="fc" id="L347">    payloadSlice().copyTo(res, res.size() - currentPayloadSize);</span>
+<span class="fc" id="L348">    setTo(nextItem());</span>
+<span class="fc" id="L349">    return res;</span>
+  }
+
+  @Override
+  public UInt64 readUInt64Scalar() {
+<span class="fc" id="L354">    return UInt64.fromBytes(readBytes8Scalar());</span>
+  }
+
+  private Bytes32 readBytes32Scalar() {
+<span class="fc" id="L358">    checkScalar(&quot;32-bytes scalar&quot;, 32);</span>
+<span class="fc" id="L359">    final MutableBytes32 res = MutableBytes32.create();</span>
+<span class="fc" id="L360">    payloadSlice().copyTo(res, res.size() - currentPayloadSize);</span>
+<span class="fc" id="L361">    setTo(nextItem());</span>
+<span class="fc" id="L362">    return res;</span>
+  }
+
+  @Override
+  public UInt256 readUInt256Scalar() {
+<span class="fc" id="L367">    return UInt256.fromBytes(readBytes32Scalar());</span>
+  }
+
+  @Override
+  public byte readByte() {
+<span class="fc" id="L372">    checkElt(&quot;byte&quot;, 1);</span>
+<span class="fc" id="L373">    final byte b = payloadByte(0);</span>
+<span class="fc" id="L374">    setTo(nextItem());</span>
+<span class="fc" id="L375">    return b;</span>
+  }
+
+  @Override
+  public short readShort() {
+<span class="fc" id="L380">    checkElt(&quot;2-byte short&quot;, 2);</span>
+<span class="fc" id="L381">    final short s = (short) ((payloadByte(0) &lt;&lt; 8) | (payloadByte(1) &amp; 0xFF));</span>
+<span class="fc" id="L382">    setTo(nextItem());</span>
+<span class="fc" id="L383">    return s;</span>
+  }
+
+  @Override
+  public int readInt() {
+<span class="fc" id="L388">    checkElt(&quot;4-byte int&quot;, 4);</span>
+<span class="fc" id="L389">    final int res = getInt(currentPayloadOffset);</span>
+<span class="fc" id="L390">    setTo(nextItem());</span>
+<span class="fc" id="L391">    return res;</span>
+  }
+
+  @Override
+  public long readLong() {
+<span class="fc" id="L396">    checkElt(&quot;8-byte long&quot;, 8);</span>
+<span class="fc" id="L397">    final long res = getLong(currentPayloadOffset);</span>
+<span class="fc" id="L398">    setTo(nextItem());</span>
+<span class="fc" id="L399">    return res;</span>
+  }
+
+  @Override
+  public InetAddress readInetAddress() {
+<span class="fc" id="L404">    checkElt(&quot;inet address&quot;);</span>
+<span class="pc bpc" id="L405" title="3 of 4 branches missed.">    if (currentPayloadSize != 4 &amp;&amp; currentPayloadSize != 16) {</span>
+<span class="nc" id="L406">      throw error(</span>
+<span class="nc" id="L407">          &quot;Cannot read an inet address, current element is %d bytes long&quot;, currentPayloadSize);</span>
+    }
+<span class="fc" id="L409">    final byte[] address = new byte[currentPayloadSize];</span>
+<span class="fc bfc" id="L410" title="All 2 branches covered.">    for (int i = 0; i &lt; currentPayloadSize; i++) {</span>
+<span class="fc" id="L411">      address[i] = payloadByte(i);</span>
+    }
+<span class="fc" id="L413">    setTo(nextItem());</span>
+    try {
+<span class="fc" id="L415">      return InetAddress.getByAddress(address);</span>
+<span class="nc" id="L416">    } catch (final UnknownHostException e) {</span>
+      // InetAddress.getByAddress() only throws for an address of illegal length, and we have
+      // validated that length already, this genuinely shouldn't throw.
+<span class="nc" id="L419">      throw new AssertionError(e);</span>
+    }
+  }
+
+  @Override
+  public Bytes readBytes() {
+<span class="fc" id="L425">    checkElt(&quot;arbitrary bytes value&quot;);</span>
+<span class="fc" id="L426">    final Bytes res = payloadSlice();</span>
+<span class="fc" id="L427">    setTo(nextItem());</span>
+<span class="fc" id="L428">    return res;</span>
+  }
+
+  @Override
+  public Bytes32 readBytes32() {
+<span class="fc" id="L433">    checkElt(&quot;32 bytes value&quot;, 32);</span>
+<span class="fc" id="L434">    final Bytes32 res = inputSlice32(currentPayloadOffset);</span>
+<span class="fc" id="L435">    setTo(nextItem());</span>
+<span class="fc" id="L436">    return res;</span>
+  }
+
+  @Override
+  public Bytes48 readBytes48() {
+<span class="fc" id="L441">    checkElt(&quot;48 bytes value&quot;, 48);</span>
+<span class="fc" id="L442">    final Bytes48 res = inputSlice48(currentPayloadOffset);</span>
+<span class="fc" id="L443">    setTo(nextItem());</span>
+<span class="fc" id="L444">    return res;</span>
+  }
+
+  @Override
+  public &lt;T&gt; T readBytes(final Function&lt;Bytes, T&gt; mapper) {
+<span class="fc" id="L449">    final Bytes res = readBytes();</span>
+    try {
+<span class="fc" id="L451">      return mapper.apply(res);</span>
+<span class="fc" id="L452">    } catch (final Exception e) {</span>
+<span class="nc" id="L453">      throw error(e, &quot;Problem decoding bytes value&quot;);</span>
+    }
+  }
+
+  @Override
+  public RLPInput readAsRlp() {
+<span class="pc bpc" id="L459" title="1 of 2 branches missed.">    if (currentItem &gt;= size) {</span>
+<span class="nc" id="L460">      throw error(&quot;Cannot read current element as RLP, input is fully consumed&quot;);</span>
+    }
+<span class="fc" id="L462">    final long next = nextItem();</span>
+<span class="fc" id="L463">    final RLPInput res = RLP.input(inputSlice(currentItem, Math.toIntExact(next - currentItem)));</span>
+<span class="fc" id="L464">    setTo(next);</span>
+<span class="fc" id="L465">    return res;</span>
+  }
+
+  @Override
+  public int enterList() {
+<span class="fc" id="L470">    return enterList(false);</span>
+  }
+
+  /**
+   * Enters the list, but does not return the number of item of the entered list. This prevents
+   * bouncing all around the file to read values that are probably not even used.
+   *
+   * @see #enterList()
+   * @param skipCount true if the element count is not required.
+   * @return -1 if skipCount==true, otherwise, the number of item of the entered list.
+   */
+  public int enterList(final boolean skipCount) {
+<span class="fc bfc" id="L482" title="All 2 branches covered.">    if (currentItem &gt;= size) {</span>
+<span class="nc" id="L483">      throw error(&quot;Cannot enter a lists, input is fully consumed&quot;);</span>
+    }
+<span class="fc bfc" id="L485" title="All 2 branches covered.">    if (!currentKind.isList()) {</span>
+<span class="nc" id="L486">      throw error(&quot;Expected current item to be a list, but it is: &quot; + currentKind);</span>
+    }
+
+<span class="fc" id="L489">    ++depth;</span>
+<span class="fc bfc" id="L490" title="All 2 branches covered.">    if (depth &gt; endOfListOffset.length) {</span>
+<span class="fc" id="L491">      endOfListOffset = Arrays.copyOf(endOfListOffset, (endOfListOffset.length * 3) / 2);</span>
+    }
+    // The first list element is the beginning of the payload. Its end is the end of this item.
+<span class="fc" id="L494">    final long listStart = currentPayloadOffset;</span>
+<span class="fc" id="L495">    final long listEnd = nextItem();</span>
+
+<span class="pc bpc" id="L497" title="1 of 2 branches missed.">    if (listEnd &gt; size) {</span>
+<span class="nc" id="L498">      throw corrupted(</span>
+          &quot;Invalid RLP item: list payload should end at offset %d but input has only %d bytes&quot;,
+<span class="nc" id="L500">          listEnd, size);</span>
+    }
+
+<span class="fc bfc" id="L503" title="All 4 branches covered.">    if (depth &gt; 1 &amp;&amp; (listEnd &gt; endOfListOffset[depth - 2])) {</span>
+<span class="pc" id="L504">      throw corrupted(</span>
+          &quot;Invalid RLP item: list ends outside of enclosing list (inner: %d, outer: %d)&quot;,
+<span class="fc" id="L506">          listEnd, endOfListOffset[depth - 2]);</span>
+    }
+
+<span class="fc" id="L509">    endOfListOffset[depth - 1] = listEnd;</span>
+<span class="fc" id="L510">    int count = -1;</span>
+
+<span class="pc bpc" id="L512" title="1 of 2 branches missed.">    if (!skipCount) {</span>
+      // Count list elements from first one.
+<span class="fc" id="L514">      count = 0;</span>
+<span class="fc" id="L515">      setTo(listStart);</span>
+<span class="fc bfc" id="L516" title="All 2 branches covered.">      while (currentItem &lt; listEnd) {</span>
+<span class="fc" id="L517">        ++count;</span>
+<span class="fc" id="L518">        setTo(nextItem());</span>
+      }
+    }
+
+    // And lastly reset on the list first element before returning
+<span class="fc" id="L523">    setTo(listStart);</span>
+<span class="fc" id="L524">    return count;</span>
+  }
+
+  @Override
+  public void leaveList() {
+<span class="fc" id="L529">    leaveList(false);</span>
+<span class="fc" id="L530">  }</span>
+
+  @Override
+  public void leaveListLenient() {
+<span class="fc" id="L534">    leaveList(true);</span>
+<span class="fc" id="L535">  }</span>
+
+  private void leaveList(final boolean ignoreRest) {
+<span class="pc bpc" id="L538" title="1 of 2 branches missed.">    checkState(depth &gt; 0, &quot;Not within an RLP list&quot;);</span>
+
+<span class="fc bfc" id="L540" title="All 2 branches covered.">    if (!ignoreRest) {</span>
+<span class="fc" id="L541">      final long listEndOffset = endOfListOffset[depth - 1];</span>
+<span class="pc bpc" id="L542" title="1 of 2 branches missed.">      if (currentItem &lt; listEndOffset) throw error(&quot;Not at the end of the current list&quot;);</span>
+    }
+
+<span class="fc" id="L545">    --depth;</span>
+<span class="fc" id="L546">  }</span>
+
+  @Override
+  public boolean nextIsList() {
+<span class="fc bfc" id="L550" title="All 4 branches covered.">    return currentKind != null &amp;&amp; currentKind.isList();</span>
+  }
+
+  @Override
+  public boolean nextIsNull() {
+<span class="fc bfc" id="L555" title="All 4 branches covered.">    return currentKind == RLPDecodingHelpers.Kind.SHORT_ELEMENT &amp;&amp; currentPayloadSize == 0;</span>
+  }
+
+  @Override
+  public int nextSize() {
+<span class="fc" id="L560">    return currentPayloadSize;</span>
+  }
+
+  @Override
+  public int nextOffset() {
+<span class="fc" id="L565">    return Math.toIntExact(currentPayloadOffset);</span>
+  }
+
+  @Override
+  public boolean isEndOfCurrentList() {
+<span class="fc bfc" id="L570" title="All 4 branches covered.">    return depth &gt; 0 &amp;&amp; currentItem &gt;= endOfListOffset[depth - 1];</span>
+  }
+
+  @Override
+  public boolean isZeroLengthString() {
+<span class="fc bfc" id="L575" title="All 4 branches covered.">    return currentKind == RLPDecodingHelpers.Kind.SHORT_ELEMENT &amp;&amp; currentPayloadSize == 0;</span>
+  }
+
+  @Override
+  public void reset() {
+<span class="fc" id="L580">    setTo(0);</span>
+<span class="fc" id="L581">  }</span>
+
+  @Override
+  public Bytes currentListAsBytes() {
+<span class="pc bpc" id="L585" title="1 of 2 branches missed.">    if (currentItem &gt;= size) {</span>
+<span class="nc" id="L586">      throw error(&quot;Cannot read list, input is fully consumed&quot;);</span>
+    }
+<span class="pc bpc" id="L588" title="1 of 2 branches missed.">    if (!currentKind.isList()) {</span>
+<span class="nc" id="L589">      throw error(&quot;Cannot read list, current item is not a list list&quot;);</span>
+    }
+
+<span class="fc" id="L592">    final MutableBytes scratch = MutableBytes.create(currentPayloadSize + 10);</span>
+<span class="fc" id="L593">    final int headerSize = RLPEncodingHelpers.writeListHeader(currentPayloadSize, scratch, 0);</span>
+<span class="fc" id="L594">    payloadSlice().copyTo(scratch, headerSize);</span>
+<span class="fc" id="L595">    final Bytes res = scratch.slice(0, currentPayloadSize + headerSize);</span>
+
+<span class="fc" id="L597">    setTo(nextItem());</span>
+<span class="fc" id="L598">    return res;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

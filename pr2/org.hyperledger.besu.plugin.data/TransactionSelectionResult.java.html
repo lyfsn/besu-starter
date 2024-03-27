@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionSelectionResult.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.data</a> &gt; <span class="el_source">TransactionSelectionResult.java</span></div><h1>TransactionSelectionResult.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.plugin.data;
+
+import java.util.Objects;
+import java.util.Optional;
+
+/**
+ * Represent the result of the selection process of a candidate transaction, during the block
+ * creation phase.
+ */
+public class TransactionSelectionResult {
+
+  /**
+   * Represent the status of a transaction selection result. Plugin can extend this to implement its
+   * own statuses.
+   */
+  protected interface Status {
+    /**
+     * Should the selection process be stopped?
+     *
+     * @return true if the selection process needs to be stopped
+     */
+    boolean stop();
+
+    /**
+     * Should the current transaction be removed from the txpool?
+     *
+     * @return yes if the transaction should be removed from the txpool
+     */
+    boolean discard();
+
+    /**
+     * Name of this status
+     *
+     * @return the name
+     */
+    String name();
+  }
+
+<span class="fc" id="L54">  private enum BaseStatus implements Status {</span>
+<span class="fc" id="L55">    SELECTED,</span>
+<span class="fc" id="L56">    BLOCK_FULL(true, false),</span>
+<span class="fc" id="L57">    BLOCK_OCCUPANCY_ABOVE_THRESHOLD(true, false),</span>
+<span class="fc" id="L58">    BLOCK_SELECTION_TIMEOUT(true, false),</span>
+<span class="fc" id="L59">    TX_EVALUATION_TOO_LONG(false, true),</span>
+<span class="fc" id="L60">    INVALID_TRANSIENT(false, false),</span>
+<span class="fc" id="L61">    INVALID(false, true);</span>
+
+    private final boolean stop;
+    private final boolean discard;
+
+<span class="fc" id="L66">    BaseStatus() {</span>
+<span class="fc" id="L67">      this.stop = false;</span>
+<span class="fc" id="L68">      this.discard = false;</span>
+<span class="fc" id="L69">    }</span>
+
+<span class="fc" id="L71">    BaseStatus(final boolean stop, final boolean discard) {</span>
+<span class="fc" id="L72">      this.stop = stop;</span>
+<span class="fc" id="L73">      this.discard = discard;</span>
+<span class="fc" id="L74">    }</span>
+
+    @Override
+    public String toString() {
+<span class="nc" id="L78">      return name() + &quot; (stop=&quot; + stop + &quot;, discard=&quot; + discard + &quot;)&quot;;</span>
+    }
+
+    @Override
+    public boolean stop() {
+<span class="fc" id="L83">      return stop;</span>
+    }
+
+    @Override
+    public boolean discard() {
+<span class="fc" id="L88">      return discard;</span>
+    }
+  }
+
+  /** The transaction has been selected to be included in the new block */
+<span class="fc" id="L93">  public static final TransactionSelectionResult SELECTED =</span>
+      new TransactionSelectionResult(BaseStatus.SELECTED);
+  /** The transaction has not been selected since the block is full. */
+<span class="fc" id="L96">  public static final TransactionSelectionResult BLOCK_FULL =</span>
+      new TransactionSelectionResult(BaseStatus.BLOCK_FULL);
+  /** There was no more time to add transaction to the block */
+<span class="fc" id="L99">  public static final TransactionSelectionResult BLOCK_SELECTION_TIMEOUT =</span>
+      new TransactionSelectionResult(BaseStatus.BLOCK_SELECTION_TIMEOUT);
+  /** Transaction took too much to evaluate */
+<span class="fc" id="L102">  public static final TransactionSelectionResult TX_EVALUATION_TOO_LONG =</span>
+      new TransactionSelectionResult(BaseStatus.TX_EVALUATION_TOO_LONG);
+  /**
+   * The transaction has not been selected since too large and the occupancy of the block is enough
+   * to stop the selection.
+   */
+<span class="fc" id="L108">  public static final TransactionSelectionResult BLOCK_OCCUPANCY_ABOVE_THRESHOLD =</span>
+      new TransactionSelectionResult(BaseStatus.BLOCK_OCCUPANCY_ABOVE_THRESHOLD);
+  /**
+   * The transaction has not been selected since its gas limit is greater than the block remaining
+   * gas, but the selection should continue.
+   */
+<span class="fc" id="L114">  public static final TransactionSelectionResult TX_TOO_LARGE_FOR_REMAINING_GAS =</span>
+<span class="fc" id="L115">      TransactionSelectionResult.invalidTransient(&quot;TX_TOO_LARGE_FOR_REMAINING_GAS&quot;);</span>
+  /**
+   * The transaction has not been selected since its current price is below the configured min
+   * price, but the selection should continue.
+   */
+<span class="fc" id="L120">  public static final TransactionSelectionResult CURRENT_TX_PRICE_BELOW_MIN =</span>
+<span class="fc" id="L121">      TransactionSelectionResult.invalidTransient(&quot;CURRENT_TX_PRICE_BELOW_MIN&quot;);</span>
+  /**
+   * The transaction has not been selected since its blob price is below the current network blob
+   * price, but the selection should continue.
+   */
+<span class="fc" id="L126">  public static final TransactionSelectionResult BLOB_PRICE_BELOW_CURRENT_MIN =</span>
+<span class="fc" id="L127">      TransactionSelectionResult.invalidTransient(&quot;BLOB_PRICE_BELOW_CURRENT_MIN&quot;);</span>
+
+  /**
+   * The transaction has not been selected since its priority fee is below the configured min
+   * priority fee per gas, but the selection should continue.
+   */
+<span class="fc" id="L133">  public static final TransactionSelectionResult PRIORITY_FEE_PER_GAS_BELOW_CURRENT_MIN =</span>
+<span class="fc" id="L134">      TransactionSelectionResult.invalidTransient(&quot;PRIORITY_FEE_PER_GAS_BELOW_CURRENT_MIN&quot;);</span>
+
+  private final Status status;
+  private final Optional&lt;String&gt; maybeInvalidReason;
+
+  /**
+   * Create a new transaction selection result with the passed status
+   *
+   * @param status the selection result status
+   */
+  protected TransactionSelectionResult(final Status status) {
+<span class="fc" id="L145">    this(status, null);</span>
+<span class="fc" id="L146">  }</span>
+
+  /**
+   * Create a new transaction selection result with the passed status and invalid reason
+   *
+   * @param status the selection result status
+   * @param invalidReason string with a custom invalid reason
+   */
+<span class="fc" id="L154">  protected TransactionSelectionResult(final Status status, final String invalidReason) {</span>
+<span class="fc" id="L155">    this.status = status;</span>
+<span class="fc" id="L156">    this.maybeInvalidReason = Optional.ofNullable(invalidReason);</span>
+<span class="fc" id="L157">  }</span>
+
+  /**
+   * Return a selection result that identify the candidate transaction as temporarily invalid, this
+   * means that the transaction could become valid at a later time.
+   *
+   * @param invalidReason the reason why transaction is invalid
+   * @return the selection result
+   */
+  public static TransactionSelectionResult invalidTransient(final String invalidReason) {
+<span class="fc" id="L167">    return new TransactionSelectionResult(BaseStatus.INVALID_TRANSIENT, invalidReason);</span>
+  }
+
+  /**
+   * Return a selection result that identify the candidate transaction as permanently invalid, this
+   * means that it could be removed safely from the transaction pool.
+   *
+   * @param invalidReason the reason why transaction is invalid
+   * @return the selection result
+   */
+  public static TransactionSelectionResult invalid(final String invalidReason) {
+<span class="fc" id="L178">    return new TransactionSelectionResult(BaseStatus.INVALID, invalidReason);</span>
+  }
+
+  /**
+   * Is the block creation done and the selection process should stop?
+   *
+   * @return true if the selection process should stop, false otherwise
+   */
+  public boolean stop() {
+<span class="fc" id="L187">    return status.stop();</span>
+  }
+
+  /**
+   * Should the candidate transaction removed from the transaction pool?
+   *
+   * @return true if the candidate transaction should be removed from transaction pool, false
+   *     otherwise
+   */
+  public boolean discard() {
+<span class="fc" id="L197">    return status.discard();</span>
+  }
+
+  /**
+   * Is the candidate transaction selected for block inclusion?
+   *
+   * @return true if the candidate transaction is included in the new block, false otherwise
+   */
+  public boolean selected() {
+<span class="fc" id="L206">    return BaseStatus.SELECTED.equals(status);</span>
+  }
+
+  /**
+   * Optionally return the reason why the transaction is invalid if present
+   *
+   * @return an optional with the invalid reason
+   */
+  public Optional&lt;String&gt; maybeInvalidReason() {
+<span class="nc" id="L215">    return maybeInvalidReason;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L220">    return status.name() + maybeInvalidReason.map(ir -&gt; &quot;(&quot; + ir + &quot;)&quot;).orElse(&quot;&quot;);</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="fc bfc" id="L225" title="All 2 branches covered.">    if (this == o) return true;</span>
+<span class="pc bpc" id="L226" title="2 of 4 branches missed.">    if (o == null || getClass() != o.getClass()) return false;</span>
+<span class="fc" id="L227">    final TransactionSelectionResult that = (TransactionSelectionResult) o;</span>
+<span class="pc bpc" id="L228" title="1 of 4 branches missed.">    return status == that.status &amp;&amp; Objects.equals(maybeInvalidReason, that.maybeInvalidReason);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L233">    return Objects.hash(status, maybeInvalidReason);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

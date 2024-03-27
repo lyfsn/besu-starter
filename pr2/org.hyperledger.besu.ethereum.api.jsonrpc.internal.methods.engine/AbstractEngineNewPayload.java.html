@@ -1,0 +1,530 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractEngineNewPayload.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine</a> &gt; <span class="el_source">AbstractEngineNewPayload.java</span></div><h1>AbstractEngineNewPayload.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine;
+
+import static java.util.stream.Collectors.toList;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.ACCEPTED;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.INVALID;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.INVALID_BLOCK_HASH;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.SYNCING;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.VALID;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine.DepositsValidatorProvider.getDepositsValidator;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine.WithdrawalsValidatorProvider.getWithdrawalsValidator;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.INVALID_PARAMS;
+
+import org.hyperledger.besu.consensus.merge.blockcreation.MergeMiningCoordinator;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.BlockProcessingResult;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.DepositParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.EnginePayloadParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.WithdrawalParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcError;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.EnginePayloadStatusResult;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.Deposit;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.core.encoding.EncodingContext;
+import org.hyperledger.besu.ethereum.core.encoding.TransactionDecoder;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.mainnet.BodyValidation;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+
+import java.security.InvalidParameterException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import io.vertx.core.Vertx;
+import io.vertx.core.json.Json;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractEngineNewPayload extends ExecutionEngineJsonRpcMethod {
+
+<span class="fc" id="L83">  private static final Hash OMMERS_HASH_CONSTANT = Hash.EMPTY_LIST_HASH;</span>
+<span class="fc" id="L84">  private static final Logger LOG = LoggerFactory.getLogger(AbstractEngineNewPayload.class);</span>
+<span class="fc" id="L85">  private static final BlockHeaderFunctions headerFunctions = new MainnetBlockHeaderFunctions();</span>
+  private final MergeMiningCoordinator mergeCoordinator;
+  private final EthPeers ethPeers;
+
+  public AbstractEngineNewPayload(
+      final Vertx vertx,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final MergeMiningCoordinator mergeCoordinator,
+      final EthPeers ethPeers,
+      final EngineCallListener engineCallListener) {
+<span class="fc" id="L96">    super(vertx, protocolSchedule, protocolContext, engineCallListener);</span>
+<span class="fc" id="L97">    this.mergeCoordinator = mergeCoordinator;</span>
+<span class="fc" id="L98">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L99">  }</span>
+
+  @Override
+  public JsonRpcResponse syncResponse(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L103">    engineCallListener.executionEngineCalled();</span>
+
+<span class="fc" id="L105">    final EnginePayloadParameter blockParam =</span>
+<span class="fc" id="L106">        requestContext.getRequiredParameter(0, EnginePayloadParameter.class);</span>
+
+<span class="fc" id="L108">    final Optional&lt;List&lt;String&gt;&gt; maybeVersionedHashParam =</span>
+<span class="fc" id="L109">        requestContext.getOptionalList(1, String.class);</span>
+
+<span class="fc" id="L111">    final Object reqId = requestContext.getRequest().getId();</span>
+
+<span class="fc" id="L113">    Optional&lt;String&gt; maybeParentBeaconBlockRootParam =</span>
+<span class="fc" id="L114">        requestContext.getOptionalParameter(2, String.class);</span>
+<span class="fc" id="L115">    final Optional&lt;Bytes32&gt; maybeParentBeaconBlockRoot =</span>
+<span class="fc" id="L116">        maybeParentBeaconBlockRootParam.map(Bytes32::fromHexString);</span>
+
+<span class="fc" id="L118">    final ValidationResult&lt;RpcErrorType&gt; parameterValidationResult =</span>
+<span class="fc" id="L119">        validateParameters(blockParam, maybeVersionedHashParam, maybeParentBeaconBlockRootParam);</span>
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (!parameterValidationResult.isValid()) {</span>
+<span class="fc" id="L121">      return new JsonRpcErrorResponse(reqId, parameterValidationResult);</span>
+    }
+
+<span class="fc" id="L124">    final ValidationResult&lt;RpcErrorType&gt; forkValidationResult =</span>
+<span class="fc" id="L125">        validateForkSupported(blockParam.getTimestamp());</span>
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">    if (!forkValidationResult.isValid()) {</span>
+<span class="nc" id="L127">      return new JsonRpcErrorResponse(reqId, forkValidationResult);</span>
+    }
+
+    final Optional&lt;List&lt;VersionedHash&gt;&gt; maybeVersionedHashes;
+    try {
+<span class="fc" id="L132">      maybeVersionedHashes = extractVersionedHashes(maybeVersionedHashParam);</span>
+<span class="fc" id="L133">    } catch (RuntimeException ex) {</span>
+<span class="fc" id="L134">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="fc" id="L137">          mergeCoordinator.getLatestValidAncestor(blockParam.getParentHash()).orElse(null),</span>
+          INVALID,
+          &quot;Invalid versionedHash&quot;);
+<span class="fc" id="L140">    }</span>
+
+<span class="fc" id="L142">    final Optional&lt;BlockHeader&gt; maybeParentHeader =</span>
+<span class="fc" id="L143">        protocolContext.getBlockchain().getBlockHeader(blockParam.getParentHash());</span>
+
+<span class="fc" id="L145">    LOG.atTrace()</span>
+<span class="fc" id="L146">        .setMessage(&quot;blockparam: {}&quot;)</span>
+<span class="pc" id="L147">        .addArgument(() -&gt; Json.encodePrettily(blockParam))</span>
+<span class="fc" id="L148">        .log();</span>
+
+<span class="fc" id="L150">    final Optional&lt;List&lt;Withdrawal&gt;&gt; maybeWithdrawals =</span>
+<span class="fc" id="L151">        Optional.ofNullable(blockParam.getWithdrawals())</span>
+<span class="fc" id="L152">            .map(ws -&gt; ws.stream().map(WithdrawalParameter::toWithdrawal).collect(toList()));</span>
+
+<span class="fc" id="L154">    if (!getWithdrawalsValidator(</span>
+<span class="fc" id="L155">            protocolSchedule.get(), blockParam.getTimestamp(), blockParam.getBlockNumber())</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        .validateWithdrawals(maybeWithdrawals)) {</span>
+<span class="fc" id="L157">      return new JsonRpcErrorResponse(</span>
+          reqId, new JsonRpcError(INVALID_PARAMS, &quot;Invalid withdrawals&quot;));
+    }
+
+<span class="fc" id="L161">    final Optional&lt;List&lt;Deposit&gt;&gt; maybeDeposits =</span>
+<span class="fc" id="L162">        Optional.ofNullable(blockParam.getDeposits())</span>
+<span class="fc" id="L163">            .map(ds -&gt; ds.stream().map(DepositParameter::toDeposit).collect(toList()));</span>
+<span class="fc" id="L164">    if (!getDepositsValidator(</span>
+<span class="fc" id="L165">            protocolSchedule.get(), blockParam.getTimestamp(), blockParam.getBlockNumber())</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">        .validateDepositParameter(maybeDeposits)) {</span>
+<span class="fc" id="L167">      return new JsonRpcErrorResponse(reqId, new JsonRpcError(INVALID_PARAMS, &quot;Invalid deposits&quot;));</span>
+    }
+
+<span class="fc bfc" id="L170" title="All 2 branches covered.">    if (mergeContext.get().isSyncing()) {</span>
+<span class="fc" id="L171">      LOG.debug(&quot;We are syncing&quot;);</span>
+<span class="fc" id="L172">      return respondWith(reqId, blockParam, null, SYNCING);</span>
+    }
+
+    final List&lt;Transaction&gt; transactions;
+    try {
+<span class="fc" id="L177">      transactions =</span>
+<span class="fc" id="L178">          blockParam.getTransactions().stream()</span>
+<span class="fc" id="L179">              .map(Bytes::fromHexString)</span>
+<span class="pc" id="L180">              .map(in -&gt; TransactionDecoder.decodeOpaqueBytes(in, EncodingContext.BLOCK_BODY))</span>
+<span class="fc" id="L181">              .collect(Collectors.toList());</span>
+<span class="fc" id="L182">      transactions.forEach(</span>
+          transaction -&gt;
+<span class="nc" id="L184">              mergeCoordinator</span>
+<span class="nc" id="L185">                  .getEthScheduler()</span>
+<span class="nc" id="L186">                  .scheduleTxWorkerTask(</span>
+                      () -&gt; {
+<span class="nc" id="L188">                        Address sender = transaction.getSender();</span>
+<span class="nc" id="L189">                        LOG.atTrace()</span>
+<span class="nc" id="L190">                            .setMessage(&quot;The sender for transaction {} is calculated : {}&quot;)</span>
+<span class="nc" id="L191">                            .addArgument(transaction::getHash)</span>
+<span class="nc" id="L192">                            .addArgument(sender)</span>
+<span class="nc" id="L193">                            .log();</span>
+<span class="nc" id="L194">                      }));</span>
+<span class="fc" id="L195">    } catch (final RLPException | IllegalArgumentException e) {</span>
+<span class="fc" id="L196">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="fc" id="L199">          mergeCoordinator.getLatestValidAncestor(blockParam.getParentHash()).orElse(null),</span>
+          INVALID,
+          &quot;Failed to decode transactions from block parameter&quot;);
+<span class="fc" id="L202">    }</span>
+
+<span class="fc bfc" id="L204" title="All 2 branches covered.">    if (blockParam.getExtraData() == null) {</span>
+<span class="fc" id="L205">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="fc" id="L208">          mergeCoordinator.getLatestValidAncestor(blockParam.getParentHash()).orElse(null),</span>
+          INVALID,
+          &quot;Field extraData must not be null&quot;);
+    }
+
+<span class="fc" id="L213">    final BlockHeader newBlockHeader =</span>
+        new BlockHeader(
+<span class="fc" id="L215">            blockParam.getParentHash(),</span>
+            OMMERS_HASH_CONSTANT,
+<span class="fc" id="L217">            blockParam.getFeeRecipient(),</span>
+<span class="fc" id="L218">            blockParam.getStateRoot(),</span>
+<span class="fc" id="L219">            BodyValidation.transactionsRoot(transactions),</span>
+<span class="fc" id="L220">            blockParam.getReceiptsRoot(),</span>
+<span class="fc" id="L221">            blockParam.getLogsBloom(),</span>
+            Difficulty.ZERO,
+<span class="fc" id="L223">            blockParam.getBlockNumber(),</span>
+<span class="fc" id="L224">            blockParam.getGasLimit(),</span>
+<span class="fc" id="L225">            blockParam.getGasUsed(),</span>
+<span class="fc" id="L226">            blockParam.getTimestamp(),</span>
+<span class="fc" id="L227">            Bytes.fromHexString(blockParam.getExtraData()),</span>
+<span class="fc" id="L228">            blockParam.getBaseFeePerGas(),</span>
+<span class="fc" id="L229">            blockParam.getPrevRandao(),</span>
+            0,
+<span class="fc" id="L231">            maybeWithdrawals.map(BodyValidation::withdrawalsRoot).orElse(null),</span>
+<span class="fc" id="L232">            blockParam.getBlobGasUsed(),</span>
+<span class="fc bfc" id="L233" title="All 2 branches covered.">            blockParam.getExcessBlobGas() == null</span>
+<span class="fc" id="L234">                ? null</span>
+<span class="fc" id="L235">                : BlobGas.fromHexString(blockParam.getExcessBlobGas()),</span>
+<span class="fc" id="L236">            maybeParentBeaconBlockRoot.orElse(null),</span>
+<span class="fc" id="L237">            maybeDeposits.map(BodyValidation::depositsRoot).orElse(null),</span>
+            headerFunctions);
+
+    // ensure the block hash matches the blockParam hash
+    // this must be done before any other check
+<span class="fc bfc" id="L242" title="All 2 branches covered.">    if (!newBlockHeader.getHash().equals(blockParam.getBlockHash())) {</span>
+<span class="fc" id="L243">      String errorMessage =</span>
+<span class="fc" id="L244">          String.format(</span>
+              &quot;Computed block hash %s does not match block hash parameter %s&quot;,
+<span class="fc" id="L246">              newBlockHeader.getBlockHash(), blockParam.getBlockHash());</span>
+<span class="fc" id="L247">      LOG.debug(errorMessage);</span>
+<span class="fc" id="L248">      return respondWithInvalid(reqId, blockParam, null, getInvalidBlockHashStatus(), errorMessage);</span>
+    }
+
+<span class="fc" id="L251">    final var blobTransactions =</span>
+<span class="pc" id="L252">        transactions.stream().filter(transaction -&gt; transaction.getType().supportsBlob()).toList();</span>
+
+<span class="fc" id="L254">    ValidationResult&lt;RpcErrorType&gt; blobValidationResult =</span>
+<span class="fc" id="L255">        validateBlobs(</span>
+            blobTransactions,
+            newBlockHeader,
+            maybeParentHeader,
+            maybeVersionedHashes,
+<span class="fc" id="L260">            protocolSchedule.get().getByBlockHeader(newBlockHeader));</span>
+<span class="pc bpc" id="L261" title="1 of 2 branches missed.">    if (!blobValidationResult.isValid()) {</span>
+<span class="nc" id="L262">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="nc" id="L265">          mergeCoordinator.getLatestValidAncestor(blockParam.getParentHash()).orElse(null),</span>
+<span class="nc" id="L266">          getInvalidBlockHashStatus(),</span>
+<span class="nc" id="L267">          blobValidationResult.getErrorMessage());</span>
+    }
+
+    // do we already have this payload
+<span class="fc bfc" id="L271" title="All 2 branches covered.">    if (protocolContext.getBlockchain().getBlockByHash(newBlockHeader.getBlockHash()).isPresent()) {</span>
+<span class="fc" id="L272">      LOG.debug(&quot;block already present&quot;);</span>
+<span class="fc" id="L273">      return respondWith(reqId, blockParam, blockParam.getBlockHash(), VALID);</span>
+    }
+<span class="fc bfc" id="L275" title="All 2 branches covered.">    if (mergeCoordinator.isBadBlock(blockParam.getBlockHash())) {</span>
+<span class="fc" id="L276">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+          mergeCoordinator
+<span class="fc" id="L280">              .getLatestValidHashOfBadBlock(blockParam.getBlockHash())</span>
+<span class="fc" id="L281">              .orElse(Hash.ZERO),</span>
+          INVALID,
+          &quot;Block already present in bad block manager.&quot;);
+    }
+
+<span class="fc bfc" id="L286" title="All 2 branches covered.">    if (maybeParentHeader.isPresent()</span>
+<span class="pc bpc" id="L287" title="1 of 2 branches missed.">        &amp;&amp; (Long.compareUnsigned(maybeParentHeader.get().getTimestamp(), blockParam.getTimestamp())</span>
+            &gt;= 0)) {
+<span class="nc" id="L289">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="nc" id="L292">          mergeCoordinator.getLatestValidAncestor(blockParam.getParentHash()).orElse(null),</span>
+          INVALID,
+          &quot;block timestamp not greater than parent&quot;);
+    }
+
+<span class="fc" id="L297">    final var block =</span>
+        new Block(
+            newBlockHeader,
+<span class="fc" id="L300">            new BlockBody(transactions, Collections.emptyList(), maybeWithdrawals, maybeDeposits));</span>
+
+<span class="fc bfc" id="L302" title="All 2 branches covered.">    if (maybeParentHeader.isEmpty()) {</span>
+<span class="fc" id="L303">      LOG.atDebug()</span>
+<span class="fc" id="L304">          .setMessage(&quot;Parent of block {} is not present, append it to backward sync&quot;)</span>
+<span class="fc" id="L305">          .addArgument(block::toLogString)</span>
+<span class="fc" id="L306">          .log();</span>
+<span class="fc" id="L307">      mergeCoordinator.appendNewPayloadToSync(block);</span>
+<span class="fc" id="L308">      return respondWith(reqId, blockParam, null, SYNCING);</span>
+    }
+
+<span class="fc" id="L311">    final var latestValidAncestor = mergeCoordinator.getLatestValidAncestor(newBlockHeader);</span>
+
+<span class="fc bfc" id="L313" title="All 2 branches covered.">    if (latestValidAncestor.isEmpty()) {</span>
+<span class="fc" id="L314">      return respondWith(reqId, blockParam, null, ACCEPTED);</span>
+    }
+
+    // execute block and return result response
+<span class="fc" id="L318">    final long startTimeMs = System.currentTimeMillis();</span>
+<span class="fc" id="L319">    final BlockProcessingResult executionResult = mergeCoordinator.rememberBlock(block);</span>
+
+<span class="fc bfc" id="L321" title="All 2 branches covered.">    if (executionResult.isSuccessful()) {</span>
+<span class="fc" id="L322">      logImportedBlockInfo(</span>
+<span class="fc" id="L323">          block, blobTransactions.size(), (System.currentTimeMillis() - startTimeMs) / 1000.0);</span>
+<span class="fc" id="L324">      return respondWith(reqId, blockParam, newBlockHeader.getHash(), VALID);</span>
+    } else {
+<span class="fc bfc" id="L326" title="All 2 branches covered.">      if (executionResult.causedBy().isPresent()) {</span>
+<span class="fc" id="L327">        Throwable causedBy = executionResult.causedBy().get();</span>
+<span class="pc bpc" id="L328" title="1 of 4 branches missed.">        if (causedBy instanceof StorageException || causedBy instanceof MerkleTrieException) {</span>
+<span class="fc" id="L329">          RpcErrorType error = RpcErrorType.INTERNAL_ERROR;</span>
+<span class="fc" id="L330">          JsonRpcErrorResponse response = new JsonRpcErrorResponse(reqId, error);</span>
+<span class="fc" id="L331">          return response;</span>
+        }
+      }
+<span class="fc" id="L334">      LOG.debug(&quot;New payload is invalid: {}&quot;, executionResult.errorMessage.get());</span>
+<span class="fc" id="L335">      return respondWithInvalid(</span>
+          reqId,
+          blockParam,
+<span class="fc" id="L338">          latestValidAncestor.get(),</span>
+          INVALID,
+<span class="fc" id="L340">          executionResult.errorMessage.get());</span>
+    }
+  }
+
+  JsonRpcResponse respondWith(
+      final Object requestId,
+      final EnginePayloadParameter param,
+      final Hash latestValidHash,
+      final EngineStatus status) {
+<span class="pc bpc" id="L349" title="2 of 4 branches missed.">    if (INVALID.equals(status) || INVALID_BLOCK_HASH.equals(status)) {</span>
+<span class="nc" id="L350">      throw new IllegalArgumentException(</span>
+<span class="nc" id="L351">          &quot;Don't call respondWith() with invalid status of &quot; + status.toString());</span>
+    }
+<span class="fc" id="L353">    LOG.atDebug()</span>
+<span class="fc" id="L354">        .setMessage(</span>
+            &quot;New payload: number: {}, hash: {}, parentHash: {}, latestValidHash: {}, status: {}&quot;)
+<span class="fc" id="L356">        .addArgument(param::getBlockNumber)</span>
+<span class="fc" id="L357">        .addArgument(param::getBlockHash)</span>
+<span class="fc" id="L358">        .addArgument(param::getParentHash)</span>
+<span class="pc bnc" id="L359" title="All 2 branches missed.">        .addArgument(() -&gt; latestValidHash == null ? null : latestValidHash.toHexString())</span>
+<span class="fc" id="L360">        .addArgument(status::name)</span>
+<span class="fc" id="L361">        .log();</span>
+<span class="fc" id="L362">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L363">        requestId, new EnginePayloadStatusResult(status, latestValidHash, Optional.empty()));</span>
+  }
+
+  // engine api calls are synchronous, no need for volatile
+<span class="fc" id="L367">  private long lastInvalidWarn = 0;</span>
+
+  JsonRpcResponse respondWithInvalid(
+      final Object requestId,
+      final EnginePayloadParameter param,
+      final Hash latestValidHash,
+      final EngineStatus invalidStatus,
+      final String validationError) {
+<span class="pc bpc" id="L375" title="1 of 4 branches missed.">    if (!INVALID.equals(invalidStatus) &amp;&amp; !INVALID_BLOCK_HASH.equals(invalidStatus)) {</span>
+<span class="nc" id="L376">      throw new IllegalArgumentException(</span>
+<span class="nc" id="L377">          &quot;Don't call respondWithInvalid() with non-invalid status of &quot; + invalidStatus.toString());</span>
+    }
+<span class="fc" id="L379">    final String invalidBlockLogMessage =</span>
+<span class="fc" id="L380">        String.format(</span>
+            &quot;Invalid new payload: number: %s, hash: %s, parentHash: %s, latestValidHash: %s, status: %s, validationError: %s&quot;,
+<span class="fc" id="L382">            param.getBlockNumber(),</span>
+<span class="fc" id="L383">            param.getBlockHash(),</span>
+<span class="fc" id="L384">            param.getParentHash(),</span>
+<span class="fc bfc" id="L385" title="All 2 branches covered.">            latestValidHash == null ? null : latestValidHash.toHexString(),</span>
+<span class="fc" id="L386">            invalidStatus.name(),</span>
+            validationError);
+    // always log invalid at DEBUG
+<span class="fc" id="L389">    LOG.debug(invalidBlockLogMessage);</span>
+    // periodically log at WARN
+<span class="pc bpc" id="L391" title="1 of 2 branches missed.">    if (lastInvalidWarn + ENGINE_API_LOGGING_THRESHOLD &lt; System.currentTimeMillis()) {</span>
+<span class="fc" id="L392">      lastInvalidWarn = System.currentTimeMillis();</span>
+<span class="fc" id="L393">      LOG.warn(invalidBlockLogMessage);</span>
+    }
+<span class="fc" id="L395">    return new JsonRpcSuccessResponse(</span>
+        requestId,
+        new EnginePayloadStatusResult(
+<span class="fc" id="L398">            invalidStatus, latestValidHash, Optional.of(validationError)));</span>
+  }
+
+  protected EngineStatus getInvalidBlockHashStatus() {
+<span class="fc" id="L402">    return INVALID;</span>
+  }
+
+  protected ValidationResult&lt;RpcErrorType&gt; validateParameters(
+      final EnginePayloadParameter parameter,
+      final Optional&lt;List&lt;String&gt;&gt; maybeVersionedHashParam,
+      final Optional&lt;String&gt; maybeBeaconBlockRootParam) {
+<span class="fc" id="L409">    return ValidationResult.valid();</span>
+  }
+
+  protected ValidationResult&lt;RpcErrorType&gt; validateBlobs(
+      final List&lt;Transaction&gt; blobTransactions,
+      final BlockHeader header,
+      final Optional&lt;BlockHeader&gt; maybeParentHeader,
+      final Optional&lt;List&lt;VersionedHash&gt;&gt; maybeVersionedHashes,
+      final ProtocolSpec protocolSpec) {
+
+<span class="fc" id="L419">    final List&lt;VersionedHash&gt; transactionVersionedHashes = new ArrayList&lt;&gt;();</span>
+<span class="pc bpc" id="L420" title="1 of 2 branches missed.">    for (Transaction transaction : blobTransactions) {</span>
+<span class="nc" id="L421">      var versionedHashes = transaction.getVersionedHashes();</span>
+      // blob transactions must have at least one blob
+<span class="nc bnc" id="L423" title="All 2 branches missed.">      if (versionedHashes.isEmpty()) {</span>
+<span class="nc" id="L424">        return ValidationResult.invalid(</span>
+            RpcErrorType.INVALID_PARAMS, &quot;There must be at least one blob&quot;);
+      }
+<span class="nc" id="L427">      transactionVersionedHashes.addAll(versionedHashes.get());</span>
+<span class="nc" id="L428">    }</span>
+
+<span class="pc bpc" id="L430" title="3 of 4 branches missed.">    if (maybeVersionedHashes.isEmpty() &amp;&amp; !transactionVersionedHashes.isEmpty()) {</span>
+<span class="nc" id="L431">      return ValidationResult.invalid(</span>
+          RpcErrorType.INVALID_PARAMS, &quot;Payload must contain versioned hashes for transactions&quot;);
+    }
+
+    // Validate versionedHashesParam
+<span class="pc bpc" id="L436" title="1 of 2 branches missed.">    if (maybeVersionedHashes.isPresent()</span>
+<span class="pc bpc" id="L437" title="1 of 2 branches missed.">        &amp;&amp; !maybeVersionedHashes.get().equals(transactionVersionedHashes)) {</span>
+<span class="nc" id="L438">      return ValidationResult.invalid(</span>
+          RpcErrorType.INVALID_PARAMS,
+          &quot;Versioned hashes from blob transactions do not match expected values&quot;);
+    }
+
+    // Validate excessBlobGas
+<span class="fc bfc" id="L444" title="All 2 branches covered.">    if (maybeParentHeader.isPresent()) {</span>
+<span class="pc bpc" id="L445" title="1 of 2 branches missed.">      if (!validateExcessBlobGas(header, maybeParentHeader.get(), protocolSpec)) {</span>
+<span class="nc" id="L446">        return ValidationResult.invalid(</span>
+            RpcErrorType.INVALID_PARAMS,
+            &quot;Payload excessBlobGas does not match calculated excessBlobGas&quot;);
+      }
+    }
+
+    // Validate blobGasUsed
+<span class="pc bpc" id="L453" title="2 of 4 branches missed.">    if (header.getBlobGasUsed().isPresent() &amp;&amp; maybeVersionedHashes.isPresent()) {</span>
+<span class="pc bpc" id="L454" title="1 of 2 branches missed.">      if (!validateBlobGasUsed(header, maybeVersionedHashes.get(), protocolSpec)) {</span>
+<span class="nc" id="L455">        return ValidationResult.invalid(</span>
+            RpcErrorType.INVALID_PARAMS,
+            &quot;Payload BlobGasUsed does not match calculated BlobGasUsed&quot;);
+      }
+    }
+
+<span class="fc" id="L461">    if (protocolSpec.getGasCalculator().blobGasCost(transactionVersionedHashes.size())</span>
+<span class="pc bpc" id="L462" title="1 of 2 branches missed.">        &gt; protocolSpec.getGasLimitCalculator().currentBlobGasLimit()) {</span>
+<span class="nc" id="L463">      return ValidationResult.invalid(</span>
+          RpcErrorType.INVALID_PARAMS,
+<span class="nc" id="L465">          String.format(&quot;Invalid Blob Count: %d&quot;, transactionVersionedHashes.size()));</span>
+    }
+<span class="fc" id="L467">    return ValidationResult.valid();</span>
+  }
+
+  private boolean validateExcessBlobGas(
+      final BlockHeader header, final BlockHeader parentHeader, final ProtocolSpec protocolSpec) {
+<span class="fc" id="L472">    BlobGas calculatedBlobGas =</span>
+<span class="fc" id="L473">        ExcessBlobGasCalculator.calculateExcessBlobGasForParent(protocolSpec, parentHeader);</span>
+<span class="fc" id="L474">    return header.getExcessBlobGas().orElse(BlobGas.ZERO).equals(calculatedBlobGas);</span>
+  }
+
+  private boolean validateBlobGasUsed(
+      final BlockHeader header,
+      final List&lt;VersionedHash&gt; maybeVersionedHashes,
+      final ProtocolSpec protocolSpec) {
+<span class="fc" id="L481">    var calculatedBlobGas =</span>
+<span class="fc" id="L482">        protocolSpec.getGasCalculator().blobGasCost(maybeVersionedHashes.size());</span>
+<span class="fc" id="L483">    return header.getBlobGasUsed().orElse(0L).equals(calculatedBlobGas);</span>
+  }
+
+  private Optional&lt;List&lt;VersionedHash&gt;&gt; extractVersionedHashes(
+      final Optional&lt;List&lt;String&gt;&gt; maybeVersionedHashParam) {
+<span class="fc" id="L488">    return maybeVersionedHashParam.map(</span>
+        versionedHashes -&gt;
+<span class="fc" id="L490">            versionedHashes.stream()</span>
+<span class="fc" id="L491">                .map(Bytes32::fromHexString)</span>
+<span class="fc" id="L492">                .map(</span>
+                    hash -&gt; {
+                      try {
+<span class="nc" id="L495">                        return new VersionedHash(hash);</span>
+<span class="nc" id="L496">                      } catch (InvalidParameterException e) {</span>
+<span class="nc" id="L497">                        throw new RuntimeException(e);</span>
+                      }
+                    })
+<span class="fc" id="L500">                .collect(Collectors.toList()));</span>
+  }
+
+  private void logImportedBlockInfo(final Block block, final int blobCount, final double timeInS) {
+<span class="fc" id="L504">    final StringBuilder message = new StringBuilder();</span>
+<span class="fc" id="L505">    message.append(&quot;Imported #%,d / %d tx&quot;);</span>
+<span class="fc" id="L506">    final List&lt;Object&gt; messageArgs =</span>
+        new ArrayList&lt;&gt;(
+<span class="fc" id="L508">            List.of(block.getHeader().getNumber(), block.getBody().getTransactions().size()));</span>
+<span class="fc bfc" id="L509" title="All 2 branches covered.">    if (block.getBody().getWithdrawals().isPresent()) {</span>
+<span class="fc" id="L510">      message.append(&quot; / %d ws&quot;);</span>
+<span class="fc" id="L511">      messageArgs.add(block.getBody().getWithdrawals().get().size());</span>
+    }
+<span class="fc bfc" id="L513" title="All 2 branches covered.">    if (block.getBody().getDeposits().isPresent()) {</span>
+<span class="fc" id="L514">      message.append(&quot; / %d ds&quot;);</span>
+<span class="fc" id="L515">      messageArgs.add(block.getBody().getDeposits().get().size());</span>
+    }
+<span class="fc" id="L517">    message.append(&quot; / %d blobs / base fee %s / %,d (%01.1f%%) gas / (%s) in %01.3fs. Peers: %d&quot;);</span>
+<span class="fc" id="L518">    messageArgs.addAll(</span>
+<span class="fc" id="L519">        List.of(</span>
+<span class="fc" id="L520">            blobCount,</span>
+<span class="fc" id="L521">            block.getHeader().getBaseFee().map(Wei::toHumanReadableString).orElse(&quot;N/A&quot;),</span>
+<span class="fc" id="L522">            block.getHeader().getGasUsed(),</span>
+<span class="fc" id="L523">            (block.getHeader().getGasUsed() * 100.0) / block.getHeader().getGasLimit(),</span>
+<span class="fc" id="L524">            block.getHash().toHexString(),</span>
+<span class="fc" id="L525">            timeInS,</span>
+<span class="fc" id="L526">            ethPeers.peerCount()));</span>
+<span class="fc" id="L527">    LOG.info(String.format(message.toString(), messageArgs.toArray()));</span>
+<span class="fc" id="L528">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

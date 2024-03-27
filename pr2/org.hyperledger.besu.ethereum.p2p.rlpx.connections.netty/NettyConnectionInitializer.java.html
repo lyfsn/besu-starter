@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NettyConnectionInitializer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty</a> &gt; <span class="el_source">NettyConnectionInitializer.java</span></div><h1>NettyConnectionInitializer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty;
+
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.config.RlpxConfiguration;
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.peers.LocalNode;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.ConnectCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.ConnectionInitializer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnectionEventDispatcher;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.Framer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.FramerProvider;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakeSecrets;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakerProvider;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies.ECIESHandshaker;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.security.GeneralSecurityException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.IntSupplier;
+import java.util.stream.StreamSupport;
+import javax.annotation.Nonnull;
+
+import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.util.concurrent.SingleThreadEventExecutor;
+
+public class NettyConnectionInitializer
+    implements ConnectionInitializer, HandshakerProvider, FramerProvider {
+
+  private static final int TIMEOUT_SECONDS = 10;
+
+  private final NodeKey nodeKey;
+  private final RlpxConfiguration config;
+  private final LocalNode localNode;
+  private final PeerConnectionEventDispatcher eventDispatcher;
+  private final MetricsSystem metricsSystem;
+<span class="fc" id="L71">  private final Subscribers&lt;ConnectCallback&gt; connectSubscribers = Subscribers.create();</span>
+  private final PeerTable peerTable;
+
+  private ChannelFuture server;
+<span class="fc" id="L75">  private final EventLoopGroup boss = new NioEventLoopGroup(1);</span>
+<span class="fc" id="L76">  private final EventLoopGroup workers = new NioEventLoopGroup(10);</span>
+<span class="fc" id="L77">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L78">  private final AtomicBoolean stopped = new AtomicBoolean(false);</span>
+
+  public NettyConnectionInitializer(
+      final NodeKey nodeKey,
+      final RlpxConfiguration config,
+      final LocalNode localNode,
+      final PeerConnectionEventDispatcher eventDispatcher,
+      final MetricsSystem metricsSystem,
+<span class="fc" id="L86">      final PeerTable peerTable) {</span>
+<span class="fc" id="L87">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L88">    this.config = config;</span>
+<span class="fc" id="L89">    this.localNode = localNode;</span>
+<span class="fc" id="L90">    this.eventDispatcher = eventDispatcher;</span>
+<span class="fc" id="L91">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L92">    this.peerTable = peerTable;</span>
+
+<span class="fc" id="L94">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.NETWORK,
+        &quot;netty_workers_pending_tasks&quot;,
+        &quot;The number of pending tasks in the Netty workers event loop&quot;,
+<span class="fc" id="L98">        pendingTaskCounter(workers));</span>
+
+<span class="fc" id="L100">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.NETWORK,
+        &quot;netty_boss_pending_tasks&quot;,
+        &quot;The number of pending tasks in the Netty boss event loop&quot;,
+<span class="fc" id="L104">        pendingTaskCounter(boss));</span>
+<span class="fc" id="L105">  }</span>
+
+  @Override
+  public CompletableFuture&lt;InetSocketAddress&gt; start() {
+<span class="fc" id="L109">    final CompletableFuture&lt;InetSocketAddress&gt; listeningPortFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="pc bpc" id="L110" title="1 of 2 branches missed.">    if (!started.compareAndSet(false, true)) {</span>
+<span class="nc" id="L111">      listeningPortFuture.completeExceptionally(</span>
+          new IllegalStateException(
+<span class="nc" id="L113">              &quot;Attempt to start an already started &quot; + this.getClass().getSimpleName()));</span>
+<span class="nc" id="L114">      return listeningPortFuture;</span>
+    }
+
+<span class="fc" id="L117">    this.server =</span>
+        new ServerBootstrap()
+<span class="fc" id="L119">            .group(boss, workers)</span>
+<span class="fc" id="L120">            .channel(NioServerSocketChannel.class)</span>
+<span class="fc" id="L121">            .childHandler(inboundChannelInitializer())</span>
+<span class="fc" id="L122">            .bind(config.getBindHost(), config.getBindPort());</span>
+<span class="fc" id="L123">    server.addListener(</span>
+        future -&gt; {
+<span class="fc" id="L125">          final InetSocketAddress socketAddress =</span>
+<span class="fc" id="L126">              (InetSocketAddress) server.channel().localAddress();</span>
+<span class="pc bpc" id="L127" title="2 of 4 branches missed.">          if (!future.isSuccess() || socketAddress == null) {</span>
+<span class="nc" id="L128">            final String message =</span>
+<span class="nc" id="L129">                String.format(</span>
+                    &quot;Unable to start listening on %s:%s. Check for port conflicts.&quot;,
+<span class="nc" id="L131">                    config.getBindHost(), config.getBindPort());</span>
+<span class="nc" id="L132">            listeningPortFuture.completeExceptionally(</span>
+<span class="nc" id="L133">                new IllegalStateException(message, future.cause()));</span>
+<span class="nc" id="L134">            return;</span>
+          }
+
+<span class="fc" id="L137">          listeningPortFuture.complete(socketAddress);</span>
+<span class="fc" id="L138">        });</span>
+
+<span class="fc" id="L140">    return listeningPortFuture;</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; stop() {
+<span class="fc" id="L145">    final CompletableFuture&lt;Void&gt; stoppedFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="pc bpc" id="L146" title="2 of 4 branches missed.">    if (!started.get() || !stopped.compareAndSet(false, true)) {</span>
+<span class="nc" id="L147">      stoppedFuture.completeExceptionally(</span>
+<span class="nc" id="L148">          new IllegalStateException(&quot;Illegal attempt to stop &quot; + this.getClass().getSimpleName()));</span>
+<span class="nc" id="L149">      return stoppedFuture;</span>
+    }
+
+<span class="fc" id="L152">    workers.shutdownGracefully();</span>
+<span class="fc" id="L153">    boss.shutdownGracefully();</span>
+<span class="fc" id="L154">    server</span>
+<span class="fc" id="L155">        .channel()</span>
+<span class="fc" id="L156">        .closeFuture()</span>
+<span class="fc" id="L157">        .addListener(</span>
+            (future) -&gt; {
+<span class="pc bpc" id="L159" title="1 of 2 branches missed.">              if (future.isSuccess()) {</span>
+<span class="fc" id="L160">                stoppedFuture.complete(null);</span>
+              } else {
+<span class="nc" id="L162">                stoppedFuture.completeExceptionally(future.cause());</span>
+              }
+<span class="fc" id="L164">            });</span>
+<span class="fc" id="L165">    return stoppedFuture;</span>
+  }
+
+  @Override
+  public void subscribeIncomingConnect(final ConnectCallback callback) {
+<span class="fc" id="L170">    connectSubscribers.subscribe(callback);</span>
+<span class="fc" id="L171">  }</span>
+
+  @Override
+  public CompletableFuture&lt;PeerConnection&gt; connect(final Peer peer) {
+<span class="fc" id="L175">    final CompletableFuture&lt;PeerConnection&gt; connectionFuture = new CompletableFuture&lt;&gt;();</span>
+
+<span class="fc bfc" id="L177" title="All 2 branches covered.">    if (peer instanceof DiscoveryPeer) {</span>
+<span class="fc" id="L178">      ((DiscoveryPeer) peer).setLastAttemptedConnection(System.currentTimeMillis());</span>
+    }
+
+<span class="fc" id="L181">    final EnodeURL enode = peer.getEnodeURL();</span>
+<span class="fc" id="L182">    new Bootstrap()</span>
+<span class="fc" id="L183">        .group(workers)</span>
+<span class="fc" id="L184">        .channel(NioSocketChannel.class)</span>
+<span class="fc" id="L185">        .remoteAddress(new InetSocketAddress(enode.getIp(), enode.getListeningPort().get()))</span>
+<span class="fc" id="L186">        .option(ChannelOption.TCP_NODELAY, true)</span>
+<span class="fc" id="L187">        .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, TIMEOUT_SECONDS * 1000)</span>
+<span class="fc" id="L188">        .handler(outboundChannelInitializer(peer, connectionFuture))</span>
+<span class="fc" id="L189">        .connect()</span>
+<span class="fc" id="L190">        .addListener(</span>
+            (f) -&gt; {
+<span class="pc bpc" id="L192" title="1 of 2 branches missed.">              if (!f.isSuccess()) {</span>
+<span class="nc" id="L193">                connectionFuture.completeExceptionally(f.cause());</span>
+              }
+<span class="fc" id="L195">            });</span>
+
+<span class="fc" id="L197">    return connectionFuture;</span>
+  }
+
+  /**
+   * @return a channel initializer for outbound connections
+   */
+  @Nonnull
+  private ChannelInitializer&lt;SocketChannel&gt; outboundChannelInitializer(
+      final Peer peer, final CompletableFuture&lt;PeerConnection&gt; connectionFuture) {
+<span class="fc" id="L206">    return new ChannelInitializer&lt;SocketChannel&gt;() {</span>
+      @Override
+      protected void initChannel(final SocketChannel ch) throws Exception {
+<span class="fc" id="L209">        ch.pipeline()</span>
+<span class="fc" id="L210">            .addLast(</span>
+<span class="fc" id="L211">                timeoutHandler(</span>
+                    connectionFuture,
+<span class="fc" id="L213">                    &quot;Timed out waiting to establish connection with peer: &quot; + peer.getId()));</span>
+<span class="fc" id="L214">        addAdditionalOutboundHandlers(ch, peer);</span>
+<span class="fc" id="L215">        ch.pipeline().addLast(outboundHandler(peer, connectionFuture));</span>
+<span class="fc" id="L216">      }</span>
+    };
+  }
+
+  /**
+   * @return a channel initializer for inbound connections
+   */
+  private ChannelInitializer&lt;SocketChannel&gt; inboundChannelInitializer() {
+<span class="fc" id="L224">    return new ChannelInitializer&lt;SocketChannel&gt;() {</span>
+      @Override
+      protected void initChannel(final SocketChannel ch) throws Exception {
+<span class="fc" id="L227">        final CompletableFuture&lt;PeerConnection&gt; connectionFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L228">        connectionFuture.thenAccept(</span>
+<span class="fc" id="L229">            connection -&gt; connectSubscribers.forEach(c -&gt; c.onConnect(connection)));</span>
+<span class="fc" id="L230">        ch.pipeline()</span>
+<span class="fc" id="L231">            .addLast(</span>
+<span class="fc" id="L232">                timeoutHandler(</span>
+                    connectionFuture, &quot;Timed out waiting to fully establish incoming connection&quot;));
+<span class="fc" id="L234">        addAdditionalInboundHandlers(ch);</span>
+<span class="fc" id="L235">        ch.pipeline().addLast(inboundHandler(connectionFuture));</span>
+<span class="fc" id="L236">      }</span>
+    };
+  }
+
+  @Nonnull
+  private HandshakeHandlerInbound inboundHandler(
+      final CompletableFuture&lt;PeerConnection&gt; connectionFuture) {
+<span class="fc" id="L243">    return new HandshakeHandlerInbound(</span>
+        nodeKey,
+<span class="fc" id="L245">        config.getSupportedProtocols(),</span>
+        localNode,
+        connectionFuture,
+        eventDispatcher,
+        metricsSystem,
+        this,
+        this,
+        peerTable);
+  }
+
+  @Nonnull
+  private HandshakeHandlerOutbound outboundHandler(
+      final Peer peer, final CompletableFuture&lt;PeerConnection&gt; connectionFuture) {
+<span class="fc" id="L258">    return new HandshakeHandlerOutbound(</span>
+        nodeKey,
+        peer,
+<span class="fc" id="L261">        config.getSupportedProtocols(),</span>
+        localNode,
+        connectionFuture,
+        eventDispatcher,
+        metricsSystem,
+        this,
+        this,
+        peerTable);
+  }
+
+  @Nonnull
+  private TimeoutHandler&lt;Channel&gt; timeoutHandler(
+      final CompletableFuture&lt;PeerConnection&gt; connectionFuture, final String s) {
+<span class="fc" id="L274">    return new TimeoutHandler&lt;&gt;(</span>
+<span class="fc" id="L275">        connectionFuture::isDone,</span>
+        TIMEOUT_SECONDS,
+<span class="nc" id="L277">        () -&gt; connectionFuture.completeExceptionally(new TimeoutException(s)));</span>
+  }
+
+  void addAdditionalOutboundHandlers(final Channel ch, final Peer peer)
+<span class="fc" id="L281">      throws GeneralSecurityException, IOException {}</span>
+
+  void addAdditionalInboundHandlers(final Channel ch)
+<span class="fc" id="L284">      throws GeneralSecurityException, IOException {}</span>
+
+  private IntSupplier pendingTaskCounter(final EventLoopGroup eventLoopGroup) {
+<span class="fc" id="L287">    return () -&gt;</span>
+<span class="nc" id="L288">        StreamSupport.stream(eventLoopGroup.spliterator(), false)</span>
+<span class="nc" id="L289">            .filter(eventExecutor -&gt; eventExecutor instanceof SingleThreadEventExecutor)</span>
+<span class="nc" id="L290">            .mapToInt(eventExecutor -&gt; ((SingleThreadEventExecutor) eventExecutor).pendingTasks())</span>
+<span class="nc" id="L291">            .sum();</span>
+  }
+
+  @Override
+  public Handshaker buildInstance() {
+<span class="fc" id="L296">    return new ECIESHandshaker();</span>
+  }
+
+  @Override
+  public Framer buildFramer(final HandshakeSecrets secrets) {
+<span class="fc" id="L301">    return new Framer(secrets);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

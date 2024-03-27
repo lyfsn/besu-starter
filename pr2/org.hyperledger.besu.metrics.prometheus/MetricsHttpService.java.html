@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MetricsHttpService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.metrics.prometheus</a> &gt; <span class="el_source">MetricsHttpService.java</span></div><h1>MetricsHttpService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.metrics.prometheus;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.Streams.stream;
+
+import org.hyperledger.besu.metrics.MetricsService;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.net.InetSocketAddress;
+import java.net.SocketException;
+import java.nio.charset.StandardCharsets;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.base.Splitter;
+import com.google.common.collect.Iterables;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.prometheus.client.exporter.common.TextFormat;
+import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Metrics http service. */
+public class MetricsHttpService implements MetricsService {
+<span class="fc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(MetricsHttpService.class);</span>
+
+<span class="fc" id="L53">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
+
+  private final Vertx vertx;
+  private final MetricsConfiguration config;
+  private final MetricsSystem metricsSystem;
+
+  private HttpServer httpServer;
+
+  /**
+   * Instantiates a new Metrics http service.
+   *
+   * @param vertx the vertx
+   * @param configuration the configuration
+   * @param metricsSystem the metrics system
+   */
+  public MetricsHttpService(
+      final Vertx vertx,
+      final MetricsConfiguration configuration,
+<span class="fc" id="L71">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L72">    validateConfig(configuration);</span>
+<span class="fc" id="L73">    this.vertx = vertx;</span>
+<span class="fc" id="L74">    this.config = configuration;</span>
+<span class="fc" id="L75">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L76">  }</span>
+
+  private void validateConfig(final MetricsConfiguration config) {
+<span class="pc bpc" id="L79" title="2 of 4 branches missed.">    checkArgument(config.getPort() &gt;= 0 &amp;&amp; config.getPort() &lt; 65535, &quot;Invalid port configuration.&quot;);</span>
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">    checkArgument(config.getHost() != null, &quot;Required host is not configured.&quot;);</span>
+<span class="fc" id="L81">    checkArgument(</span>
+<span class="pc bpc" id="L82" title="2 of 4 branches missed.">        !(config.isEnabled() &amp;&amp; config.isPushEnabled()),</span>
+        &quot;Metrics Http Service cannot run concurrent with push metrics.&quot;);
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public CompletableFuture&lt;?&gt; start() {
+<span class="fc" id="L88">    LOG.info(&quot;Starting metrics http service on {}:{}&quot;, config.getHost(), config.getPort());</span>
+    // Create the HTTP server and a router object.
+<span class="fc" id="L90">    httpServer =</span>
+<span class="fc" id="L91">        vertx.createHttpServer(</span>
+            new HttpServerOptions()
+<span class="fc" id="L93">                .setHost(config.getHost())</span>
+<span class="fc" id="L94">                .setPort(config.getPort())</span>
+<span class="fc" id="L95">                .setIdleTimeout(config.getIdleTimeout())</span>
+<span class="fc" id="L96">                .setHandle100ContinueAutomatically(true)</span>
+<span class="fc" id="L97">                .setCompressionSupported(true));</span>
+
+<span class="fc" id="L99">    final Router router = Router.router(vertx);</span>
+
+    // Verify Host header.
+<span class="fc" id="L102">    router.route().handler(checkAllowlistHostHeader());</span>
+
+    // Endpoint for AWS health check.
+<span class="fc" id="L105">    router.route(&quot;/&quot;).method(HttpMethod.GET).handler(this::handleEmptyRequest);</span>
+
+    // Endpoint for Prometheus metrics monitoring.
+<span class="fc" id="L108">    router.route(&quot;/metrics&quot;).method(HttpMethod.GET).handler(this::metricsRequest);</span>
+
+<span class="fc" id="L110">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L111">    httpServer</span>
+<span class="fc" id="L112">        .requestHandler(router)</span>
+<span class="fc" id="L113">        .listen(</span>
+            res -&gt; {
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">              if (!res.failed()) {</span>
+<span class="fc" id="L116">                resultFuture.complete(null);</span>
+<span class="fc" id="L117">                final int actualPort = httpServer.actualPort();</span>
+<span class="fc" id="L118">                config.setActualPort(actualPort);</span>
+<span class="fc" id="L119">                LOG.info(</span>
+<span class="fc" id="L120">                    &quot;Metrics service started and listening on {}:{}&quot;, config.getHost(), actualPort);</span>
+<span class="fc" id="L121">                return;</span>
+              }
+<span class="nc" id="L123">              httpServer = null;</span>
+<span class="nc" id="L124">              final Throwable cause = res.cause();</span>
+<span class="nc bnc" id="L125" title="All 2 branches missed.">              if (cause instanceof SocketException) {</span>
+<span class="nc" id="L126">                resultFuture.completeExceptionally(</span>
+                    new RuntimeException(
+<span class="nc" id="L128">                        String.format(</span>
+                            &quot;Failed to bind metrics listener to %s:%s (actual port %s): %s&quot;,
+<span class="nc" id="L130">                            config.getHost(),</span>
+<span class="nc" id="L131">                            config.getPort(),</span>
+<span class="nc" id="L132">                            config.getActualPort(),</span>
+<span class="nc" id="L133">                            cause.getMessage())));</span>
+<span class="nc" id="L134">                return;</span>
+              }
+<span class="nc" id="L136">              resultFuture.completeExceptionally(cause);</span>
+<span class="nc" id="L137">            });</span>
+<span class="fc" id="L138">    return resultFuture;</span>
+  }
+
+  private Handler&lt;RoutingContext&gt; checkAllowlistHostHeader() {
+<span class="fc" id="L142">    return event -&gt; {</span>
+<span class="fc" id="L143">      final Optional&lt;String&gt; hostHeader = getAndValidateHostHeader(event);</span>
+<span class="pc bpc" id="L144" title="1 of 2 branches missed.">      if (config.getHostsAllowlist().contains(&quot;*&quot;)</span>
+<span class="nc bnc" id="L145" title="All 4 branches missed.">          || (hostHeader.isPresent() &amp;&amp; hostIsInAllowlist(hostHeader.get()))) {</span>
+<span class="fc" id="L146">        event.next();</span>
+      } else {
+<span class="nc" id="L148">        final HttpServerResponse response = event.response();</span>
+<span class="nc bnc" id="L149" title="All 2 branches missed.">        if (!response.closed()) {</span>
+<span class="nc" id="L150">          response</span>
+<span class="nc" id="L151">              .setStatusCode(403)</span>
+<span class="nc" id="L152">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
+<span class="nc" id="L153">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
+        }
+      }
+<span class="fc" id="L156">    };</span>
+  }
+
+  private Optional&lt;String&gt; getAndValidateHostHeader(final RoutingContext event) {
+<span class="fc" id="L160">    final String hostHeader = event.request().host();</span>
+<span class="pc bpc" id="L161" title="1 of 2 branches missed.">    if (hostHeader == null) {</span>
+<span class="nc" id="L162">      return Optional.empty();</span>
+    }
+<span class="fc" id="L164">    final Iterable&lt;String&gt; splitHostHeader = Splitter.on(':').split(hostHeader);</span>
+<span class="fc" id="L165">    final long hostPieces = stream(splitHostHeader).count();</span>
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    if (hostPieces &gt; 1) {</span>
+      // If the host contains a colon, verify the host is correctly formed - host [ &quot;:&quot; port ]
+<span class="pc bpc" id="L168" title="2 of 4 branches missed.">      if (hostPieces &gt; 2 || !Iterables.get(splitHostHeader, 1).matches(&quot;\\d{1,5}+&quot;)) {</span>
+<span class="nc" id="L169">        return Optional.empty();</span>
+      }
+    }
+<span class="fc" id="L172">    return Optional.ofNullable(Iterables.get(splitHostHeader, 0));</span>
+  }
+
+  private boolean hostIsInAllowlist(final String hostHeader) {
+<span class="nc" id="L176">    if (config.getHostsAllowlist().stream()</span>
+<span class="nc bnc" id="L177" title="All 2 branches missed.">        .anyMatch(</span>
+<span class="nc" id="L178">            allowlistEntry -&gt; allowlistEntry.toLowerCase().equals(hostHeader.toLowerCase()))) {</span>
+<span class="nc" id="L179">      return true;</span>
+    } else {
+<span class="nc" id="L181">      LOG.trace(&quot;Host not in allowlist: '{}'&quot;, hostHeader);</span>
+<span class="nc" id="L182">      return false;</span>
+    }
+  }
+
+  @Override
+  public CompletableFuture&lt;?&gt; stop() {
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L189">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L192">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L193">    httpServer.close(</span>
+        res -&gt; {
+<span class="pc bpc" id="L195" title="1 of 2 branches missed.">          if (res.failed()) {</span>
+<span class="nc" id="L196">            resultFuture.completeExceptionally(res.cause());</span>
+          } else {
+<span class="fc" id="L198">            httpServer = null;</span>
+<span class="fc" id="L199">            resultFuture.complete(null);</span>
+          }
+<span class="fc" id="L201">        });</span>
+<span class="fc" id="L202">    return resultFuture;</span>
+  }
+
+  private void metricsRequest(final RoutingContext routingContext) {
+<span class="fc" id="L206">    final Set&lt;String&gt; names = new TreeSet&lt;&gt;(routingContext.queryParam(&quot;name[]&quot;));</span>
+<span class="fc" id="L207">    final HttpServerResponse response = routingContext.response();</span>
+<span class="fc" id="L208">    vertx.&lt;String&gt;executeBlocking(</span>
+        future -&gt; {
+          try {
+<span class="fc" id="L211">            final ByteArrayOutputStream metrics = new ByteArrayOutputStream(16 * 1024);</span>
+<span class="fc" id="L212">            final OutputStreamWriter osw = new OutputStreamWriter(metrics, StandardCharsets.UTF_8);</span>
+<span class="fc" id="L213">            TextFormat.write004(</span>
+                osw,
+                ((PrometheusMetricsSystem) (metricsSystem))
+<span class="fc" id="L216">                    .getRegistry()</span>
+<span class="fc" id="L217">                    .filteredMetricFamilySamples(names));</span>
+<span class="fc" id="L218">            osw.flush();</span>
+<span class="fc" id="L219">            osw.close();</span>
+<span class="fc" id="L220">            metrics.flush();</span>
+<span class="fc" id="L221">            metrics.close();</span>
+<span class="fc" id="L222">            future.complete(metrics.toString(StandardCharsets.UTF_8.name()));</span>
+<span class="nc" id="L223">          } catch (final IOException ioe) {</span>
+<span class="nc" id="L224">            future.fail(ioe);</span>
+<span class="fc" id="L225">          }</span>
+<span class="fc" id="L226">        },</span>
+        false,
+        (res) -&gt; {
+<span class="pc bpc" id="L229" title="1 of 2 branches missed.">          if (response.closed()) {</span>
+            // Request for metrics closed before response was generated
+<span class="nc" id="L231">            return;</span>
+          }
+<span class="pc bpc" id="L233" title="1 of 2 branches missed.">          if (res.failed()) {</span>
+<span class="nc" id="L234">            LOG.error(&quot;Request for metrics failed&quot;, res.cause());</span>
+<span class="nc" id="L235">            response.setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code()).end();</span>
+          } else {
+<span class="fc" id="L237">            response.setStatusCode(HttpResponseStatus.OK.code());</span>
+<span class="fc" id="L238">            response.putHeader(&quot;Content-Type&quot;, TextFormat.CONTENT_TYPE_004);</span>
+<span class="fc" id="L239">            response.end(res.result());</span>
+          }
+<span class="fc" id="L241">        });</span>
+<span class="fc" id="L242">  }</span>
+
+  /**
+   * Socket address inet socket address.
+   *
+   * @return the inet socket address
+   */
+  InetSocketAddress socketAddress() {
+<span class="fc bfc" id="L250" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L251">      return EMPTY_SOCKET_ADDRESS;</span>
+    }
+<span class="fc" id="L253">    return new InetSocketAddress(config.getHost(), httpServer.actualPort());</span>
+  }
+
+  @Override
+  public Optional&lt;Integer&gt; getPort() {
+<span class="nc bnc" id="L258" title="All 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L259">      return Optional.empty();</span>
+    }
+<span class="nc" id="L261">    return Optional.of(httpServer.actualPort());</span>
+  }
+
+  // Facilitate remote health-checks in AWS, inter alia.
+  private void handleEmptyRequest(final RoutingContext routingContext) {
+<span class="fc" id="L266">    routingContext.response().setStatusCode(201).end();</span>
+<span class="fc" id="L267">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>UndoList.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.collections.undo</a> &gt; <span class="el_source">UndoList.java</span></div><h1>UndoList.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.collections.undo;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.ListIterator;
+import javax.annotation.Nonnull;
+
+/**
+ * A list that supports rolling back the list to a prior state.
+ *
+ * &lt;p&gt;To register a prior state you want to roll back to call `mark()`. Then use that value in a
+ * subsequent call to `undo(mark)`. Every mutation operation across all undoable collections
+ * increases the global mark, so a mark set in once collection is usable across all
+ * UndoableCollection instances.
+ *
+ * @param &lt;V&gt; The type of the collection.
+ */
+public class UndoList&lt;V&gt; implements List&lt;V&gt;, Undoable {
+
+<span class="pc" id="L38">  record UndoEntry&lt;V&gt;(int index, boolean set, V value, long level) {</span>
+    UndoEntry(final int index, final boolean set, final V value) {
+<span class="fc" id="L40">      this(index, set, value, Undoable.incrementMarkStatic());</span>
+<span class="fc" id="L41">    }</span>
+
+    @Override
+    public String toString() {
+<span class="fc" id="L45">      return &quot;UndoEntry{&quot;</span>
+          + &quot;index=&quot;
+          + index
+          + &quot;, set=&quot;
+          + set
+          + &quot;, value=&quot;
+          + value
+          + &quot;, level=&quot;
+          + level
+          + '}';
+    }
+  }
+
+  static class ReadOnlyListIterator&lt;V&gt; implements ListIterator&lt;V&gt; {
+    ListIterator&lt;V&gt; iterDelegate;
+
+<span class="fc" id="L61">    public ReadOnlyListIterator(final ListIterator&lt;V&gt; iterDelegate) {</span>
+<span class="fc" id="L62">      this.iterDelegate = iterDelegate;</span>
+<span class="fc" id="L63">    }</span>
+
+    @Override
+    public boolean hasNext() {
+<span class="fc" id="L67">      return iterDelegate.hasNext();</span>
+    }
+
+    @Override
+    public V next() {
+<span class="fc" id="L72">      return iterDelegate.next();</span>
+    }
+
+    @Override
+    public boolean hasPrevious() {
+<span class="fc" id="L77">      return iterDelegate.hasPrevious();</span>
+    }
+
+    @Override
+    public V previous() {
+<span class="fc" id="L82">      return iterDelegate.previous();</span>
+    }
+
+    @Override
+    public int nextIndex() {
+<span class="fc" id="L87">      return iterDelegate.nextIndex();</span>
+    }
+
+    @Override
+    public int previousIndex() {
+<span class="fc" id="L92">      return iterDelegate.previousIndex();</span>
+    }
+
+    @Override
+    public void remove() {
+<span class="fc" id="L97">      throw new UnsupportedOperationException(</span>
+          &quot;UndoList does not support iterator based modification&quot;);
+    }
+
+    @Override
+    public void set(final V v) {
+<span class="fc" id="L103">      throw new UnsupportedOperationException(</span>
+          &quot;UndoList does not support iterator based modification&quot;);
+    }
+
+    @Override
+    public void add(final V v) {
+<span class="fc" id="L109">      throw new UnsupportedOperationException(</span>
+          &quot;UndoList does not support iterator based modification&quot;);
+    }
+  }
+
+  List&lt;V&gt; delegate;
+<span class="fc" id="L115">  List&lt;UndoList.UndoEntry&lt;V&gt;&gt; undoLog = new ArrayList&lt;&gt;();</span>
+
+  /**
+   * Create an UndoList backed by another List instance.
+   *
+   * @param delegate The List instance to use for backing storage
+   */
+<span class="fc" id="L122">  public UndoList(final List&lt;V&gt; delegate) {</span>
+<span class="fc" id="L123">    this.delegate = delegate;</span>
+<span class="fc" id="L124">  }</span>
+
+  @Override
+  public void undo(final long mark) {
+<span class="fc" id="L128">    int pos = undoLog.size() - 1;</span>
+<span class="fc bfc" id="L129" title="All 4 branches covered.">    while (pos &gt;= 0 &amp;&amp; undoLog.get(pos).level &gt; mark) {</span>
+<span class="fc" id="L130">      final var entry = undoLog.get(pos);</span>
+<span class="fc" id="L131">      undoLog.remove(pos);</span>
+<span class="fc bfc" id="L132" title="All 2 branches covered.">      if (entry.value() == null) {</span>
+<span class="fc" id="L133">        delegate.remove(entry.index);</span>
+<span class="fc bfc" id="L134" title="All 2 branches covered.">      } else if (entry.set) {</span>
+<span class="fc" id="L135">        delegate.set(entry.index, entry.value());</span>
+      } else {
+<span class="fc" id="L137">        delegate.add(entry.index, entry.value);</span>
+      }
+<span class="fc" id="L139">      pos--;</span>
+<span class="fc" id="L140">    }</span>
+<span class="fc" id="L141">  }</span>
+
+  @Override
+  public long lastUpdate() {
+<span class="nc bnc" id="L145" title="All 2 branches missed.">    return undoLog.isEmpty() ? 0L : undoLog.get(undoLog.size() - 1).level;</span>
+  }
+
+  @Override
+  public boolean add(final V v) {
+<span class="fc" id="L150">    undoLog.add(new UndoEntry&lt;&gt;(delegate.size(), false, null));</span>
+<span class="fc" id="L151">    return delegate.add(v);</span>
+  }
+
+  @SuppressWarnings({&quot;unchecked&quot;, &quot;SuspiciousMethodCalls&quot;})
+  @Override
+  public boolean remove(final Object v) {
+<span class="fc" id="L157">    int index = delegate.indexOf(v);</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">    if (index &gt;= 0) {</span>
+<span class="fc" id="L159">      delegate.remove(index);</span>
+<span class="fc" id="L160">      undoLog.add(new UndoEntry&lt;&gt;(index, false, (V) v));</span>
+<span class="fc" id="L161">      return true;</span>
+    } else {
+<span class="fc" id="L163">      return false;</span>
+    }
+  }
+
+  @Override
+  public boolean containsAll(final @Nonnull Collection&lt;?&gt; c) {
+<span class="fc" id="L169">    return new HashSet&lt;&gt;(delegate).containsAll(c);</span>
+  }
+
+  @Override
+  public boolean addAll(final Collection&lt;? extends V&gt; c) {
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    for (V v : c) {</span>
+<span class="fc" id="L175">      add(v);</span>
+<span class="fc" id="L176">    }</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">    return !c.isEmpty();</span>
+  }
+
+  @Override
+  public boolean addAll(final int index, final Collection&lt;? extends V&gt; c) {
+<span class="fc" id="L182">    int pos = index;</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">    for (V v : c) {</span>
+<span class="fc" id="L184">      add(pos++, v);</span>
+<span class="fc" id="L185">    }</span>
+<span class="pc bpc" id="L186" title="1 of 2 branches missed.">    return !c.isEmpty();</span>
+  }
+
+  @Override
+  public boolean removeAll(final @Nonnull Collection&lt;?&gt; c) {
+<span class="fc" id="L191">    HashSet&lt;?&gt; hs = new HashSet&lt;&gt;(c);</span>
+<span class="fc" id="L192">    ListIterator&lt;V&gt; iter = delegate.listIterator();</span>
+<span class="fc" id="L193">    boolean updated = false;</span>
+<span class="fc bfc" id="L194" title="All 2 branches covered.">    while (iter.hasNext()) {</span>
+<span class="fc" id="L195">      V v = iter.next();</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">      if (hs.contains(v)) {</span>
+<span class="fc" id="L197">        undoLog.add(new UndoEntry&lt;&gt;(iter.previousIndex(), false, v));</span>
+<span class="fc" id="L198">        iter.remove();</span>
+<span class="fc" id="L199">        updated = true;</span>
+      }
+<span class="fc" id="L201">    }</span>
+<span class="fc" id="L202">    return updated;</span>
+  }
+
+  @Override
+  public boolean retainAll(final @Nonnull Collection&lt;?&gt; c) {
+<span class="fc" id="L207">    HashSet&lt;?&gt; hs = new HashSet&lt;&gt;(c);</span>
+<span class="fc" id="L208">    ListIterator&lt;V&gt; iter = delegate.listIterator();</span>
+<span class="fc" id="L209">    boolean updated = false;</span>
+<span class="fc bfc" id="L210" title="All 2 branches covered.">    while (iter.hasNext()) {</span>
+<span class="fc" id="L211">      V v = iter.next();</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">      if (!hs.contains(v)) {</span>
+<span class="fc" id="L213">        undoLog.add(new UndoEntry&lt;&gt;(iter.previousIndex(), false, v));</span>
+<span class="fc" id="L214">        iter.remove();</span>
+<span class="fc" id="L215">        updated = true;</span>
+      }
+<span class="fc" id="L217">    }</span>
+<span class="fc" id="L218">    return updated;</span>
+  }
+
+  @Override
+  public void clear() {
+    // store in log in reverse so when we restore them we are appending
+<span class="fc bfc" id="L224" title="All 2 branches covered.">    for (int i = delegate.size() - 1; i &gt;= 0; i--) {</span>
+<span class="fc" id="L225">      remove(i);</span>
+    }
+<span class="fc" id="L227">  }</span>
+
+  @Override
+  public V set(final int index, final V element) {
+<span class="fc" id="L231">    V oldValue = delegate.set(index, element);</span>
+<span class="fc" id="L232">    undoLog.add(new UndoEntry&lt;&gt;(index, true, oldValue));</span>
+<span class="fc" id="L233">    return oldValue;</span>
+  }
+
+  @Override
+  public void add(final int index, final V element) {
+<span class="fc" id="L238">    delegate.add(index, element);</span>
+<span class="fc" id="L239">    undoLog.add(new UndoEntry&lt;&gt;(index, false, null));</span>
+<span class="fc" id="L240">  }</span>
+
+  @Override
+  public V remove(final int index) {
+<span class="fc" id="L244">    undoLog.add(new UndoEntry&lt;&gt;(index, false, delegate.get(index)));</span>
+<span class="fc" id="L245">    return delegate.remove(index);</span>
+  }
+
+  @Override
+  public int size() {
+<span class="fc" id="L250">    return delegate.size();</span>
+  }
+
+  @Override
+  public boolean isEmpty() {
+<span class="fc" id="L255">    return delegate.isEmpty();</span>
+  }
+
+  @Override
+  public boolean contains(final Object o) {
+<span class="fc" id="L260">    return delegate.contains(o);</span>
+  }
+
+  @Override
+  public Iterator&lt;V&gt; iterator() {
+<span class="fc" id="L265">    return delegate.iterator();</span>
+  }
+
+  @Override
+  public Object[] toArray() {
+<span class="fc" id="L270">    return delegate.toArray();</span>
+  }
+
+  @Override
+  public &lt;T&gt; T[] toArray(final @Nonnull T[] a) {
+<span class="fc" id="L275">    return delegate.toArray(a);</span>
+  }
+
+  @Override
+  public V get(final int index) {
+<span class="fc" id="L280">    return delegate.get(index);</span>
+  }
+
+  @Override
+  public int indexOf(final Object o) {
+<span class="fc" id="L285">    return delegate.indexOf(o);</span>
+  }
+
+  @Override
+  public int lastIndexOf(final Object o) {
+<span class="fc" id="L290">    return delegate.lastIndexOf(o);</span>
+  }
+
+  @Override
+  public ListIterator&lt;V&gt; listIterator() {
+<span class="fc" id="L295">    return new ReadOnlyListIterator&lt;&gt;(delegate.listIterator());</span>
+  }
+
+  @Override
+  public ListIterator&lt;V&gt; listIterator(final int index) {
+<span class="fc" id="L300">    return new ReadOnlyListIterator&lt;&gt;(delegate.listIterator(index));</span>
+  }
+
+  @Override
+  public List&lt;V&gt; subList(final int fromIndex, final int toIndex) {
+<span class="fc" id="L305">    return delegate.subList(fromIndex, toIndex);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L310">    return &quot;UndoList{&quot; + &quot;delegate=&quot; + delegate + &quot;, undoLog=&quot; + undoLog + '}';</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="pc bpc" id="L315" title="2 of 4 branches missed.">    return o instanceof UndoList &amp;&amp; delegate.equals(o);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L320">    return delegate.hashCode() ^ 0xde1e647e;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

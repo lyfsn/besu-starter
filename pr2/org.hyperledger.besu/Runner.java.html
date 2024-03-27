@@ -1,0 +1,448 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Runner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu</a> &gt; <span class="el_source">Runner.java</span></div><h1>Runner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu;
+
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.ethereum.api.graphql.GraphQLHttpService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.EngineJsonRpcService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcHttpService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.ipc.JsonRpcIpcService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.WebSocketService;
+import org.hyperledger.besu.ethereum.api.query.cache.AutoTransactionLogBloomCachingService;
+import org.hyperledger.besu.ethereum.api.query.cache.TransactionLogBloomCacher;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolEvictionService;
+import org.hyperledger.besu.ethereum.p2p.network.NetworkRunner;
+import org.hyperledger.besu.ethereum.stratum.StratumServer;
+import org.hyperledger.besu.ethstats.EthStatsService;
+import org.hyperledger.besu.metrics.MetricsService;
+import org.hyperledger.besu.nat.NatService;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.Optional;
+import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import com.google.common.annotations.VisibleForTesting;
+import io.vertx.core.Vertx;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Runner controls various Besu services lifecycle. */
+public class Runner implements AutoCloseable {
+
+<span class="fc" id="L57">  private static final Logger LOG = LoggerFactory.getLogger(Runner.class);</span>
+
+  private final Vertx vertx;
+<span class="fc" id="L60">  private final CountDownLatch vertxShutdownLatch = new CountDownLatch(1);</span>
+<span class="fc" id="L61">  private final CountDownLatch shutdown = new CountDownLatch(1);</span>
+
+  private final NatService natService;
+  private final NetworkRunner networkRunner;
+  private final Optional&lt;EthStatsService&gt; ethStatsService;
+  private final Optional&lt;GraphQLHttpService&gt; graphQLHttp;
+  private final Optional&lt;JsonRpcHttpService&gt; jsonRpc;
+  private final Optional&lt;EngineJsonRpcService&gt; engineJsonRpc;
+  private final Optional&lt;MetricsService&gt; metrics;
+  private final Optional&lt;JsonRpcIpcService&gt; ipcJsonRpc;
+  private final Optional&lt;Path&gt; pidPath;
+  private final Optional&lt;WebSocketService&gt; webSocketRpc;
+  private final TransactionPoolEvictionService transactionPoolEvictionService;
+
+  private final BesuController besuController;
+  private final Path dataDir;
+  private final Optional&lt;StratumServer&gt; stratumServer;
+  private final Optional&lt;AutoTransactionLogBloomCachingService&gt;
+      autoTransactionLogBloomCachingService;
+
+  /**
+   * Instantiates a new Runner.
+   *
+   * @param vertx the vertx
+   * @param networkRunner the network runner
+   * @param natService the nat service
+   * @param jsonRpc the json rpc
+   * @param engineJsonRpc the engine json rpc
+   * @param graphQLHttp the graph ql http
+   * @param webSocketRpc the web socket rpc
+   * @param ipcJsonRpc the ipc json rpc
+   * @param stratumServer the stratum server
+   * @param metrics the metrics
+   * @param ethStatsService the eth stats service
+   * @param besuController the besu controller
+   * @param dataDir the data dir
+   * @param pidPath the pid path
+   * @param transactionLogBloomCacher the transaction log bloom cacher
+   * @param blockchain the blockchain
+   */
+  Runner(
+      final Vertx vertx,
+      final NetworkRunner networkRunner,
+      final NatService natService,
+      final Optional&lt;JsonRpcHttpService&gt; jsonRpc,
+      final Optional&lt;EngineJsonRpcService&gt; engineJsonRpc,
+      final Optional&lt;GraphQLHttpService&gt; graphQLHttp,
+      final Optional&lt;WebSocketService&gt; webSocketRpc,
+      final Optional&lt;JsonRpcIpcService&gt; ipcJsonRpc,
+      final Optional&lt;StratumServer&gt; stratumServer,
+      final Optional&lt;MetricsService&gt; metrics,
+      final Optional&lt;EthStatsService&gt; ethStatsService,
+      final BesuController besuController,
+      final Path dataDir,
+      final Optional&lt;Path&gt; pidPath,
+      final Optional&lt;TransactionLogBloomCacher&gt; transactionLogBloomCacher,
+<span class="fc" id="L117">      final Blockchain blockchain) {</span>
+<span class="fc" id="L118">    this.vertx = vertx;</span>
+<span class="fc" id="L119">    this.networkRunner = networkRunner;</span>
+<span class="fc" id="L120">    this.natService = natService;</span>
+<span class="fc" id="L121">    this.graphQLHttp = graphQLHttp;</span>
+<span class="fc" id="L122">    this.pidPath = pidPath;</span>
+<span class="fc" id="L123">    this.jsonRpc = jsonRpc;</span>
+<span class="fc" id="L124">    this.engineJsonRpc = engineJsonRpc;</span>
+<span class="fc" id="L125">    this.webSocketRpc = webSocketRpc;</span>
+<span class="fc" id="L126">    this.ipcJsonRpc = ipcJsonRpc;</span>
+<span class="fc" id="L127">    this.metrics = metrics;</span>
+<span class="fc" id="L128">    this.ethStatsService = ethStatsService;</span>
+<span class="fc" id="L129">    this.besuController = besuController;</span>
+<span class="fc" id="L130">    this.dataDir = dataDir;</span>
+<span class="fc" id="L131">    this.stratumServer = stratumServer;</span>
+<span class="fc" id="L132">    this.autoTransactionLogBloomCachingService =</span>
+<span class="fc" id="L133">        transactionLogBloomCacher.map(</span>
+<span class="fc" id="L134">            cacher -&gt; new AutoTransactionLogBloomCachingService(blockchain, cacher));</span>
+<span class="fc" id="L135">    this.transactionPoolEvictionService =</span>
+<span class="fc" id="L136">        new TransactionPoolEvictionService(vertx, besuController.getTransactionPool());</span>
+<span class="fc" id="L137">  }</span>
+
+  /** Start external services. */
+  public void startExternalServices() {
+<span class="fc" id="L141">    LOG.info(&quot;Starting external services ... &quot;);</span>
+<span class="pc" id="L142">    metrics.ifPresent(service -&gt; waitForServiceToStart(&quot;metrics&quot;, service.start()));</span>
+
+<span class="fc" id="L144">    jsonRpc.ifPresent(service -&gt; waitForServiceToStart(&quot;jsonRpc&quot;, service.start()));</span>
+<span class="fc" id="L145">    engineJsonRpc.ifPresent(service -&gt; waitForServiceToStart(&quot;engineJsonRpc&quot;, service.start()));</span>
+<span class="pc" id="L146">    graphQLHttp.ifPresent(service -&gt; waitForServiceToStart(&quot;graphQLHttp&quot;, service.start()));</span>
+<span class="fc" id="L147">    webSocketRpc.ifPresent(service -&gt; waitForServiceToStart(&quot;websocketRpc&quot;, service.start()));</span>
+<span class="fc" id="L148">    ipcJsonRpc.ifPresent(</span>
+        service -&gt;
+<span class="nc" id="L150">            waitForServiceToStart(</span>
+<span class="nc" id="L151">                &quot;ipcJsonRpc&quot;, service.start().toCompletionStage().toCompletableFuture()));</span>
+<span class="fc" id="L152">    stratumServer.ifPresent(</span>
+        server -&gt;
+<span class="nc" id="L154">            waitForServiceToStart(</span>
+<span class="nc" id="L155">                &quot;stratum&quot;, server.start().toCompletionStage().toCompletableFuture()));</span>
+<span class="fc" id="L156">    autoTransactionLogBloomCachingService.ifPresent(AutoTransactionLogBloomCachingService::start);</span>
+<span class="fc" id="L157">  }</span>
+
+  private void startExternalServicePostMainLoop() {
+<span class="fc" id="L160">    ethStatsService.ifPresent(EthStatsService::start);</span>
+<span class="fc" id="L161">  }</span>
+
+  /** Start ethereum main loop. */
+  public void startEthereumMainLoop() {
+    try {
+<span class="fc" id="L166">      LOG.info(&quot;Starting Ethereum main loop ... &quot;);</span>
+<span class="fc" id="L167">      natService.start();</span>
+<span class="fc" id="L168">      networkRunner.start();</span>
+<span class="pc bpc" id="L169" title="1 of 2 branches missed.">      if (networkRunner.getNetwork().isP2pEnabled()) {</span>
+<span class="fc" id="L170">        besuController.getSynchronizer().start();</span>
+      }
+<span class="fc" id="L172">      besuController.getMiningCoordinator().start();</span>
+<span class="fc" id="L173">      transactionPoolEvictionService.start();</span>
+
+<span class="fc" id="L175">      LOG.info(&quot;Ethereum main loop is up.&quot;);</span>
+      // we write these values to disk to be able to access them during the acceptance tests
+<span class="fc" id="L177">      writeBesuPortsToFile();</span>
+<span class="fc" id="L178">      writeBesuNetworksToFile();</span>
+<span class="fc" id="L179">      writePidFile();</span>
+
+      // start external service that depends on information from main loop
+<span class="fc" id="L182">      startExternalServicePostMainLoop();</span>
+<span class="nc" id="L183">    } catch (final Exception ex) {</span>
+<span class="nc" id="L184">      LOG.error(&quot;unable to start main loop&quot;, ex);</span>
+<span class="nc" id="L185">      throw new IllegalStateException(&quot;Startup failed&quot;, ex);</span>
+<span class="fc" id="L186">    }</span>
+<span class="fc" id="L187">  }</span>
+
+  /** Stop services. */
+  public void stop() {
+<span class="fc" id="L191">    transactionPoolEvictionService.stop();</span>
+<span class="fc" id="L192">    jsonRpc.ifPresent(service -&gt; waitForServiceToStop(&quot;jsonRpc&quot;, service.stop()));</span>
+<span class="fc" id="L193">    engineJsonRpc.ifPresent(service -&gt; waitForServiceToStop(&quot;engineJsonRpc&quot;, service.stop()));</span>
+<span class="pc" id="L194">    graphQLHttp.ifPresent(service -&gt; waitForServiceToStop(&quot;graphQLHttp&quot;, service.stop()));</span>
+<span class="fc" id="L195">    webSocketRpc.ifPresent(service -&gt; waitForServiceToStop(&quot;websocketRpc&quot;, service.stop()));</span>
+<span class="fc" id="L196">    ipcJsonRpc.ifPresent(</span>
+        service -&gt;
+<span class="nc" id="L198">            waitForServiceToStop(</span>
+<span class="nc" id="L199">                &quot;ipcJsonRpc&quot;, service.stop().toCompletionStage().toCompletableFuture()));</span>
+<span class="fc" id="L200">    waitForServiceToStop(&quot;Transaction Pool&quot;, besuController.getTransactionPool().setDisabled());</span>
+<span class="pc" id="L201">    metrics.ifPresent(service -&gt; waitForServiceToStop(&quot;metrics&quot;, service.stop()));</span>
+<span class="fc" id="L202">    ethStatsService.ifPresent(EthStatsService::stop);</span>
+<span class="fc" id="L203">    besuController.getMiningCoordinator().stop();</span>
+<span class="fc" id="L204">    waitForServiceToStop(&quot;Mining Coordinator&quot;, besuController.getMiningCoordinator()::awaitStop);</span>
+<span class="pc" id="L205">    stratumServer.ifPresent(server -&gt; waitForServiceToStop(&quot;Stratum&quot;, server::stop));</span>
+<span class="pc bpc" id="L206" title="1 of 2 branches missed.">    if (networkRunner.getNetwork().isP2pEnabled()) {</span>
+<span class="fc" id="L207">      besuController.getSynchronizer().stop();</span>
+<span class="fc" id="L208">      waitForServiceToStop(&quot;Synchronizer&quot;, besuController.getSynchronizer()::awaitStop);</span>
+    }
+
+<span class="fc" id="L211">    networkRunner.stop();</span>
+<span class="fc" id="L212">    waitForServiceToStop(&quot;Network&quot;, networkRunner::awaitStop);</span>
+<span class="fc" id="L213">    autoTransactionLogBloomCachingService.ifPresent(AutoTransactionLogBloomCachingService::stop);</span>
+<span class="fc" id="L214">    natService.stop();</span>
+<span class="fc" id="L215">    besuController.close();</span>
+<span class="fc" id="L216">    vertx.close((res) -&gt; vertxShutdownLatch.countDown());</span>
+<span class="fc" id="L217">    waitForServiceToStop(&quot;Vertx&quot;, vertxShutdownLatch::await);</span>
+<span class="fc" id="L218">    shutdown.countDown();</span>
+<span class="fc" id="L219">  }</span>
+
+  /** Await stop. */
+  public void awaitStop() {
+    try {
+<span class="fc" id="L224">      shutdown.await();</span>
+<span class="nc" id="L225">    } catch (final InterruptedException e) {</span>
+<span class="nc" id="L226">      LOG.debug(&quot;Interrupted, exiting&quot;, e);</span>
+<span class="nc" id="L227">      Thread.currentThread().interrupt();</span>
+<span class="fc" id="L228">    }</span>
+<span class="fc" id="L229">  }</span>
+
+  @Override
+  public void close() {
+<span class="fc" id="L233">    stop();</span>
+<span class="fc" id="L234">    awaitStop();</span>
+<span class="fc" id="L235">  }</span>
+
+  private void waitForServiceToStop(
+      final String serviceName, final CompletableFuture&lt;?&gt; stopFuture) {
+    try {
+<span class="fc" id="L240">      stopFuture.get(30, TimeUnit.SECONDS);</span>
+<span class="nc" id="L241">    } catch (final InterruptedException e) {</span>
+<span class="nc" id="L242">      LOG.debug(&quot;Interrupted while waiting for service to complete&quot;, e);</span>
+<span class="nc" id="L243">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L244">    } catch (final ExecutionException e) {</span>
+<span class="nc" id="L245">      LOG.error(&quot;Service &quot; + serviceName + &quot; failed to shutdown&quot;, e);</span>
+<span class="nc" id="L246">    } catch (final TimeoutException e) {</span>
+<span class="nc" id="L247">      LOG.error(&quot;Service {} did not shut down cleanly&quot;, serviceName);</span>
+<span class="pc" id="L248">    }</span>
+<span class="fc" id="L249">  }</span>
+
+  private void waitForServiceToStop(final String serviceName, final SynchronousShutdown shutdown) {
+    try {
+<span class="fc" id="L253">      shutdown.await();</span>
+<span class="nc" id="L254">    } catch (final InterruptedException e) {</span>
+<span class="nc" id="L255">      LOG.debug(&quot;Interrupted while waiting for service &quot; + serviceName + &quot; to stop&quot;, e);</span>
+<span class="nc" id="L256">      Thread.currentThread().interrupt();</span>
+<span class="fc" id="L257">    }</span>
+<span class="fc" id="L258">  }</span>
+
+  private void waitForServiceToStart(
+      final String serviceName, final CompletableFuture&lt;?&gt; startFuture) {
+    do {
+      try {
+<span class="fc" id="L264">        startFuture.get(60, TimeUnit.SECONDS);</span>
+<span class="nc" id="L265">      } catch (final InterruptedException e) {</span>
+<span class="nc" id="L266">        Thread.currentThread().interrupt();</span>
+<span class="nc" id="L267">        throw new IllegalStateException(&quot;Interrupted while waiting for service to start&quot;, e);</span>
+<span class="nc" id="L268">      } catch (final ExecutionException e) {</span>
+<span class="nc" id="L269">        throw new IllegalStateException(&quot;Service &quot; + serviceName + &quot; failed to start&quot;, e);</span>
+<span class="nc" id="L270">      } catch (final TimeoutException e) {</span>
+<span class="nc" id="L271">        LOG.warn(&quot;Service {} is taking an unusually long time to start&quot;, serviceName);</span>
+<span class="fc" id="L272">      }</span>
+<span class="pc bpc" id="L273" title="1 of 2 branches missed.">    } while (!startFuture.isDone());</span>
+<span class="fc" id="L274">  }</span>
+
+  private void writeBesuPortsToFile() {
+<span class="fc" id="L277">    final Properties properties = new Properties();</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">    if (networkRunner.getNetwork().isP2pEnabled()) {</span>
+<span class="fc" id="L279">      networkRunner</span>
+<span class="fc" id="L280">          .getNetwork()</span>
+<span class="fc" id="L281">          .getLocalEnode()</span>
+<span class="fc" id="L282">          .ifPresent(</span>
+              enode -&gt; {
+<span class="fc" id="L284">                enode</span>
+<span class="fc" id="L285">                    .getDiscoveryPort()</span>
+<span class="fc" id="L286">                    .ifPresent(</span>
+                        discoveryPort -&gt;
+<span class="fc" id="L288">                            properties.setProperty(&quot;discovery&quot;, String.valueOf(discoveryPort)));</span>
+<span class="fc" id="L289">                enode</span>
+<span class="fc" id="L290">                    .getListeningPort()</span>
+<span class="fc" id="L291">                    .ifPresent(</span>
+                        listeningPort -&gt;
+<span class="fc" id="L293">                            properties.setProperty(&quot;p2p&quot;, String.valueOf(listeningPort)));</span>
+<span class="fc" id="L294">              });</span>
+    }
+
+<span class="fc" id="L297">    Optional&lt;Integer&gt; port = getJsonRpcPort();</span>
+<span class="fc bfc" id="L298" title="All 2 branches covered.">    if (port.isPresent()) {</span>
+<span class="fc" id="L299">      properties.setProperty(&quot;json-rpc&quot;, String.valueOf(port.get()));</span>
+    }
+<span class="fc" id="L301">    port = getGraphQLHttpPort();</span>
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">    if (port.isPresent()) {</span>
+<span class="nc" id="L303">      properties.setProperty(&quot;graphql-http&quot;, String.valueOf(port.get()));</span>
+    }
+<span class="fc" id="L305">    port = getWebSocketPort();</span>
+<span class="fc bfc" id="L306" title="All 2 branches covered.">    if (port.isPresent()) {</span>
+<span class="fc" id="L307">      properties.setProperty(&quot;ws-rpc&quot;, String.valueOf(port.get()));</span>
+    }
+<span class="fc" id="L309">    port = getMetricsPort();</span>
+<span class="pc bpc" id="L310" title="1 of 2 branches missed.">    if (port.isPresent()) {</span>
+<span class="nc" id="L311">      properties.setProperty(&quot;metrics&quot;, String.valueOf(port.get()));</span>
+    }
+<span class="fc" id="L313">    port = getEngineJsonRpcPort();</span>
+<span class="pc bpc" id="L314" title="1 of 2 branches missed.">    if (port.isPresent()) {</span>
+<span class="nc" id="L315">      properties.setProperty(&quot;engine-json-rpc&quot;, String.valueOf(port.get()));</span>
+    }
+    // create besu.ports file
+<span class="fc" id="L318">    createBesuFile(</span>
+        properties, &quot;ports&quot;, &quot;This file contains the ports used by the running instance of Besu&quot;);
+<span class="fc" id="L320">  }</span>
+
+  private void writeBesuNetworksToFile() {
+<span class="fc" id="L323">    final Properties properties = new Properties();</span>
+<span class="pc bpc" id="L324" title="1 of 2 branches missed.">    if (networkRunner.getNetwork().isP2pEnabled()) {</span>
+<span class="fc" id="L325">      networkRunner</span>
+<span class="fc" id="L326">          .getNetwork()</span>
+<span class="fc" id="L327">          .getLocalEnode()</span>
+<span class="fc" id="L328">          .ifPresent(</span>
+              enode -&gt; {
+<span class="fc" id="L330">                final String globalIp = natService.queryExternalIPAddress(enode.getIpAsString());</span>
+<span class="fc" id="L331">                properties.setProperty(&quot;global-ip&quot;, globalIp);</span>
+<span class="fc" id="L332">                final String localIp = natService.queryLocalIPAddress(enode.getIpAsString());</span>
+<span class="fc" id="L333">                properties.setProperty(&quot;local-ip&quot;, localIp);</span>
+<span class="fc" id="L334">              });</span>
+    }
+    // create besu.networks file
+<span class="fc" id="L337">    createBesuFile(</span>
+        properties,
+        &quot;networks&quot;,
+        &quot;This file contains the IP Addresses (global and local) used by the running instance of Besu&quot;);
+<span class="fc" id="L341">  }</span>
+
+  private void writePidFile() {
+<span class="fc" id="L344">    pidPath.ifPresent(</span>
+        path -&gt; {
+<span class="fc" id="L346">          String pid = &quot;&quot;;</span>
+          try {
+<span class="fc" id="L348">            pid = Long.toString(ProcessHandle.current().pid());</span>
+<span class="nc" id="L349">          } catch (Throwable t) {</span>
+<span class="nc" id="L350">            LOG.error(&quot;Error retrieving PID&quot;, t);</span>
+<span class="fc" id="L351">          }</span>
+          try {
+<span class="fc" id="L353">            Files.write(</span>
+                path,
+<span class="fc" id="L355">                pid.getBytes(StandardCharsets.UTF_8),</span>
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE);
+<span class="fc" id="L359">            path.toFile().deleteOnExit();</span>
+<span class="nc" id="L360">          } catch (IOException e) {</span>
+<span class="nc" id="L361">            LOG.error(&quot;Error writing PID file&quot;, e);</span>
+<span class="fc" id="L362">          }</span>
+<span class="fc" id="L363">        });</span>
+<span class="fc" id="L364">  }</span>
+
+  /**
+   * Gets json rpc port.
+   *
+   * @return the json rpc port
+   */
+  public Optional&lt;Integer&gt; getJsonRpcPort() {
+<span class="fc" id="L372">    return jsonRpc.map(service -&gt; service.socketAddress().getPort());</span>
+  }
+
+  /**
+   * Gets engine json rpc port.
+   *
+   * @return the engine json rpc port
+   */
+  public Optional&lt;Integer&gt; getEngineJsonRpcPort() {
+<span class="fc" id="L381">    return engineJsonRpc.map(service -&gt; service.socketAddress().getPort());</span>
+  }
+
+  /**
+   * Gets GraphQl http port.
+   *
+   * @return the graph ql http port
+   */
+  public Optional&lt;Integer&gt; getGraphQLHttpPort() {
+<span class="pc" id="L390">    return graphQLHttp.map(service -&gt; service.socketAddress().getPort());</span>
+  }
+
+  /**
+   * Gets web socket port.
+   *
+   * @return the web socket port
+   */
+  public Optional&lt;Integer&gt; getWebSocketPort() {
+<span class="fc" id="L399">    return webSocketRpc.map(service -&gt; service.socketAddress().getPort());</span>
+  }
+
+  /**
+   * Gets metrics port.
+   *
+   * @return the metrics port
+   */
+  public Optional&lt;Integer&gt; getMetricsPort() {
+<span class="pc bpc" id="L408" title="1 of 2 branches missed.">    if (metrics.isPresent()) {</span>
+<span class="nc" id="L409">      return metrics.get().getPort();</span>
+    } else {
+<span class="fc" id="L411">      return Optional.empty();</span>
+    }
+  }
+
+  /**
+   * Gets local enode.
+   *
+   * @return the local enode
+   */
+  @VisibleForTesting
+  Optional&lt;EnodeURL&gt; getLocalEnode() {
+<span class="fc" id="L422">    return networkRunner.getNetwork().getLocalEnode();</span>
+  }
+
+  @FunctionalInterface
+  private interface SynchronousShutdown {
+    /**
+     * Await for shutdown.
+     *
+     * @throws InterruptedException the interrupted exception
+     */
+    void await() throws InterruptedException;
+  }
+
+  private void createBesuFile(
+      final Properties properties, final String fileName, final String fileHeader) {
+<span class="fc" id="L437">    final File file = new File(dataDir.toFile(), String.format(&quot;besu.%s&quot;, fileName));</span>
+<span class="fc" id="L438">    file.deleteOnExit();</span>
+<span class="fc" id="L439">    try (final FileOutputStream fileOutputStream = new FileOutputStream(file)) {</span>
+<span class="fc" id="L440">      properties.store(</span>
+          fileOutputStream,
+<span class="fc" id="L442">          String.format(&quot;%s. This file will be deleted after the node is shutdown.&quot;, fileHeader));</span>
+<span class="fc" id="L443">    } catch (final Exception e) {</span>
+<span class="fc" id="L444">      LOG.warn(String.format(&quot;Error writing %s file&quot;, fileName), e);</span>
+<span class="fc" id="L445">    }</span>
+<span class="fc" id="L446">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,297 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TomlConfigurationDefaultProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.util</a> &gt; <span class="el_source">TomlConfigurationDefaultProvider.java</span></div><h1>TomlConfigurationDefaultProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.util;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.util.number.Fraction;
+import org.hyperledger.besu.util.number.Percentage;
+import org.hyperledger.besu.util.number.PositiveNumber;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.toml.Toml;
+import org.apache.tuweni.toml.TomlArray;
+import org.apache.tuweni.toml.TomlParseError;
+import org.apache.tuweni.toml.TomlParseResult;
+import picocli.CommandLine;
+import picocli.CommandLine.IDefaultValueProvider;
+import picocli.CommandLine.Model.ArgSpec;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Model.OptionSpec;
+import picocli.CommandLine.ParameterException;
+
+/** The Toml config file default value provider used by PicoCli. */
+public class TomlConfigurationDefaultProvider implements IDefaultValueProvider {
+
+  private final CommandLine commandLine;
+  private final InputStream configurationInputStream;
+  private TomlParseResult result;
+
+  /**
+   * Instantiates a new Toml config file default value provider.
+   *
+   * @param commandLine the command line
+   * @param configurationInputStream the input stream
+   */
+  private TomlConfigurationDefaultProvider(
+<span class="fc" id="L61">      final CommandLine commandLine, final InputStream configurationInputStream) {</span>
+<span class="fc" id="L62">    this.commandLine = commandLine;</span>
+<span class="fc" id="L63">    this.configurationInputStream = configurationInputStream;</span>
+<span class="fc" id="L64">  }</span>
+
+  /**
+   * Creates a new TomlConfigurationDefaultProvider from a file.
+   *
+   * @param commandLine the command line
+   * @param configFile the configuration file
+   * @return a new TomlConfigurationDefaultProvider
+   * @throws ParameterException if the configuration file is not found
+   */
+  public static TomlConfigurationDefaultProvider fromFile(
+      final CommandLine commandLine, final File configFile) {
+    try {
+<span class="fc" id="L77">      return new TomlConfigurationDefaultProvider(commandLine, new FileInputStream(configFile));</span>
+<span class="fc" id="L78">    } catch (final FileNotFoundException e) {</span>
+<span class="fc" id="L79">      throw new ParameterException(</span>
+          commandLine, &quot;Unable to read TOML configuration, file not found.&quot;);
+    }
+  }
+
+  /**
+   * Creates a new TomlConfigurationDefaultProvider from an input stream.
+   *
+   * @param commandLine the command line
+   * @param inputStream the input stream
+   * @return a new TomlConfigurationDefaultProvider
+   */
+  public static TomlConfigurationDefaultProvider fromInputStream(
+      final CommandLine commandLine, final InputStream inputStream) {
+<span class="fc" id="L93">    return new TomlConfigurationDefaultProvider(commandLine, inputStream);</span>
+  }
+
+  @Override
+  public String defaultValue(final ArgSpec argSpec) {
+<span class="fc" id="L98">    loadConfigurationFromFile();</span>
+
+    // only options can be used in config because a name is needed for the key
+    // so we skip default for positional params
+<span class="pc bpc" id="L102" title="1 of 2 branches missed.">    return argSpec.isOption() ? getConfigurationValue(((OptionSpec) argSpec)) : null;</span>
+  }
+
+  private String getConfigurationValue(final OptionSpec optionSpec) {
+    // NOTE: This temporary fix is necessary to make certain options be treated as a multi-value.
+    // This can be done automatically by picocli if the object implements Collection.
+<span class="fc" id="L108">    final boolean isArray = getKeyName(optionSpec).map(result::isArray).orElse(false);</span>
+
+<span class="fc bfc" id="L110" title="All 4 branches covered.">    if (optionSpec.type().equals(Boolean.class) || optionSpec.type().equals(boolean.class)) {</span>
+<span class="fc" id="L111">      return getBooleanEntryAsString(optionSpec);</span>
+<span class="pc bpc" id="L112" title="1 of 4 branches missed.">    } else if (optionSpec.isMultiValue() || isArray) {</span>
+<span class="fc" id="L113">      return getListEntryAsString(optionSpec);</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    } else if (isNumericType(optionSpec.type())) {</span>
+<span class="fc" id="L115">      return getNumericEntryAsString(optionSpec);</span>
+    } else { // else will be treated as String
+<span class="fc" id="L117">      return getEntryAsString(optionSpec);</span>
+    }
+  }
+
+  private boolean isNumericType(final Class&lt;?&gt; type) {
+<span class="fc bfc" id="L122" title="All 2 branches covered.">    return type.equals(Integer.class)</span>
+<span class="fc bfc" id="L123" title="All 2 branches covered.">        || type.equals(int.class)</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        || type.equals(Long.class)</span>
+<span class="fc bfc" id="L125" title="All 2 branches covered.">        || type.equals(long.class)</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">        || type.equals(Wei.class)</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">        || type.equals(BigInteger.class)</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">        || type.equals(Double.class)</span>
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">        || type.equals(double.class)</span>
+<span class="pc bpc" id="L130" title="1 of 2 branches missed.">        || type.equals(Float.class)</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">        || type.equals(float.class)</span>
+<span class="fc bfc" id="L132" title="All 2 branches covered.">        || type.equals(Percentage.class)</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">        || type.equals(Fraction.class)</span>
+<span class="fc bfc" id="L134" title="All 2 branches covered.">        || type.equals(PositiveNumber.class);</span>
+  }
+
+  private String getEntryAsString(final OptionSpec spec) {
+    // returns the string value of the config line corresponding to the option in toml file
+    // or null if not present in the config
+<span class="fc" id="L140">    return getKeyName(spec).map(result::getString).orElse(null);</span>
+  }
+
+  private Optional&lt;String&gt; getKeyName(final OptionSpec spec) {
+    // If any of the names of the option are used as key in the toml results
+    // then returns the value of first one.
+<span class="fc" id="L146">    Optional&lt;String&gt; keyName =</span>
+<span class="fc" id="L147">        Arrays.stream(spec.names())</span>
+            // remove leading dashes on option name as we can have &quot;--&quot; or &quot;-&quot; options
+<span class="fc" id="L149">            .map(name -&gt; name.replaceFirst(&quot;^-+&quot;, &quot;&quot;))</span>
+<span class="fc" id="L150">            .filter(result::contains)</span>
+<span class="fc" id="L151">            .findFirst();</span>
+
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (keyName.isEmpty()) {</span>
+      // If the base key name doesn't exist in the file it may be under a TOML table heading
+      // e.g. TxPool.tx-pool-max-size
+<span class="fc" id="L156">      keyName = getDottedKeyName(spec);</span>
+    }
+
+<span class="fc" id="L159">    return keyName;</span>
+  }
+
+  /*
+   For all spec names, look to see if any of the TOML keyPathSet entries contain
+   the name. A key path set might look like [&quot;TxPool&quot;, &quot;tx-max-pool-size&quot;] where
+   &quot;TxPool&quot; is the TOML table heading (which we ignore) and &quot;tx-max-pool-size&quot; is
+   the name of the option being requested. For a request for &quot;tx-max-pool-size&quot; this
+   function will return &quot;TxPool.tx-max-pool-size&quot; which can then be used directly
+   as a query on the TOML result structure.
+  */
+  private Optional&lt;String&gt; getDottedKeyName(final OptionSpec spec) {
+<span class="fc" id="L171">    List&lt;String&gt; foundNames = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L173">    Arrays.stream(spec.names())</span>
+<span class="fc" id="L174">        .forEach(</span>
+            nextSpecName -&gt; {
+<span class="fc" id="L176">              String specName =</span>
+<span class="fc" id="L177">                  result.keyPathSet().stream()</span>
+<span class="fc" id="L178">                      .filter(option -&gt; option.contains(nextSpecName.replaceFirst(&quot;^-+&quot;, &quot;&quot;)))</span>
+<span class="fc" id="L179">                      .findFirst()</span>
+<span class="fc" id="L180">                      .orElse(new ArrayList&lt;&gt;())</span>
+<span class="fc" id="L181">                      .stream()</span>
+<span class="fc" id="L182">                      .collect(Collectors.joining(&quot;.&quot;));</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">              if (specName.length() &gt; 0) {</span>
+<span class="fc" id="L184">                foundNames.add(specName);</span>
+              }
+<span class="fc" id="L186">            });</span>
+
+<span class="fc" id="L188">    return foundNames.stream().findFirst();</span>
+  }
+
+  private String getListEntryAsString(final OptionSpec spec) {
+    // returns the string representation of the array value of the config line in CLI format
+    // corresponding to the option in toml file
+    // or null if not present in the config
+<span class="fc" id="L195">    return decodeTomlArray(</span>
+<span class="fc" id="L196">        getKeyName(spec).map(result::getArray).map(tomlArray -&gt; tomlArray.toList()).orElse(null));</span>
+  }
+
+  private String decodeTomlArray(final List&lt;Object&gt; tomlArrayElements) {
+<span class="fc bfc" id="L200" title="All 2 branches covered.">    if (tomlArrayElements == null) return null;</span>
+<span class="fc" id="L201">    return tomlArrayElements.stream()</span>
+<span class="fc" id="L202">        .map(</span>
+            tomlObject -&gt; {
+<span class="fc bfc" id="L204" title="All 2 branches covered.">              if (tomlObject instanceof TomlArray) {</span>
+<span class="fc" id="L205">                return &quot;[&quot;.concat(decodeTomlArray(((TomlArray) tomlObject).toList())).concat(&quot;]&quot;);</span>
+              } else {
+<span class="fc" id="L207">                return tomlObject.toString();</span>
+              }
+            })
+<span class="fc" id="L210">        .collect(Collectors.joining(&quot;,&quot;));</span>
+  }
+
+  private String getBooleanEntryAsString(final OptionSpec spec) {
+    // return the string representation of the boolean value corresponding to the option in toml
+    // file
+    // or null if not present in the config
+<span class="fc" id="L217">    return getKeyName(spec).map(result::getBoolean).map(Object::toString).orElse(null);</span>
+  }
+
+  private String getNumericEntryAsString(final OptionSpec spec) {
+    // return the string representation of the numeric value corresponding to the option in toml
+    // file - this works for integer, double, and float
+    // or null if not present in the config
+
+<span class="fc" id="L225">    return getKeyName(spec).map(result::get).map(Object::toString).orElse(null);</span>
+  }
+
+  private void checkConfigurationValidity() {
+<span class="pc bpc" id="L229" title="1 of 4 branches missed.">    if (result == null || result.isEmpty())</span>
+<span class="fc" id="L230">      throw new ParameterException(</span>
+          commandLine,
+<span class="fc" id="L232">          String.format(&quot;Unable to read TOML configuration file %s&quot;, configurationInputStream));</span>
+<span class="fc" id="L233">  }</span>
+
+  /** Load configuration from file. */
+  public void loadConfigurationFromFile() {
+
+<span class="fc bfc" id="L238" title="All 2 branches covered.">    if (result == null) {</span>
+      try {
+<span class="fc" id="L240">        final TomlParseResult result = Toml.parse(configurationInputStream);</span>
+
+<span class="fc bfc" id="L242" title="All 2 branches covered.">        if (result.hasErrors()) {</span>
+<span class="fc" id="L243">          final String errors =</span>
+<span class="fc" id="L244">              result.errors().stream()</span>
+<span class="fc" id="L245">                  .map(TomlParseError::toString)</span>
+<span class="fc" id="L246">                  .collect(Collectors.joining(&quot;%n&quot;));</span>
+
+<span class="fc" id="L248">          throw new ParameterException(</span>
+<span class="fc" id="L249">              commandLine, String.format(&quot;Invalid TOML configuration: %s&quot;, errors));</span>
+        }
+
+<span class="fc" id="L252">        checkUnknownOptions(result);</span>
+
+<span class="fc" id="L254">        this.result = result;</span>
+
+<span class="nc" id="L256">      } catch (final IOException e) {</span>
+<span class="nc" id="L257">        throw new ParameterException(</span>
+            commandLine, &quot;Unable to read TOML configuration, file not found.&quot;);
+<span class="fc" id="L259">      }</span>
+    }
+<span class="fc" id="L261">    checkConfigurationValidity();</span>
+<span class="fc" id="L262">  }</span>
+
+  private void checkUnknownOptions(final TomlParseResult result) {
+<span class="fc" id="L265">    final CommandSpec commandSpec = commandLine.getCommandSpec();</span>
+
+    // Besu ignores TOML table headings (e.g. [TxPool]) so we use keyPathSet() and take the
+    // last element in each one. For a TOML parameter that's not defined inside a table, the lists
+    // returned in keyPathSet() will contain a single entry - the config parameter itself. For a
+    // TOML
+    // entry that is in a table the list will contain N entries, the last one being the config
+    // parameter itself.
+<span class="fc" id="L273">    final Set&lt;String&gt; optionsWithoutTables = new HashSet&lt;String&gt;();</span>
+<span class="fc" id="L274">    result.keyPathSet().stream()</span>
+<span class="fc" id="L275">        .forEach(</span>
+            strings -&gt; {
+<span class="fc" id="L277">              optionsWithoutTables.add(strings.get(strings.size() - 1));</span>
+<span class="fc" id="L278">            });</span>
+
+    // Once we've stripped TOML table headings from the lists, we can check that the remaining
+    // options are valid
+<span class="fc" id="L282">    final Set&lt;String&gt; unknownOptionsList =</span>
+<span class="fc" id="L283">        optionsWithoutTables.stream()</span>
+<span class="fc bfc" id="L284" title="All 2 branches covered.">            .filter(option -&gt; !commandSpec.optionsMap().containsKey(&quot;--&quot; + option))</span>
+<span class="fc" id="L285">            .collect(Collectors.toSet());</span>
+
+<span class="fc bfc" id="L287" title="All 2 branches covered.">    if (!unknownOptionsList.isEmpty()) {</span>
+<span class="fc bfc" id="L288" title="All 2 branches covered.">      final String options = unknownOptionsList.size() &gt; 1 ? &quot;options&quot; : &quot;option&quot;;</span>
+<span class="fc" id="L289">      final String csvUnknownOptions =</span>
+<span class="fc" id="L290">          unknownOptionsList.stream().collect(Collectors.joining(&quot;, &quot;));</span>
+<span class="fc" id="L291">      throw new ParameterException(</span>
+          commandLine,
+<span class="fc" id="L293">          String.format(&quot;Unknown %s in TOML configuration file: %s&quot;, options, csvUnknownOptions));</span>
+    }
+<span class="fc" id="L295">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

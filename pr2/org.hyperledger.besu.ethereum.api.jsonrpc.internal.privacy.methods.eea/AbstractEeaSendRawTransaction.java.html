@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractEeaSendRawTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.eea</a> &gt; <span class="el_source">AbstractEeaSendRawTransaction.java</span></div><h1>AbstractEeaSendRawTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.eea;
+
+import static org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcEnclaveErrorConverter.convertEnclaveInvalidReason;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcErrorConverter.convertTransactionInvalidReason;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.DECODE_ERROR;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.PrivacyIdProvider;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransaction;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.ethereum.util.NonceProvider;
+import org.hyperledger.besu.plugin.services.privacy.PrivateMarkerTransactionFactory;
+
+import java.util.Optional;
+
+import io.vertx.ext.auth.User;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractEeaSendRawTransaction implements JsonRpcMethod {
+<span class="fc" id="L50">  private static final Logger LOG = LoggerFactory.getLogger(AbstractEeaSendRawTransaction.class);</span>
+  private final TransactionPool transactionPool;
+  private final PrivacyIdProvider privacyIdProvider;
+  private final PrivateMarkerTransactionFactory privateMarkerTransactionFactory;
+  private final NonceProvider publicNonceProvider;
+
+  protected AbstractEeaSendRawTransaction(
+      final TransactionPool transactionPool,
+      final PrivacyIdProvider privacyIdProvider,
+      final PrivateMarkerTransactionFactory privateMarkerTransactionFactory,
+<span class="fc" id="L60">      final NonceProvider publicNonceProvider) {</span>
+<span class="fc" id="L61">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L62">    this.privacyIdProvider = privacyIdProvider;</span>
+<span class="fc" id="L63">    this.privateMarkerTransactionFactory = privateMarkerTransactionFactory;</span>
+<span class="fc" id="L64">    this.publicNonceProvider = publicNonceProvider;</span>
+<span class="fc" id="L65">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L69">    return RpcMethod.EEA_SEND_RAW_TRANSACTION.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L74">    final Object id = requestContext.getRequest().getId();</span>
+<span class="fc" id="L75">    final Optional&lt;User&gt; user = requestContext.getUser();</span>
+<span class="fc" id="L76">    final String rawPrivateTransaction = requestContext.getRequiredParameter(0, String.class);</span>
+
+    try {
+<span class="fc" id="L79">      final PrivateTransaction privateTransaction =</span>
+<span class="fc" id="L80">          PrivateTransaction.readFrom(RLP.input(Bytes.fromHexString(rawPrivateTransaction)));</span>
+
+<span class="fc" id="L82">      final ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+<span class="fc" id="L83">          validatePrivateTransaction(privateTransaction, user);</span>
+
+<span class="fc bfc" id="L85" title="All 2 branches covered.">      if (!validationResult.isValid()) {</span>
+<span class="fc" id="L86">        return new JsonRpcErrorResponse(</span>
+<span class="fc" id="L87">            id, convertTransactionInvalidReason(validationResult.getInvalidReason()));</span>
+      }
+
+<span class="fc" id="L90">      final Address sender =</span>
+<span class="fc" id="L91">          privateMarkerTransactionFactory.getSender(</span>
+<span class="fc" id="L92">              privateTransaction, privacyIdProvider.getPrivacyUserId(user));</span>
+
+<span class="fc" id="L94">      final Transaction privateMarkerTransaction =</span>
+<span class="fc" id="L95">          createPrivateMarkerTransaction(sender, privateTransaction, user);</span>
+
+<span class="fc" id="L97">      return transactionPool</span>
+<span class="fc" id="L98">          .addTransactionViaApi(privateMarkerTransaction)</span>
+<span class="fc" id="L99">          .either(</span>
+<span class="fc" id="L100">              () -&gt; new JsonRpcSuccessResponse(id, privateMarkerTransaction.getHash().toString()),</span>
+<span class="fc" id="L101">              errorReason -&gt; getJsonRpcErrorResponse(id, errorReason));</span>
+<span class="fc" id="L102">    } catch (final JsonRpcErrorResponseException e) {</span>
+<span class="fc" id="L103">      return new JsonRpcErrorResponse(id, e.getJsonRpcError());</span>
+<span class="fc" id="L104">    } catch (final IllegalArgumentException | RLPException e) {</span>
+<span class="fc" id="L105">      LOG.error(&quot;Unable to decode EEA raw transaction&quot;, e);</span>
+<span class="fc" id="L106">      return new JsonRpcErrorResponse(id, DECODE_ERROR);</span>
+<span class="fc" id="L107">    } catch (final Exception e) {</span>
+<span class="fc" id="L108">      return new JsonRpcErrorResponse(id, convertEnclaveInvalidReason(e.getMessage()));</span>
+    }
+  }
+
+  JsonRpcErrorResponse getJsonRpcErrorResponse(
+      final Object id, final TransactionInvalidReason errorReason) {
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (errorReason.equals(TransactionInvalidReason.INTRINSIC_GAS_EXCEEDS_GAS_LIMIT)) {</span>
+<span class="fc" id="L115">      return new JsonRpcErrorResponse(id, RpcErrorType.PMT_FAILED_INTRINSIC_GAS_EXCEEDS_LIMIT);</span>
+    }
+<span class="fc" id="L117">    return new JsonRpcErrorResponse(id, convertTransactionInvalidReason(errorReason));</span>
+  }
+
+  protected abstract ValidationResult&lt;TransactionInvalidReason&gt; validatePrivateTransaction(
+      final PrivateTransaction privateTransaction, final Optional&lt;User&gt; user);
+
+  protected abstract Transaction createPrivateMarkerTransaction(
+      final Address sender, final PrivateTransaction privateTransaction, final Optional&lt;User&gt; user);
+
+  protected Transaction createPrivateMarkerTransaction(
+      final Address sender,
+      final Address privacyPrecompileAddress,
+      final String pmtPayload,
+      final PrivateTransaction privateTransaction,
+      final String privacyUserId) {
+
+<span class="fc" id="L133">    final long nonce = publicNonceProvider.getNonce(sender);</span>
+
+<span class="fc" id="L135">    final Transaction unsignedPrivateMarkerTransaction =</span>
+        new Transaction.Builder()
+<span class="fc" id="L137">            .type(TransactionType.FRONTIER)</span>
+<span class="fc" id="L138">            .sender(sender)</span>
+<span class="fc" id="L139">            .nonce(nonce)</span>
+<span class="fc" id="L140">            .gasPrice(privateTransaction.getGasPrice())</span>
+<span class="fc" id="L141">            .gasLimit(getGasLimit(privateTransaction, pmtPayload))</span>
+<span class="fc" id="L142">            .to(privacyPrecompileAddress)</span>
+<span class="fc" id="L143">            .value(Wei.ZERO)</span>
+<span class="fc" id="L144">            .payload(Bytes.fromBase64String(pmtPayload))</span>
+<span class="fc" id="L145">            .build();</span>
+
+<span class="fc" id="L147">    final Bytes rlpBytes =</span>
+<span class="fc" id="L148">        privateMarkerTransactionFactory.create(</span>
+            unsignedPrivateMarkerTransaction, privateTransaction, privacyUserId);
+<span class="fc" id="L150">    return Transaction.readFrom(rlpBytes);</span>
+  }
+
+  protected abstract long getGasLimit(PrivateTransaction privateTransaction, String pmtPayload);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

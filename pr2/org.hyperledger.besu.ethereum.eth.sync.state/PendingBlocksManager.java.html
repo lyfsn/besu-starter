@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PendingBlocksManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.state</a> &gt; <span class="el_source">PendingBlocksManager.java</span></div><h1>PendingBlocksManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.state;
+
+import static java.util.Collections.newSetFromMap;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.state.cache.ImmutablePendingBlock;
+import org.hyperledger.besu.ethereum.eth.sync.state.cache.PendingBlockCache;
+
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+
+public class PendingBlocksManager {
+
+  private final PendingBlockCache pendingBlocks;
+
+<span class="fc" id="L42">  private final Map&lt;Hash, Set&lt;Hash&gt;&gt; pendingBlocksByParentHash = new ConcurrentHashMap&lt;&gt;();</span>
+
+<span class="fc" id="L44">  public PendingBlocksManager(final SynchronizerConfiguration synchronizerConfiguration) {</span>
+
+<span class="fc" id="L46">    pendingBlocks =</span>
+        new PendingBlockCache(
+<span class="fc" id="L48">            (Math.abs(synchronizerConfiguration.getBlockPropagationRange().lowerEndpoint())</span>
+<span class="fc" id="L49">                + Math.abs(synchronizerConfiguration.getBlockPropagationRange().upperEndpoint())));</span>
+<span class="fc" id="L50">  }</span>
+
+  /**
+   * Track the given block.
+   *
+   * @param block the block to track
+   * @param nodeId node that sent the block
+   * @return true if the block was added (was not previously present)
+   */
+  public boolean registerPendingBlock(final Block block, final Bytes nodeId) {
+
+<span class="fc" id="L61">    final ImmutablePendingBlock previousValue =</span>
+<span class="fc" id="L62">        this.pendingBlocks.putIfAbsent(</span>
+<span class="fc" id="L63">            block.getHash(), ImmutablePendingBlock.builder().block(block).nodeId(nodeId).build());</span>
+<span class="fc bfc" id="L64" title="All 2 branches covered.">    if (previousValue != null) {</span>
+<span class="fc" id="L65">      return false;</span>
+    }
+
+<span class="fc" id="L68">    pendingBlocksByParentHash</span>
+<span class="fc" id="L69">        .computeIfAbsent(</span>
+<span class="fc" id="L70">            block.getHeader().getParentHash(),</span>
+            h -&gt; {
+<span class="fc" id="L72">              final Set&lt;Hash&gt; set = newSetFromMap(new ConcurrentHashMap&lt;&gt;());</span>
+              // Go ahead and add our value at construction, so that we don't set an empty set which
+              // could be removed in deregisterPendingBlock
+<span class="fc" id="L75">              set.add(block.getHash());</span>
+<span class="fc" id="L76">              return set;</span>
+            })
+<span class="fc" id="L78">        .add(block.getHash());</span>
+
+<span class="fc" id="L80">    return true;</span>
+  }
+
+  /**
+   * Stop tracking the given block.
+   *
+   * @param block the block that is no longer pending
+   * @return true if this block was removed
+   */
+  public boolean deregisterPendingBlock(final Block block) {
+<span class="fc" id="L90">    final Hash parentHash = block.getHeader().getParentHash();</span>
+<span class="fc" id="L91">    final ImmutablePendingBlock removed = pendingBlocks.remove(block.getHash());</span>
+<span class="fc" id="L92">    final Set&lt;Hash&gt; blocksForParent = pendingBlocksByParentHash.get(parentHash);</span>
+<span class="fc bfc" id="L93" title="All 2 branches covered.">    if (blocksForParent != null) {</span>
+<span class="fc" id="L94">      blocksForParent.remove(block.getHash());</span>
+<span class="fc" id="L95">      pendingBlocksByParentHash.remove(parentHash, Collections.emptySet());</span>
+    }
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    return removed != null;</span>
+  }
+
+  public void purgeBlocksOlderThan(final long blockNumber) {
+<span class="fc" id="L101">    pendingBlocks.values().stream()</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">        .filter(b -&gt; b.block().getHeader().getNumber() &lt; blockNumber)</span>
+<span class="fc" id="L103">        .map(ImmutablePendingBlock::block)</span>
+<span class="fc" id="L104">        .forEach(this::deregisterPendingBlock);</span>
+<span class="fc" id="L105">  }</span>
+
+  public boolean contains(final Hash blockHash) {
+<span class="fc" id="L108">    return pendingBlocks.containsKey(blockHash);</span>
+  }
+
+  public int size() {
+<span class="fc" id="L112">    return pendingBlocks.size();</span>
+  }
+
+  public List&lt;Block&gt; childrenOf(final Hash parentBlock) {
+<span class="fc" id="L116">    final Set&lt;Hash&gt; blocksByParent = pendingBlocksByParentHash.get(parentBlock);</span>
+<span class="pc bpc" id="L117" title="1 of 4 branches missed.">    if (blocksByParent == null || blocksByParent.size() == 0) {</span>
+<span class="fc" id="L118">      return Collections.emptyList();</span>
+    }
+<span class="fc" id="L120">    return blocksByParent.stream()</span>
+<span class="fc" id="L121">        .map(pendingBlocks::get)</span>
+<span class="fc" id="L122">        .filter(Objects::nonNull)</span>
+<span class="fc" id="L123">        .map(ImmutablePendingBlock::block)</span>
+<span class="fc" id="L124">        .collect(Collectors.toList());</span>
+  }
+
+  public Optional&lt;BlockHeader&gt; lowestAnnouncedBlock() {
+<span class="fc" id="L128">    return pendingBlocks.values().stream()</span>
+<span class="fc" id="L129">        .map(ImmutablePendingBlock::block)</span>
+<span class="fc" id="L130">        .map(Block::getHeader)</span>
+<span class="fc" id="L131">        .min(Comparator.comparing(BlockHeader::getNumber));</span>
+  }
+
+  /**
+   * Get the lowest pending ancestor block saved for a block
+   *
+   * @param block target block
+   * @return An optional with the lowest ancestor pending block
+   */
+  public Optional&lt;Block&gt; pendingAncestorBlockOf(final Block block) {
+<span class="fc" id="L141">    Block ancestor = block;</span>
+<span class="fc" id="L142">    int ancestorLevel = 0;</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">    while (pendingBlocks.containsKey(ancestor.getHeader().getParentHash())</span>
+<span class="pc bpc" id="L144" title="1 of 2 branches missed.">        &amp;&amp; ancestorLevel++ &lt; pendingBlocks.size()) {</span>
+<span class="fc" id="L145">      ancestor = pendingBlocks.get(ancestor.getHeader().getParentHash()).block();</span>
+    }
+<span class="fc" id="L147">    return Optional.of(ancestor);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L152">    return &quot;PendingBlocksManager{&quot;</span>
+        + &quot;pendingBlocks [&quot;
+<span class="nc" id="L154">        + pendingBlocks.values().stream()</span>
+<span class="nc" id="L155">            .map(ImmutablePendingBlock::block)</span>
+<span class="nc" id="L156">            .map(b -&gt; b.getHeader().getNumber() + &quot; (&quot; + b.getHash() + &quot;)&quot;)</span>
+<span class="nc" id="L157">            .collect(Collectors.joining(&quot;, &quot;))</span>
+        + &quot;], pendingBlocksByParentHash=&quot;
+        + pendingBlocksByParentHash
+        + '}';
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

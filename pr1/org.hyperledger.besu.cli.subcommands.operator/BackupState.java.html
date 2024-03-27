@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackupState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.operator</a> &gt; <span class="el_source">BackupState.java</span></div><h1>BackupState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.cli.subcommands.operator;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP;
+
+import org.hyperledger.besu.BesuInfo;
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.ethereum.api.query.StateBackupService;
+import org.hyperledger.besu.ethereum.api.query.StateBackupService.BackupStatus;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.trie.forest.ForestWorldStateArchive;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+
+import java.io.File;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParentCommand;
+
+/** Subcommand that performs back up of state and accounts at a specified block */
+@Command(
+    name = &quot;x-backup-state&quot;,
+    description = &quot;Backs up the state and accounts at a specified block.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+<span class="fc" id="L48">public class BackupState implements Runnable {</span>
+
+<span class="fc" id="L50">  @Option(</span>
+      names = &quot;--block&quot;,
+      paramLabel = MANDATORY_LONG_FORMAT_HELP,
+      description = &quot;The block to perform the backup at (default: calculated chain head)&quot;,
+      arity = &quot;1..1&quot;)
+<span class="fc" id="L55">  private final Long block = Long.MAX_VALUE;</span>
+
+<span class="fc" id="L57">  @Option(</span>
+      names = &quot;--backup-path&quot;,
+      required = true,
+      paramLabel = MANDATORY_LONG_FORMAT_HELP,
+      description = &quot;The path to store the backup files.&quot;,
+      arity = &quot;1..1&quot;)
+  private final File backupDir = null;
+
+<span class="fc" id="L65">  @Option(</span>
+      names = {&quot;--compression-enabled&quot;},
+      description = &quot;Enable data compression&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L69">  private final Boolean compress = true;</span>
+
+  @ParentCommand private OperatorSubCommand parentCommand;
+
+  @Override
+  public void run() {
+<span class="nc" id="L75">    checkArgument(</span>
+<span class="nc" id="L76">        parentCommand.parentCommand.dataDir().toFile().exists(),</span>
+        &quot;DataDir (the blockchain being backed up) does not exist.&quot;);
+<span class="nc" id="L78">    checkArgument(</span>
+<span class="nc bnc" id="L79" title="All 4 branches missed.">        backupDir.exists() || backupDir.mkdirs(),</span>
+        &quot;Backup directory does not exist and cannot be created.&quot;);
+
+<span class="nc" id="L82">    final BesuController besuController = createBesuController();</span>
+<span class="nc" id="L83">    final MutableBlockchain blockchain = besuController.getProtocolContext().getBlockchain();</span>
+<span class="nc" id="L84">    final ForestWorldStateKeyValueStorage forestWorldStateKeyValueStorage =</span>
+<span class="nc" id="L85">        ((ForestWorldStateArchive) besuController.getProtocolContext().getWorldStateArchive())</span>
+<span class="nc" id="L86">            .getWorldStateStorage();</span>
+<span class="nc" id="L87">    final EthScheduler scheduler = new EthScheduler(1, 1, 1, 1, new NoOpMetricsSystem());</span>
+    try {
+<span class="nc" id="L89">      final long targetBlock = Math.min(blockchain.getChainHeadBlockNumber(), this.block);</span>
+<span class="nc" id="L90">      final StateBackupService backup =</span>
+          new StateBackupService(
+<span class="nc" id="L92">              BesuInfo.version(),</span>
+              blockchain,
+<span class="nc" id="L94">              backupDir.toPath(),</span>
+              scheduler,
+              forestWorldStateKeyValueStorage);
+<span class="nc" id="L97">      final BackupStatus status = backup.requestBackup(targetBlock, compress, Optional.empty());</span>
+
+<span class="nc" id="L99">      final double refValue = Math.pow(2, 256) / 100.0d;</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">      while (status.isBackingUp()) {</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">        if (status.getTargetBlockNum() != status.getStoredBlockNum()) {</span>
+<span class="nc" id="L102">          System.out.printf(</span>
+              &quot;Chain Progress - %,d of %,d (%5.2f%%)%n&quot;,
+<span class="nc" id="L104">              status.getStoredBlockNum(),</span>
+<span class="nc" id="L105">              status.getTargetBlockNum(),</span>
+<span class="nc" id="L106">              status.getStoredBlockNum() * 100.0d / status.getTargetBlockNum());</span>
+        } else {
+<span class="nc" id="L108">          System.out.printf(</span>
+              &quot;State Progress - %6.3f%% / %,d Accounts / %,d Storage Nodes%n&quot;,
+<span class="nc" id="L110">              status.getCurrentAccountBytes().toUnsignedBigInteger().doubleValue() / refValue,</span>
+<span class="nc" id="L111">              status.getAccountCount(),</span>
+<span class="nc" id="L112">              status.getStorageCount());</span>
+        }
+<span class="nc" id="L114">        LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(10));</span>
+      }
+
+<span class="nc" id="L117">      System.out.printf(</span>
+          &quot;Backup complete%n Accounts: %,d%n Code Size: %,d%nState Entries: %,d%n&quot;,
+<span class="nc" id="L119">          status.getAccountCount(), status.getCodeSize(), status.getStorageCount());</span>
+    } finally {
+<span class="nc" id="L121">      scheduler.stop();</span>
+      try {
+<span class="nc" id="L123">        scheduler.awaitStop();</span>
+<span class="nc" id="L124">      } catch (final InterruptedException e) {</span>
+        // ignore
+<span class="nc" id="L126">      }</span>
+    }
+<span class="nc" id="L128">  }</span>
+
+  private BesuController createBesuController() {
+<span class="nc" id="L131">    return parentCommand.parentCommand.buildController();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SyncTargetManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">SyncTargetManager.java</span></div><h1>SyncTargetManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+import static org.hyperledger.besu.ethereum.eth.sync.fastsync.PivotBlockRetriever.MAX_QUERY_RETRIES_PER_PEER;
+import static org.hyperledger.besu.util.log.LogUtil.throttledLog;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.sync.AbstractSyncTargetManager;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.RetryingGetHeaderFromPeerByNumberTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class SyncTargetManager extends AbstractSyncTargetManager {
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(SyncTargetManager.class);</span>
+
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final MetricsSystem metricsSystem;
+  private final FastSyncState fastSyncState;
+<span class="fc" id="L51">  private final AtomicBoolean logDebug = new AtomicBoolean(true);</span>
+<span class="fc" id="L52">  private final AtomicBoolean logInfo = new AtomicBoolean(true);</span>
+<span class="fc" id="L53">  private final int logDebugRepeatDelay = 15;</span>
+<span class="fc" id="L54">  private final int logInfoRepeatDelay = 120;</span>
+
+  public SyncTargetManager(
+      final SynchronizerConfiguration config,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final FastSyncState fastSyncState) {
+<span class="fc" id="L64">    super(config, protocolSchedule, protocolContext, ethContext, metricsSystem);</span>
+<span class="fc" id="L65">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L66">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L67">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L68">    this.ethContext = ethContext;</span>
+<span class="fc" id="L69">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L70">    this.fastSyncState = fastSyncState;</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  protected CompletableFuture&lt;Optional&lt;EthPeer&gt;&gt; selectBestAvailableSyncTarget() {
+<span class="fc" id="L75">    final BlockHeader pivotBlockHeader = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="fc" id="L76">    final EthPeers ethPeers = ethContext.getEthPeers();</span>
+<span class="fc" id="L77">    final Optional&lt;EthPeer&gt; maybeBestPeer = ethPeers.bestPeerWithHeightEstimate();</span>
+<span class="pc bpc" id="L78" title="1 of 2 branches missed.">    if (maybeBestPeer.isEmpty()) {</span>
+<span class="nc" id="L79">      throttledLog(</span>
+<span class="nc" id="L80">          LOG::debug,</span>
+<span class="nc" id="L81">          String.format(</span>
+              &quot;Unable to find sync target. Currently checking %d peers for usefulness. Pivot block: %d&quot;,
+<span class="nc" id="L83">              ethContext.getEthPeers().peerCount(), pivotBlockHeader.getNumber()),</span>
+          logDebug,
+          logDebugRepeatDelay);
+<span class="nc" id="L86">      throttledLog(</span>
+<span class="nc" id="L87">          LOG::info,</span>
+<span class="nc" id="L88">          String.format(</span>
+              &quot;Unable to find sync target. Currently checking %d peers for usefulness.&quot;,
+<span class="nc" id="L90">              ethContext.getEthPeers().peerCount()),</span>
+          logInfo,
+          logInfoRepeatDelay);
+<span class="nc" id="L93">      return completedFuture(Optional.empty());</span>
+    } else {
+<span class="fc" id="L95">      final EthPeer bestPeer = maybeBestPeer.get();</span>
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">      if (bestPeer.chainState().getEstimatedHeight() &lt; pivotBlockHeader.getNumber()) {</span>
+<span class="nc" id="L97">        LOG.info(</span>
+            &quot;Best peer {} has chain height {} below pivotBlock height {}. Waiting for better peers. Current {} of max {}&quot;,
+<span class="nc" id="L99">            maybeBestPeer.map(EthPeer::getLoggableId).orElse(&quot;none&quot;),</span>
+<span class="nc" id="L100">            maybeBestPeer.map(p -&gt; p.chainState().getEstimatedHeight()).orElse(-1L),</span>
+<span class="nc" id="L101">            pivotBlockHeader.getNumber(),</span>
+<span class="nc" id="L102">            ethPeers.peerCount(),</span>
+<span class="nc" id="L103">            ethPeers.getMaxPeers());</span>
+<span class="nc" id="L104">        ethPeers.disconnectWorstUselessPeer();</span>
+<span class="nc" id="L105">        return completedFuture(Optional.empty());</span>
+      } else {
+<span class="fc" id="L107">        return confirmPivotBlockHeader(bestPeer);</span>
+      }
+    }
+  }
+
+  private CompletableFuture&lt;Optional&lt;EthPeer&gt;&gt; confirmPivotBlockHeader(final EthPeer bestPeer) {
+<span class="fc" id="L113">    final BlockHeader pivotBlockHeader = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="fc" id="L114">    final RetryingGetHeaderFromPeerByNumberTask task =</span>
+<span class="fc" id="L115">        RetryingGetHeaderFromPeerByNumberTask.forSingleNumber(</span>
+            protocolSchedule,
+            ethContext,
+            metricsSystem,
+<span class="fc" id="L119">            pivotBlockHeader.getNumber(),</span>
+            MAX_QUERY_RETRIES_PER_PEER);
+<span class="fc" id="L121">    task.assignPeer(bestPeer);</span>
+<span class="fc" id="L122">    return ethContext</span>
+<span class="fc" id="L123">        .getScheduler()</span>
+<span class="fc" id="L124">        .timeout(task)</span>
+<span class="fc" id="L125">        .thenCompose(</span>
+            result -&gt; {
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">              if (peerHasDifferentPivotBlock(result)) {</span>
+<span class="nc bnc" id="L128" title="All 2 branches missed.">                if (!hasPivotChanged(pivotBlockHeader)) {</span>
+                  // if the pivot block has not changed, then warn and disconnect this peer
+<span class="nc" id="L130">                  LOG.warn(</span>
+                      &quot;Best peer has wrong pivot block (#{}) expecting {} but received {}.  Disconnect: {}&quot;,
+<span class="nc" id="L132">                      pivotBlockHeader.getNumber(),</span>
+<span class="nc" id="L133">                      pivotBlockHeader.getHash(),</span>
+<span class="nc bnc" id="L134" title="All 2 branches missed.">                      result.size() == 1 ? result.get(0).getHash() : &quot;invalid response&quot;,</span>
+                      bestPeer);
+<span class="nc" id="L136">                  bestPeer.disconnect(DisconnectReason.USELESS_PEER);</span>
+<span class="nc" id="L137">                  return CompletableFuture.completedFuture(Optional.&lt;EthPeer&gt;empty());</span>
+                }
+<span class="nc" id="L139">                LOG.debug(</span>
+                    &quot;Retrying best peer {} with new pivot block {}&quot;,
+<span class="nc" id="L141">                    bestPeer.getLoggableId(),</span>
+<span class="nc" id="L142">                    pivotBlockHeader.toLogString());</span>
+<span class="nc" id="L143">                return confirmPivotBlockHeader(bestPeer);</span>
+              } else {
+<span class="fc" id="L145">                return CompletableFuture.completedFuture(Optional.of(bestPeer));</span>
+              }
+            })
+<span class="fc" id="L148">        .exceptionally(</span>
+            error -&gt; {
+<span class="nc" id="L150">              LOG.debug(&quot;Could not confirm best peer had pivot block&quot;, error);</span>
+<span class="nc" id="L151">              return Optional.empty();</span>
+            });
+  }
+
+  private boolean hasPivotChanged(final BlockHeader requestedPivot) {
+<span class="nc" id="L156">    return fastSyncState</span>
+<span class="nc" id="L157">        .getPivotBlockHash()</span>
+<span class="nc" id="L158">        .filter(currentPivotHash -&gt; requestedPivot.getBlockHash().equals(currentPivotHash))</span>
+<span class="nc" id="L159">        .isEmpty();</span>
+  }
+
+  private boolean peerHasDifferentPivotBlock(final List&lt;BlockHeader&gt; result) {
+<span class="fc" id="L163">    final BlockHeader pivotBlockHeader = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="pc bpc" id="L164" title="2 of 4 branches missed.">    return result.size() != 1 || !result.get(0).equals(pivotBlockHeader);</span>
+  }
+
+  @Override
+  public boolean shouldContinueDownloading() {
+<span class="fc" id="L169">    final BlockHeader pivotBlockHeader = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="fc" id="L170">    boolean isValidChainHead =</span>
+<span class="fc" id="L171">        protocolContext.getBlockchain().getChainHeadHash().equals(pivotBlockHeader.getHash());</span>
+<span class="fc bfc" id="L172" title="All 2 branches covered.">    if (!isValidChainHead) {</span>
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">      if (protocolContext.getBlockchain().contains(pivotBlockHeader.getHash())) {</span>
+<span class="nc" id="L174">        protocolContext.getBlockchain().rewindToBlock(pivotBlockHeader.getHash());</span>
+      } else {
+<span class="fc" id="L176">        return true;</span>
+      }
+    }
+<span class="pc bpc" id="L179" title="1 of 2 branches missed.">    return !worldStateStorageCoordinator.isWorldStateAvailable(</span>
+<span class="fc" id="L180">        pivotBlockHeader.getStateRoot(), pivotBlockHeader.getBlockHash());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetBlockValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum</a> &gt; <span class="el_source">MainnetBlockValidator.java</span></div><h1>MainnetBlockValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum;
+
+import org.hyperledger.besu.ethereum.chain.BadBlockCause;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.mainnet.BlockBodyValidator;
+import org.hyperledger.besu.ethereum.mainnet.BlockHeaderValidator;
+import org.hyperledger.besu.ethereum.mainnet.BlockProcessor;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MainnetBlockValidator implements BlockValidator {
+
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(MainnetBlockValidator.class);</span>
+  protected final BlockHeaderValidator blockHeaderValidator;
+  protected final BlockBodyValidator blockBodyValidator;
+  protected final BlockProcessor blockProcessor;
+  protected final BadBlockManager badBlockManager;
+
+  public MainnetBlockValidator(
+      final BlockHeaderValidator blockHeaderValidator,
+      final BlockBodyValidator blockBodyValidator,
+      final BlockProcessor blockProcessor,
+<span class="fc" id="L50">      final BadBlockManager badBlockManager) {</span>
+<span class="fc" id="L51">    this.blockHeaderValidator = blockHeaderValidator;</span>
+<span class="fc" id="L52">    this.blockBodyValidator = blockBodyValidator;</span>
+<span class="fc" id="L53">    this.blockProcessor = blockProcessor;</span>
+<span class="fc" id="L54">    this.badBlockManager = badBlockManager;</span>
+<span class="fc" id="L55">  }</span>
+
+  /**
+   * Performs a full validation and processing of a block
+   *
+   * @param context the {@link ProtocolContext}
+   * @param block the block being validated and processed
+   * @param headerValidationMode the {@link HeaderValidationMode} used for validating the header
+   * @param ommerValidationMode the {@link HeaderValidationMode} used for validating the ommers
+   * @return an optional containing the {@link BlockProcessingOutputs} with the output of processing
+   *     the block, empty if the block was deemed invalid or couldn't be processed
+   */
+  @Override
+  public BlockProcessingResult validateAndProcessBlock(
+      final ProtocolContext context,
+      final Block block,
+      final HeaderValidationMode headerValidationMode,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc" id="L73">    return validateAndProcessBlock(</span>
+        context, block, headerValidationMode, ommerValidationMode, true, true);
+  }
+
+  @Override
+  public BlockProcessingResult validateAndProcessBlock(
+      final ProtocolContext context,
+      final Block block,
+      final HeaderValidationMode headerValidationMode,
+      final HeaderValidationMode ommerValidationMode,
+      final boolean shouldPersist) {
+<span class="fc" id="L84">    return validateAndProcessBlock(</span>
+        context, block, headerValidationMode, ommerValidationMode, shouldPersist, true);
+  }
+
+  @Override
+  public BlockProcessingResult validateAndProcessBlock(
+      final ProtocolContext context,
+      final Block block,
+      final HeaderValidationMode headerValidationMode,
+      final HeaderValidationMode ommerValidationMode,
+      final boolean shouldPersist,
+      final boolean shouldRecordBadBlock) {
+
+<span class="fc" id="L97">    final BlockHeader header = block.getHeader();</span>
+    final BlockHeader parentHeader;
+
+    try {
+<span class="fc" id="L101">      final MutableBlockchain blockchain = context.getBlockchain();</span>
+<span class="fc" id="L102">      final Optional&lt;BlockHeader&gt; maybeParentHeader =</span>
+<span class="fc" id="L103">          blockchain.getBlockHeader(header.getParentHash());</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">      if (maybeParentHeader.isEmpty()) {</span>
+<span class="fc" id="L105">        var retval =</span>
+            new BlockProcessingResult(
+<span class="fc" id="L107">                &quot;Parent block with hash &quot; + header.getParentHash() + &quot; not present&quot;);</span>
+        // Blocks should not be marked bad due to missing data
+<span class="fc" id="L109">        handleFailedBlockProcessing(block, retval, false);</span>
+<span class="fc" id="L110">        return retval;</span>
+      }
+<span class="fc" id="L112">      parentHeader = maybeParentHeader.get();</span>
+
+<span class="fc bfc" id="L114" title="All 2 branches covered.">      if (!blockHeaderValidator.validateHeader(</span>
+          header, parentHeader, context, headerValidationMode)) {
+<span class="fc" id="L116">        final String error = String.format(&quot;Header validation failed (%s)&quot;, headerValidationMode);</span>
+<span class="fc" id="L117">        var retval = new BlockProcessingResult(error);</span>
+<span class="fc" id="L118">        handleFailedBlockProcessing(block, retval, shouldRecordBadBlock);</span>
+<span class="fc" id="L119">        return retval;</span>
+      }
+<span class="fc" id="L121">    } catch (StorageException ex) {</span>
+<span class="fc" id="L122">      var retval = new BlockProcessingResult(Optional.empty(), ex);</span>
+      // Blocks should not be marked bad due to a local storage failure
+<span class="fc" id="L124">      handleFailedBlockProcessing(block, retval, false);</span>
+<span class="fc" id="L125">      return retval;</span>
+<span class="fc" id="L126">    }</span>
+<span class="fc" id="L127">    try (final var worldState =</span>
+<span class="fc" id="L128">        context.getWorldStateArchive().getMutable(parentHeader, shouldPersist).orElse(null)) {</span>
+
+<span class="fc bfc" id="L130" title="All 2 branches covered.">      if (worldState == null) {</span>
+<span class="fc" id="L131">        var retval =</span>
+            new BlockProcessingResult(
+                &quot;Unable to process block because parent world state &quot;
+<span class="fc" id="L134">                    + parentHeader.getStateRoot()</span>
+                    + &quot; is not available&quot;);
+        // Blocks should not be marked bad due to missing data
+<span class="fc" id="L137">        handleFailedBlockProcessing(block, retval, false);</span>
+<span class="fc" id="L138">        return retval;</span>
+      }
+<span class="fc" id="L140">      var result = processBlock(context, worldState, block);</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">      if (result.isFailed()) {</span>
+<span class="fc" id="L142">        handleFailedBlockProcessing(block, result, shouldRecordBadBlock);</span>
+<span class="fc" id="L143">        return result;</span>
+      } else {
+<span class="fc" id="L145">        List&lt;TransactionReceipt&gt; receipts =</span>
+<span class="fc" id="L146">            result.getYield().map(BlockProcessingOutputs::getReceipts).orElse(new ArrayList&lt;&gt;());</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">        if (!blockBodyValidator.validateBody(</span>
+<span class="fc" id="L148">            context, block, receipts, worldState.rootHash(), ommerValidationMode)) {</span>
+<span class="fc" id="L149">          result = new BlockProcessingResult(&quot;failed to validate output of imported block&quot;);</span>
+<span class="fc" id="L150">          handleFailedBlockProcessing(block, result, shouldRecordBadBlock);</span>
+<span class="fc" id="L151">          return result;</span>
+        }
+
+<span class="fc" id="L154">        return new BlockProcessingResult(</span>
+<span class="fc" id="L155">            Optional.of(new BlockProcessingOutputs(worldState, receipts)));</span>
+      }
+<span class="pc bpc" id="L157" title="3 of 6 branches missed.">    } catch (MerkleTrieException ex) {</span>
+<span class="fc" id="L158">      context</span>
+<span class="fc" id="L159">          .getSynchronizer()</span>
+<span class="fc" id="L160">          .ifPresentOrElse(</span>
+<span class="nc" id="L161">              synchronizer -&gt; synchronizer.healWorldState(ex.getMaybeAddress(), ex.getLocation()),</span>
+              () -&gt;
+<span class="fc" id="L163">                  handleFailedBlockProcessing(</span>
+                      block,
+<span class="fc" id="L165">                      new BlockProcessingResult(Optional.empty(), ex),</span>
+                      // Do not record bad black due to missing data
+                      false));
+<span class="fc" id="L168">      return new BlockProcessingResult(Optional.empty(), ex);</span>
+<span class="fc" id="L169">    } catch (StorageException ex) {</span>
+<span class="fc" id="L170">      var retval = new BlockProcessingResult(Optional.empty(), ex);</span>
+      // Do not record bad block due to a local storage issue
+<span class="fc" id="L172">      handleFailedBlockProcessing(block, retval, false);</span>
+<span class="fc" id="L173">      return retval;</span>
+<span class="nc" id="L174">    } catch (Exception ex) {</span>
+      // Wrap checked autocloseable exception from try-with-resources
+<span class="nc" id="L176">      throw new RuntimeException(ex);</span>
+    }
+  }
+
+  private void handleFailedBlockProcessing(
+      final Block failedBlock,
+      final BlockValidationResult result,
+      final boolean shouldRecordBadBlock) {
+<span class="fc bfc" id="L184" title="All 2 branches covered.">    if (result.causedBy().isPresent()) {</span>
+      // Block processing failed exceptionally, we cannot assume the block was intrinsically invalid
+<span class="fc" id="L186">      LOG.info(</span>
+          &quot;Failed to process block {}: {}, caused by {}&quot;,
+<span class="fc" id="L188">          failedBlock.toLogString(),</span>
+          result.errorMessage,
+<span class="fc" id="L190">          result.causedBy().get());</span>
+<span class="fc" id="L191">      LOG.debug(&quot;with stack&quot;, result.causedBy().get());</span>
+    } else {
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">      if (result.errorMessage.isPresent()) {</span>
+<span class="fc" id="L194">        LOG.info(&quot;Invalid block {}: {}&quot;, failedBlock.toLogString(), result.errorMessage);</span>
+      } else {
+<span class="nc" id="L196">        LOG.info(&quot;Invalid block {}&quot;, failedBlock.toLogString());</span>
+      }
+
+<span class="fc bfc" id="L199" title="All 2 branches covered.">      if (shouldRecordBadBlock) {</span>
+        // Result.errorMessage should not be empty on failure, but add a default to be safe
+<span class="fc" id="L201">        String description = result.errorMessage.orElse(&quot;Unknown cause&quot;);</span>
+<span class="fc" id="L202">        final BadBlockCause cause = BadBlockCause.fromValidationFailure(description);</span>
+<span class="fc" id="L203">        badBlockManager.addBadBlock(failedBlock, cause);</span>
+<span class="fc" id="L204">      } else {</span>
+<span class="fc" id="L205">        LOG.debug(&quot;Invalid block {} not added to badBlockManager &quot;, failedBlock.toLogString());</span>
+      }
+    }
+<span class="fc" id="L208">  }</span>
+
+  /**
+   * Processes a block, returning the result of the processing
+   *
+   * @param context the ProtocolContext
+   * @param worldState the world state for the parent block state root hash
+   * @param block the block to be processed
+   * @return the result of processing the block
+   */
+  protected BlockProcessingResult processBlock(
+      final ProtocolContext context, final MutableWorldState worldState, final Block block) {
+
+<span class="fc" id="L221">    return blockProcessor.processBlock(context.getBlockchain(), worldState, block);</span>
+  }
+
+  @Override
+  public boolean fastBlockValidation(
+      final ProtocolContext context,
+      final Block block,
+      final List&lt;TransactionReceipt&gt; receipts,
+      final HeaderValidationMode headerValidationMode,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc" id="L231">    final BlockHeader header = block.getHeader();</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (!blockHeaderValidator.validateHeader(header, context, headerValidationMode)) {</span>
+<span class="fc" id="L233">      String description = String.format(&quot;Failed header validation (%s)&quot;, headerValidationMode);</span>
+<span class="fc" id="L234">      badBlockManager.addBadBlock(block, BadBlockCause.fromValidationFailure(description));</span>
+<span class="fc" id="L235">      return false;</span>
+    }
+
+<span class="fc bfc" id="L238" title="All 2 branches covered.">    if (!blockBodyValidator.validateBodyLight(context, block, receipts, ommerValidationMode)) {</span>
+<span class="fc" id="L239">      badBlockManager.addBadBlock(</span>
+<span class="fc" id="L240">          block, BadBlockCause.fromValidationFailure(&quot;Failed body validation (light)&quot;));</span>
+<span class="fc" id="L241">      return false;</span>
+    }
+<span class="fc" id="L243">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

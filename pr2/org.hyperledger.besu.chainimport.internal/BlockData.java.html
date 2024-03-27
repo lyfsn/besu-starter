@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockData.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.chainimport.internal</a> &gt; <span class="el_source">BlockData.java</span></div><h1>BlockData.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.chainimport.internal;
+
+import org.hyperledger.besu.chainimport.internal.TransactionData.NonceProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/**
+ * Represents BlockData used in ChainData. Meant to be constructed by Json serializer/deserializer.
+ */
+@JsonIgnoreProperties(&quot;comment&quot;)
+public class BlockData {
+
+  private final Optional&lt;Long&gt; number;
+  private final Optional&lt;Hash&gt; parentHash;
+  private final List&lt;TransactionData&gt; transactionData;
+  private final Optional&lt;Address&gt; coinbase;
+  private final Optional&lt;Bytes&gt; extraData;
+
+  /**
+   * Constructor for BlockData
+   *
+   * @param number Block number in hex format.
+   * @param parentHash Parent hash in hex format.
+   * @param coinbase Coinbase Address in hex format.
+   * @param extraData Extra data in hex format.
+   * @param transactions list of TransactionData.
+   */
+  @JsonCreator
+  public BlockData(
+      @JsonProperty(&quot;number&quot;) final Optional&lt;String&gt; number,
+      @JsonProperty(&quot;parentHash&quot;) final Optional&lt;String&gt; parentHash,
+      @JsonProperty(&quot;coinbase&quot;) final Optional&lt;String&gt; coinbase,
+      @JsonProperty(&quot;extraData&quot;) final Optional&lt;String&gt; extraData,
+<span class="fc" id="L63">      @JsonProperty(&quot;transactions&quot;) final List&lt;TransactionData&gt; transactions) {</span>
+<span class="fc" id="L64">    this.number = number.map(UInt256::fromHexString).map(UInt256::toLong);</span>
+<span class="fc" id="L65">    this.parentHash = parentHash.map(Bytes32::fromHexString).map(Hash::wrap);</span>
+<span class="fc" id="L66">    this.coinbase = coinbase.map(Address::fromHexString);</span>
+<span class="fc" id="L67">    this.extraData = extraData.map(Bytes::fromHexStringLenient);</span>
+<span class="fc" id="L68">    this.transactionData = transactions;</span>
+<span class="fc" id="L69">  }</span>
+
+  /**
+   * Gets number.
+   *
+   * @return the number
+   */
+  public Optional&lt;Long&gt; getNumber() {
+<span class="fc" id="L77">    return number;</span>
+  }
+
+  /**
+   * Gets parent hash.
+   *
+   * @return the parent hash
+   */
+  public Optional&lt;Hash&gt; getParentHash() {
+<span class="fc" id="L86">    return parentHash;</span>
+  }
+
+  /**
+   * Gets coinbase.
+   *
+   * @return the coinbase
+   */
+  public Optional&lt;Address&gt; getCoinbase() {
+<span class="fc" id="L95">    return coinbase;</span>
+  }
+
+  /**
+   * Gets extra data.
+   *
+   * @return the extra data
+   */
+  public Optional&lt;Bytes&gt; getExtraData() {
+<span class="fc" id="L104">    return extraData;</span>
+  }
+
+  /**
+   * Stream transactions.
+   *
+   * @param worldState the world state
+   * @return the stream of Transaction
+   */
+  public Stream&lt;Transaction&gt; streamTransactions(final WorldState worldState) {
+<span class="fc" id="L114">    final NonceProvider nonceProvider = getNonceProvider(worldState);</span>
+<span class="fc" id="L115">    return transactionData.stream().map((tx) -&gt; tx.getSignedTransaction(nonceProvider));</span>
+  }
+
+  /**
+   * Gets nonce provider.
+   *
+   * @param worldState the world state
+   * @return the nonce provider
+   */
+  public NonceProvider getNonceProvider(final WorldState worldState) {
+<span class="fc" id="L125">    final HashMap&lt;Address, Long&gt; currentNonceValues = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L126">    return (Address address) -&gt;</span>
+<span class="fc" id="L127">        currentNonceValues.compute(</span>
+            address,
+            (addr, currentValue) -&gt; {
+<span class="fc bfc" id="L130" title="All 2 branches covered.">              if (currentValue == null) {</span>
+<span class="fc" id="L131">                return Optional.ofNullable(worldState.get(address))</span>
+<span class="fc" id="L132">                    .map(Account::getNonce)</span>
+<span class="fc" id="L133">                    .orElse(0L);</span>
+              }
+<span class="fc" id="L135">              return currentValue + 1;</span>
+            });
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

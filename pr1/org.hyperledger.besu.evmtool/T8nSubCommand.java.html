@@ -1,0 +1,339 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>T8nSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evmtool</a> &gt; <span class="el_source">T8nSubCommand.java</span></div><h1>T8nSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evmtool;
+
+import static org.hyperledger.besu.evmtool.T8nSubCommand.COMMAND_ALIAS;
+import static org.hyperledger.besu.evmtool.T8nSubCommand.COMMAND_NAME;
+
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestEnv;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestWorldState;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.tracing.StandardJsonTracer;
+import org.hyperledger.besu.evmtool.T8nExecutor.RejectedTransaction;
+import org.hyperledger.besu.util.LogConfigurator;
+
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Stack;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.IParameterConsumer;
+import picocli.CommandLine.Model.ArgSpec;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParameterException;
+import picocli.CommandLine.Parameters;
+import picocli.CommandLine.ParentCommand;
+
+@Command(
+    name = COMMAND_NAME,
+    aliases = COMMAND_ALIAS,
+    description = &quot;Execute an Ethereum State Test.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+public class T8nSubCommand implements Runnable {
+
+  static final String COMMAND_NAME = &quot;transition&quot;;
+  static final String COMMAND_ALIAS = &quot;t8n&quot;;
+<span class="fc" id="L74">  private static final Path stdoutPath = Path.of(&quot;stdout&quot;);</span>
+<span class="fc" id="L75">  private static final Path stdinPath = Path.of(&quot;stdin&quot;);</span>
+
+<span class="pc" id="L77">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;})</span>
+  @Option(
+      names = {&quot;--state.fork&quot;},
+      paramLabel = &quot;fork name&quot;,
+      description = &quot;The fork to run the transition against&quot;)
+  private String fork = null;
+
+<span class="pc" id="L84">  @Option(</span>
+      names = {&quot;--input.env&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The block environment for the transition&quot;)
+  private final Path env = stdinPath;
+
+<span class="pc" id="L90">  @Option(</span>
+      names = {&quot;--input.alloc&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The account state for the transition&quot;)
+  private final Path alloc = stdinPath;
+
+<span class="pc" id="L96">  @Option(</span>
+      names = {&quot;--input.txs&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The transactions to transition&quot;)
+  private final Path txs = stdinPath;
+
+<span class="pc" id="L102">  @Option(</span>
+      names = {&quot;--output.basedir&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The output &quot;)
+<span class="pc" id="L106">  private final Path outDir = Path.of(&quot;.&quot;);</span>
+
+<span class="pc" id="L108">  @Option(</span>
+      names = {&quot;--output.alloc&quot;},
+      paramLabel = &quot;file name&quot;,
+      description = &quot;The account state after the transition&quot;)
+<span class="pc" id="L112">  private final Path outAlloc = Path.of(&quot;alloc.json&quot;);</span>
+
+<span class="pc" id="L114">  @Option(</span>
+      names = {&quot;--output.result&quot;},
+      paramLabel = &quot;file name&quot;,
+      description = &quot;The summary of the transition&quot;)
+<span class="pc" id="L118">  private final Path outResult = Path.of(&quot;result.json&quot;);</span>
+
+<span class="pc" id="L120">  @Option(</span>
+      names = {&quot;--output.body&quot;},
+      paramLabel = &quot;file name&quot;,
+      description = &quot;RLP of transactions considered&quot;)
+<span class="pc" id="L124">  private final Path outBody = Path.of(&quot;txs.rlp&quot;);</span>
+
+<span class="pc" id="L126">  @Option(</span>
+      names = {&quot;--state.chainid&quot;},
+      paramLabel = &quot;chain ID&quot;,
+      description = &quot;The chain Id to use&quot;)
+<span class="pc" id="L130">  private final Long chainId = 1L;</span>
+
+<span class="pc" id="L132">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;})</span>
+  @Option(
+      names = {&quot;--state.reward&quot;},
+      paramLabel = &quot;block mining reward&quot;,
+      description = &quot;The block reward to use in block tess&quot;)
+  private String rewardString = null;
+
+  @ParentCommand private final EvmToolCommand parentCommand;
+
+<span class="pc" id="L141">  @Parameters(parameterConsumer = OnlyEmptyParams.class)</span>
+  @SuppressWarnings(&quot;UnusedVariable&quot;)
+  private final List&lt;String&gt; parameters = new ArrayList&lt;&gt;();
+
+<span class="fc" id="L145">  static class OnlyEmptyParams implements IParameterConsumer {</span>
+    @Override
+    public void consumeParameters(
+        final Stack&lt;String&gt; args, final ArgSpec argSpec, final CommandSpec commandSpec) {
+<span class="nc bnc" id="L149" title="All 2 branches missed.">      while (!args.isEmpty()) {</span>
+<span class="nc bnc" id="L150" title="All 2 branches missed.">        if (!args.pop().isEmpty()) {</span>
+<span class="nc" id="L151">          throw new ParameterException(</span>
+<span class="nc" id="L152">              argSpec.command().commandLine(),</span>
+              &quot;The transition command does not accept any non-empty parameters&quot;);
+        }
+      }
+<span class="nc" id="L156">    }</span>
+  }
+
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L160">  public T8nSubCommand() {</span>
+    // PicoCLI requires this
+<span class="fc" id="L162">    parentCommand = null;</span>
+<span class="fc" id="L163">  }</span>
+
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="nc" id="L166">  public T8nSubCommand(final EvmToolCommand parentCommand) {</span>
+    // PicoCLI requires this too
+<span class="nc" id="L168">    this.parentCommand = parentCommand;</span>
+<span class="nc" id="L169">  }</span>
+
+  @Override
+  public void run() {
+<span class="fc" id="L173">    LogConfigurator.setLevel(&quot;&quot;, &quot;OFF&quot;);</span>
+    // presume ethereum mainnet for reference and state tests
+<span class="fc" id="L175">    SignatureAlgorithmFactory.setDefaultInstance();</span>
+<span class="fc" id="L176">    final ObjectMapper objectMapper = JsonUtils.createObjectMapper();</span>
+<span class="fc" id="L177">    final ObjectReader t8nReader = objectMapper.reader();</span>
+
+    ReferenceTestWorldState initialWorldState;
+    ReferenceTestEnv referenceTestEnv;
+<span class="fc" id="L181">    List&lt;Transaction&gt; transactions = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L182">    List&lt;RejectedTransaction&gt; rejections = new ArrayList&lt;&gt;();</span>
+    try {
+      ObjectNode config;
+<span class="pc bpc" id="L185" title="5 of 6 branches missed.">      if (env.equals(stdinPath) || alloc.equals(stdinPath) || txs.equals(stdinPath)) {</span>
+<span class="fc" id="L186">        try (InputStreamReader reader =</span>
+            new InputStreamReader(parentCommand.in, StandardCharsets.UTF_8)) {
+<span class="fc" id="L188">          config = (ObjectNode) t8nReader.readTree(reader);</span>
+        }
+      } else {
+<span class="nc" id="L191">        config = objectMapper.createObjectNode();</span>
+      }
+
+<span class="pc bpc" id="L194" title="1 of 2 branches missed.">      if (!env.equals(stdinPath)) {</span>
+<span class="nc" id="L195">        try (FileReader reader = new FileReader(env.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L196">          config.set(&quot;env&quot;, t8nReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L199" title="1 of 2 branches missed.">      if (!alloc.equals(stdinPath)) {</span>
+<span class="nc" id="L200">        try (FileReader reader = new FileReader(alloc.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L201">          config.set(&quot;alloc&quot;, t8nReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L204" title="1 of 2 branches missed.">      if (!txs.equals(stdinPath)) {</span>
+<span class="nc" id="L205">        try (FileReader reader = new FileReader(txs.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L206">          config.set(&quot;txs&quot;, t8nReader.readTree(reader));</span>
+        }
+      }
+
+<span class="fc" id="L210">      referenceTestEnv = objectMapper.convertValue(config.get(&quot;env&quot;), ReferenceTestEnv.class);</span>
+<span class="fc" id="L211">      Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts =</span>
+<span class="fc" id="L212">          objectMapper.convertValue(config.get(&quot;alloc&quot;), new TypeReference&lt;&gt;() {});</span>
+<span class="fc" id="L213">      initialWorldState = ReferenceTestWorldState.create(accounts, EvmConfiguration.DEFAULT);</span>
+<span class="fc" id="L214">      initialWorldState.persist(null);</span>
+<span class="fc" id="L215">      var node = config.get(&quot;txs&quot;);</span>
+      Iterator&lt;JsonNode&gt; it;
+<span class="fc bfc" id="L217" title="All 2 branches covered.">      if (node.isArray()) {</span>
+<span class="fc" id="L218">        it = config.get(&quot;txs&quot;).elements();</span>
+<span class="pc bpc" id="L219" title="1 of 4 branches missed.">      } else if (node == null || node.isNull()) {</span>
+<span class="fc" id="L220">        it = Collections.emptyIterator();</span>
+      } else {
+<span class="fc" id="L222">        it = List.of(node).iterator();</span>
+      }
+
+<span class="fc" id="L225">      T8nExecutor.extractTransactions(parentCommand.out, it, transactions, rejections);</span>
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">      if (!outDir.toString().isBlank()) {</span>
+<span class="fc" id="L227">        outDir.toFile().mkdirs();</span>
+      }
+<span class="nc" id="L229">    } catch (final JsonProcessingException jpe) {</span>
+<span class="nc" id="L230">      parentCommand.out.println(&quot;File content error: &quot; + jpe);</span>
+<span class="nc" id="L231">      jpe.printStackTrace();</span>
+<span class="nc" id="L232">      return;</span>
+<span class="nc" id="L233">    } catch (final IOException e) {</span>
+<span class="nc" id="L234">      System.err.println(&quot;Unable to read state file&quot;);</span>
+<span class="nc" id="L235">      e.printStackTrace(System.err);</span>
+<span class="nc" id="L236">      return;</span>
+<span class="fc" id="L237">    }</span>
+
+    T8nExecutor.TracerManager tracerManager;
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">    if (parentCommand.showJsonResults) {</span>
+<span class="nc" id="L241">      tracerManager =</span>
+<span class="nc" id="L242">          new T8nExecutor.TracerManager() {</span>
+<span class="nc" id="L243">            private final Map&lt;OperationTracer, FileOutputStream&gt; outputStreams = new HashMap&lt;&gt;();</span>
+
+            @Override
+            public OperationTracer getManagedTracer(final int txIndex, final Hash txHash)
+                throws Exception {
+<span class="nc" id="L248">              var traceDest =</span>
+                  new FileOutputStream(
+                      outDir
+<span class="nc" id="L251">                          .resolve(</span>
+<span class="nc" id="L252">                              String.format(&quot;trace-%d-%s.jsonl&quot;, txIndex, txHash.toHexString()))</span>
+<span class="nc" id="L253">                          .toFile());</span>
+
+<span class="nc" id="L255">              var jsonTracer =</span>
+                  new StandardJsonTracer(
+                      new PrintStream(traceDest),
+<span class="nc" id="L258">                      parentCommand.showMemory,</span>
+<span class="nc bnc" id="L259" title="All 2 branches missed.">                      !parentCommand.hideStack,</span>
+<span class="nc" id="L260">                      parentCommand.showReturnData,</span>
+<span class="nc" id="L261">                      parentCommand.showStorage);</span>
+<span class="nc" id="L262">              outputStreams.put(jsonTracer, traceDest);</span>
+<span class="nc" id="L263">              return jsonTracer;</span>
+            }
+
+            @Override
+            public void disposeTracer(final OperationTracer tracer) throws IOException {
+<span class="nc bnc" id="L268" title="All 2 branches missed.">              if (outputStreams.containsKey(tracer)) {</span>
+<span class="nc" id="L269">                outputStreams.remove(tracer).close();</span>
+              }
+<span class="nc" id="L271">            }</span>
+          };
+    } else {
+<span class="fc" id="L274">      tracerManager =</span>
+<span class="fc" id="L275">          new T8nExecutor.TracerManager() {</span>
+            @Override
+            public OperationTracer getManagedTracer(final int txIndex, final Hash txHash) {
+<span class="fc" id="L278">              return OperationTracer.NO_TRACING;</span>
+            }
+
+            @Override
+            public void disposeTracer(final OperationTracer tracer) {
+              // single-test mode doesn't need to track tracers
+<span class="fc" id="L284">            }</span>
+          };
+    }
+<span class="fc" id="L287">    final T8nExecutor.T8nResult result =</span>
+<span class="fc" id="L288">        T8nExecutor.runTest(</span>
+            chainId,
+            fork,
+            rewardString,
+            objectMapper,
+            referenceTestEnv,
+            initialWorldState,
+            transactions,
+            rejections,
+            tracerManager);
+
+    try {
+<span class="fc" id="L300">      ObjectWriter writer = objectMapper.writerWithDefaultPrettyPrinter();</span>
+<span class="fc" id="L301">      ObjectNode outputObject = objectMapper.createObjectNode();</span>
+
+<span class="pc bpc" id="L303" title="1 of 2 branches missed.">      if (outAlloc.equals(stdoutPath)) {</span>
+<span class="fc" id="L304">        outputObject.set(&quot;alloc&quot;, result.allocObject());</span>
+      } else {
+<span class="nc" id="L306">        try (PrintStream fileOut =</span>
+<span class="nc" id="L307">            new PrintStream(new FileOutputStream(outDir.resolve(outAlloc).toFile()))) {</span>
+<span class="nc" id="L308">          fileOut.println(writer.writeValueAsString(result.allocObject()));</span>
+        }
+      }
+
+<span class="fc bfc" id="L312" title="All 2 branches covered.">      if (outBody.equals((stdoutPath))) {</span>
+<span class="fc" id="L313">        outputObject.set(&quot;body&quot;, result.bodyBytes());</span>
+      } else {
+<span class="fc" id="L315">        try (PrintStream fileOut =</span>
+<span class="fc" id="L316">            new PrintStream(new FileOutputStream(outDir.resolve(outBody).toFile()))) {</span>
+<span class="fc" id="L317">          fileOut.print(result.bodyBytes().textValue());</span>
+        }
+      }
+
+<span class="pc bpc" id="L321" title="1 of 2 branches missed.">      if (outResult.equals(stdoutPath)) {</span>
+<span class="fc" id="L322">        outputObject.set(&quot;result&quot;, result.resultObject());</span>
+      } else {
+<span class="nc" id="L324">        try (PrintStream fileOut =</span>
+<span class="nc" id="L325">            new PrintStream(new FileOutputStream(outDir.resolve(outResult).toFile()))) {</span>
+<span class="nc" id="L326">          fileOut.println(writer.writeValueAsString(result.resultObject()));</span>
+        }
+      }
+
+<span class="pc bpc" id="L330" title="1 of 2 branches missed.">      if (!outputObject.isEmpty()) {</span>
+<span class="fc" id="L331">        parentCommand.out.println(writer.writeValueAsString(outputObject));</span>
+      }
+<span class="nc" id="L333">    } catch (IOException ioe) {</span>
+<span class="nc" id="L334">      System.err.println(&quot;Could not write results&quot;);</span>
+<span class="nc" id="L335">      ioe.printStackTrace(System.err);</span>
+<span class="fc" id="L336">    }</span>
+<span class="fc" id="L337">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

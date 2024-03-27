@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateStateGenesisAllocator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateStateGenesisAllocator.java</span></div><h1>PrivateStateGenesisAllocator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.DEFAULT_FLEXIBLE_PRIVACY_MANAGEMENT;
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.FLEXIBLE_PRIVACY_PROXY;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.privacy.group.FlexibleGroupManagement;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.plugin.data.PrivacyGenesis;
+import org.hyperledger.besu.plugin.services.privacy.PrivacyGroupGenesisProvider;
+
+import java.math.BigInteger;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivateStateGenesisAllocator {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(PrivateStateGenesisAllocator.class);</span>
+
+  private final Boolean isFlexiblePrivacyEnabled;
+  private final PrivacyGroupGenesisProvider privacyGroupGenesisProvider;
+
+  public PrivateStateGenesisAllocator(
+      final Boolean isFlexiblePrivacyEnabled,
+<span class="fc" id="L45">      final PrivacyGroupGenesisProvider privacyGroupGenesisProvider) {</span>
+<span class="fc" id="L46">    this.isFlexiblePrivacyEnabled = isFlexiblePrivacyEnabled;</span>
+<span class="fc" id="L47">    this.privacyGroupGenesisProvider = privacyGroupGenesisProvider;</span>
+<span class="fc" id="L48">  }</span>
+
+  public void applyGenesisToPrivateWorldState(
+      final MutableWorldState disposablePrivateState,
+      final WorldUpdater privateWorldStateUpdater,
+      final Bytes privacyGroupId,
+      final long blockNumber) {
+
+<span class="fc" id="L56">    final PrivacyGenesis genesis =</span>
+<span class="fc" id="L57">        privacyGroupGenesisProvider.getPrivacyGenesis(privacyGroupId, blockNumber);</span>
+
+<span class="fc bfc" id="L59" title="All 2 branches covered.">    if (!genesis.getAccounts().isEmpty()) {</span>
+
+<span class="fc" id="L61">      LOG.debug(</span>
+          &quot;Applying {} privacy accounts onto {} private state genesis at {}&quot;,
+<span class="fc" id="L63">          genesis.getAccounts().size(),</span>
+          privacyGroupId,
+<span class="fc" id="L65">          blockNumber);</span>
+
+<span class="fc" id="L67">      genesis</span>
+<span class="fc" id="L68">          .getAccounts()</span>
+<span class="fc" id="L69">          .forEach(</span>
+              genesisAccount -&gt; {
+<span class="fc" id="L71">                final Address address = genesisAccount.getAddress();</span>
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">                if (address.toBigInteger().compareTo(BigInteger.valueOf(Byte.MAX_VALUE)) &lt; 0) {</span>
+<span class="nc" id="L73">                  LOG.warn(</span>
+                      &quot;Genesis address {} is in reserved range and may be overwritten&quot;, address);
+                }
+
+<span class="fc" id="L77">                final MutableAccount account = privateWorldStateUpdater.createAccount(address);</span>
+
+<span class="fc" id="L79">                LOG.debug(&quot;{} applied to genesis&quot;, address.toHexString());</span>
+
+<span class="fc" id="L81">                account.setNonce(genesisAccount.getNonce());</span>
+<span class="fc" id="L82">                account.setBalance(Wei.fromQuantity(genesisAccount.getBalance()));</span>
+<span class="fc" id="L83">                account.setCode(genesisAccount.getCode());</span>
+
+<span class="fc" id="L85">                genesisAccount.getStorage().forEach(account::setStorageValue);</span>
+<span class="fc" id="L86">              });</span>
+    }
+
+<span class="fc bfc" id="L89" title="All 2 branches covered.">    if (isFlexiblePrivacyEnabled) {</span>
+      // inject management
+<span class="fc" id="L91">      final MutableAccount managementContract =</span>
+<span class="fc" id="L92">          privateWorldStateUpdater.createAccount(DEFAULT_FLEXIBLE_PRIVACY_MANAGEMENT);</span>
+
+      // this is the code for the simple management contract
+<span class="fc" id="L95">      managementContract.setCode(FlexibleGroupManagement.DEFAULT_GROUP_MANAGEMENT_RUNTIME_BYTECODE);</span>
+
+      // inject proxy
+<span class="fc" id="L98">      final MutableAccount procyContract =</span>
+<span class="fc" id="L99">          privateWorldStateUpdater.createAccount(FLEXIBLE_PRIVACY_PROXY);</span>
+
+      // this is the code for the proxy contract
+<span class="fc" id="L102">      procyContract.setCode(FlexibleGroupManagement.PROXY_RUNTIME_BYTECODE);</span>
+      // manually set the management contract address so the proxy can trust it
+<span class="fc" id="L104">      procyContract.setStorageValue(</span>
+<span class="fc" id="L105">          UInt256.ZERO, UInt256.fromBytes(Bytes32.leftPad(DEFAULT_FLEXIBLE_PRIVACY_MANAGEMENT)));</span>
+    }
+
+<span class="fc" id="L108">    privateWorldStateUpdater.commit();</span>
+<span class="fc" id="L109">    disposablePrivateState.persist(null);</span>
+<span class="fc" id="L110">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

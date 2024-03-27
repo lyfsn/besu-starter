@@ -1,0 +1,266 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BigIntegerModularExponentiationPrecompiledContract.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.precompile</a> &gt; <span class="el_source">BigIntegerModularExponentiationPrecompiledContract.java</span></div><h1>BigIntegerModularExponentiationPrecompiledContract.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.precompile;
+
+import static org.hyperledger.besu.evm.internal.Words.clampedAdd;
+import static org.hyperledger.besu.evm.internal.Words.clampedMultiply;
+import static org.hyperledger.besu.evm.internal.Words.clampedToInt;
+import static org.hyperledger.besu.evm.internal.Words.clampedToLong;
+
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.nativelib.arithmetic.LibArithmetic;
+
+import java.math.BigInteger;
+import java.util.Optional;
+import javax.annotation.Nonnull;
+
+import com.sun.jna.ptr.IntByReference;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.MutableBytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Big integer modular exponentiation precompiled contract defined in EIP-198. */
+public class BigIntegerModularExponentiationPrecompiledContract
+    extends AbstractPrecompiledContract {
+
+<span class="fc" id="L41">  private static final Logger LOG =</span>
+<span class="fc" id="L42">      LoggerFactory.getLogger(BigIntegerModularExponentiationPrecompiledContract.class);</span>
+
+  /** Use native Arithmetic libraries. */
+  static boolean useNative;
+
+  /** The constant BASE_OFFSET. */
+  public static final int BASE_OFFSET = 96;
+
+  private static final int PARAMETER_LENGTH = 32;
+  private static final int BASE_LENGTH_OFFSET = 0;
+  private static final int EXPONENT_LENGTH_OFFSET = 32;
+  private static final int MODULUS_LENGTH_OFFSET = 64;
+
+  /**
+   * Instantiates a new BigInteger modular exponentiation precompiled contract.
+   *
+   * @param gasCalculator the gas calculator
+   */
+  public BigIntegerModularExponentiationPrecompiledContract(final GasCalculator gasCalculator) {
+<span class="fc" id="L61">    super(&quot;BigIntModExp&quot;, gasCalculator);</span>
+<span class="fc" id="L62">  }</span>
+
+  /** Disable native Arithmetic libraries. */
+  public static void disableNative() {
+<span class="nc" id="L66">    useNative = false;</span>
+<span class="nc" id="L67">  }</span>
+
+  /**
+   * Attempt to enable the native library for ModExp
+   *
+   * @return true if the native library was enabled.
+   */
+  public static boolean maybeEnableNative() {
+    try {
+<span class="fc" id="L76">      useNative = LibArithmetic.ENABLED;</span>
+<span class="nc" id="L77">    } catch (UnsatisfiedLinkError | NoClassDefFoundError ule) {</span>
+<span class="nc" id="L78">      LOG.info(&quot;modexp native precompile not available: {}&quot;, ule.getMessage());</span>
+<span class="nc" id="L79">      useNative = false;</span>
+<span class="fc" id="L80">    }</span>
+<span class="fc" id="L81">    return useNative;</span>
+  }
+
+  /**
+   * Check if native Arithmetic libraries are enabled.
+   *
+   * @return the boolean
+   */
+  public static boolean isNative() {
+<span class="nc" id="L90">    return useNative;</span>
+  }
+
+  @Override
+  public long gasRequirement(final Bytes input) {
+<span class="fc" id="L95">    return gasCalculator().modExpGasCost(input);</span>
+  }
+
+  @Nonnull
+  @Override
+  public PrecompileContractResult computePrecompile(
+      final Bytes input, @Nonnull final MessageFrame messageFrame) {
+<span class="pc bpc" id="L102" title="1 of 2 branches missed.">    if (useNative) {</span>
+<span class="nc" id="L103">      return computeNative(input);</span>
+    } else {
+<span class="fc" id="L105">      return computeDefault(input);</span>
+    }
+  }
+
+  /**
+   * Compute default precompile contract.
+   *
+   * @param input the input
+   * @return the precompile contract result
+   */
+  @Nonnull
+  public PrecompileContractResult computeDefault(final Bytes input) {
+<span class="fc" id="L117">    final int baseLength = clampedToInt(baseLength(input));</span>
+<span class="fc" id="L118">    final int exponentLength = clampedToInt(exponentLength(input));</span>
+<span class="fc" id="L119">    final int modulusLength = clampedToInt(modulusLength(input));</span>
+    // If baseLength and modulusLength are zero
+    // we could have a massively overflowing exp because it wouldn't have been filtered out at the
+    // gas cost phase
+<span class="fc bfc" id="L123" title="All 4 branches covered.">    if ((baseLength == 0) &amp;&amp; (modulusLength == 0)) {</span>
+<span class="fc" id="L124">      return PrecompileContractResult.success(Bytes.EMPTY);</span>
+    }
+<span class="fc" id="L126">    final int exponentOffset = BASE_OFFSET + baseLength;</span>
+<span class="fc" id="L127">    final int modulusOffset = exponentOffset + exponentLength;</span>
+<span class="fc" id="L128">    final BigInteger base = extractParameter(input, BASE_OFFSET, baseLength);</span>
+<span class="fc" id="L129">    final BigInteger exp = extractParameter(input, exponentOffset, exponentLength);</span>
+<span class="fc" id="L130">    final BigInteger mod = extractParameter(input, modulusOffset, modulusLength);</span>
+
+    final Bytes modExp;
+    // Result must be the length of the modulus.
+<span class="fc" id="L134">    final MutableBytes result = MutableBytes.create(modulusLength);</span>
+<span class="fc bfc" id="L135" title="All 2 branches covered.">    if (mod.compareTo(BigInteger.ZERO) == 0) {</span>
+<span class="fc" id="L136">      modExp = MutableBytes.EMPTY;</span>
+    } else {
+      // BigInteger zero-pads positive values whose most significant bit is a 1 if
+      // the padding was not there.
+<span class="fc" id="L140">      modExp = Bytes.wrap(base.modPow(exp, mod).toByteArray()).trimLeadingZeros();</span>
+    }
+
+<span class="fc" id="L143">    modExp.copyTo(result, result.size() - modExp.size());</span>
+<span class="fc" id="L144">    return PrecompileContractResult.success(result);</span>
+  }
+
+  /**
+   * Equation to estimate the multiplication complexity.
+   *
+   * @param x the x
+   * @return the long
+   */
+  public static long multiplicationComplexity(final long x) {
+<span class="fc bfc" id="L154" title="All 2 branches covered.">    if (x &lt;= 64) {</span>
+<span class="fc" id="L155">      return square(x);</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    } else if (x &lt;= 1024) {</span>
+<span class="fc" id="L157">      return clampedAdd((square(x) / 4), clampedMultiply(x, 96)) - 3072;</span>
+    } else {
+<span class="fc" id="L159">      return clampedAdd((square(x) / 16), clampedMultiply(480, x)) - 199680;</span>
+    }
+  }
+
+  /**
+   * Base length.
+   *
+   * @param input the input
+   * @return the long
+   */
+  public static long baseLength(final Bytes input) {
+<span class="fc" id="L170">    return extractParameterLong(input, BASE_LENGTH_OFFSET, PARAMETER_LENGTH);</span>
+  }
+
+  /**
+   * Exponent length.
+   *
+   * @param input the input
+   * @return the long
+   */
+  public static long exponentLength(final Bytes input) {
+<span class="fc" id="L180">    return extractParameterLong(input, EXPONENT_LENGTH_OFFSET, PARAMETER_LENGTH);</span>
+  }
+
+  /**
+   * Modulus length.
+   *
+   * @param input the input
+   * @return the long
+   */
+  public static long modulusLength(final Bytes input) {
+<span class="fc" id="L190">    return extractParameterLong(input, MODULUS_LENGTH_OFFSET, PARAMETER_LENGTH);</span>
+  }
+
+  /**
+   * Extract parameter.
+   *
+   * @param input the input
+   * @param offset the offset
+   * @param length the length
+   * @return the big integer
+   */
+  public static BigInteger extractParameter(final Bytes input, final int offset, final int length) {
+<span class="fc bfc" id="L202" title="All 4 branches covered.">    if (offset &gt;= input.size() || length == 0) {</span>
+<span class="fc" id="L203">      return BigInteger.ZERO;</span>
+<span class="fc bfc" id="L204" title="All 2 branches covered.">    } else if (offset + length &lt; input.size()) {</span>
+<span class="fc" id="L205">      return new BigInteger(1, input.slice(offset, length).toArray());</span>
+    } else {
+<span class="fc" id="L207">      byte[] raw = new byte[length];</span>
+<span class="fc" id="L208">      Bytes partial = input.slice(offset);</span>
+<span class="fc" id="L209">      System.arraycopy(partial.toArray(), 0, raw, 0, partial.size());</span>
+<span class="fc" id="L210">      return new BigInteger(1, raw);</span>
+    }
+  }
+
+  /**
+   * Extract parameter.
+   *
+   * @param input the input
+   * @param offset the offset
+   * @param length the length
+   * @return the long
+   */
+  public static long extractParameterLong(final Bytes input, final int offset, final int length) {
+<span class="pc bpc" id="L223" title="1 of 4 branches missed.">    if (offset &gt;= input.size() || length == 0) {</span>
+<span class="fc" id="L224">      return 0;</span>
+    }
+    Bytes num;
+<span class="fc bfc" id="L227" title="All 2 branches covered.">    if (offset + length &lt;= input.size()) {</span>
+<span class="fc" id="L228">      num = input.slice(offset, length).trimLeadingZeros();</span>
+    } else {
+      // Ethereum's memory is always infinitely full of zeros, but we don't store those zeros, just
+      // what we write.  If we are asked for a range that is outside the written memory create a
+      // result of the correct size (defaults to zeros) and copy the memory we do have into there.
+<span class="fc" id="L233">      MutableBytes mut = MutableBytes.create(length);</span>
+<span class="fc" id="L234">      input.slice(offset).copyTo(mut, 0);</span>
+<span class="fc" id="L235">      num = mut.trimLeadingZeros();</span>
+    }
+<span class="fc" id="L237">    return clampedToLong(num);</span>
+  }
+
+  private static long square(final long n) {
+<span class="fc" id="L241">    return clampedMultiply(n, n);</span>
+  }
+
+  /**
+   * Compute native precompile contract.
+   *
+   * @param input the input
+   * @return the precompile contract result
+   */
+  public PrecompileContractResult computeNative(final @Nonnull Bytes input) {
+<span class="nc" id="L251">    final int modulusLength = clampedToInt(modulusLength(input));</span>
+<span class="nc" id="L252">    final IntByReference o_len = new IntByReference(modulusLength);</span>
+
+<span class="nc" id="L254">    final byte[] result = new byte[modulusLength];</span>
+<span class="nc" id="L255">    final int errorNo =</span>
+<span class="nc" id="L256">        LibArithmetic.modexp_precompiled(input.toArrayUnsafe(), input.size(), result, o_len);</span>
+<span class="nc bnc" id="L257" title="All 2 branches missed.">    if (errorNo == 0) {</span>
+<span class="nc" id="L258">      return PrecompileContractResult.success(Bytes.wrap(result, 0, o_len.getValue()));</span>
+    } else {
+<span class="nc" id="L260">      LOG.trace(&quot;Error executing precompiled contract {}: {}&quot;, getName(), errorNo);</span>
+<span class="nc" id="L261">      return PrecompileContractResult.halt(</span>
+<span class="nc" id="L262">          null, Optional.of(ExceptionalHaltReason.PRECOMPILE_ERROR));</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

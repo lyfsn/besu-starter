@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PeerDiscoveryAgent.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery</a> &gt; <span class="el_source">PeerDiscoveryAgent.java</span></div><h1>PeerDiscoveryAgent.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.chain.VariablesStorage;
+import org.hyperledger.besu.ethereum.forkid.ForkIdManager;
+import org.hyperledger.besu.ethereum.p2p.config.DiscoveryConfiguration;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.Packet;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerDiscoveryController;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerRequirement;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PingPacketData;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.TimerUtil;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeURLImpl;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.peers.PeerId;
+import org.hyperledger.besu.ethereum.p2p.permissions.PeerPermissions;
+import org.hyperledger.besu.ethereum.p2p.rlpx.RlpxAgent;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.nat.NatService;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.NetworkUtility;
+
+import java.net.InetSocketAddress;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Suppliers;
+import com.google.common.net.InetAddresses;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt64;
+import org.ethereum.beacon.discovery.schema.EnrField;
+import org.ethereum.beacon.discovery.schema.IdentitySchema;
+import org.ethereum.beacon.discovery.schema.NodeRecord;
+import org.ethereum.beacon.discovery.schema.NodeRecordFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The peer discovery agent is the network component that sends and receives peer discovery messages
+ * via UDP.
+ */
+public abstract class PeerDiscoveryAgent {
+<span class="fc" id="L70">  private static final Logger LOG = LoggerFactory.getLogger(PeerDiscoveryAgent.class);</span>
+<span class="fc" id="L71">  private static final com.google.common.base.Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L72">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  // The devp2p specification says only accept packets up to 1280, but some
+  // clients ignore that, so we add in a little extra padding.
+  private static final int MAX_PACKET_SIZE_BYTES = 1600;
+  protected final List&lt;DiscoveryPeer&gt; bootstrapPeers;
+<span class="fc" id="L78">  private final List&lt;PeerRequirement&gt; peerRequirements = new CopyOnWriteArrayList&lt;&gt;();</span>
+  private final PeerPermissions peerPermissions;
+  private final NatService natService;
+  private final MetricsSystem metricsSystem;
+  private final RlpxAgent rlpxAgent;
+  private final ForkIdManager forkIdManager;
+  private final PeerTable peerTable;
+<span class="fc" id="L85">  private static final boolean isIpv6Available = NetworkUtility.isIPv6Available();</span>
+
+  /* The peer controller, which takes care of the state machine of peers. */
+<span class="fc" id="L88">  protected Optional&lt;PeerDiscoveryController&gt; controller = Optional.empty();</span>
+
+  /* The keypair used to sign messages. */
+  protected final NodeKey nodeKey;
+  private final Bytes id;
+  protected final DiscoveryConfiguration config;
+
+  /* This is the {@link org.hyperledger.besu.ethereum.p2p.Peer} object representing our local node.
+   * This value is empty on construction, and is set after the discovery agent is started.
+   */
+<span class="fc" id="L98">  private Optional&lt;DiscoveryPeer&gt; localNode = Optional.empty();</span>
+
+  /* Is discovery enabled? */
+<span class="fc" id="L101">  private boolean isActive = false;</span>
+  private final VariablesStorage variablesStorage;
+  private final Supplier&lt;List&lt;Bytes&gt;&gt; forkIdSupplier;
+  private String advertisedAddress;
+
+  protected PeerDiscoveryAgent(
+      final NodeKey nodeKey,
+      final DiscoveryConfiguration config,
+      final PeerPermissions peerPermissions,
+      final NatService natService,
+      final MetricsSystem metricsSystem,
+      final StorageProvider storageProvider,
+      final ForkIdManager forkIdManager,
+      final RlpxAgent rlpxAgent,
+<span class="fc" id="L115">      final PeerTable peerTable) {</span>
+<span class="fc" id="L116">    this.metricsSystem = metricsSystem;</span>
+<span class="pc bpc" id="L117" title="1 of 2 branches missed.">    checkArgument(nodeKey != null, &quot;nodeKey cannot be null&quot;);</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">    checkArgument(config != null, &quot;provided configuration cannot be null&quot;);</span>
+
+<span class="fc" id="L120">    validateConfiguration(config);</span>
+
+<span class="fc" id="L122">    this.peerPermissions = peerPermissions;</span>
+<span class="fc" id="L123">    this.natService = natService;</span>
+<span class="fc" id="L124">    this.bootstrapPeers =</span>
+<span class="fc" id="L125">        config.getBootnodes().stream().map(DiscoveryPeer::fromEnode).collect(Collectors.toList());</span>
+
+<span class="fc" id="L127">    this.config = config;</span>
+<span class="fc" id="L128">    this.nodeKey = nodeKey;</span>
+
+<span class="fc" id="L130">    this.id = nodeKey.getPublicKey().getEncodedBytes();</span>
+
+<span class="fc" id="L132">    this.variablesStorage = storageProvider.createVariablesStorage();</span>
+<span class="fc" id="L133">    this.forkIdManager = forkIdManager;</span>
+<span class="fc" id="L134">    this.forkIdSupplier = () -&gt; forkIdManager.getForkIdForChainHead().getForkIdAsBytesList();</span>
+<span class="fc" id="L135">    this.rlpxAgent = rlpxAgent;</span>
+<span class="fc" id="L136">    this.peerTable = peerTable;</span>
+<span class="fc" id="L137">  }</span>
+
+  protected abstract TimerUtil createTimer();
+
+  protected abstract PeerDiscoveryController.AsyncExecutor createWorkerExecutor();
+
+  protected abstract CompletableFuture&lt;InetSocketAddress&gt; listenForConnections();
+
+  protected abstract CompletableFuture&lt;Void&gt; sendOutgoingPacket(
+      final DiscoveryPeer peer, final Packet packet);
+
+  public abstract CompletableFuture&lt;?&gt; stop();
+
+  public CompletableFuture&lt;Integer&gt; start(final int tcpPort) {
+<span class="fc bfc" id="L151" title="All 2 branches covered.">    if (config.isActive()) {</span>
+<span class="fc" id="L152">      final String host = config.getBindHost();</span>
+<span class="fc" id="L153">      final int port = config.getBindPort();</span>
+<span class="fc" id="L154">      LOG.info(&quot;Starting peer discovery agent on host={}, port={}&quot;, host, port);</span>
+
+      // override advertised host if we detect an external IP address via NAT manager
+<span class="fc" id="L157">      this.advertisedAddress = natService.queryExternalIPAddress(config.getAdvertisedHost());</span>
+
+<span class="fc" id="L159">      return listenForConnections()</span>
+<span class="fc" id="L160">          .thenApply(</span>
+              (InetSocketAddress localAddress) -&gt; {
+                // Once listener is set up, finish initializing
+<span class="fc" id="L163">                final int discoveryPort = localAddress.getPort();</span>
+                final DiscoveryPeer ourNode =
+<span class="fc" id="L165">                    DiscoveryPeer.fromEnode(</span>
+<span class="fc" id="L166">                        EnodeURLImpl.builder()</span>
+<span class="fc" id="L167">                            .nodeId(id)</span>
+<span class="fc" id="L168">                            .ipAddress(advertisedAddress)</span>
+<span class="fc" id="L169">                            .listeningPort(tcpPort)</span>
+<span class="fc" id="L170">                            .discoveryPort(discoveryPort)</span>
+<span class="fc" id="L171">                            .build());</span>
+<span class="fc" id="L172">                this.localNode = Optional.of(ourNode);</span>
+<span class="fc" id="L173">                isActive = true;</span>
+<span class="fc" id="L174">                LOG.info(&quot;P2P peer discovery agent started and listening on {}&quot;, localAddress);</span>
+<span class="fc" id="L175">                updateNodeRecord();</span>
+<span class="fc" id="L176">                startController(ourNode);</span>
+<span class="fc" id="L177">                return discoveryPort;</span>
+              });
+    } else {
+<span class="fc" id="L180">      this.isActive = false;</span>
+<span class="fc" id="L181">      return CompletableFuture.completedFuture(0);</span>
+    }
+  }
+
+  public void updateNodeRecord() {
+<span class="fc bfc" id="L186" title="All 2 branches covered.">    if (!config.isActive()) {</span>
+<span class="fc" id="L187">      return;</span>
+    }
+
+<span class="fc" id="L190">    final NodeRecordFactory nodeRecordFactory = NodeRecordFactory.DEFAULT;</span>
+<span class="fc" id="L191">    final Optional&lt;NodeRecord&gt; existingNodeRecord =</span>
+<span class="fc" id="L192">        variablesStorage.getLocalEnrSeqno().map(nodeRecordFactory::fromBytes);</span>
+
+<span class="fc" id="L194">    final Bytes addressBytes = Bytes.of(InetAddresses.forString(advertisedAddress).getAddress());</span>
+<span class="fc" id="L195">    final Optional&lt;EnodeURL&gt; maybeEnodeURL = localNode.map(DiscoveryPeer::getEnodeURL);</span>
+<span class="fc" id="L196">    final Integer discoveryPort = maybeEnodeURL.flatMap(EnodeURL::getDiscoveryPort).orElse(0);</span>
+<span class="fc" id="L197">    final Integer listeningPort = maybeEnodeURL.flatMap(EnodeURL::getListeningPort).orElse(0);</span>
+<span class="fc" id="L198">    final String forkIdEnrField = &quot;eth&quot;;</span>
+<span class="fc" id="L199">    final NodeRecord newNodeRecord =</span>
+        existingNodeRecord
+<span class="fc" id="L201">            .filter(</span>
+                nodeRecord -&gt;
+<span class="pc bpc" id="L203" title="1 of 2 branches missed.">                    id.equals(nodeRecord.get(EnrField.PKEY_SECP256K1))</span>
+<span class="nc bnc" id="L204" title="All 2 branches missed.">                        &amp;&amp; addressBytes.equals(nodeRecord.get(EnrField.IP_V4))</span>
+<span class="nc bnc" id="L205" title="All 2 branches missed.">                        &amp;&amp; discoveryPort.equals(nodeRecord.get(EnrField.UDP))</span>
+<span class="nc bnc" id="L206" title="All 2 branches missed.">                        &amp;&amp; listeningPort.equals(nodeRecord.get(EnrField.TCP))</span>
+<span class="pc bnc" id="L207" title="All 2 branches missed.">                        &amp;&amp; forkIdSupplier.get().equals(nodeRecord.get(forkIdEnrField)))</span>
+<span class="fc" id="L208">            .orElseGet(</span>
+                () -&gt; {
+<span class="fc" id="L210">                  final UInt64 sequenceNumber =</span>
+<span class="fc" id="L211">                      existingNodeRecord.map(NodeRecord::getSeq).orElse(UInt64.ZERO).add(1);</span>
+<span class="fc" id="L212">                  final NodeRecord nodeRecord =</span>
+<span class="fc" id="L213">                      nodeRecordFactory.createFromValues(</span>
+                          sequenceNumber,
+                          new EnrField(EnrField.ID, IdentitySchema.V4),
+                          new EnrField(
+<span class="fc" id="L217">                              SIGNATURE_ALGORITHM.get().getCurveName(),</span>
+                              SIGNATURE_ALGORITHM
+<span class="fc" id="L219">                                  .get()</span>
+<span class="fc" id="L220">                                  .compressPublicKey(</span>
+<span class="fc" id="L221">                                      SIGNATURE_ALGORITHM.get().createPublicKey(id))),</span>
+                          new EnrField(EnrField.IP_V4, addressBytes),
+                          new EnrField(EnrField.TCP, listeningPort),
+                          new EnrField(EnrField.UDP, discoveryPort),
+                          new EnrField(
+<span class="fc" id="L226">                              forkIdEnrField, Collections.singletonList(forkIdSupplier.get())));</span>
+<span class="fc" id="L227">                  nodeRecord.setSignature(</span>
+                      nodeKey
+<span class="fc" id="L229">                          .sign(Hash.keccak256(nodeRecord.serializeNoSignature()))</span>
+<span class="fc" id="L230">                          .encodedBytes()</span>
+<span class="fc" id="L231">                          .slice(0, 64));</span>
+
+<span class="fc" id="L233">                  LOG.info(&quot;Writing node record to disk. {}&quot;, nodeRecord);</span>
+<span class="fc" id="L234">                  final var variablesUpdater = variablesStorage.updater();</span>
+<span class="fc" id="L235">                  variablesUpdater.setLocalEnrSeqno(nodeRecord.serialize());</span>
+<span class="fc" id="L236">                  variablesUpdater.commit();</span>
+
+<span class="fc" id="L238">                  return nodeRecord;</span>
+                });
+<span class="fc" id="L240">    localNode</span>
+<span class="pc" id="L241">        .orElseThrow(() -&gt; new IllegalStateException(&quot;Local node should be set here&quot;))</span>
+<span class="fc" id="L242">        .setNodeRecord(newNodeRecord);</span>
+<span class="fc" id="L243">  }</span>
+
+  public void addPeerRequirement(final PeerRequirement peerRequirement) {
+<span class="fc" id="L246">    this.peerRequirements.add(peerRequirement);</span>
+<span class="fc" id="L247">  }</span>
+
+  public boolean checkForkId(final DiscoveryPeer peer) {
+<span class="fc" id="L250">    return peer.getForkId().map(forkIdManager::peerCheck).orElse(true);</span>
+  }
+
+  private void startController(final DiscoveryPeer localNode) {
+<span class="fc" id="L254">    final PeerDiscoveryController controller = createController(localNode);</span>
+<span class="fc" id="L255">    this.controller = Optional.of(controller);</span>
+<span class="fc" id="L256">    controller.start();</span>
+<span class="fc" id="L257">  }</span>
+
+  private PeerDiscoveryController createController(final DiscoveryPeer localNode) {
+<span class="fc" id="L260">    return PeerDiscoveryController.builder()</span>
+<span class="fc" id="L261">        .nodeKey(nodeKey)</span>
+<span class="fc" id="L262">        .localPeer(localNode)</span>
+<span class="fc" id="L263">        .bootstrapNodes(bootstrapPeers)</span>
+<span class="fc" id="L264">        .outboundMessageHandler(this::handleOutgoingPacket)</span>
+<span class="fc" id="L265">        .timerUtil(createTimer())</span>
+<span class="fc" id="L266">        .workerExecutor(createWorkerExecutor())</span>
+<span class="fc" id="L267">        .peerRequirement(PeerRequirement.combine(peerRequirements))</span>
+<span class="fc" id="L268">        .peerPermissions(peerPermissions)</span>
+<span class="fc" id="L269">        .metricsSystem(metricsSystem)</span>
+<span class="fc" id="L270">        .filterOnEnrForkId((config.isFilterOnEnrForkIdEnabled()))</span>
+<span class="fc" id="L271">        .rlpxAgent(rlpxAgent)</span>
+<span class="fc" id="L272">        .peerTable(peerTable)</span>
+<span class="fc" id="L273">        .build();</span>
+  }
+
+  protected boolean validatePacketSize(final int packetSize) {
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">    return packetSize &lt;= MAX_PACKET_SIZE_BYTES;</span>
+  }
+
+  protected void handleIncomingPacket(final Endpoint sourceEndpoint, final Packet packet) {
+<span class="fc" id="L281">    final int udpPort = sourceEndpoint.getUdpPort();</span>
+<span class="fc" id="L282">    final int tcpPort =</span>
+        packet
+<span class="fc" id="L284">            .getPacketData(PingPacketData.class)</span>
+<span class="fc" id="L285">            .flatMap(PingPacketData::getFrom)</span>
+<span class="fc" id="L286">            .flatMap(Endpoint::getTcpPort)</span>
+<span class="fc" id="L287">            .orElse(udpPort);</span>
+
+<span class="fc" id="L289">    final String host = deriveHost(sourceEndpoint, packet);</span>
+
+    // Notify the peer controller.
+    final DiscoveryPeer peer =
+<span class="fc" id="L293">        DiscoveryPeer.fromEnode(</span>
+<span class="fc" id="L294">            EnodeURLImpl.builder()</span>
+<span class="fc" id="L295">                .nodeId(packet.getNodeId())</span>
+<span class="fc" id="L296">                .ipAddress(host)</span>
+<span class="fc" id="L297">                .listeningPort(tcpPort)</span>
+<span class="fc" id="L298">                .discoveryPort(udpPort)</span>
+<span class="fc" id="L299">                .build());</span>
+
+<span class="fc" id="L301">    controller.ifPresent(c -&gt; c.onMessage(packet, peer));</span>
+<span class="fc" id="L302">  }</span>
+
+  /**
+   * method to derive the host from the source endpoint and the P2P PING packet. If the host is
+   * present in the P2P PING packet itself, use that as the endpoint. If the P2P PING packet
+   * specifies 127.0.0.1 (the default if a custom value is not specified with --p2p-host or via a
+   * suitable --nat-method) we ignore it in favour of the UDP source address. Some implementations
+   * send 127.0.0.1 or 255.255.255.255 anyway, but this reduces the chance of an unexpected change
+   * in behaviour as a result of https://github.com/hyperledger/besu/issues/6224 being fixed.
+   *
+   * @param sourceEndpoint source endpoint of the packet
+   * @param packet P2P PING packet
+   * @return host address as string
+   */
+  static String deriveHost(final Endpoint sourceEndpoint, final Packet packet) {
+<span class="fc" id="L317">    final Optional&lt;String&gt; pingPacketHost =</span>
+        packet
+<span class="fc" id="L319">            .getPacketData(PingPacketData.class)</span>
+<span class="fc" id="L320">            .flatMap(PingPacketData::getFrom)</span>
+<span class="fc" id="L321">            .map(Endpoint::getHost);</span>
+
+<span class="fc" id="L323">    return pingPacketHost</span>
+        // fall back to source endpoint &quot;from&quot; if ping packet from address does not satisfy filters
+<span class="fc" id="L325">        .filter(InetAddresses::isInetAddress)</span>
+<span class="fc bfc" id="L326" title="All 2 branches covered.">        .filter(h -&gt; !NetworkUtility.isUnspecifiedAddress(h))</span>
+<span class="fc bfc" id="L327" title="All 2 branches covered.">        .filter(h -&gt; !NetworkUtility.isLocalhostAddress(h))</span>
+<span class="pc bpc" id="L328" title="3 of 4 branches missed.">        .filter(h -&gt; isIpv6Available || !NetworkUtility.isIpV6Address(h))</span>
+<span class="fc" id="L329">        .stream()</span>
+<span class="fc" id="L330">        .peek(</span>
+            h -&gt;
+<span class="fc" id="L332">                LOG.atTrace()</span>
+<span class="fc" id="L333">                    .setMessage(</span>
+                        &quot;Using \&quot;From\&quot; endpoint {} specified in ping packet. Ignoring UDP source host {}&quot;)
+<span class="fc" id="L335">                    .addArgument(h)</span>
+<span class="fc" id="L336">                    .addArgument(sourceEndpoint::getHost)</span>
+<span class="fc" id="L337">                    .log())</span>
+<span class="fc" id="L338">        .findFirst()</span>
+<span class="fc" id="L339">        .orElseGet(</span>
+            () -&gt; {
+<span class="fc" id="L341">              LOG.atTrace()</span>
+<span class="fc" id="L342">                  .setMessage(</span>
+                      &quot;Ignoring \&quot;From\&quot; endpoint {} in ping packet. Using UDP source host {}&quot;)
+<span class="fc" id="L344">                  .addArgument(pingPacketHost.orElse(&quot;not specified&quot;))</span>
+<span class="fc" id="L345">                  .addArgument(sourceEndpoint.getHost())</span>
+<span class="fc" id="L346">                  .log();</span>
+<span class="fc" id="L347">              return sourceEndpoint.getHost();</span>
+            });
+  }
+
+  /**
+   * Send a packet to the given recipient.
+   *
+   * @param peer the recipient
+   * @param packet the packet to send
+   */
+  protected void handleOutgoingPacket(final DiscoveryPeer peer, final Packet packet) {
+<span class="fc" id="L358">    sendOutgoingPacket(peer, packet)</span>
+<span class="fc" id="L359">        .whenComplete(</span>
+            (res, err) -&gt; {
+<span class="pc bpc" id="L361" title="1 of 2 branches missed.">              if (err != null) {</span>
+<span class="nc" id="L362">                handleOutgoingPacketError(err, peer, packet);</span>
+<span class="nc" id="L363">                return;</span>
+              }
+<span class="fc" id="L365">              peer.setLastContacted(System.currentTimeMillis());</span>
+<span class="fc" id="L366">            });</span>
+<span class="fc" id="L367">  }</span>
+
+  protected abstract void handleOutgoingPacketError(
+      final Throwable err, final DiscoveryPeer peer, final Packet packet);
+
+  public Stream&lt;DiscoveryPeer&gt; streamDiscoveredPeers() {
+<span class="fc" id="L373">    return controller.map(PeerDiscoveryController::streamDiscoveredPeers).orElse(Stream.empty());</span>
+  }
+
+  public void dropPeer(final PeerId peer) {
+<span class="nc" id="L377">    controller.ifPresent(c -&gt; c.dropPeer(peer));</span>
+<span class="nc" id="L378">  }</span>
+
+  public Optional&lt;DiscoveryPeer&gt; getAdvertisedPeer() {
+<span class="fc" id="L381">    return localNode;</span>
+  }
+
+  public Bytes getId() {
+<span class="fc" id="L385">    return id;</span>
+  }
+
+  private static void validateConfiguration(final DiscoveryConfiguration config) {
+<span class="fc" id="L389">    checkArgument(</span>
+<span class="fc bfc" id="L390" title="All 4 branches covered.">        config.getBindHost() != null &amp;&amp; InetAddresses.isInetAddress(config.getBindHost()),</span>
+        &quot;valid bind host required&quot;);
+<span class="fc" id="L392">    checkArgument(</span>
+<span class="pc bpc" id="L393" title="1 of 2 branches missed.">        config.getAdvertisedHost() != null</span>
+<span class="pc bpc" id="L394" title="1 of 2 branches missed.">            &amp;&amp; InetAddresses.isInetAddress(config.getAdvertisedHost()),</span>
+        &quot;valid advertisement host required&quot;);
+<span class="fc" id="L396">    checkArgument(</span>
+<span class="fc bfc" id="L397" title="All 4 branches covered.">        config.getBindPort() == 0 || NetworkUtility.isValidPort(config.getBindPort()),</span>
+        &quot;valid port number required&quot;);
+<span class="pc bpc" id="L399" title="1 of 2 branches missed.">    checkArgument(config.getBootnodes() != null, &quot;bootstrapPeers cannot be null&quot;);</span>
+<span class="pc bpc" id="L400" title="1 of 2 branches missed.">    checkArgument(config.getBucketSize() &gt; 0, &quot;bucket size cannot be negative nor zero&quot;);</span>
+<span class="fc" id="L401">  }</span>
+
+  /**
+   * Returns the current state of the PeerDiscoveryAgent.
+   *
+   * &lt;p&gt;If true, the node is actively listening for new connections. If false, discovery has been
+   * turned off and the node is not listening for connections.
+   *
+   * @return true, if the {@link PeerDiscoveryAgent} is active on this node, false, otherwise.
+   */
+  public boolean isActive() {
+<span class="fc" id="L412">    return isActive;</span>
+  }
+
+  public void bond(final Peer peer) {
+<span class="fc" id="L416">    controller.ifPresent(</span>
+        c -&gt; {
+<span class="fc" id="L418">          DiscoveryPeer.from(peer).ifPresent(c::handleBondingRequest);</span>
+<span class="fc" id="L419">        });</span>
+<span class="fc" id="L420">  }</span>
+
+  @VisibleForTesting
+  public Optional&lt;DiscoveryPeer&gt; getLocalNode() {
+<span class="fc" id="L424">    return localNode;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

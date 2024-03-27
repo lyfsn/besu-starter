@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CliqueHelpers.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.clique</a> &gt; <span class="el_source">CliqueHelpers.java</span></div><h1>CliqueHelpers.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.clique;
+
+import org.hyperledger.besu.consensus.clique.blockcreation.CliqueProposerSelector;
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+
+import java.util.Collection;
+import java.util.Comparator;
+
+/** The Clique helpers. */
+<span class="nc" id="L29">public class CliqueHelpers {</span>
+
+  /**
+   * Gets proposer of block.
+   *
+   * @param header the header
+   * @return the proposer of block address
+   */
+  public static Address getProposerOfBlock(final BlockHeader header) {
+<span class="fc" id="L38">    final CliqueExtraData extraData = CliqueExtraData.decode(header);</span>
+<span class="fc" id="L39">    return extraData.getProposerAddress();</span>
+  }
+
+  /**
+   * Gets proposer for block after.
+   *
+   * @param parent the parent
+   * @param validatorProvider the validator provider
+   * @return the proposer for block after
+   */
+  static Address getProposerForBlockAfter(
+      final BlockHeader parent, final ValidatorProvider validatorProvider) {
+<span class="fc" id="L51">    final CliqueProposerSelector proposerSelector = new CliqueProposerSelector(validatorProvider);</span>
+<span class="fc" id="L52">    return proposerSelector.selectProposerForNextBlock(parent);</span>
+  }
+
+  /**
+   * Is signer.
+   *
+   * @param candidate the candidate
+   * @param protocolContext the protocol context
+   * @param parent the parent
+   * @return the boolean
+   */
+  static boolean isSigner(
+      final Address candidate, final ProtocolContext protocolContext, final BlockHeader parent) {
+<span class="fc" id="L65">    final Collection&lt;Address&gt; validators =</span>
+        protocolContext
+<span class="fc" id="L67">            .getConsensusContext(CliqueContext.class)</span>
+<span class="fc" id="L68">            .getValidatorProvider()</span>
+<span class="fc" id="L69">            .getValidatorsAfterBlock(parent);</span>
+<span class="fc" id="L70">    return validators.contains(candidate);</span>
+  }
+
+  /**
+   * Address is allowed to produce next block.
+   *
+   * @param candidate the candidate
+   * @param protocolContext the protocol context
+   * @param parent the parent
+   * @return the boolean
+   */
+  public static boolean addressIsAllowedToProduceNextBlock(
+      final Address candidate, final ProtocolContext protocolContext, final BlockHeader parent) {
+<span class="fc" id="L83">    final ValidatorProvider validatorProvider =</span>
+<span class="fc" id="L84">        protocolContext.getConsensusContext(CliqueContext.class).getValidatorProvider();</span>
+
+<span class="fc bfc" id="L86" title="All 2 branches covered.">    if (!isSigner(candidate, protocolContext, parent)) {</span>
+<span class="fc" id="L87">      return false;</span>
+    }
+
+<span class="fc" id="L90">    final int minimumUnsignedPastBlocks =</span>
+<span class="fc" id="L91">        minimumBlocksSincePreviousSigning(parent, validatorProvider);</span>
+
+<span class="fc" id="L93">    final Blockchain blockchain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L94">    int unsignedBlockCount = 0;</span>
+<span class="fc" id="L95">    BlockHeader localParent = parent;</span>
+
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    while (unsignedBlockCount &lt; minimumUnsignedPastBlocks) {</span>
+
+<span class="fc bfc" id="L99" title="All 2 branches covered.">      if (localParent.getNumber() == 0) {</span>
+<span class="fc" id="L100">        return true;</span>
+      }
+
+<span class="fc" id="L103">      final Address parentSigner = CliqueHelpers.getProposerOfBlock(localParent);</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">      if (parentSigner.equals(candidate)) {</span>
+<span class="fc" id="L105">        return false;</span>
+      }
+<span class="fc" id="L107">      unsignedBlockCount++;</span>
+
+<span class="fc" id="L109">      localParent =</span>
+          blockchain
+<span class="fc" id="L111">              .getBlockHeader(localParent.getParentHash())</span>
+<span class="fc" id="L112">              .orElseThrow(() -&gt; new IllegalStateException(&quot;The block was on a orphaned chain.&quot;));</span>
+<span class="fc" id="L113">    }</span>
+
+<span class="fc" id="L115">    return true;</span>
+  }
+
+  private static int minimumBlocksSincePreviousSigning(
+      final BlockHeader parent, final ValidatorProvider validatorProvider) {
+<span class="fc" id="L120">    final int validatorCount = validatorProvider.getValidatorsAfterBlock(parent).size();</span>
+    // The number of contiguous blocks in which a signer may only sign 1 (as taken from clique spec)
+<span class="fc" id="L122">    final int signerLimit = (validatorCount / 2) + 1;</span>
+<span class="fc" id="L123">    return signerLimit - 1;</span>
+  }
+
+  /**
+   * Install clique block choice rule.
+   *
+   * @param blockchain the blockchain
+   * @param cliqueContext the clique context
+   */
+  public static void installCliqueBlockChoiceRule(
+      final Blockchain blockchain, final CliqueContext cliqueContext) {
+<span class="fc" id="L134">    blockchain.setBlockChoiceRule(</span>
+        // EIP-3436 - https://eips.ethereum.org/EIPS/eip-3436
+        blockchain
+            // 1. Choose the block with the most total difficulty.
+<span class="fc" id="L138">            .getBlockChoiceRule()</span>
+            // 2. Then choose the block with the lowest block number.
+<span class="fc" id="L140">            .thenComparing(Comparator.comparing(ProcessableBlockHeader::getNumber).reversed())</span>
+            // 3. Then choose the block whose validator had the least recent in-turn block
+            // assignment.
+<span class="fc" id="L143">            .thenComparing((BlockHeader header) -&gt; -distanceFromInTurn(header, cliqueContext))</span>
+            // 4. Then choose the block with the lowest hash.
+<span class="fc" id="L145">            .thenComparing(Comparator.comparing(BlockHeader::getHash).reversed()));</span>
+<span class="fc" id="L146">  }</span>
+
+  /**
+   * Distance calculation from step 3 of the forck choice rule in EIP-3436
+   *
+   * &lt;p&gt;` (header_number - validator_index) % validator_count `
+   *
+   * @param header The block header to calculate distance
+   * @param context The clique context, holding validators last validaion
+   * @return the number of blocks from when the validator in that block was most recently &quot;in turn&quot;
+   */
+  static int distanceFromInTurn(final BlockHeader header, final CliqueContext context) {
+<span class="fc" id="L158">    final Address proposer = CliqueHelpers.getProposerOfBlock(header);</span>
+<span class="fc" id="L159">    final Collection&lt;Address&gt; validators =</span>
+<span class="fc" id="L160">        context.getValidatorProvider().getValidatorsAfterBlock(header);</span>
+
+    // validators is an ordered collection, but as it is a tree set the only way to get an &quot;index&quot;
+    // is to walk the tree.
+<span class="fc" id="L164">    int index = 0;</span>
+<span class="pc bpc" id="L165" title="1 of 2 branches missed.">    for (final Address validator : validators) {</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">      if (validator.equals(proposer)) {</span>
+<span class="fc" id="L167">        break;</span>
+      }
+<span class="fc" id="L169">      index++;</span>
+<span class="fc" id="L170">    }</span>
+
+<span class="fc" id="L172">    return (int) (header.getNumber() - index) % validators.size();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

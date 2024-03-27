@@ -1,0 +1,506 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RlpxAgent.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx</a> &gt; <span class="el_source">RlpxAgent.java</span></div><h1>RlpxAgent.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.config.RlpxConfiguration;
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.peers.LocalNode;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.peers.PeerPrivileges;
+import org.hyperledger.besu.ethereum.p2p.permissions.PeerPermissions;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.ConnectionInitializer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnectionEvents;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerRlpxPermissions;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty.NettyConnectionInitializer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty.NettyTLSConnectionInitializer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty.TLSConfiguration;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.ShouldConnectCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import javax.annotation.Nonnull;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RlpxAgent {
+<span class="fc" id="L63">  private static final Logger LOG = LoggerFactory.getLogger(RlpxAgent.class);</span>
+
+  private final LocalNode localNode;
+  private final PeerConnectionEvents connectionEvents;
+  private final ConnectionInitializer connectionInitializer;
+<span class="fc" id="L68">  private final Subscribers&lt;ConnectCallback&gt; connectSubscribers = Subscribers.create();</span>
+<span class="fc" id="L69">  private final List&lt;ShouldConnectCallback&gt; connectRequestSubscribers = new ArrayList&lt;&gt;();</span>
+  private final PeerRlpxPermissions peerPermissions;
+  private final PeerPrivileges peerPrivileges;
+<span class="fc" id="L72">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L73">  private final AtomicBoolean stopped = new AtomicBoolean(false);</span>
+  private final int maxPeers;
+  private final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allConnectionsSupplier;
+  private final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allActiveConnectionsSupplier;
+<span class="fc" id="L77">  private final Cache&lt;Bytes, CompletableFuture&lt;PeerConnection&gt;&gt; peersConnectingCache =</span>
+<span class="fc" id="L78">      CacheBuilder.newBuilder()</span>
+<span class="fc" id="L79">          .expireAfterWrite(</span>
+<span class="fc" id="L80">              Duration.ofSeconds(30L)) // we will at most try to connect every 30 seconds</span>
+<span class="fc" id="L81">          .concurrencyLevel(1)</span>
+<span class="fc" id="L82">          .build();</span>
+
+  private RlpxAgent(
+      final LocalNode localNode,
+      final PeerConnectionEvents connectionEvents,
+      final ConnectionInitializer connectionInitializer,
+      final PeerRlpxPermissions peerPermissions,
+      final PeerPrivileges peerPrivileges,
+      final int maxPeers,
+      final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allConnectionsSupplier,
+<span class="fc" id="L92">      final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allActiveConnectionsSupplier) {</span>
+<span class="fc" id="L93">    this.localNode = localNode;</span>
+<span class="fc" id="L94">    this.connectionEvents = connectionEvents;</span>
+<span class="fc" id="L95">    this.connectionInitializer = connectionInitializer;</span>
+<span class="fc" id="L96">    this.peerPermissions = peerPermissions;</span>
+<span class="fc" id="L97">    this.peerPrivileges = peerPrivileges;</span>
+<span class="fc" id="L98">    this.maxPeers = maxPeers;</span>
+<span class="fc" id="L99">    this.allConnectionsSupplier = allConnectionsSupplier;</span>
+<span class="fc" id="L100">    this.allActiveConnectionsSupplier = allActiveConnectionsSupplier;</span>
+<span class="fc" id="L101">  }</span>
+
+  public static Builder builder() {
+<span class="fc" id="L104">    return new Builder();</span>
+  }
+
+  public CompletableFuture&lt;Integer&gt; start() {
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    if (!started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L109">      return CompletableFuture.failedFuture(</span>
+          new IllegalStateException(
+<span class="fc" id="L111">              &quot;Unable to start an already started &quot; + getClass().getSimpleName()));</span>
+    }
+
+<span class="fc" id="L114">    setupListeners();</span>
+<span class="fc" id="L115">    return connectionInitializer</span>
+<span class="fc" id="L116">        .start()</span>
+<span class="fc" id="L117">        .thenApply(</span>
+            (socketAddress) -&gt; {
+<span class="fc" id="L119">              LOG.info(&quot;P2P RLPx agent started and listening on {}.&quot;, socketAddress);</span>
+<span class="fc" id="L120">              return socketAddress.getPort();</span>
+            })
+<span class="fc" id="L122">        .whenComplete(</span>
+            (res, err) -&gt; {
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">              if (err != null) {</span>
+                // the detail of this error is already logged by the completeExceptionally() call in
+                // NettyConnectionInitializer
+<span class="nc" id="L127">                LOG.error(&quot;Failed to start P2P RLPx agent. Check for port conflicts.&quot;);</span>
+              }
+<span class="fc" id="L129">            });</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; stop() {
+<span class="fc bfc" id="L133" title="All 4 branches covered.">    if (!started.get() || !stopped.compareAndSet(false, true)) {</span>
+<span class="fc" id="L134">      return CompletableFuture.failedFuture(</span>
+<span class="fc" id="L135">          new IllegalStateException(&quot;Illegal attempt to stop &quot; + getClass().getSimpleName()));</span>
+    }
+
+<span class="fc" id="L138">    streamConnections().forEach((conn) -&gt; conn.disconnect(DisconnectReason.CLIENT_QUITTING));</span>
+<span class="fc" id="L139">    return connectionInitializer.stop();</span>
+  }
+
+  public Stream&lt;PeerConnection&gt; streamConnections() {
+    try {
+<span class="fc" id="L144">      return allConnectionsSupplier.get();</span>
+<span class="nc" id="L145">    } catch (final Exception e) {</span>
+<span class="nc" id="L146">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public Stream&lt;PeerConnection&gt; streamActiveConnections() {
+    try {
+<span class="fc" id="L152">      return allActiveConnectionsSupplier.get();</span>
+<span class="nc" id="L153">    } catch (final Exception e) {</span>
+<span class="nc" id="L154">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public int getConnectionCount() {
+    try {
+<span class="fc" id="L160">      return (int) allActiveConnectionsSupplier.get().count();</span>
+<span class="nc" id="L161">    } catch (final Exception e) {</span>
+<span class="nc" id="L162">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public void disconnect(final Bytes peerId, final DisconnectReason reason) {
+    try {
+<span class="fc" id="L168">      allActiveConnectionsSupplier</span>
+<span class="fc" id="L169">          .get()</span>
+<span class="pc" id="L170">          .filter(c -&gt; c.getPeer().getId().equals(peerId))</span>
+<span class="pc" id="L171">          .forEach(c -&gt; c.disconnect(reason));</span>
+<span class="fc" id="L172">      final CompletableFuture&lt;PeerConnection&gt; peerConnectionCompletableFuture =</span>
+<span class="fc" id="L173">          getMapOfCompletableFutures().get(peerId);</span>
+<span class="pc bpc" id="L174" title="1 of 2 branches missed.">      if (peerConnectionCompletableFuture != null) {</span>
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">        if (!peerConnectionCompletableFuture.isDone()) {</span>
+<span class="nc" id="L176">          peerConnectionCompletableFuture.cancel(true);</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">        } else if (!peerConnectionCompletableFuture.isCompletedExceptionally()</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">            &amp;&amp; !peerConnectionCompletableFuture.isCancelled()) {</span>
+<span class="fc" id="L179">          peerConnectionCompletableFuture.get().disconnect(reason);</span>
+        }
+      }
+<span class="nc" id="L182">    } catch (final Exception e) {</span>
+<span class="nc" id="L183">      throw new RuntimeException(e);</span>
+<span class="fc" id="L184">    }</span>
+<span class="fc" id="L185">  }</span>
+
+  /**
+   * Connect to the peer
+   *
+   * @param peer The peer to connect to
+   * @return A future that will resolve to the existing or newly-established connection with this
+   *     peer.
+   */
+  public CompletableFuture&lt;PeerConnection&gt; connect(final Peer peer) {
+    // Check if we're ready to establish connections
+<span class="fc bfc" id="L196" title="All 2 branches covered.">    if (!localNode.isReady()) {</span>
+<span class="fc" id="L197">      return CompletableFuture.failedFuture(</span>
+          new IllegalStateException(
+              &quot;Cannot connect before &quot;
+<span class="fc" id="L200">                  + this.getClass().getSimpleName()</span>
+                  + &quot; has finished starting&quot;));
+    }
+
+    // Check peer is valid
+<span class="fc" id="L205">    final EnodeURL enode = peer.getEnodeURL();</span>
+<span class="fc bfc" id="L206" title="All 2 branches covered.">    if (!enode.isListening()) {</span>
+<span class="fc" id="L207">      final String errorMsg = &quot;Attempt to connect to peer with no listening port: &quot; + enode;</span>
+<span class="fc" id="L208">      LOG.warn(errorMsg);</span>
+<span class="fc" id="L209">      return CompletableFuture.failedFuture((new IllegalArgumentException(errorMsg)));</span>
+    }
+
+    // Check permissions
+<span class="fc bfc" id="L213" title="All 2 branches covered.">    if (!peerPermissions.allowNewOutboundConnectionTo(peer)) {</span>
+<span class="fc" id="L214">      return CompletableFuture.failedFuture(peerPermissions.newOutboundConnectionException(peer));</span>
+    }
+
+    final CompletableFuture&lt;PeerConnection&gt; peerConnectionCompletableFuture;
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    if (checkWhetherToConnect(peer, false)) {</span>
+      try {
+<span class="fc" id="L220">        synchronized (this) {</span>
+<span class="fc" id="L221">          peerConnectionCompletableFuture =</span>
+<span class="fc" id="L222">              peersConnectingCache.get(</span>
+<span class="fc" id="L223">                  peer.getId(), () -&gt; createPeerConnectionCompletableFuture(peer));</span>
+<span class="fc" id="L224">        }</span>
+<span class="nc" id="L225">      } catch (final ExecutionException e) {</span>
+<span class="nc" id="L226">        throw new RuntimeException(e);</span>
+<span class="fc" id="L227">      }</span>
+    } else {
+<span class="fc" id="L229">      final String errorMsg =</span>
+<span class="fc" id="L230">          &quot;None of the ProtocolManagers wants to connect to peer &quot; + peer.getId();</span>
+<span class="fc" id="L231">      LOG.trace(errorMsg);</span>
+<span class="fc" id="L232">      return CompletableFuture.failedFuture((new RuntimeException(errorMsg)));</span>
+    }
+
+<span class="fc" id="L235">    return peerConnectionCompletableFuture;</span>
+  }
+
+  @Nonnull
+  private CompletableFuture&lt;PeerConnection&gt; createPeerConnectionCompletableFuture(final Peer peer) {
+<span class="fc" id="L240">    final CompletableFuture&lt;PeerConnection&gt; peerConnectionCompletableFuture =</span>
+<span class="fc" id="L241">        initiateOutboundConnection(peer);</span>
+<span class="fc" id="L242">    peerConnectionCompletableFuture.whenComplete(</span>
+        (peerConnection, throwable) -&gt; {
+<span class="fc bfc" id="L244" title="All 2 branches covered.">          if (throwable == null) {</span>
+<span class="fc" id="L245">            dispatchConnect(peerConnection);</span>
+          }
+<span class="fc" id="L247">        });</span>
+<span class="fc" id="L248">    return peerConnectionCompletableFuture;</span>
+  }
+
+  private boolean checkWhetherToConnect(final Peer peer, final boolean incoming) {
+<span class="fc" id="L252">    return connectRequestSubscribers.stream()</span>
+<span class="fc" id="L253">        .anyMatch(callback -&gt; callback.shouldConnect(peer, incoming));</span>
+  }
+
+  private void setupListeners() {
+<span class="fc" id="L257">    connectionInitializer.subscribeIncomingConnect(this::handleIncomingConnection);</span>
+<span class="fc" id="L258">    peerPermissions.subscribeUpdate(this::handlePermissionsUpdate);</span>
+<span class="fc" id="L259">  }</span>
+
+  private void handlePermissionsUpdate(
+      final boolean permissionsRestricted, final Optional&lt;List&lt;Peer&gt;&gt; peers) {
+<span class="fc bfc" id="L263" title="All 2 branches covered.">    if (!permissionsRestricted) {</span>
+      // Nothing to do
+<span class="fc" id="L265">      return;</span>
+    }
+
+    final Stream&lt;PeerConnection&gt; connectionsToCheck;
+<span class="fc bfc" id="L269" title="All 2 branches covered.">    if (peers.isPresent()) {</span>
+<span class="fc" id="L270">      final List&lt;Bytes&gt; changedPeersIds =</span>
+<span class="fc" id="L271">          peers.get().stream().map(p -&gt; p.getId()).collect(Collectors.toList());</span>
+<span class="fc" id="L272">      connectionsToCheck =</span>
+<span class="fc" id="L273">          streamConnections().filter(c -&gt; changedPeersIds.contains(c.getPeer().getId()));</span>
+<span class="fc" id="L274">    } else {</span>
+<span class="fc" id="L275">      connectionsToCheck = streamConnections();</span>
+    }
+
+<span class="fc" id="L278">    connectionsToCheck.forEach(</span>
+        connection -&gt; {
+<span class="fc bfc" id="L280" title="All 2 branches covered.">          if (!peerPermissions.allowOngoingConnection(</span>
+<span class="fc" id="L281">              connection.getPeer(), connection.inboundInitiated())) {</span>
+<span class="fc" id="L282">            LOG.debug(</span>
+                &quot;Disconnecting from peer that is not permitted to maintain ongoing connection: {}&quot;,
+                connection);
+<span class="fc" id="L285">            connection.disconnect(DisconnectReason.REQUESTED);</span>
+          }
+<span class="fc" id="L287">        });</span>
+<span class="fc" id="L288">  }</span>
+
+  private CompletableFuture&lt;PeerConnection&gt; initiateOutboundConnection(final Peer peer) {
+<span class="fc" id="L291">    LOG.trace(&quot;Initiating connection to peer: {}&quot;, peer.getEnodeURL());</span>
+<span class="fc bfc" id="L292" title="All 2 branches covered.">    if (peer instanceof DiscoveryPeer) {</span>
+<span class="fc" id="L293">      ((DiscoveryPeer) peer).setLastAttemptedConnection(System.currentTimeMillis());</span>
+    }
+
+<span class="fc" id="L296">    return connectionInitializer</span>
+<span class="fc" id="L297">        .connect(peer)</span>
+<span class="fc" id="L298">        .whenComplete(</span>
+            (conn, err) -&gt; {
+<span class="fc bfc" id="L300" title="All 2 branches covered.">              if (err != null) {</span>
+<span class="fc" id="L301">                LOG.debug(&quot;Failed to connect to peer {}: {}&quot;, peer.getId(), err);</span>
+              } else {
+<span class="fc" id="L303">                LOG.debug(&quot;Outbound connection established to peer: {}&quot;, peer.getId());</span>
+              }
+<span class="fc" id="L305">            });</span>
+  }
+
+  public boolean canExceedConnectionLimits(final Bytes peerId) {
+<span class="fc" id="L309">    return peerPrivileges.canExceedConnectionLimits(peerId);</span>
+  }
+
+  private void handleIncomingConnection(final PeerConnection peerConnection) {
+<span class="fc" id="L313">    final Peer peer = peerConnection.getPeer();</span>
+    // Deny connection if our local node isn't ready
+<span class="pc bpc" id="L315" title="1 of 2 branches missed.">    if (!localNode.isReady()) {</span>
+<span class="nc" id="L316">      LOG.debug(&quot;Node is not ready. Disconnect incoming connection: {}&quot;, peerConnection);</span>
+<span class="nc" id="L317">      peerConnection.disconnect(DisconnectReason.UNKNOWN);</span>
+<span class="nc" id="L318">      return;</span>
+    }
+
+    // Disconnect if not permitted
+<span class="fc bfc" id="L322" title="All 2 branches covered.">    if (!peerPermissions.allowNewInboundConnectionFrom(peer)) {</span>
+<span class="fc" id="L323">      LOG.debug(</span>
+          &quot;Node is not permitted to connect. Disconnect incoming connection: {}&quot;, peerConnection);
+<span class="fc" id="L325">      peerConnection.disconnect(DisconnectReason.UNKNOWN);</span>
+<span class="fc" id="L326">      return;</span>
+    }
+
+<span class="fc bfc" id="L329" title="All 2 branches covered.">    if (checkWhetherToConnect(peer, true)) {</span>
+<span class="fc" id="L330">      dispatchConnect(peerConnection);</span>
+    } else {
+<span class="fc" id="L332">      peerConnection.disconnect(DisconnectReason.UNKNOWN);</span>
+    }
+<span class="fc" id="L334">  }</span>
+
+  public void subscribeMessage(final Capability capability, final MessageCallback callback) {
+<span class="fc" id="L337">    connectionEvents.subscribeMessage(capability, callback);</span>
+<span class="fc" id="L338">  }</span>
+
+  public void subscribeConnect(final ConnectCallback callback) {
+<span class="fc" id="L341">    connectSubscribers.subscribe(callback);</span>
+<span class="fc" id="L342">  }</span>
+
+  public void subscribeConnectRequest(final ShouldConnectCallback callback) {
+<span class="fc" id="L345">    connectRequestSubscribers.add(callback);</span>
+<span class="fc" id="L346">  }</span>
+
+  public void subscribeDisconnect(final DisconnectCallback callback) {
+<span class="fc" id="L349">    connectionEvents.subscribeDisconnect(callback);</span>
+<span class="fc" id="L350">  }</span>
+
+  private void dispatchConnect(final PeerConnection connection) {
+<span class="fc" id="L353">    connectSubscribers.forEach(c -&gt; c.onConnect(connection));</span>
+<span class="fc" id="L354">  }</span>
+
+  @VisibleForTesting
+  public ConcurrentMap&lt;Bytes, CompletableFuture&lt;PeerConnection&gt;&gt; getMapOfCompletableFutures() {
+<span class="fc" id="L358">    return peersConnectingCache.asMap();</span>
+  }
+
+  public int getMaxPeers() {
+<span class="fc" id="L362">    return maxPeers;</span>
+  }
+
+  public static class Builder {
+    private NodeKey nodeKey;
+    private LocalNode localNode;
+    private RlpxConfiguration config;
+    private PeerPrivileges peerPrivileges;
+    private PeerPermissions peerPermissions;
+    private ConnectionInitializer connectionInitializer;
+    private PeerConnectionEvents connectionEvents;
+    private MetricsSystem metricsSystem;
+    private Optional&lt;TLSConfiguration&gt; p2pTLSConfiguration;
+    private Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allConnectionsSupplier;
+    private Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allActiveConnectionsSupplier;
+    private int maxPeers;
+    private PeerTable peerTable;
+
+    private Builder() {}
+
+    public RlpxAgent build() {
+<span class="fc" id="L383">      validate();</span>
+
+<span class="fc bfc" id="L385" title="All 2 branches covered.">      if (connectionEvents == null) {</span>
+<span class="fc" id="L386">        connectionEvents = new PeerConnectionEvents(metricsSystem);</span>
+      }
+<span class="fc bfc" id="L388" title="All 2 branches covered.">      if (connectionInitializer == null) {</span>
+<span class="fc bfc" id="L389" title="All 2 branches covered.">        if (p2pTLSConfiguration.isPresent()) {</span>
+<span class="fc" id="L390">          LOG.debug(&quot;TLS Configuration found using NettyTLSConnectionInitializer&quot;);</span>
+<span class="fc" id="L391">          connectionInitializer =</span>
+              new NettyTLSConnectionInitializer(
+                  nodeKey,
+                  config,
+                  localNode,
+                  connectionEvents,
+                  metricsSystem,
+<span class="fc" id="L398">                  p2pTLSConfiguration.get(),</span>
+                  peerTable);
+        } else {
+<span class="fc" id="L401">          LOG.debug(&quot;Using default NettyConnectionInitializer&quot;);</span>
+<span class="fc" id="L402">          connectionInitializer =</span>
+              new NettyConnectionInitializer(
+                  nodeKey, config, localNode, connectionEvents, metricsSystem, peerTable);
+        }
+      }
+
+<span class="fc" id="L408">      final PeerRlpxPermissions rlpxPermissions =</span>
+          new PeerRlpxPermissions(localNode, peerPermissions);
+<span class="fc" id="L410">      return new RlpxAgent(</span>
+          localNode,
+          connectionEvents,
+          connectionInitializer,
+          rlpxPermissions,
+          peerPrivileges,
+          maxPeers,
+          allConnectionsSupplier,
+          allActiveConnectionsSupplier);
+    }
+
+    private void validate() {
+<span class="pc bpc" id="L422" title="1 of 2 branches missed.">      checkState(nodeKey != null, &quot;NodeKey must be configured&quot;);</span>
+<span class="pc bpc" id="L423" title="1 of 2 branches missed.">      checkState(localNode != null, &quot;LocalNode must be configured&quot;);</span>
+<span class="pc bpc" id="L424" title="1 of 2 branches missed.">      checkState(config != null, &quot;RlpxConfiguration must be set&quot;);</span>
+<span class="pc bpc" id="L425" title="1 of 2 branches missed.">      checkState(peerPrivileges != null, &quot;PeerPrivileges must be configured&quot;);</span>
+<span class="pc bpc" id="L426" title="1 of 2 branches missed.">      checkState(peerPermissions != null, &quot;PeerPermissions must be configured&quot;);</span>
+<span class="pc bpc" id="L427" title="1 of 2 branches missed.">      checkState(metricsSystem != null, &quot;MetricsSystem must be configured&quot;);</span>
+<span class="fc" id="L428">    }</span>
+
+    public Builder nodeKey(final NodeKey nodeKey) {
+<span class="fc" id="L431">      checkNotNull(nodeKey);</span>
+<span class="fc" id="L432">      this.nodeKey = nodeKey;</span>
+<span class="fc" id="L433">      return this;</span>
+    }
+
+    public Builder localNode(final LocalNode localNode) {
+<span class="fc" id="L437">      checkNotNull(localNode);</span>
+<span class="fc" id="L438">      this.localNode = localNode;</span>
+<span class="fc" id="L439">      return this;</span>
+    }
+
+    public Builder connectionInitializer(final ConnectionInitializer connectionInitializer) {
+<span class="fc" id="L443">      checkNotNull(connectionInitializer);</span>
+<span class="fc" id="L444">      this.connectionInitializer = connectionInitializer;</span>
+<span class="fc" id="L445">      return this;</span>
+    }
+
+    public Builder config(final RlpxConfiguration config) {
+<span class="fc" id="L449">      checkNotNull(config);</span>
+<span class="fc" id="L450">      this.config = config;</span>
+<span class="fc" id="L451">      return this;</span>
+    }
+
+    public Builder peerPrivileges(final PeerPrivileges peerPrivileges) {
+<span class="fc" id="L455">      checkNotNull(peerPrivileges);</span>
+<span class="fc" id="L456">      this.peerPrivileges = peerPrivileges;</span>
+<span class="fc" id="L457">      return this;</span>
+    }
+
+    public Builder peerPermissions(final PeerPermissions peerPermissions) {
+<span class="fc" id="L461">      checkNotNull(peerPermissions);</span>
+<span class="fc" id="L462">      this.peerPermissions = peerPermissions;</span>
+<span class="fc" id="L463">      return this;</span>
+    }
+
+    public Builder connectionEvents(final PeerConnectionEvents connectionEvents) {
+<span class="fc" id="L467">      checkNotNull(connectionEvents);</span>
+<span class="fc" id="L468">      this.connectionEvents = connectionEvents;</span>
+<span class="fc" id="L469">      return this;</span>
+    }
+
+    public Builder metricsSystem(final MetricsSystem metricsSystem) {
+<span class="fc" id="L473">      checkNotNull(metricsSystem);</span>
+<span class="fc" id="L474">      this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L475">      return this;</span>
+    }
+
+    public Builder p2pTLSConfiguration(final Optional&lt;TLSConfiguration&gt; p2pTLSConfiguration) {
+<span class="fc" id="L479">      this.p2pTLSConfiguration = p2pTLSConfiguration;</span>
+<span class="fc" id="L480">      return this;</span>
+    }
+
+    public Builder allConnectionsSupplier(
+        final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allConnectionsSupplier) {
+<span class="fc" id="L485">      this.allConnectionsSupplier = allConnectionsSupplier;</span>
+<span class="fc" id="L486">      return this;</span>
+    }
+
+    public Builder allActiveConnectionsSupplier(
+        final Supplier&lt;Stream&lt;PeerConnection&gt;&gt; allActiveConnectionsSupplier) {
+<span class="fc" id="L491">      this.allActiveConnectionsSupplier = allActiveConnectionsSupplier;</span>
+<span class="fc" id="L492">      return this;</span>
+    }
+
+    public Builder maxPeers(final int maxPeers) {
+<span class="fc" id="L496">      this.maxPeers = maxPeers;</span>
+<span class="fc" id="L497">      return this;</span>
+    }
+
+    public Builder peerTable(final PeerTable peerTable) {
+<span class="fc" id="L501">      this.peerTable = peerTable;</span>
+<span class="fc" id="L502">      return this;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

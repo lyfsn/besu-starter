@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EngineAuthService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.authentication</a> &gt; <span class="el_source">EngineAuthService.java</span></div><h1>EngineAuthService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ *  the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.api.jsonrpc.authentication;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collection;
+import java.util.Optional;
+
+import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.auth.JWTOptions;
+import io.vertx.ext.auth.PubSecKeyOptions;
+import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.impl.Codec;
+import io.vertx.ext.auth.jwt.JWTAuth;
+import io.vertx.ext.auth.jwt.JWTAuthOptions;
+import io.vertx.ext.web.RoutingContext;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class EngineAuthService implements AuthenticationService {
+
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(EngineAuthService.class);</span>
+  private static final int JWT_EXPIRATION_TIME_IN_SECONDS = 60;
+
+  public static final String EPHEMERAL_JWT_FILE = &quot;jwt.hex&quot;;
+
+  private final JWTAuth jwtAuthProvider;
+
+<span class="fc" id="L53">  public EngineAuthService(final Vertx vertx, final Optional&lt;File&gt; signingKey, final Path datadir) {</span>
+<span class="fc" id="L54">    final JWTAuthOptions jwtAuthOptions =</span>
+<span class="fc" id="L55">        engineApiJWTOptions(JwtAlgorithm.HS256, signingKey, datadir);</span>
+<span class="fc" id="L56">    this.jwtAuthProvider = JWTAuth.create(vertx, jwtAuthOptions);</span>
+<span class="fc" id="L57">  }</span>
+
+  public String createToken() {
+<span class="fc" id="L60">    JsonObject claims = new JsonObject();</span>
+<span class="fc" id="L61">    claims.put(&quot;iat&quot;, System.currentTimeMillis() / 1000);</span>
+<span class="fc" id="L62">    return this.jwtAuthProvider.generateToken(claims);</span>
+  }
+
+  private JWTAuthOptions engineApiJWTOptions(
+      final JwtAlgorithm jwtAlgorithm, final Optional&lt;File&gt; keyFile, final Path datadir) {
+<span class="fc" id="L67">    byte[] signingKey = null;</span>
+<span class="fc bfc" id="L68" title="All 2 branches covered.">    if (!keyFile.isPresent()) {</span>
+<span class="fc" id="L69">      final File jwtFile = new File(datadir.toFile(), EPHEMERAL_JWT_FILE);</span>
+<span class="fc" id="L70">      jwtFile.deleteOnExit();</span>
+<span class="fc" id="L71">      final byte[] ephemeralKey = Bytes32.random().toArray();</span>
+      try {
+<span class="fc" id="L73">        Files.writeString(jwtFile.toPath(), Codec.base16Encode(ephemeralKey));</span>
+<span class="fc" id="L74">      } catch (IOException ioe) {</span>
+<span class="fc" id="L75">        LOG.warn(&quot;Unable to write ephemeral jwt key file to {}&quot;, jwtFile.toPath().toString());</span>
+<span class="fc" id="L76">        LOG.info(&quot;JWT KEY: {}&quot;, Codec.base16Encode(ephemeralKey));</span>
+<span class="fc" id="L77">      }</span>
+<span class="fc" id="L78">      signingKey = ephemeralKey;</span>
+<span class="fc" id="L79">    } else { // user configured option to use a specified file</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">      if (keyFile.get().exists()) {</span>
+        try {
+<span class="fc" id="L82">          final String keyHex = Files.readAllLines(keyFile.get().toPath()).get(0);</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">          if (keyHex.length() &gt;= 64) {</span>
+<span class="fc" id="L84">            signingKey = Bytes.fromHexString(keyHex).toArray();</span>
+          } else {
+<span class="fc" id="L86">            UnsecurableEngineApiException e =</span>
+                new UnsecurableEngineApiException(&quot;signing key too short, 256 bits required&quot;);
+<span class="fc" id="L88">            e.fillInStackTrace();</span>
+<span class="fc" id="L89">            throw e;</span>
+          }
+<span class="nc" id="L91">        } catch (IOException ioe) {</span>
+<span class="nc" id="L92">          UnsecurableEngineApiException e =</span>
+              new UnsecurableEngineApiException(
+<span class="nc" id="L94">                  &quot;Could not read key from &quot; + keyFile.get().toString());</span>
+<span class="nc" id="L95">          e.fillInStackTrace();</span>
+<span class="nc" id="L96">          e.initCause(ioe);</span>
+<span class="nc" id="L97">          throw e;</span>
+<span class="fc" id="L98">        }</span>
+      } else {
+<span class="fc" id="L100">        UnsecurableEngineApiException e =</span>
+            new UnsecurableEngineApiException(
+<span class="fc" id="L102">                &quot;Could not read key from &quot; + keyFile.get().toString());</span>
+<span class="fc" id="L103">        e.fillInStackTrace();</span>
+<span class="fc" id="L104">        throw e;</span>
+      }
+    }
+<span class="pc bpc" id="L107" title="2 of 4 branches missed.">    if (signingKey == null || signingKey.length &lt; 32) {</span>
+<span class="nc" id="L108">      UnsecurableEngineApiException e =</span>
+          new UnsecurableEngineApiException(
+              &quot;Could not read at least 256 bits of key from &quot;
+<span class="nc bnc" id="L111" title="All 2 branches missed.">                  + (keyFile.isPresent() ? keyFile.get().toString() : &quot;undefined&quot;));</span>
+<span class="nc" id="L112">      e.fillInStackTrace();</span>
+<span class="nc" id="L113">      throw e;</span>
+    }
+
+<span class="fc" id="L116">    return new JWTAuthOptions()</span>
+<span class="fc" id="L117">        .setJWTOptions(new JWTOptions().setIgnoreExpiration(true).setLeeway(5))</span>
+<span class="fc" id="L118">        .addPubSecKey(</span>
+            new PubSecKeyOptions()
+<span class="fc" id="L120">                .setAlgorithm(jwtAlgorithm.toString())</span>
+<span class="fc" id="L121">                .setBuffer(Buffer.buffer(signingKey)));</span>
+  }
+
+  @Override
+  public void handleLogin(final RoutingContext routingContext) {
+<span class="nc" id="L126">    LOG.warn(&quot;Engine Auth does not support logins, no login handled&quot;);</span>
+<span class="nc" id="L127">  }</span>
+
+  @Override
+  public JWTAuth getJwtAuthProvider() {
+<span class="fc" id="L131">    return this.jwtAuthProvider;</span>
+  }
+
+  @Override
+  public void authenticate(final String token, final Handler&lt;Optional&lt;User&gt;&gt; handler) {
+    try {
+<span class="fc" id="L137">      JsonObject jwt = new JsonObject().put(&quot;token&quot;, token);</span>
+<span class="fc" id="L138">      getJwtAuthProvider()</span>
+<span class="fc" id="L139">          .authenticate(</span>
+              jwt,
+              r -&gt; {
+<span class="fc bfc" id="L142" title="All 2 branches covered.">                if (r.succeeded()) {</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">                  if (issuedRecently(r.result().attributes().getLong(&quot;iat&quot;))) {</span>
+<span class="fc" id="L144">                    final Optional&lt;User&gt; user = Optional.ofNullable(r.result());</span>
+<span class="fc" id="L145">                    handler.handle(user);</span>
+<span class="fc" id="L146">                  } else {</span>
+<span class="fc" id="L147">                    LOG.warn(&quot;Client sent stale token: {}&quot;, r.result().attributes());</span>
+<span class="fc" id="L148">                    handler.handle(Optional.empty());</span>
+                  }
+
+                } else {
+<span class="fc" id="L152">                  LOG.debug(&quot;Authentication failed: {}&quot;, r.cause().toString());</span>
+<span class="fc" id="L153">                  handler.handle(Optional.empty());</span>
+                }
+<span class="fc" id="L155">              });</span>
+
+<span class="nc" id="L157">    } catch (Exception e) {</span>
+<span class="nc" id="L158">      LOG.debug(&quot;exception validating JWT &quot;, e);</span>
+<span class="nc" id="L159">      handler.handle(Optional.empty());</span>
+<span class="fc" id="L160">    }</span>
+<span class="fc" id="L161">  }</span>
+
+  @Override
+  public boolean isPermitted(
+      final Optional&lt;User&gt; optionalUser,
+      final JsonRpcMethod jsonRpcMethod,
+      final Collection&lt;String&gt; noAuthMethods) {
+<span class="pc bpc" id="L168" title="2 of 4 branches missed.">    return noAuthMethods.contains(jsonRpcMethod.getName()) || optionalUser.isPresent();</span>
+  }
+
+  private boolean issuedRecently(final long iat) {
+<span class="fc" id="L172">    long iatSecondsSinceEpoch = iat;</span>
+<span class="fc" id="L173">    long nowSecondsSinceEpoch = System.currentTimeMillis() / 1000;</span>
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    return (Math.abs((nowSecondsSinceEpoch - iatSecondsSinceEpoch))</span>
+        &lt;= JWT_EXPIRATION_TIME_IN_SECONDS);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

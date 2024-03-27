@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RestoreState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.operator</a> &gt; <span class="el_source">RestoreState.java</span></div><h1>RestoreState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.cli.subcommands.operator;
+
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP;
+import static org.hyperledger.besu.ethereum.trie.CompactEncoding.bytesToPath;
+
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.config.JsonUtil;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.api.query.StateBackupService;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.PersistVisitor;
+import org.hyperledger.besu.ethereum.trie.RestoreVisitor;
+import org.hyperledger.besu.ethereum.trie.forest.ForestWorldStateArchive;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.util.io.RollingFileReader;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParentCommand;
+
+/** The Restore state subcommand. */
+@Command(
+    name = &quot;x-restore-state&quot;,
+    description = &quot;Restores the chain from a previously generated backup-state.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+<span class="fc" id="L65">public class RestoreState implements Runnable {</span>
+
+<span class="fc" id="L67">  private static final Logger LOG = LoggerFactory.getLogger(RestoreState.class);</span>
+
+<span class="fc" id="L69">  @Option(</span>
+      names = &quot;--backup-path&quot;,
+      required = true,
+      paramLabel = MANDATORY_LONG_FORMAT_HELP,
+      description = &quot;The path to store the backup files.&quot;,
+      arity = &quot;1..1&quot;)
+  private final Path backupDir = null;
+
+  @ParentCommand private OperatorSubCommand parentCommand;
+
+  private static final int TRIE_NODE_COMMIT_BATCH_SIZE = 100;
+
+  private long targetBlock;
+  private long accountCount;
+  private long trieNodeCount;
+  private boolean compressed;
+  private BesuController besuController;
+  private ForestWorldStateKeyValueStorage.Updater updater;
+
+  private Path accountFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L89">    return StateBackupService.accountFileName(backupDir, targetBlock, fileNumber, compressed);</span>
+  }
+
+  private Path headerFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L93">    return StateBackupService.headerFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  private Path bodyFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L97">    return StateBackupService.bodyFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  private Path receiptFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L101">    return StateBackupService.receiptFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  @Override
+  public void run() {
+    try {
+<span class="nc" id="L107">      final ObjectNode manifest =</span>
+<span class="nc" id="L108">          JsonUtil.objectNodeFromString(</span>
+<span class="nc" id="L109">              Files.readString(backupDir.resolve(&quot;besu-backup-manifest.json&quot;)));</span>
+
+<span class="nc" id="L111">      compressed = manifest.get(&quot;compressed&quot;).asBoolean(false);</span>
+<span class="nc" id="L112">      targetBlock = manifest.get(&quot;targetBlock&quot;).asLong();</span>
+<span class="nc" id="L113">      accountCount = manifest.get(&quot;accountCount&quot;).asLong();</span>
+<span class="nc" id="L114">      besuController = createBesuController();</span>
+
+<span class="nc" id="L116">      restoreBlocks();</span>
+<span class="nc" id="L117">      restoreAccounts();</span>
+
+<span class="nc" id="L119">      LOG.info(&quot;Restore complete&quot;);</span>
+
+<span class="nc" id="L121">    } catch (final IOException e) {</span>
+<span class="nc" id="L122">      LOG.error(&quot;Error restoring state&quot;, e);</span>
+<span class="nc" id="L123">    }</span>
+<span class="nc" id="L124">  }</span>
+
+  private void restoreBlocks() throws IOException {
+<span class="nc" id="L127">    try (final RollingFileReader headerReader =</span>
+            new RollingFileReader(this::headerFileName, compressed);
+<span class="nc" id="L129">        final RollingFileReader bodyReader = new RollingFileReader(this::bodyFileName, compressed);</span>
+<span class="nc" id="L130">        final RollingFileReader receiptReader =</span>
+            new RollingFileReader(this::receiptFileName, compressed)) {
+<span class="nc" id="L132">      final MutableBlockchain blockchain = besuController.getProtocolContext().getBlockchain();</span>
+      // target block is &quot;including&quot; the target block, so LE test not LT.
+<span class="nc bnc" id="L134" title="All 2 branches missed.">      for (long i = 0; i &lt;= targetBlock; i++) {</span>
+<span class="nc bnc" id="L135" title="All 2 branches missed.">        if (i % 100000 == 0) {</span>
+<span class="nc" id="L136">          LOG.info(&quot;Loading chain data {} / {}&quot;, i, targetBlock);</span>
+        }
+
+<span class="nc" id="L139">        final byte[] headerEntry = headerReader.readBytes();</span>
+<span class="nc" id="L140">        final byte[] bodyEntry = bodyReader.readBytes();</span>
+<span class="nc" id="L141">        final byte[] receiptEntry = receiptReader.readBytes();</span>
+<span class="nc" id="L142">        final BlockHeaderFunctions functions = new MainnetBlockHeaderFunctions();</span>
+
+<span class="nc" id="L144">        final BlockHeader header =</span>
+<span class="nc" id="L145">            BlockHeader.readFrom(</span>
+<span class="nc" id="L146">                new BytesValueRLPInput(Bytes.wrap(headerEntry), false, true), functions);</span>
+<span class="nc" id="L147">        final BlockBody body =</span>
+<span class="nc" id="L148">            BlockBody.readWrappedBodyFrom(</span>
+<span class="nc" id="L149">                new BytesValueRLPInput(Bytes.wrap(bodyEntry), false, true), functions);</span>
+<span class="nc" id="L150">        final RLPInput receiptsRlp = new BytesValueRLPInput(Bytes.wrap(receiptEntry), false, true);</span>
+<span class="nc" id="L151">        final int receiptsCount = receiptsRlp.enterList();</span>
+<span class="nc" id="L152">        final List&lt;TransactionReceipt&gt; receipts = new ArrayList&lt;&gt;(receiptsCount);</span>
+<span class="nc bnc" id="L153" title="All 2 branches missed.">        for (int j = 0; j &lt; receiptsCount; j++) {</span>
+<span class="nc" id="L154">          receipts.add(TransactionReceipt.readFrom(receiptsRlp, true));</span>
+        }
+<span class="nc" id="L156">        receiptsRlp.leaveList();</span>
+
+<span class="nc" id="L158">        blockchain.appendBlock(new Block(header, body), receipts);</span>
+      }
+    }
+<span class="nc" id="L161">    LOG.info(&quot;Chain data loaded&quot;);</span>
+<span class="nc" id="L162">  }</span>
+
+  @SuppressWarnings(&quot;UnusedVariable&quot;)
+  private void restoreAccounts() throws IOException {
+<span class="nc" id="L166">    newWorldStateUpdater();</span>
+<span class="nc" id="L167">    int storageBranchCount = 0;</span>
+<span class="nc" id="L168">    int storageExtensionCount = 0;</span>
+<span class="nc" id="L169">    int storageLeafCount = 0;</span>
+
+<span class="nc" id="L171">    final PersistVisitor&lt;Bytes&gt; accountPersistVisitor =</span>
+        new PersistVisitor&lt;&gt;(this::updateAccountState);
+<span class="nc" id="L173">    Node&lt;Bytes&gt; root = accountPersistVisitor.initialRoot();</span>
+
+<span class="nc" id="L175">    try (final RollingFileReader reader =</span>
+        new RollingFileReader(this::accountFileName, compressed)) {
+<span class="nc bnc" id="L177" title="All 2 branches missed.">      for (long i = 0; i &lt; accountCount; i++) {</span>
+<span class="nc bnc" id="L178" title="All 2 branches missed.">        if (i % 100000 == 0) {</span>
+<span class="nc" id="L179">          LOG.info(&quot;Loading account data {} / {}&quot;, i, accountCount);</span>
+        }
+<span class="nc" id="L181">        final byte[] accountEntry = reader.readBytes();</span>
+<span class="nc" id="L182">        final BytesValueRLPInput accountInput =</span>
+<span class="nc" id="L183">            new BytesValueRLPInput(Bytes.of(accountEntry), false, true);</span>
+<span class="nc" id="L184">        final int length = accountInput.enterList();</span>
+<span class="nc bnc" id="L185" title="All 2 branches missed.">        if (length != 3) {</span>
+<span class="nc" id="L186">          throw new RuntimeException(&quot;Unexpected account length &quot; + length);</span>
+        }
+<span class="nc" id="L188">        final Bytes32 trieKey = accountInput.readBytes32();</span>
+<span class="nc" id="L189">        final Bytes accountRlp = accountInput.readBytes();</span>
+<span class="nc" id="L190">        final Bytes code = accountInput.readBytes();</span>
+
+<span class="nc" id="L192">        final StateTrieAccountValue trieAccount =</span>
+<span class="nc" id="L193">            StateTrieAccountValue.readFrom(new BytesValueRLPInput(accountRlp, false, true));</span>
+<span class="nc bnc" id="L194" title="All 2 branches missed.">        if (!trieAccount.getCodeHash().equals(Hash.hash(code))) {</span>
+<span class="nc" id="L195">          throw new RuntimeException(&quot;Code hash doesn't match&quot;);</span>
+        }
+<span class="nc bnc" id="L197" title="All 2 branches missed.">        if (code.size() &gt; 0) {</span>
+<span class="nc" id="L198">          updateCode(code);</span>
+        }
+
+<span class="nc" id="L201">        final RestoreVisitor&lt;Bytes&gt; accountTrieWriteVisitor =</span>
+<span class="nc" id="L202">            new RestoreVisitor&lt;&gt;(t -&gt; t, accountRlp, accountPersistVisitor);</span>
+
+<span class="nc" id="L204">        root = root.accept(accountTrieWriteVisitor, bytesToPath(trieKey));</span>
+
+<span class="nc" id="L206">        final PersistVisitor&lt;Bytes&gt; storagePersistVisitor =</span>
+            new PersistVisitor&lt;&gt;(this::updateAccountStorage);
+<span class="nc" id="L208">        Node&lt;Bytes&gt; storageRoot = storagePersistVisitor.initialRoot();</span>
+
+        while (true) {
+<span class="nc" id="L211">          final byte[] trieEntry = reader.readBytes();</span>
+<span class="nc" id="L212">          final BytesValueRLPInput trieInput =</span>
+<span class="nc" id="L213">              new BytesValueRLPInput(Bytes.of(trieEntry), false, true);</span>
+<span class="nc" id="L214">          final int len = trieInput.enterList();</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">          if (len == 0) {</span>
+<span class="nc" id="L216">            break;</span>
+          }
+<span class="nc bnc" id="L218" title="All 2 branches missed.">          if (len != 2) {</span>
+<span class="nc" id="L219">            throw new RuntimeException(&quot;Unexpected storage trie entry length &quot; + len);</span>
+          }
+<span class="nc" id="L221">          final Bytes32 storageTrieKey = Bytes32.wrap(trieInput.readBytes());</span>
+<span class="nc" id="L222">          final Bytes storageTrieValue = Bytes.wrap(trieInput.readBytes());</span>
+<span class="nc" id="L223">          final RestoreVisitor&lt;Bytes&gt; storageTrieWriteVisitor =</span>
+<span class="nc" id="L224">              new RestoreVisitor&lt;&gt;(t -&gt; t, storageTrieValue, storagePersistVisitor);</span>
+<span class="nc" id="L225">          storageRoot = storageRoot.accept(storageTrieWriteVisitor, bytesToPath(storageTrieKey));</span>
+
+<span class="nc" id="L227">          trieInput.leaveList();</span>
+<span class="nc" id="L228">        }</span>
+<span class="nc" id="L229">        storagePersistVisitor.persist(storageRoot);</span>
+<span class="nc" id="L230">        storageBranchCount += storagePersistVisitor.getBranchNodeCount();</span>
+<span class="nc" id="L231">        storageExtensionCount += storagePersistVisitor.getExtensionNodeCount();</span>
+<span class="nc" id="L232">        storageLeafCount += storagePersistVisitor.getLeafNodeCount();</span>
+
+<span class="nc" id="L234">        accountInput.leaveList();</span>
+      }
+    }
+<span class="nc" id="L237">    accountPersistVisitor.persist(root);</span>
+<span class="nc" id="L238">    updater.commit();</span>
+<span class="nc" id="L239">    LOG.info(&quot;Account BranchNodes: {} &quot;, accountPersistVisitor.getBranchNodeCount());</span>
+<span class="nc" id="L240">    LOG.info(&quot;Account ExtensionNodes: {} &quot;, accountPersistVisitor.getExtensionNodeCount());</span>
+<span class="nc" id="L241">    LOG.info(&quot;Account LeafNodes: {} &quot;, accountPersistVisitor.getLeafNodeCount());</span>
+<span class="nc" id="L242">    LOG.info(&quot;Storage BranchNodes: {} &quot;, storageBranchCount);</span>
+<span class="nc" id="L243">    LOG.info(&quot;Storage LeafNodes: {} &quot;, storageExtensionCount);</span>
+<span class="nc" id="L244">    LOG.info(&quot;Storage ExtensionNodes: {} &quot;, storageLeafCount);</span>
+<span class="nc" id="L245">    LOG.info(&quot;Account data loaded&quot;);</span>
+<span class="nc" id="L246">  }</span>
+
+  private void newWorldStateUpdater() {
+<span class="nc bnc" id="L249" title="All 2 branches missed.">    if (updater != null) {</span>
+<span class="nc" id="L250">      updater.commit();</span>
+    }
+<span class="nc" id="L252">    final ForestWorldStateKeyValueStorage worldStateKeyValueStorage =</span>
+<span class="nc" id="L253">        ((ForestWorldStateArchive) besuController.getProtocolContext().getWorldStateArchive())</span>
+<span class="nc" id="L254">            .getWorldStateStorage();</span>
+<span class="nc" id="L255">    updater = worldStateKeyValueStorage.updater();</span>
+<span class="nc" id="L256">  }</span>
+
+  private void maybeCommitUpdater() {
+<span class="nc bnc" id="L259" title="All 2 branches missed.">    if (trieNodeCount % TRIE_NODE_COMMIT_BATCH_SIZE == 0) {</span>
+<span class="nc" id="L260">      newWorldStateUpdater();</span>
+    }
+<span class="nc" id="L262">  }</span>
+
+  private void updateCode(final Bytes code) {
+<span class="nc" id="L265">    maybeCommitUpdater();</span>
+<span class="nc" id="L266">    updater.putCode(code);</span>
+<span class="nc" id="L267">  }</span>
+
+  private void updateAccountState(final Bytes32 key, final Bytes value) {
+<span class="nc" id="L270">    maybeCommitUpdater();</span>
+    // restore by path not supported
+<span class="nc" id="L272">    updater.putAccountStateTrieNode(key, value);</span>
+<span class="nc" id="L273">    trieNodeCount++;</span>
+<span class="nc" id="L274">  }</span>
+
+  private void updateAccountStorage(final Bytes32 key, final Bytes value) {
+<span class="nc" id="L277">    maybeCommitUpdater();</span>
+    // restore by path not supported
+<span class="nc" id="L279">    updater.putAccountStorageTrieNode(key, value);</span>
+<span class="nc" id="L280">    trieNodeCount++;</span>
+<span class="nc" id="L281">  }</span>
+
+  private BesuController createBesuController() {
+<span class="nc" id="L284">    return parentCommand.parentCommand.buildController();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

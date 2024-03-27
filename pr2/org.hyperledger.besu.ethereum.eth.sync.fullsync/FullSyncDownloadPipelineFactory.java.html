@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FullSyncDownloadPipelineFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fullsync</a> &gt; <span class="el_source">FullSyncDownloadPipelineFactory.java</span></div><h1>FullSyncDownloadPipelineFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fullsync;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadBodiesStep;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadHeadersStep;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadPipelineFactory;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.ValidationPolicy;
+import org.hyperledger.besu.ethereum.eth.sync.range.RangeHeadersFetcher;
+import org.hyperledger.besu.ethereum.eth.sync.range.RangeHeadersValidationStep;
+import org.hyperledger.besu.ethereum.eth.sync.range.SyncTargetRangeSource;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncTarget;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.services.pipeline.PipelineBuilder;
+
+import java.util.concurrent.CompletionStage;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FullSyncDownloadPipelineFactory implements DownloadPipelineFactory {
+<span class="fc" id="L45">  private static final Logger LOG = LoggerFactory.getLogger(FullSyncDownloadPipelineFactory.class);</span>
+
+  private final SynchronizerConfiguration syncConfig;
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final MetricsSystem metricsSystem;
+<span class="fc" id="L52">  private final ValidationPolicy detachedValidationPolicy =</span>
+<span class="fc" id="L53">      () -&gt; HeaderValidationMode.DETACHED_ONLY;</span>
+  private final BetterSyncTargetEvaluator betterSyncTargetEvaluator;
+  private final SyncTerminationCondition fullSyncTerminationCondition;
+
+  public FullSyncDownloadPipelineFactory(
+      final SynchronizerConfiguration syncConfig,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+<span class="fc" id="L63">      final SyncTerminationCondition syncTerminationCondition) {</span>
+<span class="fc" id="L64">    this.syncConfig = syncConfig;</span>
+<span class="fc" id="L65">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L66">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L67">    this.ethContext = ethContext;</span>
+<span class="fc" id="L68">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L69">    this.fullSyncTerminationCondition = syncTerminationCondition;</span>
+<span class="fc" id="L70">    betterSyncTargetEvaluator = new BetterSyncTargetEvaluator(syncConfig, ethContext.getEthPeers());</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public CompletionStage&lt;Void&gt; startPipeline(
+      final EthScheduler scheduler,
+      final SyncState syncState,
+      final SyncTarget syncTarget,
+      final Pipeline&lt;?&gt; pipeline) {
+<span class="fc" id="L79">    return scheduler.startPipeline(pipeline);</span>
+  }
+
+  @Override
+  public Pipeline&lt;?&gt; createDownloadPipelineForSyncTarget(final SyncTarget target) {
+<span class="fc" id="L84">    final int downloaderParallelism = syncConfig.getDownloaderParallelism();</span>
+<span class="fc" id="L85">    final int headerRequestSize = syncConfig.getDownloaderHeaderRequestSize();</span>
+<span class="fc" id="L86">    final int singleHeaderBufferSize = headerRequestSize * downloaderParallelism;</span>
+<span class="fc" id="L87">    final SyncTargetRangeSource checkpointRangeSource =</span>
+        new SyncTargetRangeSource(
+            new RangeHeadersFetcher(syncConfig, protocolSchedule, ethContext, metricsSystem),
+            this::shouldContinueDownloadingFromPeer,
+<span class="fc" id="L91">            ethContext.getScheduler(),</span>
+<span class="fc" id="L92">            target.peer(),</span>
+<span class="fc" id="L93">            target.commonAncestor(),</span>
+<span class="fc" id="L94">            syncConfig.getDownloaderCheckpointTimeoutsPermitted(),</span>
+            fullSyncTerminationCondition);
+<span class="fc" id="L96">    final DownloadHeadersStep downloadHeadersStep =</span>
+        new DownloadHeadersStep(
+            protocolSchedule,
+            protocolContext,
+            ethContext,
+            detachedValidationPolicy,
+            headerRequestSize,
+            metricsSystem);
+<span class="fc" id="L104">    final RangeHeadersValidationStep validateHeadersJoinUpStep =</span>
+        new RangeHeadersValidationStep(protocolSchedule, protocolContext, detachedValidationPolicy);
+<span class="fc" id="L106">    final DownloadBodiesStep downloadBodiesStep =</span>
+        new DownloadBodiesStep(protocolSchedule, ethContext, metricsSystem);
+<span class="fc" id="L108">    final ExtractTxSignaturesStep extractTxSignaturesStep = new ExtractTxSignaturesStep();</span>
+<span class="fc" id="L109">    final FullImportBlockStep importBlockStep =</span>
+        new FullImportBlockStep(
+            protocolSchedule, protocolContext, ethContext, fullSyncTerminationCondition);
+
+<span class="fc" id="L113">    return PipelineBuilder.createPipelineFrom(</span>
+            &quot;fetchCheckpoints&quot;,
+            checkpointRangeSource,
+            downloaderParallelism,
+<span class="fc" id="L117">            metricsSystem.createLabelledCounter(</span>
+                BesuMetricCategory.SYNCHRONIZER,
+                &quot;chain_download_pipeline_processed_total&quot;,
+                &quot;Number of entries process by each chain download pipeline stage&quot;,
+                &quot;step&quot;,
+                &quot;action&quot;),
+            true,
+            &quot;fullSync&quot;)
+<span class="fc" id="L125">        .thenProcessAsyncOrdered(&quot;downloadHeaders&quot;, downloadHeadersStep, downloaderParallelism)</span>
+<span class="fc" id="L126">        .thenFlatMap(&quot;validateHeadersJoin&quot;, validateHeadersJoinUpStep, singleHeaderBufferSize)</span>
+<span class="fc" id="L127">        .inBatches(headerRequestSize)</span>
+<span class="fc" id="L128">        .thenProcessAsyncOrdered(&quot;downloadBodies&quot;, downloadBodiesStep, downloaderParallelism)</span>
+<span class="fc" id="L129">        .thenFlatMap(&quot;extractTxSignatures&quot;, extractTxSignaturesStep, singleHeaderBufferSize)</span>
+<span class="fc" id="L130">        .andFinishWith(&quot;importBlock&quot;, importBlockStep);</span>
+  }
+
+  private boolean shouldContinueDownloadingFromPeer(
+      final EthPeer peer, final BlockHeader lastCheckpointHeader) {
+<span class="fc" id="L135">    final boolean shouldTerminate = fullSyncTerminationCondition.shouldStopDownload();</span>
+<span class="fc" id="L136">    final boolean caughtUpToPeer =</span>
+<span class="fc bfc" id="L137" title="All 2 branches covered.">        peer.chainState().getEstimatedHeight() &lt;= lastCheckpointHeader.getNumber();</span>
+<span class="fc" id="L138">    final boolean isDisconnected = peer.isDisconnected();</span>
+<span class="fc" id="L139">    final boolean shouldSwitchSyncTarget = betterSyncTargetEvaluator.shouldSwitchSyncTarget(peer);</span>
+<span class="fc" id="L140">    LOG.debug(</span>
+        &quot;shouldTerminate {}, shouldContinueDownloadingFromPeer? {}, disconnected {}, caughtUp {}, shouldSwitchSyncTarget {}&quot;,
+<span class="fc" id="L142">        shouldTerminate,</span>
+        peer,
+<span class="fc" id="L144">        isDisconnected,</span>
+<span class="fc" id="L145">        caughtUpToPeer,</span>
+<span class="fc" id="L146">        shouldSwitchSyncTarget);</span>
+
+<span class="pc bpc" id="L148" title="3 of 8 branches missed.">    return !shouldTerminate &amp;&amp; !isDisconnected &amp;&amp; !caughtUpToPeer &amp;&amp; !shouldSwitchSyncTarget;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

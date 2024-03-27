@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastWorldStateDownloader.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate</a> &gt; <span class="el_source">FastWorldStateDownloader.java</span></div><h1>FastWorldStateDownloader.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncActions;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncState;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloader;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.services.tasks.InMemoryTasksPriorityQueues;
+
+import java.time.Clock;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FastWorldStateDownloader implements WorldStateDownloader {
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(FastWorldStateDownloader.class);</span>
+
+  private final long minMillisBeforeStalling;
+  private final Clock clock;
+  private final MetricsSystem metricsSystem;
+
+  private final EthContext ethContext;
+  private final InMemoryTasksPriorityQueues&lt;NodeDataRequest&gt; taskCollection;
+  private final int hashCountPerRequest;
+  private final int maxOutstandingRequests;
+  private final int maxNodeRequestsWithoutProgress;
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+
+<span class="fc" id="L53">  private final AtomicReference&lt;FastWorldDownloadState&gt; downloadState = new AtomicReference&lt;&gt;();</span>
+
+<span class="fc" id="L55">  private Optional&lt;CompleteTaskStep&gt; maybeCompleteTask = Optional.empty();</span>
+
+  public FastWorldStateDownloader(
+      final EthContext ethContext,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final InMemoryTasksPriorityQueues&lt;NodeDataRequest&gt; taskCollection,
+      final int hashCountPerRequest,
+      final int maxOutstandingRequests,
+      final int maxNodeRequestsWithoutProgress,
+      final long minMillisBeforeStalling,
+      final Clock clock,
+<span class="fc" id="L66">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L67">    this.ethContext = ethContext;</span>
+<span class="fc" id="L68">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L69">    this.taskCollection = taskCollection;</span>
+<span class="fc" id="L70">    this.hashCountPerRequest = hashCountPerRequest;</span>
+<span class="fc" id="L71">    this.maxOutstandingRequests = maxOutstandingRequests;</span>
+<span class="fc" id="L72">    this.maxNodeRequestsWithoutProgress = maxNodeRequestsWithoutProgress;</span>
+<span class="fc" id="L73">    this.minMillisBeforeStalling = minMillisBeforeStalling;</span>
+<span class="fc" id="L74">    this.clock = clock;</span>
+<span class="fc" id="L75">    this.metricsSystem = metricsSystem;</span>
+
+<span class="fc" id="L77">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;world_state_node_requests_since_last_progress_current&quot;,
+        &quot;Number of world state requests made since the last time new data was returned&quot;,
+<span class="fc" id="L81">        downloadStateValue(FastWorldDownloadState::getRequestsSinceLastProgress));</span>
+
+<span class="fc" id="L83">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;world_state_inflight_requests_current&quot;,
+        &quot;Number of in progress requests for world state data&quot;,
+<span class="fc" id="L87">        downloadStateValue(FastWorldDownloadState::getOutstandingTaskCount));</span>
+<span class="fc" id="L88">  }</span>
+
+  private IntSupplier downloadStateValue(final Function&lt;FastWorldDownloadState, Integer&gt; getter) {
+<span class="fc" id="L91">    return () -&gt; {</span>
+<span class="nc" id="L92">      final FastWorldDownloadState state = this.downloadState.get();</span>
+<span class="nc bnc" id="L93" title="All 2 branches missed.">      return state != null ? getter.apply(state) : 0;</span>
+    };
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; run(
+      final FastSyncActions fastSyncActions, final FastSyncState fastSyncState) {
+<span class="fc" id="L100">    synchronized (this) {</span>
+<span class="fc" id="L101">      final FastWorldDownloadState oldDownloadState = this.downloadState.get();</span>
+<span class="pc bpc" id="L102" title="3 of 4 branches missed.">      if (oldDownloadState != null &amp;&amp; oldDownloadState.isDownloading()) {</span>
+<span class="nc" id="L103">        final CompletableFuture&lt;Void&gt; failed = new CompletableFuture&lt;&gt;();</span>
+<span class="nc" id="L104">        failed.completeExceptionally(</span>
+            new IllegalStateException(
+<span class="nc" id="L106">                &quot;Cannot run an already running &quot; + this.getClass().getSimpleName()));</span>
+<span class="nc" id="L107">        return failed;</span>
+      }
+
+<span class="fc" id="L110">      Optional&lt;BlockHeader&gt; checkNull = Optional.of(fastSyncState.getPivotBlockHeader().get());</span>
+<span class="pc bpc" id="L111" title="1 of 2 branches missed.">      if (checkNull.isEmpty()) {</span>
+<span class="nc" id="L112">        LOG.error(&quot;Pivot Block not present&quot;);</span>
+<span class="nc" id="L113">        final CompletableFuture&lt;Void&gt; failed = new CompletableFuture&lt;&gt;();</span>
+<span class="nc" id="L114">        failed.completeExceptionally(new NullPointerException(&quot;Pivot Block not present&quot;));</span>
+<span class="nc" id="L115">        return failed;</span>
+      }
+
+<span class="fc" id="L118">      final BlockHeader header = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="fc" id="L119">      final Hash stateRoot = header.getStateRoot();</span>
+<span class="pc bpc" id="L120" title="1 of 2 branches missed.">      if (worldStateStorageCoordinator.isWorldStateAvailable(stateRoot, header.getHash())) {</span>
+<span class="nc" id="L121">        LOG.info(</span>
+            &quot;World state already available for block {} ({}). State root {}&quot;,
+<span class="nc" id="L123">            header.getNumber(),</span>
+<span class="nc" id="L124">            header.getHash(),</span>
+            stateRoot);
+<span class="nc" id="L126">        return CompletableFuture.completedFuture(null);</span>
+      }
+<span class="fc" id="L128">      LOG.info(</span>
+          &quot;Begin downloading world state from peers for block {} ({}). State root {}&quot;,
+<span class="fc" id="L130">          header.getNumber(),</span>
+<span class="fc" id="L131">          header.getHash(),</span>
+          stateRoot);
+
+<span class="fc" id="L134">      final FastWorldDownloadState newDownloadState =</span>
+          new FastWorldDownloadState(
+              worldStateStorageCoordinator,
+              taskCollection,
+              maxNodeRequestsWithoutProgress,
+              minMillisBeforeStalling,
+              clock);
+<span class="fc" id="L141">      this.downloadState.set(newDownloadState);</span>
+
+<span class="pc bpc" id="L143" title="1 of 2 branches missed.">      if (!newDownloadState.downloadWasResumed()) {</span>
+        // Only queue the root node if we're starting a new download from scratch
+<span class="fc" id="L145">        newDownloadState.enqueueRequest(</span>
+<span class="fc" id="L146">            NodeDataRequest.createAccountDataRequest(stateRoot, Optional.of(Bytes.EMPTY)));</span>
+      }
+
+<span class="fc" id="L149">      maybeCompleteTask = Optional.of(new CompleteTaskStep(metricsSystem, taskCollection::size));</span>
+      final FastWorldStateDownloadProcess downloadProcess =
+<span class="fc" id="L151">          FastWorldStateDownloadProcess.builder()</span>
+<span class="fc" id="L152">              .hashCountPerRequest(hashCountPerRequest)</span>
+<span class="fc" id="L153">              .maxOutstandingRequests(maxOutstandingRequests)</span>
+<span class="fc" id="L154">              .loadLocalDataStep(new LoadLocalDataStep(worldStateStorageCoordinator, metricsSystem))</span>
+<span class="fc" id="L155">              .requestDataStep(new RequestDataStep(ethContext, metricsSystem))</span>
+<span class="fc" id="L156">              .persistDataStep(new PersistDataStep(worldStateStorageCoordinator))</span>
+<span class="fc" id="L157">              .completeTaskStep(maybeCompleteTask.get())</span>
+<span class="fc" id="L158">              .downloadState(newDownloadState)</span>
+<span class="fc" id="L159">              .pivotBlockHeader(header)</span>
+<span class="fc" id="L160">              .metricsSystem(metricsSystem)</span>
+<span class="fc" id="L161">              .build();</span>
+
+<span class="fc" id="L163">      newDownloadState.setWorldStateDownloadProcess(downloadProcess);</span>
+
+<span class="fc" id="L165">      return newDownloadState.startDownload(downloadProcess, ethContext.getScheduler());</span>
+    }
+  }
+
+  @Override
+  public void cancel() {
+<span class="fc" id="L171">    synchronized (this) {</span>
+<span class="fc" id="L172">      final FastWorldDownloadState downloadState = this.downloadState.get();</span>
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">      if (downloadState != null) {</span>
+<span class="fc" id="L174">        downloadState.getDownloadFuture().cancel(true);</span>
+      }
+<span class="fc" id="L176">    }</span>
+<span class="fc" id="L177">  }</span>
+
+  @Override
+  public Optional&lt;Long&gt; getPulledStates() {
+<span class="fc" id="L181">    return maybeCompleteTask.map(CompleteTaskStep::getCompletedRequests);</span>
+  }
+
+  @Override
+  public Optional&lt;Long&gt; getKnownStates() {
+<span class="fc" id="L186">    return maybeCompleteTask.map(task -&gt; task.getCompletedRequests() + task.getPendingRequests());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

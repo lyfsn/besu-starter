@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RestrictedDefaultPrivacyController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">RestrictedDefaultPrivacyController.java</span></div><h1>RestrictedDefaultPrivacyController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.types.PrivacyGroup;
+import org.hyperledger.besu.enclave.types.SendResponse;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RestrictedDefaultPrivacyController extends AbstractRestrictedPrivacyController {
+
+<span class="fc" id="L37">  private static final Logger LOG =</span>
+<span class="fc" id="L38">      LoggerFactory.getLogger(RestrictedDefaultPrivacyController.class);</span>
+
+  public RestrictedDefaultPrivacyController(
+      final Blockchain blockchain,
+      final PrivacyParameters privacyParameters,
+      final Optional&lt;BigInteger&gt; chainId,
+      final PrivateTransactionSimulator privateTransactionSimulator,
+      final PrivateNonceProvider privateNonceProvider,
+      final PrivateWorldStateReader privateWorldStateReader) {
+<span class="fc" id="L47">    this(</span>
+        blockchain,
+<span class="fc" id="L49">        privacyParameters.getPrivateStateStorage(),</span>
+<span class="fc" id="L50">        privacyParameters.getEnclave(),</span>
+        new PrivateTransactionValidator(chainId),
+        privateTransactionSimulator,
+        privateNonceProvider,
+        privateWorldStateReader,
+<span class="fc" id="L55">        privacyParameters.getPrivateStateRootResolver());</span>
+<span class="fc" id="L56">  }</span>
+
+  public RestrictedDefaultPrivacyController(
+      final Blockchain blockchain,
+      final PrivateStateStorage privateStateStorage,
+      final Enclave enclave,
+      final PrivateTransactionValidator privateTransactionValidator,
+      final PrivateTransactionSimulator privateTransactionSimulator,
+      final PrivateNonceProvider privateNonceProvider,
+      final PrivateWorldStateReader privateWorldStateReader,
+      final PrivateStateRootResolver privateStateRootResolver) {
+<span class="fc" id="L67">    super(</span>
+        blockchain,
+        privateStateStorage,
+        enclave,
+        privateTransactionValidator,
+        privateTransactionSimulator,
+        privateNonceProvider,
+        privateWorldStateReader,
+        privateStateRootResolver);
+<span class="fc" id="L76">  }</span>
+
+  @Override
+  public String createPrivateMarkerTransactionPayload(
+      final PrivateTransaction privateTransaction,
+      final String privacyUserId,
+      final Optional&lt;PrivacyGroup&gt; maybePrivacyGroup) {
+<span class="fc" id="L83">    LOG.trace(&quot;Storing private transaction in enclave&quot;);</span>
+<span class="fc" id="L84">    final SendResponse sendResponse =</span>
+<span class="nc" id="L85">        sendRequest(privateTransaction, privacyUserId, maybePrivacyGroup);</span>
+<span class="nc" id="L86">    return sendResponse.getKey();</span>
+  }
+
+  @Override
+  public PrivacyGroup createPrivacyGroup(
+      final List&lt;String&gt; addresses,
+      final String name,
+      final String description,
+      final String privacyUserId) {
+<span class="fc" id="L95">    return enclave.createPrivacyGroup(addresses, privacyUserId, name, description);</span>
+  }
+
+  @Override
+  public String deletePrivacyGroup(final String privacyGroupId, final String privacyUserId) {
+<span class="fc" id="L100">    return enclave.deletePrivacyGroup(privacyGroupId, privacyUserId);</span>
+  }
+
+  @Override
+  public PrivacyGroup[] findPrivacyGroupByMembers(
+      final List&lt;String&gt; addresses, final String privacyUserId) {
+<span class="fc" id="L106">    return enclave.findPrivacyGroup(addresses);</span>
+  }
+
+  @Override
+  public Optional&lt;PrivacyGroup&gt; findPrivacyGroupByGroupId(
+      final String privacyGroupId, final String privacyUserId) {
+<span class="nc" id="L112">    return Optional.ofNullable(enclave.retrievePrivacyGroup(privacyGroupId));</span>
+  }
+
+  private SendResponse sendRequest(
+      final PrivateTransaction privateTransaction,
+      final String privacyUserId,
+      final Optional&lt;PrivacyGroup&gt; maybePrivacyGroup) {
+<span class="fc" id="L119">    final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+
+<span class="pc bpc" id="L121" title="1 of 2 branches missed.">    if (maybePrivacyGroup.isPresent()) {</span>
+<span class="nc" id="L122">      final PrivacyGroup privacyGroup = maybePrivacyGroup.get();</span>
+<span class="nc bnc" id="L123" title="All 2 branches missed.">      if (privacyGroup.getType() == PrivacyGroup.Type.PANTHEON) {</span>
+        // offchain privacy group
+<span class="nc" id="L125">        privateTransaction.writeTo(rlpOutput);</span>
+<span class="nc" id="L126">        return enclave.send(</span>
+<span class="nc" id="L127">            rlpOutput.encoded().toBase64String(),</span>
+            privacyUserId,
+<span class="nc" id="L129">            privateTransaction.getPrivacyGroupId().get().toBase64String());</span>
+      } else {
+        // this should not happen
+<span class="nc" id="L132">        throw new IllegalArgumentException(</span>
+            &quot;Wrong privacy group type &quot;
+<span class="nc" id="L134">                + privacyGroup.getType()</span>
+                + &quot; when &quot;
+                + PrivacyGroup.Type.PANTHEON
+                + &quot; was expected.&quot;);
+      }
+    }
+    // legacy transaction
+<span class="fc" id="L141">    final List&lt;String&gt; privateFor = resolveLegacyPrivateFor(privateTransaction);</span>
+<span class="pc bpc" id="L142" title="1 of 2 branches missed.">    if (privateFor.isEmpty()) {</span>
+<span class="nc" id="L143">      privateFor.add(privateTransaction.getPrivateFrom().toBase64String());</span>
+    }
+<span class="fc" id="L145">    privateTransaction.writeTo(rlpOutput);</span>
+<span class="fc" id="L146">    final String payload = rlpOutput.encoded().toBase64String();</span>
+
+<span class="nc" id="L148">    return enclave.send(payload, privateTransaction.getPrivateFrom().toBase64String(), privateFor);</span>
+  }
+
+  private List&lt;String&gt; resolveLegacyPrivateFor(final PrivateTransaction privateTransaction) {
+<span class="fc" id="L152">    final ArrayList&lt;String&gt; privateFor = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L153">    final boolean isLegacyTransaction = privateTransaction.getPrivateFor().isPresent();</span>
+<span class="pc bpc" id="L154" title="1 of 2 branches missed.">    if (isLegacyTransaction) {</span>
+<span class="fc" id="L155">      privateFor.addAll(</span>
+<span class="fc" id="L156">          privateTransaction.getPrivateFor().get().stream()</span>
+<span class="fc" id="L157">              .map(Bytes::toBase64String)</span>
+<span class="fc" id="L158">              .collect(Collectors.toList()));</span>
+    }
+<span class="fc" id="L160">    return privateFor;</span>
+  }
+
+  @Override
+  public void verifyPrivacyGroupContainsPrivacyUserId(
+      final String privacyGroupId, final String privacyUserId) {
+<span class="nc" id="L166">    final PrivacyGroup offchainPrivacyGroup = enclave.retrievePrivacyGroup(privacyGroupId);</span>
+<span class="nc bnc" id="L167" title="All 2 branches missed.">    if (!offchainPrivacyGroup.getMembers().contains(privacyUserId)) {</span>
+<span class="nc" id="L168">      throw new MultiTenancyValidationException(</span>
+          &quot;Privacy group must contain the enclave public key&quot;);
+    }
+<span class="nc" id="L171">  }</span>
+
+  @Override
+  public void verifyPrivacyGroupContainsPrivacyUserId(
+      final String privacyGroupId, final String privacyUserId, final Optional&lt;Long&gt; blockNumber) {
+<span class="nc" id="L176">    verifyPrivacyGroupContainsPrivacyUserId(privacyGroupId, privacyUserId);</span>
+<span class="nc" id="L177">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

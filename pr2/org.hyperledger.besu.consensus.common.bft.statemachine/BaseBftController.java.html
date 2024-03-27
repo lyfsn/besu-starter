@@ -1,0 +1,248 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BaseBftController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.bft.statemachine</a> &gt; <span class="el_source">BaseBftController.java</span></div><h1>BaseBftController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common.bft.statemachine;
+
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.Gossiper;
+import org.hyperledger.besu.consensus.common.bft.MessageTracker;
+import org.hyperledger.besu.consensus.common.bft.SynchronizerUpdater;
+import org.hyperledger.besu.consensus.common.bft.events.BftReceivedMessageEvent;
+import org.hyperledger.besu.consensus.common.bft.events.BlockTimerExpiry;
+import org.hyperledger.besu.consensus.common.bft.events.NewChainHead;
+import org.hyperledger.besu.consensus.common.bft.events.RoundExpiry;
+import org.hyperledger.besu.consensus.common.bft.messagewrappers.BftMessage;
+import org.hyperledger.besu.consensus.common.bft.payload.Authored;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Base bft controller. */
+public abstract class BaseBftController implements BftEventHandler {
+
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(BaseBftController.class);</span>
+  private final Blockchain blockchain;
+  private final BftFinalState bftFinalState;
+  private final FutureMessageBuffer futureMessageBuffer;
+  private final Gossiper gossiper;
+  private final MessageTracker duplicateMessageTracker;
+  private final SynchronizerUpdater sychronizerUpdater;
+
+<span class="fc" id="L49">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+
+  /**
+   * Instantiates a new Base bft controller.
+   *
+   * @param blockchain the blockchain
+   * @param bftFinalState the bft final state
+   * @param gossiper the gossiper
+   * @param duplicateMessageTracker the duplicate message tracker
+   * @param futureMessageBuffer the future message buffer
+   * @param sychronizerUpdater the synchronizer updater
+   */
+  protected BaseBftController(
+      final Blockchain blockchain,
+      final BftFinalState bftFinalState,
+      final Gossiper gossiper,
+      final MessageTracker duplicateMessageTracker,
+      final FutureMessageBuffer futureMessageBuffer,
+<span class="fc" id="L67">      final SynchronizerUpdater sychronizerUpdater) {</span>
+<span class="fc" id="L68">    this.blockchain = blockchain;</span>
+<span class="fc" id="L69">    this.bftFinalState = bftFinalState;</span>
+<span class="fc" id="L70">    this.futureMessageBuffer = futureMessageBuffer;</span>
+<span class="fc" id="L71">    this.gossiper = gossiper;</span>
+<span class="fc" id="L72">    this.duplicateMessageTracker = duplicateMessageTracker;</span>
+<span class="fc" id="L73">    this.sychronizerUpdater = sychronizerUpdater;</span>
+<span class="fc" id="L74">  }</span>
+
+  @Override
+  public void start() {
+<span class="pc bpc" id="L78" title="1 of 2 branches missed.">    if (started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L79">      startNewHeightManager(blockchain.getChainHeadHeader());</span>
+    }
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public void handleMessageEvent(final BftReceivedMessageEvent msg) {
+<span class="fc" id="L85">    final MessageData data = msg.getMessage().getData();</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">    if (!duplicateMessageTracker.hasSeenMessage(data)) {</span>
+<span class="fc" id="L87">      duplicateMessageTracker.addSeenMessage(data);</span>
+<span class="fc" id="L88">      handleMessage(msg.getMessage());</span>
+    } else {
+<span class="fc" id="L90">      LOG.trace(&quot;Discarded duplicate message&quot;);</span>
+    }
+<span class="fc" id="L92">  }</span>
+
+  /**
+   * Handle message.
+   *
+   * @param message the message
+   */
+  protected abstract void handleMessage(final Message message);
+
+  /**
+   * Consume message.
+   *
+   * @param &lt;P&gt; the type parameter of BftMessage
+   * @param message the message
+   * @param bftMessage the bft message
+   * @param handleMessage the handle message
+   */
+  protected &lt;P extends BftMessage&lt;?&gt;&gt; void consumeMessage(
+      final Message message, final P bftMessage, final Consumer&lt;P&gt; handleMessage) {
+<span class="fc" id="L111">    LOG.trace(&quot;Received BFT {} message&quot;, bftMessage.getClass().getSimpleName());</span>
+
+    // Discard all messages which target the BLOCKCHAIN height (which SHOULD be 1 less than
+    // the currentHeightManager, but CAN be the same directly following import).
+<span class="fc" id="L115">    if (bftMessage.getRoundIdentifier().getSequenceNumber()</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">        &lt;= blockchain.getChainHeadBlockNumber()) {</span>
+<span class="fc" id="L117">      LOG.debug(</span>
+          &quot;Discarding a message which targets a height {} not above current chain height {}.&quot;,
+<span class="fc" id="L119">          bftMessage.getRoundIdentifier().getSequenceNumber(),</span>
+<span class="fc" id="L120">          blockchain.getChainHeadBlockNumber());</span>
+<span class="fc" id="L121">      return;</span>
+    }
+
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    if (processMessage(bftMessage, message)) {</span>
+<span class="fc" id="L125">      gossiper.send(message);</span>
+<span class="fc" id="L126">      handleMessage.accept(bftMessage);</span>
+    }
+<span class="fc" id="L128">  }</span>
+
+  @Override
+  public void handleNewBlockEvent(final NewChainHead newChainHead) {
+<span class="fc" id="L132">    final BlockHeader newBlockHeader = newChainHead.getNewChainHeadHeader();</span>
+<span class="fc" id="L133">    final BlockHeader currentMiningParent = getCurrentHeightManager().getParentBlockHeader();</span>
+<span class="fc" id="L134">    LOG.debug(</span>
+        &quot;New chain head detected (block number={}),&quot; + &quot; currently mining on top of {}.&quot;,
+<span class="fc" id="L136">        newBlockHeader.getNumber(),</span>
+<span class="fc" id="L137">        currentMiningParent.getNumber());</span>
+<span class="fc bfc" id="L138" title="All 2 branches covered.">    if (newBlockHeader.getNumber() &lt; currentMiningParent.getNumber()) {</span>
+<span class="fc" id="L139">      LOG.trace(</span>
+          &quot;Discarding NewChainHead event, was for previous block height. chainHeight={} eventHeight={}&quot;,
+<span class="fc" id="L141">          currentMiningParent.getNumber(),</span>
+<span class="fc" id="L142">          newBlockHeader.getNumber());</span>
+<span class="fc" id="L143">      return;</span>
+    }
+
+<span class="fc bfc" id="L146" title="All 2 branches covered.">    if (newBlockHeader.getNumber() == currentMiningParent.getNumber()) {</span>
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">      if (newBlockHeader.getHash().equals(currentMiningParent.getHash())) {</span>
+<span class="fc" id="L148">        LOG.trace(</span>
+            &quot;Discarding duplicate NewChainHead event. chainHeight={} newBlockHash={} parentBlockHash={}&quot;,
+<span class="fc" id="L150">            newBlockHeader.getNumber(),</span>
+<span class="fc" id="L151">            newBlockHeader.getHash(),</span>
+<span class="fc" id="L152">            currentMiningParent.getHash());</span>
+      } else {
+<span class="nc" id="L154">        LOG.error(</span>
+            &quot;Subsequent NewChainHead event at same block height indicates chain fork. chainHeight={}&quot;,
+<span class="nc" id="L156">            currentMiningParent.getNumber());</span>
+      }
+<span class="fc" id="L158">      return;</span>
+    }
+<span class="fc" id="L160">    startNewHeightManager(newBlockHeader);</span>
+<span class="fc" id="L161">  }</span>
+
+  @Override
+  public void handleBlockTimerExpiry(final BlockTimerExpiry blockTimerExpiry) {
+<span class="fc" id="L165">    final ConsensusRoundIdentifier roundIndentifier = blockTimerExpiry.getRoundIndentifier();</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    if (isMsgForCurrentHeight(roundIndentifier)) {</span>
+<span class="fc" id="L167">      getCurrentHeightManager().handleBlockTimerExpiry(roundIndentifier);</span>
+    } else {
+<span class="fc" id="L169">      LOG.trace(</span>
+          &quot;Block timer event discarded as it is not for current block height chainHeight={} eventHeight={}&quot;,
+<span class="fc" id="L171">          getCurrentHeightManager().getChainHeight(),</span>
+<span class="fc" id="L172">          roundIndentifier.getSequenceNumber());</span>
+    }
+<span class="fc" id="L174">  }</span>
+
+  @Override
+  public void handleRoundExpiry(final RoundExpiry roundExpiry) {
+    // Discard all messages which target the BLOCKCHAIN height (which SHOULD be 1 less than
+    // the currentHeightManager, but CAN be the same directly following import).
+<span class="fc bfc" id="L180" title="All 2 branches covered.">    if (roundExpiry.getView().getSequenceNumber() &lt;= blockchain.getChainHeadBlockNumber()) {</span>
+<span class="fc" id="L181">      LOG.debug(&quot;Discarding a round-expiry which targets a height not above current chain height.&quot;);</span>
+<span class="fc" id="L182">      return;</span>
+    }
+
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">    if (isMsgForCurrentHeight(roundExpiry.getView())) {</span>
+<span class="fc" id="L186">      getCurrentHeightManager().roundExpired(roundExpiry);</span>
+    } else {
+<span class="nc" id="L188">      LOG.trace(</span>
+          &quot;Round expiry event discarded as it is not for current block height chainHeight={} eventHeight={}&quot;,
+<span class="nc" id="L190">          getCurrentHeightManager().getChainHeight(),</span>
+<span class="nc" id="L191">          roundExpiry.getView().getSequenceNumber());</span>
+    }
+<span class="fc" id="L193">  }</span>
+
+  /**
+   * Create new height manager.
+   *
+   * @param parentHeader the parent header
+   */
+  protected abstract void createNewHeightManager(final BlockHeader parentHeader);
+
+  /**
+   * Gets current height manager.
+   *
+   * @return the current height manager
+   */
+  protected abstract BaseBlockHeightManager getCurrentHeightManager();
+
+  private void startNewHeightManager(final BlockHeader parentHeader) {
+<span class="fc" id="L210">    createNewHeightManager(parentHeader);</span>
+<span class="fc" id="L211">    final long newChainHeight = getCurrentHeightManager().getChainHeight();</span>
+<span class="fc" id="L212">    futureMessageBuffer.retrieveMessagesForHeight(newChainHeight).forEach(this::handleMessage);</span>
+<span class="fc" id="L213">  }</span>
+
+  private boolean processMessage(final BftMessage&lt;?&gt; msg, final Message rawMsg) {
+<span class="fc" id="L216">    final ConsensusRoundIdentifier msgRoundIdentifier = msg.getRoundIdentifier();</span>
+<span class="fc bfc" id="L217" title="All 2 branches covered.">    if (isMsgForCurrentHeight(msgRoundIdentifier)) {</span>
+<span class="pc bpc" id="L218" title="1 of 4 branches missed.">      return isMsgFromKnownValidator(msg) &amp;&amp; bftFinalState.isLocalNodeValidator();</span>
+<span class="pc bpc" id="L219" title="1 of 2 branches missed.">    } else if (isMsgForFutureChainHeight(msgRoundIdentifier)) {</span>
+<span class="fc" id="L220">      LOG.trace(&quot;Received message for future block height round={}&quot;, msgRoundIdentifier);</span>
+<span class="fc" id="L221">      futureMessageBuffer.addMessage(msgRoundIdentifier.getSequenceNumber(), rawMsg);</span>
+      // Notify the synchronizer the transmitting peer must have the parent block to the received
+      // message's target height.
+<span class="fc" id="L224">      sychronizerUpdater.updatePeerChainState(</span>
+<span class="fc" id="L225">          msgRoundIdentifier.getSequenceNumber() - 1L, rawMsg.getConnection());</span>
+    } else {
+<span class="nc" id="L227">      LOG.trace(</span>
+          &quot;BFT message discarded as it is from a previous block height messageType={} chainHeight={} eventHeight={}&quot;,
+<span class="nc" id="L229">          msg.getMessageType(),</span>
+<span class="nc" id="L230">          getCurrentHeightManager().getChainHeight(),</span>
+<span class="nc" id="L231">          msgRoundIdentifier.getSequenceNumber());</span>
+    }
+<span class="fc" id="L233">    return false;</span>
+  }
+
+  private boolean isMsgFromKnownValidator(final Authored msg) {
+<span class="fc" id="L237">    return bftFinalState.getValidators().contains(msg.getAuthor());</span>
+  }
+
+  private boolean isMsgForCurrentHeight(final ConsensusRoundIdentifier roundIdentifier) {
+<span class="fc bfc" id="L241" title="All 2 branches covered.">    return roundIdentifier.getSequenceNumber() == getCurrentHeightManager().getChainHeight();</span>
+  }
+
+  private boolean isMsgForFutureChainHeight(final ConsensusRoundIdentifier roundIdentifier) {
+<span class="pc bpc" id="L245" title="1 of 2 branches missed.">    return roundIdentifier.getSequenceNumber() &gt; getCurrentHeightManager().getChainHeight();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Stratum1Protocol.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.stratum</a> &gt; <span class="el_source">Stratum1Protocol.java</span></div><h1>Stratum1Protocol.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.stratum;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequest;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.blockcreation.PoWMiningCoordinator;
+import org.hyperledger.besu.ethereum.mainnet.DirectAcyclicGraphSeed;
+import org.hyperledger.besu.ethereum.mainnet.EpochCalculator;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolution;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolverInputs;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Random;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.json.DecodeException;
+import io.vertx.core.json.JsonObject;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Implementation of the stratum+tcp protocol.
+ *
+ * &lt;p&gt;This protocol allows miners to submit EthHash solutions over a persistent TCP connection.
+ */
+public class Stratum1Protocol implements StratumProtocol {
+<span class="fc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(Stratum1Protocol.class);</span>
+<span class="fc" id="L52">  private static final JsonMapper mapper = new JsonMapper();</span>
+  private static final String STRATUM_1 = &quot;EthereumStratum/1.0.0&quot;;
+
+  private static String createSubscriptionID() {
+<span class="nc" id="L56">    byte[] subscriptionBytes = new byte[16];</span>
+<span class="nc" id="L57">    new Random().nextBytes(subscriptionBytes);</span>
+<span class="nc" id="L58">    return Bytes.wrap(subscriptionBytes).toShortHexString();</span>
+  }
+
+  private final MiningCoordinator miningCoordinator;
+  private final String extranonce;
+  private PoWSolverInputs currentInput;
+  private Function&lt;PoWSolution, Boolean&gt; submitCallback;
+  private final Supplier&lt;String&gt; jobIdSupplier;
+  private final Supplier&lt;String&gt; subscriptionIdCreator;
+<span class="fc" id="L67">  private final List&lt;StratumConnection&gt; activeConnections = new ArrayList&lt;&gt;();</span>
+  private final EpochCalculator epochCalculator;
+
+  public Stratum1Protocol(final String extranonce, final PoWMiningCoordinator miningCoordinator) {
+<span class="fc" id="L71">    this(</span>
+        extranonce,
+        miningCoordinator,
+        () -&gt; {
+<span class="nc" id="L75">          Bytes timeValue = Bytes.minimalBytes(Instant.now().toEpochMilli());</span>
+<span class="nc" id="L76">          return timeValue.slice(timeValue.size() - 4, 4).toShortHexString();</span>
+        },
+        Stratum1Protocol::createSubscriptionID);
+<span class="fc" id="L79">  }</span>
+
+  Stratum1Protocol(
+      final String extranonce,
+      final PoWMiningCoordinator miningCoordinator,
+      final Supplier&lt;String&gt; jobIdSupplier,
+<span class="fc" id="L85">      final Supplier&lt;String&gt; subscriptionIdCreator) {</span>
+<span class="fc" id="L86">    this.extranonce = extranonce;</span>
+<span class="fc" id="L87">    this.miningCoordinator = miningCoordinator;</span>
+<span class="fc" id="L88">    this.jobIdSupplier = jobIdSupplier;</span>
+<span class="fc" id="L89">    this.subscriptionIdCreator = subscriptionIdCreator;</span>
+<span class="fc" id="L90">    this.epochCalculator = miningCoordinator.getEpochCalculator();</span>
+<span class="fc" id="L91">  }</span>
+
+  @Override
+  public boolean maybeHandle(
+      final Buffer initialMessage, final StratumConnection conn, final Consumer&lt;String&gt; sender) {
+    final JsonRpcRequest requestBody;
+    try {
+<span class="fc" id="L98">      requestBody = new JsonObject(initialMessage).mapTo(JsonRpcRequest.class);</span>
+<span class="fc" id="L99">    } catch (IllegalArgumentException | DecodeException e) {</span>
+<span class="fc" id="L100">      LOG.debug(e.getMessage(), e);</span>
+<span class="fc" id="L101">      return false;</span>
+<span class="fc" id="L102">    }</span>
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (!&quot;mining.subscribe&quot;.equals(requestBody.getMethod())) {</span>
+<span class="fc" id="L104">      LOG.debug(&quot;Invalid first message method: {}&quot;, requestBody.getMethod());</span>
+<span class="fc" id="L105">      return false;</span>
+    }
+    try {
+<span class="fc" id="L108">      String notify =</span>
+<span class="fc" id="L109">          mapper.writeValueAsString(</span>
+              new JsonRpcSuccessResponse(
+<span class="fc" id="L111">                  requestBody.getId(),</span>
+                  new Object[] {
+                    new String[] {
+                      &quot;mining.notify&quot;,
+<span class="fc" id="L115">                      subscriptionIdCreator.get(), // subscription ID, never reused.</span>
+                      STRATUM_1
+                    },
+                    extranonce
+                  }));
+<span class="fc" id="L120">      sender.accept(notify);</span>
+<span class="nc" id="L121">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L122">      LOG.debug(e.getMessage(), e);</span>
+<span class="nc" id="L123">      conn.close();</span>
+<span class="fc" id="L124">    }</span>
+<span class="fc" id="L125">    return true;</span>
+  }
+
+  private void registerConnection(final StratumConnection conn, final Consumer&lt;String&gt; sender) {
+<span class="fc" id="L129">    activeConnections.add(conn);</span>
+<span class="pc bpc" id="L130" title="1 of 2 branches missed.">    if (currentInput != null) {</span>
+<span class="nc" id="L131">      sendNewWork(sender);</span>
+    }
+<span class="fc" id="L133">  }</span>
+
+  private void sendNewWork(final Consumer&lt;String&gt; sender) {
+<span class="fc" id="L136">    byte[] dagSeed = DirectAcyclicGraphSeed.dagSeed(currentInput.getBlockNumber(), epochCalculator);</span>
+<span class="fc" id="L137">    Object[] params =</span>
+        new Object[] {
+<span class="fc" id="L139">          jobIdSupplier.get(),</span>
+<span class="fc" id="L140">          Bytes.wrap(currentInput.getPrePowHash()).toHexString(),</span>
+<span class="fc" id="L141">          Bytes.wrap(dagSeed).toHexString(),</span>
+<span class="fc" id="L142">          currentInput.getTarget().toHexString(),</span>
+<span class="fc" id="L143">          true</span>
+        };
+<span class="fc" id="L145">    JsonRpcRequest req = new JsonRpcRequest(&quot;2.0&quot;, &quot;mining.notify&quot;, params);</span>
+    try {
+<span class="fc" id="L147">      sender.accept(mapper.writeValueAsString(req));</span>
+<span class="nc" id="L148">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L149">      throw new IllegalStateException(e);</span>
+<span class="fc" id="L150">    }</span>
+<span class="fc" id="L151">  }</span>
+
+  @Override
+  public void onClose(final StratumConnection conn) {
+<span class="nc" id="L155">    activeConnections.remove(conn);</span>
+<span class="nc" id="L156">  }</span>
+
+  @Override
+  public void handle(
+      final StratumConnection conn, final Buffer message, final Consumer&lt;String&gt; sender) {
+<span class="fc" id="L161">    JsonRpcRequest req = new JsonObject(message).mapTo(JsonRpcRequest.class);</span>
+<span class="fc bfc" id="L162" title="All 2 branches covered.">    if (&quot;mining.authorize&quot;.equals(req.getMethod())) {</span>
+<span class="fc" id="L163">      handleMiningAuthorize(conn, req, sender);</span>
+<span class="pc bpc" id="L164" title="1 of 2 branches missed.">    } else if (&quot;mining.submit&quot;.equals(req.getMethod())) {</span>
+<span class="nc" id="L165">      handleMiningSubmit(req, sender);</span>
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    } else if (RpcMethod.ETH_SUBMIT_HASHRATE.getMethodName().equals(req.getMethod())) {</span>
+<span class="fc" id="L167">      handleHashrateSubmit(mapper, miningCoordinator, conn, req, sender);</span>
+    }
+<span class="fc" id="L169">  }</span>
+
+  private void handleMiningSubmit(final JsonRpcRequest message, final Consumer&lt;String&gt; sender) {
+<span class="nc" id="L172">    LOG.debug(&quot;Miner submitted solution {}&quot;, message);</span>
+<span class="nc" id="L173">    boolean result = false;</span>
+<span class="nc" id="L174">    final PoWSolution solution =</span>
+        new PoWSolution(
+<span class="nc" id="L176">            Bytes.fromHexString(message.getRequiredParameter(2, String.class)).getLong(0),</span>
+<span class="nc" id="L177">            Hash.fromHexString(message.getRequiredParameter(4, String.class)),</span>
+            null,
+<span class="nc" id="L179">            Bytes.fromHexString(message.getRequiredParameter(3, String.class)));</span>
+<span class="nc bnc" id="L180" title="All 2 branches missed.">    if (currentInput.getPrePowHash().equals(solution.getPowHash())) {</span>
+<span class="nc" id="L181">      result = submitCallback.apply(solution);</span>
+    }
+
+    String response;
+    try {
+<span class="nc" id="L186">      response = mapper.writeValueAsString(new JsonRpcSuccessResponse(message.getId(), result));</span>
+<span class="nc" id="L187">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L188">      throw new IllegalStateException(e);</span>
+<span class="nc" id="L189">    }</span>
+<span class="nc" id="L190">    sender.accept(response);</span>
+<span class="nc" id="L191">  }</span>
+
+  private void handleMiningAuthorize(
+      final StratumConnection conn, final JsonRpcRequest message, final Consumer&lt;String&gt; sender) {
+    // discard message contents as we don't care for username/password.
+    // send confirmation
+    String confirm;
+    try {
+<span class="fc" id="L199">      confirm = mapper.writeValueAsString(new JsonRpcSuccessResponse(message.getId(), true));</span>
+<span class="nc" id="L200">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L201">      throw new IllegalStateException(e);</span>
+<span class="fc" id="L202">    }</span>
+<span class="fc" id="L203">    sender.accept(confirm);</span>
+    // ready for work.
+<span class="fc" id="L205">    registerConnection(conn, sender);</span>
+<span class="fc" id="L206">  }</span>
+
+  @Override
+  public void setCurrentWorkTask(final PoWSolverInputs input) {
+<span class="fc" id="L210">    this.currentInput = input;</span>
+<span class="fc" id="L211">    LOG.debug(&quot;Sending new work to miners: {}&quot;, input);</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">    for (StratumConnection conn : activeConnections) {</span>
+<span class="fc" id="L213">      sendNewWork(conn.notificationSender());</span>
+<span class="fc" id="L214">    }</span>
+<span class="fc" id="L215">  }</span>
+
+  @Override
+  public void setSubmitCallback(final Function&lt;PoWSolution, Boolean&gt; submitSolutionCallback) {
+<span class="nc" id="L219">    this.submitCallback = submitSolutionCallback;</span>
+<span class="nc" id="L220">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

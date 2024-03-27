@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RetestethSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands</a> &gt; <span class="el_source">RetestethSubCommand.java</span></div><h1>RetestethSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.subcommands;
+
+import static org.hyperledger.besu.cli.subcommands.RetestethSubCommand.COMMAND_NAME;
+
+import org.hyperledger.besu.BesuInfo;
+import org.hyperledger.besu.cli.DefaultCommandValues;
+import org.hyperledger.besu.cli.custom.JsonRPCAllowlistHostsProperty;
+import org.hyperledger.besu.cli.options.stable.LoggingLevelOption;
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration;
+import org.hyperledger.besu.ethereum.retesteth.RetestethConfiguration;
+import org.hyperledger.besu.ethereum.retesteth.RetestethService;
+import org.hyperledger.besu.util.LogConfigurator;
+
+import java.net.InetAddress;
+import java.nio.file.Path;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
+
+/** Subcommand to run a Retesteth compatible server for reference tests. */
+@Command(
+    name = COMMAND_NAME,
+    description = &quot;Run a Retesteth compatible server for reference tests.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+@SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L45">public class RetestethSubCommand implements Runnable {</span>
+
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(RetestethSubCommand.class);</span>
+
+  /** The constant COMMAND_NAME. */
+  public static final String COMMAND_NAME = &quot;retesteth&quot;;
+
+  /**
+   * Using a distinct port for retesteth will result in less testing collisions and accidental RPC
+   * calls. This is &lt;code&gt;0xba5e&lt;/code&gt; in hex, a hex speak play on the english translation of
+   * &quot;Besu.&quot;
+   */
+  public static final int RETESTETH_PORT = 47710;
+
+<span class="fc" id="L59">  @Option(</span>
+      names = {&quot;--data-path&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;The path to Besu data directory (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L63">  private final Path dataPath = DefaultCommandValues.getDefaultBesuDataPath(this);</span>
+
+  @Mixin private LoggingLevelOption loggingLevelOption;
+
+<span class="fc" id="L67">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @Option(
+      names = {&quot;--rpc-http-host&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_HOST_FORMAT_HELP,
+      description = &quot;Host for Retesteth JSON-RPC HTTP to listen on (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L73">  private String rpcHttpHost = autoDiscoverDefaultIP().getHostAddress();</span>
+
+<span class="fc" id="L75">  @Option(</span>
+      names = {&quot;--rpc-http-port&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_PORT_FORMAT_HELP,
+      description = &quot;Port for Retesteth JSON-RPC HTTP to listen on (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L80">  private final Integer rpcHttpPort = RETESTETH_PORT;</span>
+
+<span class="fc" id="L82">  @Option(</span>
+      names = {&quot;--host-allowlist&quot;, &quot;--host-whitelist&quot;},
+      paramLabel = &quot;&lt;hostname&gt;[,&lt;hostname&gt;...]... or * or all&quot;,
+      description =
+          &quot;Comma separated list of hostnames to allow for RPC access, or * to accept any host (default: ${DEFAULT-VALUE})&quot;,
+      defaultValue = &quot;localhost,127.0.0.1&quot;)
+  private final JsonRPCAllowlistHostsProperty hostsAllowlist = new JsonRPCAllowlistHostsProperty();
+
+  private InetAddress autoDiscoveredDefaultIP;
+
+  // Used to discover the default IP of the client.
+  // Loopback IP is used by default as this is how smokeTests require it to be
+  // and it's probably a good security behaviour to default only on the localhost.
+  private InetAddress autoDiscoverDefaultIP() {
+
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">    if (autoDiscoveredDefaultIP != null) {</span>
+<span class="nc" id="L98">      return autoDiscoveredDefaultIP;</span>
+    }
+
+<span class="fc" id="L101">    autoDiscoveredDefaultIP = InetAddress.getLoopbackAddress();</span>
+
+<span class="fc" id="L103">    return autoDiscoveredDefaultIP;</span>
+  }
+
+  private void prepareLogging() {
+    // set log level per CLI flags
+<span class="nc" id="L108">    final String logLevel = loggingLevelOption.getLogLevel();</span>
+<span class="nc bnc" id="L109" title="All 2 branches missed.">    if (logLevel != null) {</span>
+<span class="nc" id="L110">      System.out.println(&quot;Setting logging level to &quot; + logLevel);</span>
+<span class="nc" id="L111">      LogConfigurator.setLevel(&quot;&quot;, logLevel);</span>
+    }
+<span class="nc" id="L113">  }</span>
+
+  @Override
+  public void run() {
+<span class="nc" id="L117">    prepareLogging();</span>
+
+<span class="nc" id="L119">    final RetestethConfiguration retestethConfiguration = new RetestethConfiguration(dataPath);</span>
+<span class="nc" id="L120">    final JsonRpcConfiguration jsonRpcConfiguration = JsonRpcConfiguration.createDefault();</span>
+<span class="nc" id="L121">    jsonRpcConfiguration.setHost(rpcHttpHost);</span>
+<span class="nc" id="L122">    jsonRpcConfiguration.setPort(rpcHttpPort);</span>
+<span class="nc" id="L123">    jsonRpcConfiguration.setHostsAllowlist(hostsAllowlist);</span>
+
+<span class="nc" id="L125">    final RetestethService retestethService =</span>
+<span class="nc" id="L126">        new RetestethService(BesuInfo.version(), retestethConfiguration, jsonRpcConfiguration);</span>
+
+<span class="nc" id="L128">    Runtime.getRuntime()</span>
+<span class="nc" id="L129">        .addShutdownHook(</span>
+            new Thread(
+                () -&gt; {
+                  try {
+<span class="nc" id="L133">                    retestethService.close();</span>
+<span class="nc" id="L134">                    LogConfigurator.shutdown();</span>
+<span class="nc" id="L135">                  } catch (final Exception e) {</span>
+<span class="nc" id="L136">                    LOG.error(&quot;Failed to stop Besu Retesteth&quot;);</span>
+<span class="nc" id="L137">                  }</span>
+<span class="nc" id="L138">                }));</span>
+<span class="nc" id="L139">    retestethService.start();</span>
+    try {
+<span class="nc" id="L141">      Thread.sleep(Long.MAX_VALUE); // Is there a better way?</span>
+<span class="nc" id="L142">    } catch (final InterruptedException e) {</span>
+      // e.printStackTrace();
+<span class="nc" id="L144">    }</span>
+<span class="nc" id="L145">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

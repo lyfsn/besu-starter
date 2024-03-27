@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>B11rSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evmtool</a> &gt; <span class="el_source">B11rSubCommand.java</span></div><h1>B11rSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evmtool;
+
+import static org.hyperledger.besu.evmtool.B11rSubCommand.COMMAND_ALIAS;
+import static org.hyperledger.besu.evmtool.B11rSubCommand.COMMAND_NAME;
+
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.ethereum.core.BlockHeaderBuilder;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.referencetests.BlockchainReferenceTestCaseSpec.ReferenceTestBlockHeader;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.util.LogConfigurator;
+
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Stack;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.tuweni.bytes.Bytes;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.IParameterConsumer;
+import picocli.CommandLine.Model.ArgSpec;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+import picocli.CommandLine.ParentCommand;
+
+@Command(
+    name = COMMAND_NAME,
+    aliases = {COMMAND_ALIAS},
+    description = &quot;Execute an Ethereum State Test.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+public class B11rSubCommand implements Runnable {
+  static final String COMMAND_NAME = &quot;block-builder&quot;;
+  static final String COMMAND_ALIAS = &quot;b11r&quot;;
+<span class="fc" id="L65">  private static final Path stdoutPath = Path.of(&quot;stdout&quot;);</span>
+<span class="fc" id="L66">  private static final Path stdinPath = Path.of(&quot;stdin&quot;);</span>
+
+<span class="pc" id="L68">  @Option(</span>
+      names = {&quot;--input.header&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The block header for the block&quot;)
+  private final Path header = stdinPath;
+
+<span class="pc" id="L74">  @Option(</span>
+      names = {&quot;--input.txs&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The transactions to block&quot;)
+  private final Path txs = stdinPath;
+
+<span class="pc" id="L80">  @Option(</span>
+      names = {&quot;--input.ommers&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The ommers for the block&quot;)
+  private final Path ommers = stdinPath;
+
+<span class="pc" id="L86">  @Option(</span>
+      names = {&quot;--input.withdrawals&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The withdrawals for the block&quot;)
+  private final Path withdrawals = stdinPath;
+
+<span class="pc" id="L92">  @Option(</span>
+      names = {&quot;--seal.clique&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The clique seal/signature for the block&quot;)
+  private final Path sealClique = stdinPath;
+
+<span class="pc" id="L98">  @SuppressWarnings(&quot;UnusedVariable&quot;)</span>
+  @Option(
+      names = {&quot;--seal.ethash&quot;},
+      description = &quot;Use Proof of Work to seal the block&quot;)
+<span class="pc" id="L102">  private final Boolean sealEthash = false;</span>
+
+<span class="pc" id="L104">  @SuppressWarnings(&quot;UnusedVariable&quot;)</span>
+  @Option(
+      names = {&quot;--seal.ethash.mode&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The ethash mode for the block&quot;)
+  private String sealEthashMode = &quot;noproof&quot;;
+
+<span class="pc" id="L111">  @Option(</span>
+      names = {&quot;--output.basedir&quot;},
+      paramLabel = &quot;full path&quot;,
+      description = &quot;The output &quot;)
+<span class="pc" id="L115">  private final Path outDir = Path.of(&quot;.&quot;);</span>
+
+<span class="pc" id="L117">  @Option(</span>
+      names = {&quot;--output.block&quot;},
+      paramLabel = &quot;file name&quot;,
+      description = &quot;The account state after the transition&quot;)
+<span class="pc" id="L121">  private final Path outBlock = Path.of(&quot;block.json&quot;);</span>
+
+  @ParentCommand private final EvmToolCommand parentCommand;
+
+<span class="pc" id="L125">  @Parameters(parameterConsumer = OnlyEmptyParams.class)</span>
+  @SuppressWarnings(&quot;UnusedVariable&quot;)
+  private final List&lt;String&gt; parameters = new ArrayList&lt;&gt;();
+
+<span class="fc" id="L129">  static class OnlyEmptyParams implements IParameterConsumer {</span>
+    @Override
+    public void consumeParameters(
+        final Stack&lt;String&gt; args, final ArgSpec argSpec, final CommandSpec commandSpec) {
+<span class="nc bnc" id="L133" title="All 2 branches missed.">      while (!args.isEmpty()) {</span>
+<span class="nc bnc" id="L134" title="All 2 branches missed.">        if (!args.pop().isEmpty()) {</span>
+<span class="nc" id="L135">          throw new CommandLine.ParameterException(</span>
+<span class="nc" id="L136">              argSpec.command().commandLine(),</span>
+              &quot;The block-builder command does not accept any non-empty parameters&quot;);
+        }
+      }
+<span class="nc" id="L140">    }</span>
+  }
+
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L144">  public B11rSubCommand() {</span>
+    // PicoCLI requires this
+<span class="fc" id="L146">    parentCommand = null;</span>
+<span class="fc" id="L147">  }</span>
+
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="nc" id="L150">  public B11rSubCommand(final EvmToolCommand parentCommand) {</span>
+    // PicoCLI requires this too
+<span class="nc" id="L152">    this.parentCommand = parentCommand;</span>
+<span class="nc" id="L153">  }</span>
+
+  @Override
+  public void run() {
+<span class="fc" id="L157">    LogConfigurator.setLevel(&quot;&quot;, &quot;OFF&quot;);</span>
+    // presume ethereum mainnet for reference and state tests
+<span class="fc" id="L159">    SignatureAlgorithmFactory.setDefaultInstance();</span>
+<span class="fc" id="L160">    ObjectMapper objectMapper = JsonUtils.createObjectMapper();</span>
+<span class="fc" id="L161">    final ObjectReader b11rReader = objectMapper.reader();</span>
+
+    ObjectNode config;
+    try {
+<span class="pc bpc" id="L165" title="1 of 2 branches missed.">      if (header.equals(stdinPath)</span>
+<span class="nc bnc" id="L166" title="All 2 branches missed.">          || txs.equals(stdinPath)</span>
+<span class="nc bnc" id="L167" title="All 2 branches missed.">          || ommers.equals(stdinPath)</span>
+<span class="nc bnc" id="L168" title="All 2 branches missed.">          || sealClique.equals(stdinPath)</span>
+<span class="nc bnc" id="L169" title="All 2 branches missed.">          || withdrawals.equals(stdinPath)) {</span>
+<span class="fc" id="L170">        config =</span>
+            (ObjectNode)
+<span class="fc" id="L172">                b11rReader.readTree(</span>
+                    new InputStreamReader(parentCommand.in, StandardCharsets.UTF_8));
+      } else {
+<span class="nc" id="L175">        config = objectMapper.createObjectNode();</span>
+      }
+
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">      if (!header.equals(stdinPath)) {</span>
+<span class="nc" id="L179">        try (FileReader reader = new FileReader(header.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L180">          config.set(&quot;header&quot;, b11rReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L183" title="1 of 2 branches missed.">      if (!txs.equals(stdinPath)) {</span>
+<span class="nc" id="L184">        try (FileReader reader = new FileReader(txs.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L185">          config.set(&quot;txs&quot;, b11rReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">      if (!withdrawals.equals(stdinPath)) {</span>
+<span class="nc" id="L189">        try (FileReader reader = new FileReader(withdrawals.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L190">          config.set(&quot;withdrawals&quot;, b11rReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">      if (!ommers.equals(stdinPath)) {</span>
+<span class="nc" id="L194">        try (FileReader reader = new FileReader(ommers.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L195">          config.set(&quot;ommers&quot;, b11rReader.readTree(reader));</span>
+        }
+      }
+<span class="pc bpc" id="L198" title="1 of 2 branches missed.">      if (!sealClique.equals(stdinPath)) {</span>
+<span class="nc" id="L199">        try (FileReader reader = new FileReader(sealClique.toFile(), StandardCharsets.UTF_8)) {</span>
+<span class="nc" id="L200">          config.set(&quot;clique&quot;, b11rReader.readTree(reader));</span>
+        }
+      }
+<span class="nc" id="L203">    } catch (final JsonProcessingException jpe) {</span>
+<span class="nc" id="L204">      parentCommand.out.println(&quot;File content error: &quot; + jpe);</span>
+<span class="nc" id="L205">      jpe.printStackTrace();</span>
+<span class="nc" id="L206">      return;</span>
+<span class="nc" id="L207">    } catch (final IOException e) {</span>
+<span class="nc" id="L208">      System.err.println(&quot;Unable to read state file&quot;);</span>
+<span class="nc" id="L209">      e.printStackTrace(System.err);</span>
+<span class="nc" id="L210">      return;</span>
+<span class="fc" id="L211">    }</span>
+
+<span class="fc" id="L213">    var testHeader = this.readHeader(config.get(&quot;header&quot;), objectMapper);</span>
+<span class="fc" id="L214">    Bytes txsBytes = null;</span>
+
+<span class="pc bpc" id="L216" title="1 of 2 branches missed.">    if (config.has(&quot;txs&quot;)) {</span>
+<span class="fc" id="L217">      String txsString = config.get(&quot;txs&quot;).textValue();</span>
+<span class="pc bpc" id="L218" title="1 of 2 branches missed.">      if (!txsString.isEmpty()) {</span>
+<span class="nc" id="L219">        txsBytes = Bytes.fromHexString(txsString);</span>
+      }
+    }
+
+<span class="fc" id="L223">    var newHeader =</span>
+<span class="fc" id="L224">        BlockHeaderBuilder.fromHeader(testHeader)</span>
+<span class="fc" id="L225">            .blockHeaderFunctions(new MainnetBlockHeaderFunctions())</span>
+<span class="fc" id="L226">            .buildBlockHeader();</span>
+<span class="fc" id="L227">    BytesValueRLPOutput rlpOut = new BytesValueRLPOutput();</span>
+<span class="fc" id="L228">    rlpOut.startList();</span>
+<span class="fc" id="L229">    newHeader.writeTo(rlpOut);</span>
+<span class="pc bpc" id="L230" title="3 of 4 branches missed.">    if (txsBytes != null &amp;&amp; !txsBytes.isEmpty()) {</span>
+<span class="nc" id="L231">      rlpOut.writeRaw(txsBytes);</span>
+    } else {
+<span class="fc" id="L233">      rlpOut.startList();</span>
+<span class="fc" id="L234">      rlpOut.endList();</span>
+    }
+    // ommers
+<span class="fc" id="L237">    rlpOut.startList();</span>
+<span class="fc" id="L238">    rlpOut.endList();</span>
+
+    // withdrawals
+    // TODO - waiting on b11r spec to specify how withdrawals are added to blocks.
+
+<span class="fc" id="L243">    rlpOut.endList();</span>
+
+<span class="fc" id="L245">    final ObjectNode resultObject = objectMapper.createObjectNode();</span>
+<span class="fc" id="L246">    resultObject.put(&quot;rlp&quot;, rlpOut.encoded().toHexString());</span>
+<span class="fc" id="L247">    resultObject.put(&quot;hash&quot;, newHeader.getHash().toHexString());</span>
+<span class="fc" id="L248">    var writer = objectMapper.writerWithDefaultPrettyPrinter();</span>
+    try {
+<span class="fc" id="L250">      var resultString = writer.writeValueAsString(resultObject);</span>
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      if (outBlock.equals((stdoutPath))) {</span>
+<span class="fc" id="L252">        parentCommand.out.println(resultString);</span>
+      } else {
+<span class="nc" id="L254">        try (var fileOut =</span>
+<span class="nc" id="L255">            new PrintStream(new FileOutputStream(outDir.resolve(outBlock).toFile()))) {</span>
+<span class="nc" id="L256">          fileOut.println(resultString);</span>
+        }
+      }
+<span class="nc" id="L259">    } catch (FileNotFoundException | JsonProcessingException e) {</span>
+<span class="nc" id="L260">      throw new RuntimeException(e);</span>
+<span class="fc" id="L261">    }</span>
+<span class="fc" id="L262">  }</span>
+
+  void maybeMoveField(final ObjectNode jsonObject, final String oldField, final String newField) {
+<span class="pc bpc" id="L265" title="1 of 2 branches missed.">    if (jsonObject.has(oldField)) {</span>
+<span class="fc" id="L266">      jsonObject.set(newField, jsonObject.remove(oldField));</span>
+    }
+<span class="fc" id="L268">  }</span>
+
+  private ReferenceTestBlockHeader readHeader(
+      final JsonNode jsonObject, final ObjectMapper objectMapper) {
+<span class="fc" id="L272">    ObjectNode objectNode = (ObjectNode) jsonObject;</span>
+<span class="fc" id="L273">    maybeMoveField(objectNode, &quot;sha3Uncles&quot;, &quot;uncleHash&quot;);</span>
+<span class="fc" id="L274">    maybeMoveField(objectNode, &quot;miner&quot;, &quot;coinbase&quot;);</span>
+<span class="fc" id="L275">    maybeMoveField(objectNode, &quot;transactionsRoot&quot;, &quot;transactionsTrie&quot;);</span>
+<span class="fc" id="L276">    maybeMoveField(objectNode, &quot;receiptsRoot&quot;, &quot;receiptTrie&quot;);</span>
+<span class="fc" id="L277">    maybeMoveField(objectNode, &quot;logsBloom&quot;, &quot;bloom&quot;);</span>
+<span class="fc" id="L278">    return objectMapper.convertValue(jsonObject, ReferenceTestBlockHeader.class);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

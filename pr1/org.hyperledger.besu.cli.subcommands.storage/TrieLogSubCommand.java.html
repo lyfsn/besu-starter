@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieLogSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.storage</a> &gt; <span class="el_source">TrieLogSubCommand.java</span></div><h1>TrieLogSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.subcommands.storage;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.hyperledger.besu.cli.subcommands.storage.RocksDbHelper.formatOutputSize;
+import static org.hyperledger.besu.controller.BesuController.DATABASE_PATH;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_LOG_STORAGE;
+
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogPruner;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.config.Configurator;
+import org.rocksdb.RocksDBException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.ParentCommand;
+
+/** The Trie Log subcommand. */
+@Command(
+    name = &quot;x-trie-log&quot;,
+    description = &quot;Manipulate trie logs&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class,
+    subcommands = {
+      TrieLogSubCommand.CountTrieLog.class,
+      TrieLogSubCommand.PruneTrieLog.class,
+      TrieLogSubCommand.ExportTrieLog.class,
+      TrieLogSubCommand.ImportTrieLog.class
+    })
+<span class="fc" id="L62">public class TrieLogSubCommand implements Runnable {</span>
+
+<span class="fc" id="L64">  private static final Logger LOG = LoggerFactory.getLogger(TrieLogSubCommand.class);</span>
+
+  @SuppressWarnings(&quot;UnusedVariable&quot;)
+  @ParentCommand
+  private static StorageSubCommand parentCommand;
+
+  @SuppressWarnings(&quot;unused&quot;)
+  @CommandLine.Spec
+  private CommandLine.Model.CommandSpec spec; // Picocli injects reference to command spec
+
+  @Override
+  public void run() {
+<span class="nc" id="L76">    final PrintWriter out = spec.commandLine().getOut();</span>
+<span class="nc" id="L77">    spec.commandLine().usage(out);</span>
+<span class="nc" id="L78">  }</span>
+
+  private static BesuController createBesuController() {
+<span class="nc" id="L81">    return parentCommand.besuCommand.buildController();</span>
+  }
+
+  @Command(
+      name = &quot;count&quot;,
+      description = &quot;This command counts all the trie logs&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L89">  static class CountTrieLog implements Runnable {</span>
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private TrieLogSubCommand parentCommand;
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec; // Picocli injects reference to command spec
+
+    @Override
+    public void run() {
+<span class="nc" id="L101">      final TrieLogContext context = getTrieLogContext();</span>
+
+<span class="nc" id="L103">      final PrintWriter out = spec.commandLine().getOut();</span>
+
+<span class="nc" id="L105">      out.println(&quot;Counting trie logs...&quot;);</span>
+<span class="nc" id="L106">      final TrieLogHelper trieLogHelper = new TrieLogHelper();</span>
+<span class="nc" id="L107">      trieLogHelper.printCount(</span>
+          out,
+<span class="nc" id="L109">          trieLogHelper.getCount(</span>
+              context.rootWorldStateStorage, Integer.MAX_VALUE, context.blockchain));
+<span class="nc" id="L111">    }</span>
+  }
+
+  @Command(
+      name = &quot;prune&quot;,
+      description =
+          &quot;This command prunes all trie log layers below the retention limit, including orphaned trie logs.&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L120">  static class PruneTrieLog implements Runnable {</span>
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private TrieLogSubCommand parentCommand;
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec; // Picocli injects reference to command spec
+
+    @Override
+    public void run() {
+<span class="nc" id="L132">      final TrieLogContext context = getTrieLogContext();</span>
+<span class="nc" id="L133">      final Path dataDirectoryPath =</span>
+<span class="nc" id="L134">          Paths.get(</span>
+<span class="nc" id="L135">              TrieLogSubCommand.parentCommand.besuCommand.dataDir().toAbsolutePath().toString());</span>
+
+<span class="nc" id="L137">      LOG.info(&quot;Estimating trie logs size before pruning...&quot;);</span>
+<span class="nc" id="L138">      long sizeBefore = estimatedSizeOfTrieLogs();</span>
+<span class="nc" id="L139">      LOG.info(&quot;Estimated trie logs size before pruning: {}&quot;, formatOutputSize(sizeBefore));</span>
+<span class="nc" id="L140">      LOG.info(&quot;Starting pruning...&quot;);</span>
+<span class="nc" id="L141">      final TrieLogHelper trieLogHelper = new TrieLogHelper();</span>
+<span class="nc" id="L142">      boolean success =</span>
+<span class="nc" id="L143">          trieLogHelper.prune(</span>
+<span class="nc" id="L144">              context.config(),</span>
+<span class="nc" id="L145">              context.rootWorldStateStorage(),</span>
+<span class="nc" id="L146">              context.blockchain(),</span>
+              dataDirectoryPath);
+
+<span class="nc bnc" id="L149" title="All 2 branches missed.">      if (success) {</span>
+<span class="nc" id="L150">        LOG.info(&quot;Finished pruning. Re-estimating trie logs size...&quot;);</span>
+<span class="nc" id="L151">        final long sizeAfter = estimatedSizeOfTrieLogs();</span>
+<span class="nc" id="L152">        LOG.info(</span>
+            &quot;Estimated trie logs size after pruning: {} (0 B estimate is normal when using default settings)&quot;,
+<span class="nc" id="L154">            formatOutputSize(sizeAfter));</span>
+<span class="nc" id="L155">        long estimatedSaving = sizeBefore - sizeAfter;</span>
+<span class="nc" id="L156">        LOG.info(</span>
+            &quot;Prune ran successfully. We estimate you freed up {}! \uD83D\uDE80&quot;,
+<span class="nc" id="L158">            formatOutputSize(estimatedSaving));</span>
+<span class="nc" id="L159">        spec.commandLine()</span>
+<span class="nc" id="L160">            .getOut()</span>
+<span class="nc" id="L161">            .printf(</span>
+                &quot;Prune ran successfully. We estimate you freed up %s! \uD83D\uDE80\n&quot;,
+<span class="nc" id="L163">                formatOutputSize(estimatedSaving));</span>
+      }
+<span class="nc" id="L165">    }</span>
+
+    private long estimatedSizeOfTrieLogs() {
+<span class="nc" id="L168">      final String dbPath =</span>
+          TrieLogSubCommand.parentCommand
+              .besuCommand
+<span class="nc" id="L171">              .dataDir()</span>
+<span class="nc" id="L172">              .toString()</span>
+<span class="nc" id="L173">              .concat(&quot;/&quot;)</span>
+<span class="nc" id="L174">              .concat(DATABASE_PATH);</span>
+
+<span class="nc" id="L176">      AtomicLong estimatedSaving = new AtomicLong(0L);</span>
+      try {
+<span class="nc" id="L178">        RocksDbHelper.forEachColumnFamily(</span>
+            dbPath,
+            (rocksdb, cfHandle) -&gt; {
+              try {
+<span class="nc bnc" id="L182" title="All 2 branches missed.">                if (Arrays.equals(cfHandle.getName(), TRIE_LOG_STORAGE.getId())) {</span>
+
+<span class="nc" id="L184">                  final long sstSize =</span>
+<span class="nc" id="L185">                      Long.parseLong(rocksdb.getProperty(cfHandle, &quot;rocksdb.total-sst-files-size&quot;));</span>
+<span class="nc" id="L186">                  final long blobSize =</span>
+<span class="nc" id="L187">                      Long.parseLong(rocksdb.getProperty(cfHandle, &quot;rocksdb.total-blob-file-size&quot;));</span>
+
+<span class="nc" id="L189">                  estimatedSaving.set(sstSize + blobSize);</span>
+                }
+<span class="nc" id="L191">              } catch (RocksDBException | NumberFormatException e) {</span>
+<span class="nc" id="L192">                throw new RuntimeException(e);</span>
+<span class="nc" id="L193">              }</span>
+<span class="nc" id="L194">            });</span>
+<span class="nc" id="L195">      } catch (Exception e) {</span>
+<span class="nc" id="L196">        LOG.warn(&quot;Error while estimating trie log size, returning 0 for estimate&quot;, e);</span>
+<span class="nc" id="L197">        return 0L;</span>
+<span class="nc" id="L198">      }</span>
+
+<span class="nc" id="L200">      return estimatedSaving.get();</span>
+    }
+  }
+
+  @Command(
+      name = &quot;export&quot;,
+      description = &quot;This command exports the trie log of a determined block to a binary file&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L209">  static class ExportTrieLog implements Runnable {</span>
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private TrieLogSubCommand parentCommand;
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec; // Picocli injects reference to command spec
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @CommandLine.Option(
+        names = &quot;--trie-log-block-hash&quot;,
+        description =
+            &quot;Comma separated list of hashes from the blocks you want to export the trie logs of&quot;,
+        split = &quot; {0,1}, {0,1}&quot;,
+        arity = &quot;1..*&quot;)
+    private List&lt;String&gt; trieLogBlockHashList;
+
+<span class="fc" id="L228">    @CommandLine.Option(</span>
+        names = &quot;--trie-log-file-path&quot;,
+        description = &quot;The file you want to export the trie logs to&quot;,
+        arity = &quot;1..1&quot;)
+    private Path trieLogFilePath = null;
+
+    @Override
+    public void run() {
+<span class="nc bnc" id="L236" title="All 2 branches missed.">      if (trieLogFilePath == null) {</span>
+<span class="nc" id="L237">        trieLogFilePath =</span>
+<span class="nc" id="L238">            Paths.get(</span>
+                TrieLogSubCommand.parentCommand
+                    .besuCommand
+<span class="nc" id="L241">                    .dataDir()</span>
+<span class="nc" id="L242">                    .resolve(&quot;trie-logs.bin&quot;)</span>
+<span class="nc" id="L243">                    .toAbsolutePath()</span>
+<span class="nc" id="L244">                    .toString());</span>
+      }
+
+<span class="nc" id="L247">      final TrieLogContext context = getTrieLogContext();</span>
+
+<span class="nc" id="L249">      final List&lt;Hash&gt; listOfBlockHashes =</span>
+<span class="nc" id="L250">          trieLogBlockHashList.stream().map(Hash::fromHexString).toList();</span>
+
+<span class="nc" id="L252">      final TrieLogHelper trieLogHelper = new TrieLogHelper();</span>
+
+      try {
+<span class="nc" id="L255">        trieLogHelper.exportTrieLog(</span>
+<span class="nc" id="L256">            context.rootWorldStateStorage(), listOfBlockHashes, trieLogFilePath);</span>
+<span class="nc" id="L257">      } catch (IOException e) {</span>
+<span class="nc" id="L258">        throw new RuntimeException(e);</span>
+<span class="nc" id="L259">      }</span>
+<span class="nc" id="L260">    }</span>
+  }
+
+  @Command(
+      name = &quot;import&quot;,
+      description = &quot;This command imports a trie log exported by another besu node&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L268">  static class ImportTrieLog implements Runnable {</span>
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private TrieLogSubCommand parentCommand;
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec; // Picocli injects reference to command spec
+
+<span class="fc" id="L278">    @CommandLine.Option(</span>
+        names = &quot;--trie-log-file-path&quot;,
+        description = &quot;The file you want to import the trie logs from&quot;,
+        arity = &quot;1..1&quot;)
+    private Path trieLogFilePath = null;
+
+    @Override
+    public void run() {
+<span class="nc bnc" id="L286" title="All 2 branches missed.">      if (trieLogFilePath == null) {</span>
+<span class="nc" id="L287">        trieLogFilePath =</span>
+<span class="nc" id="L288">            Paths.get(</span>
+                TrieLogSubCommand.parentCommand
+                    .besuCommand
+<span class="nc" id="L291">                    .dataDir()</span>
+<span class="nc" id="L292">                    .resolve(&quot;trie-logs.bin&quot;)</span>
+<span class="nc" id="L293">                    .toAbsolutePath()</span>
+<span class="nc" id="L294">                    .toString());</span>
+      }
+
+<span class="nc" id="L297">      TrieLogContext context = getTrieLogContext();</span>
+<span class="nc" id="L298">      final TrieLogHelper trieLogHelper = new TrieLogHelper();</span>
+<span class="nc" id="L299">      trieLogHelper.importTrieLog(context.rootWorldStateStorage(), trieLogFilePath);</span>
+<span class="nc" id="L300">    }</span>
+  }
+
+<span class="nc" id="L303">  record TrieLogContext(</span>
+      DataStorageConfiguration config,
+      BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      MutableBlockchain blockchain) {}
+
+  private static TrieLogContext getTrieLogContext() {
+<span class="nc" id="L309">    Configurator.setLevel(LoggerFactory.getLogger(TrieLogPruner.class).getName(), Level.DEBUG);</span>
+<span class="nc" id="L310">    checkNotNull(parentCommand);</span>
+<span class="nc" id="L311">    BesuController besuController = createBesuController();</span>
+<span class="nc" id="L312">    final DataStorageConfiguration config = besuController.getDataStorageConfiguration();</span>
+<span class="nc" id="L313">    checkArgument(</span>
+<span class="nc" id="L314">        DataStorageFormat.BONSAI.equals(config.getDataStorageFormat()),</span>
+        &quot;Subcommand only works with data-storage-format=BONSAI&quot;);
+
+<span class="nc" id="L317">    final StorageProvider storageProvider = besuController.getStorageProvider();</span>
+<span class="nc" id="L318">    final BonsaiWorldStateKeyValueStorage rootWorldStateStorage =</span>
+<span class="nc" id="L319">        (BonsaiWorldStateKeyValueStorage) storageProvider.createWorldStateStorage(config);</span>
+<span class="nc" id="L320">    final MutableBlockchain blockchain = besuController.getProtocolContext().getBlockchain();</span>
+<span class="nc" id="L321">    return new TrieLogContext(config, rootWorldStateStorage, blockchain);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

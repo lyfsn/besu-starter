@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackwardChain.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.backwardsync</a> &gt; <span class="el_source">BackwardChain.java</span></div><h1>BackwardChain.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.eth.sync.backwardsync;
+
+import static org.slf4j.LoggerFactory.getLogger;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.Queue;
+
+import org.slf4j.Logger;
+
+public class BackwardChain {
+<span class="fc" id="L37">  private static final Logger LOG = getLogger(BackwardChain.class);</span>
+
+  private static final String FIRST_STORED_ANCESTOR_KEY = &quot;firstStoredAncestor&quot;;
+  private static final String LAST_STORED_PIVOT_KEY = &quot;lastStoredPivot&quot;;
+
+  private final GenericKeyValueStorageFacade&lt;Hash, BlockHeader&gt; headers;
+  private final GenericKeyValueStorageFacade&lt;Hash, Block&gt; blocks;
+  private final GenericKeyValueStorageFacade&lt;Hash, Hash&gt; chainStorage;
+  private final GenericKeyValueStorageFacade&lt;String, BlockHeader&gt; sessionDataStorage;
+  private Optional&lt;BlockHeader&gt; firstStoredAncestor;
+  private Optional&lt;BlockHeader&gt; lastStoredPivot;
+<span class="fc" id="L48">  private final Queue&lt;Hash&gt; hashesToAppend = new ArrayDeque&lt;&gt;();</span>
+
+  public BackwardChain(
+      final GenericKeyValueStorageFacade&lt;Hash, BlockHeader&gt; headersStorage,
+      final GenericKeyValueStorageFacade&lt;Hash, Block&gt; blocksStorage,
+      final GenericKeyValueStorageFacade&lt;Hash, Hash&gt; chainStorage,
+<span class="fc" id="L54">      final GenericKeyValueStorageFacade&lt;String, BlockHeader&gt; sessionDataStorage) {</span>
+<span class="fc" id="L55">    this.headers = headersStorage;</span>
+<span class="fc" id="L56">    this.blocks = blocksStorage;</span>
+<span class="fc" id="L57">    this.chainStorage = chainStorage;</span>
+<span class="fc" id="L58">    this.sessionDataStorage = sessionDataStorage;</span>
+<span class="fc" id="L59">    firstStoredAncestor =</span>
+        sessionDataStorage
+<span class="fc" id="L61">            .get(FIRST_STORED_ANCESTOR_KEY)</span>
+<span class="fc" id="L62">            .map(</span>
+                header -&gt; {
+<span class="nc" id="L64">                  LOG.atDebug()</span>
+<span class="nc" id="L65">                      .setMessage(FIRST_STORED_ANCESTOR_KEY + &quot; loaded from storage with value {}&quot;)</span>
+<span class="nc" id="L66">                      .addArgument(header::toLogString)</span>
+<span class="nc" id="L67">                      .log();</span>
+<span class="nc" id="L68">                  return header;</span>
+                });
+<span class="fc" id="L70">    lastStoredPivot =</span>
+        sessionDataStorage
+<span class="fc" id="L72">            .get(LAST_STORED_PIVOT_KEY)</span>
+<span class="fc" id="L73">            .map(</span>
+                header -&gt; {
+<span class="nc" id="L75">                  LOG.atDebug()</span>
+<span class="nc" id="L76">                      .setMessage(LAST_STORED_PIVOT_KEY + &quot; loaded from storage with value {}&quot;)</span>
+<span class="nc" id="L77">                      .addArgument(header::toLogString)</span>
+<span class="nc" id="L78">                      .log();</span>
+<span class="nc" id="L79">                  return header;</span>
+                });
+<span class="fc" id="L81">  }</span>
+
+  public static BackwardChain from(
+      final StorageProvider storageProvider, final BlockHeaderFunctions blockHeaderFunctions) {
+<span class="fc" id="L85">    return new BackwardChain(</span>
+        new GenericKeyValueStorageFacade&lt;&gt;(
+            Hash::toArrayUnsafe,
+<span class="fc" id="L88">            BlocksHeadersConvertor.of(blockHeaderFunctions),</span>
+<span class="fc" id="L89">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.BACKWARD_SYNC_HEADERS)),
+        new GenericKeyValueStorageFacade&lt;&gt;(
+            Hash::toArrayUnsafe,
+<span class="fc" id="L93">            BlocksConvertor.of(blockHeaderFunctions),</span>
+<span class="fc" id="L94">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.BACKWARD_SYNC_BLOCKS)),
+        new GenericKeyValueStorageFacade&lt;&gt;(
+            Hash::toArrayUnsafe,
+            new HashConvertor(),
+<span class="fc" id="L99">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.BACKWARD_SYNC_CHAIN)),
+        // using BACKWARD_SYNC_CHAIN that contains the sequence of the work to do,
+        // to also store the session data that will be used to resume
+        // the backward sync from where it was left before the restart
+        new GenericKeyValueStorageFacade&lt;&gt;(
+<span class="fc" id="L105">            key -&gt; key.getBytes(StandardCharsets.UTF_8),</span>
+<span class="fc" id="L106">            BlocksHeadersConvertor.of(blockHeaderFunctions),</span>
+<span class="fc" id="L107">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.BACKWARD_SYNC_CHAIN)));
+  }
+
+  public synchronized Optional&lt;BlockHeader&gt; getFirstAncestorHeader() {
+<span class="fc" id="L112">    return firstStoredAncestor;</span>
+  }
+
+  public synchronized List&lt;BlockHeader&gt; getFirstNAncestorHeaders(final int size) {
+<span class="fc" id="L116">    List&lt;BlockHeader&gt; result = new ArrayList&lt;&gt;(size);</span>
+<span class="fc" id="L117">    Optional&lt;BlockHeader&gt; it = firstStoredAncestor;</span>
+<span class="pc bpc" id="L118" title="1 of 4 branches missed.">    while (it.isPresent() &amp;&amp; result.size() &lt; size) {</span>
+<span class="fc" id="L119">      result.add(it.get());</span>
+<span class="fc" id="L120">      it = chainStorage.get(it.get().getHash()).flatMap(headers::get);</span>
+    }
+<span class="fc" id="L122">    return result;</span>
+  }
+
+  public synchronized void prependAncestorsHeader(final BlockHeader blockHeader) {
+<span class="fc" id="L126">    prependAncestorsHeader(blockHeader, false);</span>
+<span class="fc" id="L127">  }</span>
+
+  public synchronized void prependAncestorsHeader(
+      final BlockHeader blockHeader, final boolean alreadyStored) {
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (!alreadyStored) {</span>
+<span class="fc" id="L132">      headers.put(blockHeader.getHash(), blockHeader);</span>
+    }
+
+<span class="fc bfc" id="L135" title="All 2 branches covered.">    if (firstStoredAncestor.isEmpty()) {</span>
+<span class="fc" id="L136">      updateLastStoredPivot(Optional.of(blockHeader));</span>
+    } else {
+<span class="fc" id="L138">      final BlockHeader firstHeader = firstStoredAncestor.get();</span>
+<span class="fc" id="L139">      chainStorage.put(blockHeader.getHash(), firstHeader.getHash());</span>
+<span class="fc" id="L140">      LOG.atDebug()</span>
+<span class="fc" id="L141">          .setMessage(&quot;Added header {} to backward chain led by pivot {} on height {}&quot;)</span>
+<span class="fc" id="L142">          .addArgument(blockHeader::toLogString)</span>
+<span class="pc" id="L143">          .addArgument(() -&gt; lastStoredPivot.orElseThrow().toLogString())</span>
+<span class="fc" id="L144">          .addArgument(firstHeader::getNumber)</span>
+<span class="fc" id="L145">          .log();</span>
+    }
+
+<span class="fc" id="L148">    updateFirstStoredAncestor(Optional.of(blockHeader));</span>
+<span class="fc" id="L149">  }</span>
+
+  private void updateFirstStoredAncestor(final Optional&lt;BlockHeader&gt; maybeHeader) {
+<span class="fc" id="L152">    maybeHeader.ifPresentOrElse(</span>
+<span class="fc" id="L153">        header -&gt; sessionDataStorage.put(FIRST_STORED_ANCESTOR_KEY, header),</span>
+<span class="fc" id="L154">        () -&gt; sessionDataStorage.drop(FIRST_STORED_ANCESTOR_KEY));</span>
+<span class="fc" id="L155">    firstStoredAncestor = maybeHeader;</span>
+<span class="fc" id="L156">  }</span>
+
+  private void updateLastStoredPivot(final Optional&lt;BlockHeader&gt; maybeHeader) {
+<span class="fc" id="L159">    maybeHeader.ifPresentOrElse(</span>
+<span class="fc" id="L160">        header -&gt; sessionDataStorage.put(LAST_STORED_PIVOT_KEY, header),</span>
+<span class="fc" id="L161">        () -&gt; sessionDataStorage.drop(LAST_STORED_PIVOT_KEY));</span>
+<span class="fc" id="L162">    lastStoredPivot = maybeHeader;</span>
+<span class="fc" id="L163">  }</span>
+
+  public synchronized Optional&lt;Block&gt; getPivot() {
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    if (lastStoredPivot.isEmpty()) {</span>
+<span class="nc" id="L167">      return Optional.empty();</span>
+    }
+<span class="fc" id="L169">    return blocks.get(lastStoredPivot.get().getHash());</span>
+  }
+
+  public synchronized void dropFirstHeader() {
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">    if (firstStoredAncestor.isEmpty()) {</span>
+<span class="nc" id="L174">      return;</span>
+    }
+<span class="fc" id="L176">    headers.drop(firstStoredAncestor.get().getHash());</span>
+<span class="fc" id="L177">    final Optional&lt;Hash&gt; hash = chainStorage.get(firstStoredAncestor.get().getHash());</span>
+<span class="fc" id="L178">    chainStorage.drop(firstStoredAncestor.get().getHash());</span>
+<span class="fc" id="L179">    updateFirstStoredAncestor(hash.flatMap(headers::get));</span>
+<span class="fc bfc" id="L180" title="All 2 branches covered.">    if (firstStoredAncestor.isEmpty()) {</span>
+<span class="fc" id="L181">      updateLastStoredPivot(Optional.empty());</span>
+    }
+<span class="fc" id="L183">  }</span>
+
+  public synchronized void appendTrustedBlock(final Block newPivot) {
+<span class="fc" id="L186">    LOG.atDebug().setMessage(&quot;Appending trusted block {}&quot;).addArgument(newPivot::toLogString).log();</span>
+<span class="fc" id="L187">    headers.put(newPivot.getHash(), newPivot.getHeader());</span>
+<span class="fc" id="L188">    blocks.put(newPivot.getHash(), newPivot);</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">    if (lastStoredPivot.isEmpty()) {</span>
+<span class="fc" id="L190">      updateFirstStoredAncestor(Optional.of(newPivot.getHeader()));</span>
+    } else {
+<span class="fc bfc" id="L192" title="All 2 branches covered.">      if (newPivot.getHeader().getParentHash().equals(lastStoredPivot.get().getHash())) {</span>
+<span class="fc" id="L193">        LOG.atDebug()</span>
+<span class="fc" id="L194">            .setMessage(&quot;Added block {} to backward chain led by pivot {} on height {}&quot;)</span>
+<span class="fc" id="L195">            .addArgument(newPivot::toLogString)</span>
+<span class="fc" id="L196">            .addArgument(lastStoredPivot.get()::toLogString)</span>
+<span class="fc" id="L197">            .addArgument(firstStoredAncestor.get()::getNumber)</span>
+<span class="fc" id="L198">            .log();</span>
+<span class="fc" id="L199">        chainStorage.put(lastStoredPivot.get().getHash(), newPivot.getHash());</span>
+      } else {
+<span class="fc" id="L201">        updateFirstStoredAncestor(Optional.of(newPivot.getHeader()));</span>
+<span class="fc" id="L202">        LOG.atDebug()</span>
+<span class="fc" id="L203">            .setMessage(&quot;Re-pivoting to new target block {}&quot;)</span>
+<span class="fc" id="L204">            .addArgument(newPivot::toLogString)</span>
+<span class="fc" id="L205">            .log();</span>
+      }
+    }
+<span class="fc" id="L208">    updateLastStoredPivot(Optional.of(newPivot.getHeader()));</span>
+<span class="fc" id="L209">  }</span>
+
+  public synchronized boolean isTrusted(final Hash hash) {
+<span class="fc" id="L212">    return blocks.get(hash).isPresent();</span>
+  }
+
+  public synchronized Block getTrustedBlock(final Hash hash) {
+<span class="fc" id="L216">    return blocks.get(hash).orElseThrow();</span>
+  }
+
+  public synchronized void clear() {
+<span class="fc" id="L220">    blocks.clear();</span>
+<span class="fc" id="L221">    headers.clear();</span>
+<span class="fc" id="L222">    chainStorage.clear();</span>
+<span class="fc" id="L223">    sessionDataStorage.clear();</span>
+<span class="fc" id="L224">    firstStoredAncestor = Optional.empty();</span>
+<span class="fc" id="L225">    lastStoredPivot = Optional.empty();</span>
+<span class="fc" id="L226">    hashesToAppend.clear();</span>
+<span class="fc" id="L227">  }</span>
+
+  public synchronized Optional&lt;Hash&gt; getDescendant(final Hash blockHash) {
+<span class="fc" id="L230">    return chainStorage.get(blockHash);</span>
+  }
+
+  public synchronized Optional&lt;Block&gt; getBlock(final Hash hash) {
+<span class="fc" id="L234">    return blocks.get(hash);</span>
+  }
+
+  public synchronized Optional&lt;BlockHeader&gt; getHeader(final Hash hash) {
+<span class="fc" id="L238">    return headers.get(hash);</span>
+  }
+
+  public synchronized void addNewHash(final Hash newBlockHash) {
+<span class="fc bfc" id="L242" title="All 2 branches covered.">    if (hashesToAppend.contains(newBlockHash)) {</span>
+<span class="fc" id="L243">      return;</span>
+    }
+<span class="fc" id="L245">    this.hashesToAppend.add(newBlockHash);</span>
+<span class="fc" id="L246">  }</span>
+
+  public synchronized Optional&lt;Hash&gt; getFirstHashToAppend() {
+<span class="fc" id="L249">    return Optional.ofNullable(hashesToAppend.peek());</span>
+  }
+
+  public synchronized void removeFromHashToAppend(final Hash hashToRemove) {
+<span class="pc bpc" id="L253" title="1 of 2 branches missed.">    if (hashesToAppend.contains(hashToRemove)) {</span>
+<span class="fc" id="L254">      hashesToAppend.remove(hashToRemove);</span>
+    }
+<span class="fc" id="L256">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

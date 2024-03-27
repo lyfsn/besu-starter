@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AllowlistPersistor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning</a> &gt; <span class="el_source">AllowlistPersistor.java</span></div><h1>AllowlistPersistor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.AbstractMap;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Charsets;
+import org.apache.tuweni.toml.Toml;
+import org.apache.tuweni.toml.TomlParseResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class AllowlistPersistor {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(AllowlistPersistor.class);</span>
+
+  private final File configurationFile;
+
+<span class="fc" id="L42">  public enum ALLOWLIST_TYPE {</span>
+<span class="fc" id="L43">    ACCOUNTS(&quot;accounts-allowlist&quot;),</span>
+<span class="fc" id="L44">    NODES(&quot;nodes-allowlist&quot;);</span>
+
+    private final String tomlKey;
+
+<span class="fc" id="L48">    ALLOWLIST_TYPE(final String tomlKey) {</span>
+<span class="fc" id="L49">      this.tomlKey = tomlKey;</span>
+<span class="fc" id="L50">    }</span>
+
+    public String getTomlKey() {
+<span class="fc" id="L53">      return tomlKey;</span>
+    }
+  }
+
+<span class="fc" id="L57">  public AllowlistPersistor(final String configurationFile) {</span>
+<span class="fc" id="L58">    this.configurationFile = new File(configurationFile);</span>
+<span class="fc" id="L59">  }</span>
+
+  public static boolean verifyConfigFileMatchesState(
+      final ALLOWLIST_TYPE allowlistType,
+      final Collection&lt;String&gt; checkLists,
+      final Path configurationFilePath)
+      throws IOException, AllowlistFileSyncException {
+
+<span class="fc" id="L67">    final Map&lt;ALLOWLIST_TYPE, Collection&lt;String&gt;&gt; configItems =</span>
+<span class="fc" id="L68">        existingConfigItems(configurationFilePath);</span>
+    final Collection&lt;String&gt; existingValues =
+<span class="fc bfc" id="L70" title="All 2 branches covered.">        configItems.get(allowlistType) != null</span>
+<span class="fc" id="L71">            ? configItems.get(allowlistType)</span>
+<span class="fc" id="L72">            : Collections.emptyList();</span>
+
+<span class="fc bfc" id="L74" title="All 2 branches covered.">    if (!existingValues.containsAll(checkLists)) {</span>
+<span class="fc" id="L75">      LOG.atDebug()</span>
+<span class="fc" id="L76">          .setMessage(&quot;\n LISTS DO NOT MATCH configFile::&quot;)</span>
+<span class="fc" id="L77">          .addArgument(existingValues)</span>
+<span class="fc" id="L78">          .addArgument(configurationFilePath)</span>
+<span class="fc" id="L79">          .log();</span>
+<span class="fc" id="L80">      LOG.atDebug().setMessage(&quot;\nLISTS DO NOT MATCH in-memory ::&quot;).addArgument(checkLists).log();</span>
+<span class="fc" id="L81">      throw new AllowlistFileSyncException();</span>
+    }
+<span class="fc" id="L83">    return true;</span>
+  }
+
+  public boolean verifyConfigFileMatchesState(
+      final ALLOWLIST_TYPE allowlistType, final Collection&lt;String&gt; checkLists)
+      throws IOException, AllowlistFileSyncException {
+<span class="fc" id="L89">    return verifyConfigFileMatchesState(allowlistType, checkLists, configurationFile.toPath());</span>
+  }
+
+  public synchronized void updateConfig(
+      final ALLOWLIST_TYPE allowlistType, final Collection&lt;String&gt; updatedAllowlistValues)
+      throws IOException {
+<span class="fc" id="L95">    removeExistingConfigItem(allowlistType);</span>
+<span class="fc" id="L96">    addNewConfigItem(allowlistType, updatedAllowlistValues);</span>
+<span class="fc" id="L97">  }</span>
+
+  private static Map&lt;ALLOWLIST_TYPE, Collection&lt;String&gt;&gt; existingConfigItems(
+      final Path configurationFilePath) throws IOException {
+<span class="fc" id="L101">    TomlParseResult parsedToml = Toml.parse(configurationFilePath);</span>
+
+<span class="fc" id="L103">    return Arrays.stream(ALLOWLIST_TYPE.values())</span>
+<span class="fc" id="L104">        .filter(k -&gt; parsedToml.contains(k.getTomlKey()))</span>
+<span class="fc" id="L105">        .map(</span>
+            allowlist_type -&gt;
+<span class="fc" id="L107">                new AbstractMap.SimpleImmutableEntry&lt;&gt;(</span>
+<span class="fc" id="L108">                    allowlist_type, parsedToml.getArrayOrEmpty(allowlist_type.getTomlKey())))</span>
+<span class="fc" id="L109">        .collect(</span>
+<span class="fc" id="L110">            Collectors.toMap(</span>
+<span class="fc" id="L111">                o -&gt; o.getKey(),</span>
+                o -&gt;
+<span class="fc" id="L113">                    o.getValue().toList().parallelStream()</span>
+<span class="fc" id="L114">                        .map(Object::toString)</span>
+<span class="fc" id="L115">                        .collect(Collectors.toList())));</span>
+  }
+
+  @VisibleForTesting
+  void removeExistingConfigItem(final ALLOWLIST_TYPE allowlistType) throws IOException {
+<span class="fc" id="L120">    List&lt;String&gt; otherConfigItems =</span>
+<span class="fc" id="L121">        existingConfigItems(configurationFile.toPath()).entrySet().parallelStream()</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">            .filter(listType -&gt; !listType.getKey().equals(allowlistType))</span>
+<span class="fc" id="L123">            .map(keyVal -&gt; valueListToTomlArray(keyVal.getKey(), keyVal.getValue()))</span>
+<span class="fc" id="L124">            .collect(Collectors.toList());</span>
+
+<span class="fc" id="L126">    Files.write(</span>
+<span class="fc" id="L127">        configurationFile.toPath(),</span>
+        otherConfigItems,
+        StandardOpenOption.WRITE,
+        StandardOpenOption.TRUNCATE_EXISTING);
+<span class="fc" id="L131">  }</span>
+
+  @VisibleForTesting
+  public static void addNewConfigItem(
+      final ALLOWLIST_TYPE allowlistType,
+      final Collection&lt;String&gt; allowlistValues,
+      final Path configFilePath)
+      throws IOException {
+<span class="fc" id="L139">    String newConfigItem = valueListToTomlArray(allowlistType, allowlistValues);</span>
+
+<span class="fc" id="L141">    Files.write(</span>
+        configFilePath,
+<span class="fc" id="L143">        newConfigItem.getBytes(Charsets.UTF_8),</span>
+        StandardOpenOption.WRITE,
+        StandardOpenOption.APPEND);
+<span class="fc" id="L146">  }</span>
+
+  @VisibleForTesting
+  void addNewConfigItem(
+      final ALLOWLIST_TYPE allowlistType, final Collection&lt;String&gt; allowlistValues)
+      throws IOException {
+<span class="fc" id="L152">    addNewConfigItem(allowlistType, allowlistValues, configurationFile.toPath());</span>
+<span class="fc" id="L153">  }</span>
+
+  private static String valueListToTomlArray(
+      final ALLOWLIST_TYPE allowlistType, final Collection&lt;String&gt; allowlistValues) {
+<span class="fc" id="L157">    return String.format(</span>
+        &quot;%s=[%s]&quot;,
+<span class="fc" id="L159">        allowlistType.getTomlKey(),</span>
+<span class="fc" id="L160">        allowlistValues.parallelStream()</span>
+<span class="fc" id="L161">            .map(uri -&gt; String.format(&quot;\&quot;%s\&quot;&quot;, uri))</span>
+<span class="fc" id="L162">            .collect(Collectors.joining(&quot;,&quot;)));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

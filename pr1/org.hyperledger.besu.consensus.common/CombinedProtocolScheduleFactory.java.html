@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CombinedProtocolScheduleFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common</a> &gt; <span class="el_source">CombinedProtocolScheduleFactory.java</span></div><h1>CombinedProtocolScheduleFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.consensus.common.bft.BftProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.DefaultProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ScheduledProtocolSpec;
+
+import java.math.BigInteger;
+import java.util.NavigableSet;
+import java.util.Optional;
+import java.util.function.Predicate;
+
+/** The Combined protocol schedule factory. */
+<span class="fc" id="L30">public class CombinedProtocolScheduleFactory {</span>
+
+  /**
+   * Create protocol schedule.
+   *
+   * @param forkSpecs the fork specs
+   * @param chainId the chain id
+   * @return the protocol schedule
+   */
+  public BftProtocolSchedule create(
+      final NavigableSet&lt;ForkSpec&lt;ProtocolSchedule&gt;&gt; forkSpecs,
+      final Optional&lt;BigInteger&gt; chainId) {
+<span class="fc" id="L42">    final BftProtocolSchedule combinedProtocolSchedule =</span>
+        new BftProtocolSchedule(new DefaultProtocolSchedule(chainId));
+<span class="fc bfc" id="L44" title="All 2 branches covered.">    for (ForkSpec&lt;ProtocolSchedule&gt; spec : forkSpecs) {</span>
+<span class="fc" id="L45">      checkState(</span>
+<span class="fc" id="L46">          spec.getValue() instanceof DefaultProtocolSchedule,</span>
+          &quot;Consensus migration requires a DefaultProtocolSchedule&quot;);
+<span class="fc" id="L48">      final BftProtocolSchedule protocolSchedule =</span>
+<span class="fc" id="L49">          new BftProtocolSchedule((DefaultProtocolSchedule) spec.getValue());</span>
+
+<span class="fc" id="L51">      final Optional&lt;Long&gt; endBlock =</span>
+<span class="fc" id="L52">          Optional.ofNullable(forkSpecs.higher(spec)).map(ForkSpec::getBlock);</span>
+<span class="fc" id="L53">      protocolSchedule.getScheduledProtocolSpecs().stream()</span>
+<span class="fc" id="L54">          .filter(protocolSpecMatchesConsensusBlockRange(spec.getBlock(), endBlock))</span>
+<span class="fc" id="L55">          .forEach(</span>
+              s -&gt; {
+<span class="fc bfc" id="L57" title="All 2 branches covered.">                if (s instanceof ScheduledProtocolSpec.TimestampProtocolSpec) {</span>
+<span class="fc" id="L58">                  combinedProtocolSchedule.putTimestampMilestone(s.fork().milestone(), s.spec());</span>
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">                } else if (s instanceof ScheduledProtocolSpec.BlockNumberProtocolSpec) {</span>
+<span class="fc" id="L60">                  combinedProtocolSchedule.putBlockNumberMilestone(s.fork().milestone(), s.spec());</span>
+                } else {
+<span class="nc" id="L62">                  throw new IllegalStateException(</span>
+<span class="nc" id="L63">                      &quot;Unexpected milestone: &quot; + s + &quot; for milestone: &quot; + s.fork().milestone());</span>
+                }
+<span class="fc" id="L65">              });</span>
+
+      // When moving to a new consensus mechanism we want to use the last milestone but created by
+      // our consensus mechanism's BesuControllerBuilder so any additional rules are applied
+<span class="fc bfc" id="L69" title="All 2 branches covered.">      if (spec.getBlock() &gt; 0) {</span>
+<span class="fc" id="L70">        combinedProtocolSchedule.putBlockNumberMilestone(</span>
+<span class="fc" id="L71">            spec.getBlock(), protocolSchedule.getByBlockNumberOrTimestamp(spec.getBlock(), 0L));</span>
+      }
+<span class="fc" id="L73">    }</span>
+<span class="fc" id="L74">    return combinedProtocolSchedule;</span>
+  }
+
+  private Predicate&lt;ScheduledProtocolSpec&gt; protocolSpecMatchesConsensusBlockRange(
+      final long startBlock, final Optional&lt;Long&gt; endBlock) {
+<span class="fc" id="L79">    return scheduledProtocolSpec -&gt;</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">        scheduledProtocolSpec.fork().milestone() &gt;= startBlock</span>
+<span class="fc bfc" id="L81" title="All 4 branches covered.">            &amp;&amp; endBlock.map(b -&gt; scheduledProtocolSpec.fork().milestone() &lt; b).orElse(true);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

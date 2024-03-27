@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GetNodeDataFromPeerTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">GetNodeDataFromPeerTask.java</span></div><h1>GetNodeDataFromPeerTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import static java.util.Collections.emptyMap;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.PendingPeerRequest;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV63;
+import org.hyperledger.besu.ethereum.eth.messages.NodeDataMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class GetNodeDataFromPeerTask extends AbstractPeerRequestTask&lt;Map&lt;Hash, Bytes&gt;&gt; {
+
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(GetNodeDataFromPeerTask.class);</span>
+
+  private final Set&lt;Hash&gt; hashes;
+  private final long pivotBlockNumber;
+
+  private GetNodeDataFromPeerTask(
+      final EthContext ethContext,
+      final Collection&lt;Hash&gt; hashes,
+      final long pivotBlockNumber,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L52">    super(ethContext, EthPV63.GET_NODE_DATA, metricsSystem);</span>
+<span class="fc" id="L53">    this.hashes = new HashSet&lt;&gt;(hashes);</span>
+<span class="fc" id="L54">    this.pivotBlockNumber = pivotBlockNumber;</span>
+<span class="fc" id="L55">  }</span>
+
+  public static GetNodeDataFromPeerTask forHashes(
+      final EthContext ethContext,
+      final Collection&lt;Hash&gt; hashes,
+      final long pivotBlockNumber,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L62">    return new GetNodeDataFromPeerTask(ethContext, hashes, pivotBlockNumber, metricsSystem);</span>
+  }
+
+  @Override
+  protected PendingPeerRequest sendRequest() {
+<span class="fc" id="L67">    return sendRequestToPeer(</span>
+        peer -&gt; {
+<span class="fc" id="L69">          LOG.atTrace()</span>
+<span class="fc" id="L70">              .setMessage(&quot;Requesting {} node data entries from peer {}...&quot;)</span>
+<span class="fc" id="L71">              .addArgument(hashes::size)</span>
+<span class="fc" id="L72">              .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L73">              .log();</span>
+<span class="fc" id="L74">          return peer.getNodeData(hashes);</span>
+        },
+        pivotBlockNumber);
+  }
+
+  @Override
+  protected Optional&lt;Map&lt;Hash, Bytes&gt;&gt; processResponse(
+      final boolean streamClosed, final MessageData message, final EthPeer peer) {
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (streamClosed) {</span>
+      // We don't record this as a useless response because it's impossible to know if a peer has
+      // the data we're requesting.
+<span class="fc" id="L85">      return Optional.of(emptyMap());</span>
+    }
+<span class="fc" id="L87">    final NodeDataMessage nodeDataMessage = NodeDataMessage.readFrom(message);</span>
+<span class="fc" id="L88">    final List&lt;Bytes&gt; nodeData = nodeDataMessage.nodeData();</span>
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    if (nodeData.size() &gt; hashes.size()) {</span>
+      // Can't be the response to our request
+<span class="nc" id="L91">      return Optional.empty();</span>
+    }
+<span class="fc" id="L93">    return mapNodeDataByHash(nodeData);</span>
+  }
+
+  private Optional&lt;Map&lt;Hash, Bytes&gt;&gt; mapNodeDataByHash(final List&lt;Bytes&gt; nodeData) {
+<span class="fc" id="L97">    final Map&lt;Hash, Bytes&gt; nodeDataByHash = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    for (final Bytes data : nodeData) {</span>
+<span class="fc" id="L99">      final Hash hash = Hash.hash(data);</span>
+<span class="pc bpc" id="L100" title="1 of 2 branches missed.">      if (!hashes.contains(hash)) {</span>
+<span class="nc" id="L101">        return Optional.empty();</span>
+      }
+<span class="fc" id="L103">      nodeDataByHash.put(hash, data);</span>
+<span class="fc" id="L104">    }</span>
+<span class="fc" id="L105">    return Optional.of(nodeDataByHash);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

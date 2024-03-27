@@ -1,0 +1,427 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PipelineBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.pipeline</a> &gt; <span class="el_source">PipelineBuilder.java</span></div><h1>PipelineBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.pipeline;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singleton;
+
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+/**
+ * Supports building a new pipeline. Pipelines are comprised of a source, various processing stages
+ * and a consumer, each of which run in their own thread.
+ *
+ * &lt;p&gt;The pipeline completes when all items from the source have passed through each stage and are
+ * received by the consumer. The pipeline will halt immediately if an exception is thrown from any
+ * processing stage.
+ *
+ * @param &lt;I&gt; the type of item input to the very start of this pipeline.
+ * @param &lt;T&gt; the output type of the last stage in the pipeline.
+ */
+public class PipelineBuilder&lt;I, T&gt; {
+
+  private final Pipe&lt;I&gt; inputPipe;
+  private final Collection&lt;Stage&gt; stages;
+  private final Collection&lt;Pipe&lt;?&gt;&gt; pipes;
+  private final String lastStageName;
+  private final ReadPipe&lt;T&gt; pipeEnd;
+  private final int bufferSize;
+  private final LabelledMetric&lt;Counter&gt; outputCounter;
+  private final boolean tracingEnabled;
+  private final String pipelineName;
+
+  /**
+   * Instantiates a new Pipeline builder.
+   *
+   * @param inputPipe the input pipe
+   * @param stages the stages
+   * @param pipes the pipes
+   * @param lastStageName the last stage name
+   * @param pipeEnd the pipe end
+   * @param bufferSize the buffer size
+   * @param outputCounter the output counter
+   * @param tracingEnabled the tracing enabled
+   * @param pipelineName the pipeline name
+   */
+  public PipelineBuilder(
+      final Pipe&lt;I&gt; inputPipe,
+      final Collection&lt;Stage&gt; stages,
+      final Collection&lt;Pipe&lt;?&gt;&gt; pipes,
+      final String lastStageName,
+      final ReadPipe&lt;T&gt; pipeEnd,
+      final int bufferSize,
+      final LabelledMetric&lt;Counter&gt; outputCounter,
+      final boolean tracingEnabled,
+<span class="fc" id="L79">      final String pipelineName) {</span>
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">    checkArgument(!pipes.isEmpty(), &quot;Must have at least one pipe in a pipeline&quot;);</span>
+<span class="fc" id="L81">    this.lastStageName = lastStageName;</span>
+<span class="fc" id="L82">    this.outputCounter = outputCounter;</span>
+<span class="fc" id="L83">    this.inputPipe = inputPipe;</span>
+<span class="fc" id="L84">    this.stages = stages;</span>
+<span class="fc" id="L85">    this.pipes = pipes;</span>
+<span class="fc" id="L86">    this.pipeEnd = pipeEnd;</span>
+<span class="fc" id="L87">    this.bufferSize = bufferSize;</span>
+<span class="fc" id="L88">    this.tracingEnabled = tracingEnabled;</span>
+<span class="fc" id="L89">    this.pipelineName = pipelineName;</span>
+<span class="fc" id="L90">  }</span>
+
+  /**
+   * Create a new pipeline that processes inputs from &lt;i&gt;source&lt;/i&gt;. The pipeline completes when
+   * &lt;i&gt;source&lt;/i&gt; returns &lt;code&gt;false&lt;/code&gt; from {@link Iterator#hasNext()} and the last item has
+   * been reached the end of the pipeline.
+   *
+   * @param &lt;T&gt; the type of items input into the pipeline.
+   * @param sourceName the name of this stage. Used as the label for the output count metric.
+   * @param source the source to pull items from for processing.
+   * @param bufferSize the number of items to be buffered between each stage in the pipeline.
+   * @param itemCounter the counter to increment for each output of a stage. Must accept two labels,
+   *     the stage name and action (output or drained).
+   * @param tracingEnabled whether this pipeline should be traced
+   * @param pipelineName the name of the pipeline for tracing purposes
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public static &lt;T&gt; PipelineBuilder&lt;T, T&gt; createPipelineFrom(
+      final String sourceName,
+      final Iterator&lt;T&gt; source,
+      final int bufferSize,
+      final LabelledMetric&lt;Counter&gt; itemCounter,
+      final boolean tracingEnabled,
+      final String pipelineName) {
+<span class="fc" id="L114">    final Pipe&lt;T&gt; pipe = createPipe(bufferSize, sourceName, itemCounter);</span>
+<span class="fc" id="L115">    final IteratorSourceStage&lt;T&gt; sourceStage = new IteratorSourceStage&lt;&gt;(sourceName, source, pipe);</span>
+<span class="fc" id="L116">    return new PipelineBuilder&lt;&gt;(</span>
+        pipe,
+<span class="fc" id="L118">        singleton(sourceStage),</span>
+<span class="fc" id="L119">        singleton(pipe),</span>
+        sourceName,
+        pipe,
+        bufferSize,
+        itemCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  /**
+   * Create a new pipeline that processes inputs added to &lt;i&gt;pipe&lt;/i&gt;. The pipeline completes when
+   * &lt;i&gt;pipe&lt;/i&gt; is closed and the last item has been reached the end of the pipeline.
+   *
+   * @param &lt;T&gt; the type of items input into the pipeline.
+   * @param sourceName the name of this stage. Used as the label for the output count metric.
+   * @param bufferSize the number of items to be buffered between each stage in the pipeline.
+   * @param outputCounter the counter to increment for each output of a stage. Must have a single
+   *     label which will be filled with the stage name.
+   * @param tracingEnabled whether this pipeline should be traced
+   * @param pipelineName the name of the pipeline for tracing purposes
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public static &lt;T&gt; PipelineBuilder&lt;T, T&gt; createPipeline(
+      final String sourceName,
+      final int bufferSize,
+      final LabelledMetric&lt;Counter&gt; outputCounter,
+      final boolean tracingEnabled,
+      final String pipelineName) {
+<span class="fc" id="L147">    final Pipe&lt;T&gt; pipe = createPipe(bufferSize, sourceName, outputCounter);</span>
+<span class="fc" id="L148">    return new PipelineBuilder&lt;&gt;(</span>
+        pipe,
+<span class="fc" id="L150">        emptyList(),</span>
+<span class="fc" id="L151">        singleton(pipe),</span>
+        sourceName,
+        pipe,
+        bufferSize,
+        outputCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  /**
+   * Adds a 1-to-1 processing stage to the pipeline. A single thread processes each item in the
+   * pipeline with &lt;i&gt;processor&lt;/i&gt; outputting its return value to the next stage.
+   *
+   * @param &lt;O&gt; the output type for this processing step.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param processor the processing to apply to each item.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenProcess(
+      final String stageName, final Function&lt;T, O&gt; processor) {
+<span class="fc" id="L171">    final Processor&lt;T, O&gt; singleStepStage = new MapProcessor&lt;&gt;(processor);</span>
+<span class="fc" id="L172">    return addStage(singleStepStage, stageName);</span>
+  }
+
+  /**
+   * Adds a 1-to-1 processing stage to the pipeline. Multiple threads process items in the pipeline
+   * concurrently with &lt;i&gt;processor&lt;/i&gt; outputting its return value to the next stage.
+   *
+   * &lt;p&gt;Note: The order of items is not preserved.
+   *
+   * @param &lt;O&gt; the output type for this processing step.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param processor the processing to apply to each item.
+   * @param numberOfThreads the number of threads to use for processing.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenProcessInParallel(
+      final String stageName, final Function&lt;T, O&gt; processor, final int numberOfThreads) {
+<span class="fc" id="L189">    return thenProcessInParallel(</span>
+<span class="fc" id="L190">        stageName, () -&gt; new MapProcessor&lt;&gt;(processor), numberOfThreads, bufferSize);</span>
+  }
+
+  /**
+   * Adds a 1-to-1, asynchronous processing stage to the pipeline. A single thread reads items from
+   * the input and calls &lt;i&gt;processor&lt;/i&gt; to begin processing. While a single thread is used to
+   * begin processing, up to &lt;i&gt;maxConcurrency&lt;/i&gt; items may be in progress concurrently. When the
+   * returned {@link CompletableFuture} completes successfully the result is passed to the next
+   * stage.
+   *
+   * &lt;p&gt;If the returned {@link CompletableFuture} completes exceptionally the pipeline will abort.
+   *
+   * &lt;p&gt;Note: The order of items is not preserved.
+   *
+   * @param &lt;O&gt; the output type for this processing step.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param processor the processing to apply to each item.
+   * @param maxConcurrency the maximum number of items being processed concurrently.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenProcessAsync(
+      final String stageName,
+      final Function&lt;T, CompletableFuture&lt;O&gt;&gt; processor,
+      final int maxConcurrency) {
+<span class="fc" id="L214">    return addStage(new AsyncOperationProcessor&lt;&gt;(processor, maxConcurrency, false), stageName);</span>
+  }
+
+  /**
+   * Adds a 1-to-1, asynchronous processing stage to the pipeline. A single thread reads items from
+   * the input and calls &lt;i&gt;processor&lt;/i&gt; to begin processing. While a single thread is used to
+   * begin processing, up to &lt;i&gt;maxConcurrency&lt;/i&gt; items may be in progress concurrently. As each
+   * returned {@link CompletableFuture} completes successfully the result is passed to the next
+   * stage in order.
+   *
+   * &lt;p&gt;If the returned {@link CompletableFuture} completes exceptionally the pipeline will abort.
+   *
+   * &lt;p&gt;Note: While processing may occur concurrently, order is preserved when results are output.
+   *
+   * @param &lt;O&gt; the output type for this processing step.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param processor the processing to apply to each item.
+   * @param maxConcurrency the maximum number of items being processed concurrently.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenProcessAsyncOrdered(
+      final String stageName,
+      final Function&lt;T, CompletableFuture&lt;O&gt;&gt; processor,
+      final int maxConcurrency) {
+<span class="fc" id="L238">    return addStage(new AsyncOperationProcessor&lt;&gt;(processor, maxConcurrency, true), stageName);</span>
+  }
+
+  /**
+   * Batches items into groups of at most &lt;i&gt;maximumBatchSize&lt;/i&gt;. Batches are created eagerly to
+   * minimize delay so may not be full.
+   *
+   * &lt;p&gt;Order of items is preserved.
+   *
+   * &lt;p&gt;The output buffer size is reduced to &lt;code&gt;bufferSize / maximumBatchSize + 1&lt;/code&gt;.
+   *
+   * @param maximumBatchSize the maximum number of items to include in a batch.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public PipelineBuilder&lt;I, List&lt;T&gt;&gt; inBatches(final int maximumBatchSize) {
+<span class="pc bpc" id="L253" title="1 of 2 branches missed.">    checkArgument(maximumBatchSize &gt; 0, &quot;Maximum batch size must be greater than 0&quot;);</span>
+<span class="fc" id="L254">    return new PipelineBuilder&lt;&gt;(</span>
+        inputPipe,
+        stages,
+        pipes,
+        lastStageName,
+        new BatchingReadPipe&lt;&gt;(
+            pipeEnd,
+            maximumBatchSize,
+<span class="fc" id="L262">            outputCounter.labels(lastStageName + &quot;_outputPipe&quot;, &quot;batches&quot;)),</span>
+<span class="fc" id="L263">        (int) Math.ceil(((double) bufferSize) / maximumBatchSize),</span>
+        outputCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  /**
+   * Batches items into groups of at most &lt;i&gt;maximumBatchSize&lt;/i&gt;. Batches are created eagerly to
+   * minimize delay so may not be full.
+   *
+   * &lt;p&gt;Order of items is preserved.
+   *
+   * &lt;p&gt;The output buffer size is reduced to &lt;code&gt;bufferSize / maximumBatchSize + 1&lt;/code&gt;.
+   *
+   * @param maximumBatchSize the maximum number of items to include in a batch.
+   * @param stopBatchCondition the condition before ending the batch
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public PipelineBuilder&lt;I, List&lt;T&gt;&gt; inBatches(
+      final int maximumBatchSize, final Function&lt;List&lt;T&gt;, Integer&gt; stopBatchCondition) {
+<span class="nc" id="L283">    return new PipelineBuilder&lt;&gt;(</span>
+        inputPipe,
+        stages,
+        pipes,
+        lastStageName,
+        new BatchingReadPipe&lt;&gt;(
+            pipeEnd,
+            maximumBatchSize,
+<span class="nc" id="L291">            outputCounter.labels(lastStageName + &quot;_outputPipe&quot;, &quot;batches&quot;),</span>
+            stopBatchCondition),
+<span class="nc" id="L293">        (int) Math.ceil(((double) bufferSize) / maximumBatchSize),</span>
+        outputCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  /**
+   * Adds a 1-to-many processing stage to the pipeline. For each item in the stream, &lt;i&gt;mapper&lt;/i&gt;
+   * is called and each item of the {@link Stream} it returns is output as an individual item. The
+   * returned Stream may be empty to remove an item.
+   *
+   * &lt;p&gt;This can be used to reverse the effect of {@link #inBatches(int)} with:
+   *
+   * &lt;pre&gt;thenFlatMap(List::stream, newBufferSize)&lt;/pre&gt;
+   *
+   * @param &lt;O&gt; the type of items to be output from this stage.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param mapper the function to process each item with.
+   * @param newBufferSize the output buffer size to use from this stage onwards.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenFlatMap(
+      final String stageName, final Function&lt;T, Stream&lt;O&gt;&gt; mapper, final int newBufferSize) {
+<span class="fc" id="L316">    return addStage(new FlatMapProcessor&lt;&gt;(mapper), newBufferSize, stageName);</span>
+  }
+
+  /**
+   * Adds a 1-to-many processing stage to the pipeline. For each item in the stream, &lt;i&gt;mapper&lt;/i&gt;
+   * is called and each item of the {@link Stream} it returns is output as an individual item. The
+   * returned Stream may be empty to remove an item. Multiple threads process items in the pipeline
+   * concurrently.
+   *
+   * &lt;p&gt;This can be used to reverse the effect of {@link #inBatches(int)} with:
+   *
+   * &lt;pre&gt;thenFlatMap(List::stream, newBufferSize)&lt;/pre&gt;
+   *
+   * @param &lt;O&gt; the type of items to be output from this stage.
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param mapper the function to process each item with.
+   * @param numberOfThreads the number of threads to use for processing.
+   * @param newBufferSize the output buffer size to use from this stage onwards.
+   * @return a {@link PipelineBuilder} ready to extend the pipeline with additional stages.
+   */
+  public &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenFlatMapInParallel(
+      final String stageName,
+      final Function&lt;T, Stream&lt;O&gt;&gt; mapper,
+      final int numberOfThreads,
+      final int newBufferSize) {
+<span class="fc" id="L341">    return thenProcessInParallel(</span>
+<span class="fc" id="L342">        stageName, () -&gt; new FlatMapProcessor&lt;&gt;(mapper), numberOfThreads, newBufferSize);</span>
+  }
+
+  /**
+   * End the pipeline with a {@link Consumer} that is the last stage of the pipeline.
+   *
+   * @param stageName the name of this stage. Used as the label for the output count metric.
+   * @param completer the {@link Consumer} that accepts the final output of the pipeline.
+   * @return the constructed pipeline ready to execute.
+   */
+  public Pipeline&lt;I&gt; andFinishWith(final String stageName, final Consumer&lt;T&gt; completer) {
+<span class="fc" id="L353">    return new Pipeline&lt;&gt;(</span>
+        inputPipe,
+        pipelineName,
+        tracingEnabled,
+        stages,
+        pipes,
+        new CompleterStage&lt;&gt;(stageName, pipeEnd, completer));
+  }
+
+  private &lt;O&gt; PipelineBuilder&lt;I, O&gt; thenProcessInParallel(
+      final String stageName,
+      final Supplier&lt;Processor&lt;T, O&gt;&gt; createProcessor,
+      final int numberOfThreads,
+      final int newBufferSize) {
+<span class="fc" id="L367">    final Pipe&lt;O&gt; newPipeEnd = createPipe(newBufferSize, stageName, outputCounter);</span>
+<span class="fc" id="L368">    final WritePipe&lt;O&gt; outputPipe = new SharedWritePipe&lt;&gt;(newPipeEnd, numberOfThreads);</span>
+<span class="fc" id="L369">    final ArrayList&lt;Stage&gt; newStages = new ArrayList&lt;&gt;(stages);</span>
+<span class="fc bfc" id="L370" title="All 2 branches covered.">    for (int i = 0; i &lt; numberOfThreads; i++) {</span>
+<span class="fc" id="L371">      final Stage processStage =</span>
+<span class="fc" id="L372">          new ProcessingStage&lt;&gt;(stageName, pipeEnd, outputPipe, createProcessor.get());</span>
+<span class="fc" id="L373">      newStages.add(processStage);</span>
+    }
+<span class="fc" id="L375">    return new PipelineBuilder&lt;&gt;(</span>
+        inputPipe,
+        newStages,
+<span class="fc" id="L378">        concat(pipes, newPipeEnd),</span>
+        stageName,
+        newPipeEnd,
+        newBufferSize,
+        outputCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  private &lt;O&gt; PipelineBuilder&lt;I, O&gt; addStage(
+      final Processor&lt;T, O&gt; processor, final String stageName) {
+<span class="fc" id="L389">    return addStage(processor, bufferSize, stageName);</span>
+  }
+
+  private &lt;O&gt; PipelineBuilder&lt;I, O&gt; addStage(
+      final Processor&lt;T, O&gt; processor, final int newBufferSize, final String stageName) {
+<span class="fc" id="L394">    final Pipe&lt;O&gt; outputPipe = createPipe(newBufferSize, stageName, outputCounter);</span>
+<span class="fc" id="L395">    final Stage processStage = new ProcessingStage&lt;&gt;(stageName, pipeEnd, outputPipe, processor);</span>
+<span class="fc" id="L396">    final List&lt;Stage&gt; newStages = concat(stages, processStage);</span>
+<span class="fc" id="L397">    return new PipelineBuilder&lt;&gt;(</span>
+        inputPipe,
+        newStages,
+<span class="fc" id="L400">        concat(pipes, outputPipe),</span>
+<span class="fc" id="L401">        processStage.getName(),</span>
+        outputPipe,
+        newBufferSize,
+        outputCounter,
+        tracingEnabled,
+        pipelineName);
+  }
+
+  private &lt;X&gt; List&lt;X&gt; concat(final Collection&lt;X&gt; existing, final X newItem) {
+<span class="fc" id="L410">    final List&lt;X&gt; newList = new ArrayList&lt;&gt;(existing);</span>
+<span class="fc" id="L411">    newList.add(newItem);</span>
+<span class="fc" id="L412">    return newList;</span>
+  }
+
+  private static &lt;O&gt; Pipe&lt;O&gt; createPipe(
+      final int newBufferSize,
+      final String stageName,
+      final LabelledMetric&lt;Counter&gt; outputCounter) {
+<span class="fc" id="L419">    final String labelName = stageName + &quot;_outputPipe&quot;;</span>
+<span class="fc" id="L420">    return new Pipe&lt;&gt;(</span>
+        newBufferSize,
+<span class="fc" id="L422">        outputCounter.labels(labelName, &quot;added&quot;),</span>
+<span class="fc" id="L423">        outputCounter.labels(labelName, &quot;removed&quot;),</span>
+<span class="fc" id="L424">        outputCounter.labels(labelName, &quot;aborted&quot;));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

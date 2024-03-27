@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PendingTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">PendingTransaction.java</span></div><h1>PendingTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Besu contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import org.hyperledger.besu.datatypes.AccessListEntry;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.Transaction;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Tracks the additional metadata associated with transactions to enable prioritization for mining
+ * and deciding which transactions to drop when the transaction pool reaches its size limit.
+ */
+public abstract class PendingTransaction
+    implements org.hyperledger.besu.datatypes.PendingTransaction {
+  static final int NOT_INITIALIZED = -1;
+  static final int FRONTIER_AND_ACCESS_LIST_SHALLOW_MEMORY_SIZE = 888;
+  static final int EIP1559_AND_EIP4844_SHALLOW_MEMORY_SIZE = 1000;
+  static final int OPTIONAL_TO_MEMORY_SIZE = 112;
+  static final int OPTIONAL_CHAIN_ID_MEMORY_SIZE = 80;
+  static final int PAYLOAD_BASE_MEMORY_SIZE = 32;
+  static final int ACCESS_LIST_STORAGE_KEY_MEMORY_SIZE = 32;
+  static final int ACCESS_LIST_ENTRY_BASE_MEMORY_SIZE = 248;
+  static final int OPTIONAL_ACCESS_LIST_MEMORY_SIZE = 24;
+  static final int VERSIONED_HASH_SIZE = 96;
+  static final int BASE_LIST_SIZE = 48;
+  static final int BASE_OPTIONAL_SIZE = 16;
+  static final int KZG_COMMITMENT_OR_PROOF_SIZE = 112;
+  static final int BLOB_SIZE = 131136;
+  static final int BLOBS_WITH_COMMITMENTS_SIZE = 40;
+  static final int PENDING_TRANSACTION_MEMORY_SIZE = 40;
+<span class="fc" id="L49">  private static final AtomicLong TRANSACTIONS_ADDED = new AtomicLong();</span>
+  private final Transaction transaction;
+  private final long addedAt;
+  private final long sequence; // Allows prioritization based on order transactions are added
+
+<span class="fc" id="L54">  private int memorySize = NOT_INITIALIZED;</span>
+
+  private PendingTransaction(
+<span class="fc" id="L57">      final Transaction transaction, final long addedAt, final long sequence) {</span>
+<span class="fc" id="L58">    this.transaction = transaction;</span>
+<span class="fc" id="L59">    this.addedAt = addedAt;</span>
+<span class="fc" id="L60">    this.sequence = sequence;</span>
+<span class="fc" id="L61">  }</span>
+
+  private PendingTransaction(final Transaction transaction, final long addedAt) {
+<span class="fc" id="L64">    this(transaction, addedAt, TRANSACTIONS_ADDED.getAndIncrement());</span>
+<span class="fc" id="L65">  }</span>
+
+  public static PendingTransaction newPendingTransaction(
+      final Transaction transaction, final boolean isLocal, final boolean hasPriority) {
+<span class="fc" id="L69">    return newPendingTransaction(transaction, isLocal, hasPriority, System.currentTimeMillis());</span>
+  }
+
+  public static PendingTransaction newPendingTransaction(
+      final Transaction transaction,
+      final boolean isLocal,
+      final boolean hasPriority,
+      final long addedAt) {
+<span class="fc bfc" id="L77" title="All 2 branches covered.">    if (isLocal) {</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">      if (hasPriority) {</span>
+<span class="fc" id="L79">        return new Local.Priority(transaction, addedAt);</span>
+      }
+<span class="fc" id="L81">      return new Local(transaction, addedAt);</span>
+    }
+<span class="fc bfc" id="L83" title="All 2 branches covered.">    if (hasPriority) {</span>
+<span class="fc" id="L84">      return new Remote.Priority(transaction, addedAt);</span>
+    }
+<span class="fc" id="L86">    return new Remote(transaction, addedAt);</span>
+  }
+
+  @Override
+  public Transaction getTransaction() {
+<span class="fc" id="L91">    return transaction;</span>
+  }
+
+  public Wei getGasPrice() {
+<span class="fc" id="L95">    return transaction.getGasPrice().orElse(Wei.ZERO);</span>
+  }
+
+  public long getSequence() {
+<span class="fc" id="L99">    return sequence;</span>
+  }
+
+  public long getNonce() {
+<span class="fc" id="L103">    return transaction.getNonce();</span>
+  }
+
+  public Address getSender() {
+<span class="fc" id="L107">    return transaction.getSender();</span>
+  }
+
+  public Hash getHash() {
+<span class="fc" id="L111">    return transaction.getHash();</span>
+  }
+
+  @Override
+  public long getAddedAt() {
+<span class="fc" id="L116">    return addedAt;</span>
+  }
+
+  public int memorySize() {
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (memorySize == NOT_INITIALIZED) {</span>
+<span class="fc" id="L121">      memorySize = computeMemorySize();</span>
+    }
+<span class="fc" id="L123">    return memorySize;</span>
+  }
+
+  public abstract PendingTransaction detachedCopy();
+
+  private int computeMemorySize() {
+<span class="pc bpc" id="L129" title="1 of 5 branches missed.">    return switch (transaction.getType()) {</span>
+<span class="fc" id="L130">          case FRONTIER -&gt; computeFrontierMemorySize();</span>
+<span class="fc" id="L131">          case ACCESS_LIST -&gt; computeAccessListMemorySize();</span>
+<span class="fc" id="L132">          case EIP1559 -&gt; computeEIP1559MemorySize();</span>
+<span class="fc" id="L133">          case BLOB -&gt; computeBlobMemorySize();</span>
+        }
+        + PENDING_TRANSACTION_MEMORY_SIZE;
+  }
+
+  private int computeFrontierMemorySize() {
+<span class="fc" id="L139">    return FRONTIER_AND_ACCESS_LIST_SHALLOW_MEMORY_SIZE</span>
+<span class="fc" id="L140">        + computePayloadMemorySize()</span>
+<span class="fc" id="L141">        + computeToMemorySize()</span>
+<span class="fc" id="L142">        + computeChainIdMemorySize();</span>
+  }
+
+  private int computeAccessListMemorySize() {
+<span class="fc" id="L146">    return FRONTIER_AND_ACCESS_LIST_SHALLOW_MEMORY_SIZE</span>
+<span class="fc" id="L147">        + computePayloadMemorySize()</span>
+<span class="fc" id="L148">        + computeToMemorySize()</span>
+<span class="fc" id="L149">        + computeChainIdMemorySize()</span>
+<span class="fc" id="L150">        + computeAccessListEntriesMemorySize();</span>
+  }
+
+  private int computeEIP1559MemorySize() {
+<span class="fc" id="L154">    return EIP1559_AND_EIP4844_SHALLOW_MEMORY_SIZE</span>
+<span class="fc" id="L155">        + computePayloadMemorySize()</span>
+<span class="fc" id="L156">        + computeToMemorySize()</span>
+<span class="fc" id="L157">        + computeChainIdMemorySize()</span>
+<span class="fc" id="L158">        + computeAccessListEntriesMemorySize();</span>
+  }
+
+  private int computeBlobMemorySize() {
+<span class="fc" id="L162">    return computeEIP1559MemorySize()</span>
+        + BASE_OPTIONAL_SIZE // for the versionedHashes field
+<span class="fc" id="L164">        + computeBlobWithCommitmentsMemorySize();</span>
+  }
+
+  private int computeBlobWithCommitmentsMemorySize() {
+<span class="fc" id="L168">    final int blobCount = transaction.getBlobCount();</span>
+
+<span class="fc" id="L170">    return BASE_OPTIONAL_SIZE</span>
+        + BLOBS_WITH_COMMITMENTS_SIZE
+        + (BASE_LIST_SIZE * 4)
+        + (KZG_COMMITMENT_OR_PROOF_SIZE * blobCount * 2)
+        + (VERSIONED_HASH_SIZE * blobCount)
+        + (BLOB_SIZE * blobCount);
+  }
+
+  private int computePayloadMemorySize() {
+<span class="fc bfc" id="L179" title="All 2 branches covered.">    return transaction.getPayload().size() &gt; 0</span>
+<span class="fc" id="L180">        ? PAYLOAD_BASE_MEMORY_SIZE + transaction.getPayload().size()</span>
+<span class="fc" id="L181">        : 0;</span>
+  }
+
+  private int computeToMemorySize() {
+<span class="fc bfc" id="L185" title="All 2 branches covered.">    if (transaction.getTo().isPresent()) {</span>
+<span class="fc" id="L186">      return OPTIONAL_TO_MEMORY_SIZE;</span>
+    }
+<span class="fc" id="L188">    return 0;</span>
+  }
+
+  private int computeChainIdMemorySize() {
+<span class="fc bfc" id="L192" title="All 2 branches covered.">    if (transaction.getChainId().isPresent()) {</span>
+<span class="fc" id="L193">      return OPTIONAL_CHAIN_ID_MEMORY_SIZE;</span>
+    }
+<span class="fc" id="L195">    return 0;</span>
+  }
+
+  private int computeAccessListEntriesMemorySize() {
+<span class="fc" id="L199">    return transaction</span>
+<span class="fc" id="L200">        .getAccessList()</span>
+<span class="fc" id="L201">        .map(</span>
+            al -&gt; {
+<span class="fc" id="L203">              int totalSize = OPTIONAL_ACCESS_LIST_MEMORY_SIZE;</span>
+<span class="fc" id="L204">              totalSize += al.size() * ACCESS_LIST_ENTRY_BASE_MEMORY_SIZE;</span>
+<span class="fc" id="L205">              totalSize +=</span>
+<span class="fc" id="L206">                  al.stream().map(AccessListEntry::storageKeys).mapToInt(List::size).sum()</span>
+                      * ACCESS_LIST_STORAGE_KEY_MEMORY_SIZE;
+<span class="fc" id="L208">              return totalSize;</span>
+            })
+<span class="fc" id="L210">        .orElse(0);</span>
+  }
+
+  public static List&lt;Transaction&gt; toTransactionList(
+      final Collection&lt;PendingTransaction&gt; transactionsInfo) {
+<span class="fc" id="L215">    return transactionsInfo.stream().map(PendingTransaction::getTransaction).toList();</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="fc bfc" id="L220" title="All 2 branches covered.">    if (this == o) {</span>
+<span class="fc" id="L221">      return true;</span>
+    }
+<span class="fc bfc" id="L223" title="All 4 branches covered.">    if (o == null || getClass() != o.getClass()) {</span>
+<span class="fc" id="L224">      return false;</span>
+    }
+
+<span class="fc" id="L227">    PendingTransaction that = (PendingTransaction) o;</span>
+
+<span class="fc bfc" id="L229" title="All 2 branches covered.">    return sequence == that.sequence;</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L234">    return 31 * (int) (sequence ^ (sequence &gt;&gt;&gt; 32));</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L239">    return &quot;Hash=&quot;</span>
+<span class="nc" id="L240">        + transaction.getHash().toShortHexString()</span>
+        + &quot;, nonce=&quot;
+<span class="nc" id="L242">        + transaction.getNonce()</span>
+        + &quot;, sender=&quot;
+<span class="nc" id="L244">        + transaction.getSender().toShortHexString()</span>
+        + &quot;, addedAt=&quot;
+        + addedAt
+        + &quot;, sequence=&quot;
+        + sequence
+        + &quot;, isLocal=&quot;
+<span class="nc" id="L250">        + isReceivedFromLocalSource()</span>
+        + &quot;, hasPriority=&quot;
+<span class="nc" id="L252">        + hasPriority()</span>
+        + '}';
+  }
+
+  public String toTraceLog() {
+<span class="nc" id="L257">    return &quot;{sequence: &quot;</span>
+        + sequence
+        + &quot;, addedAt: &quot;
+        + addedAt
+        + &quot;, isLocal=&quot;
+<span class="nc" id="L262">        + isReceivedFromLocalSource()</span>
+        + &quot;, hasPriority=&quot;
+<span class="nc" id="L264">        + hasPriority()</span>
+        + &quot;, &quot;
+<span class="nc" id="L266">        + transaction.toTraceLog()</span>
+        + &quot;}&quot;;
+  }
+
+  public static class Local extends PendingTransaction {
+
+    public Local(final Transaction transaction, final long addedAt) {
+<span class="fc" id="L273">      super(transaction, addedAt);</span>
+<span class="fc" id="L274">    }</span>
+
+    public Local(final Transaction transaction) {
+<span class="fc" id="L277">      this(transaction, System.currentTimeMillis());</span>
+<span class="fc" id="L278">    }</span>
+
+    private Local(final long sequence, final Transaction transaction) {
+<span class="fc" id="L281">      super(transaction, System.currentTimeMillis(), sequence);</span>
+<span class="fc" id="L282">    }</span>
+
+    @Override
+    public PendingTransaction detachedCopy() {
+<span class="fc" id="L286">      return new Local(getSequence(), getTransaction().detachedCopy());</span>
+    }
+
+    @Override
+    public boolean isReceivedFromLocalSource() {
+<span class="fc" id="L291">      return true;</span>
+    }
+
+    @Override
+    public boolean hasPriority() {
+<span class="fc" id="L296">      return false;</span>
+    }
+
+    public static class Priority extends Local {
+      public Priority(final Transaction transaction) {
+<span class="fc" id="L301">        this(transaction, System.currentTimeMillis());</span>
+<span class="fc" id="L302">      }</span>
+
+      public Priority(final Transaction transaction, final long addedAt) {
+<span class="fc" id="L305">        super(transaction, addedAt);</span>
+<span class="fc" id="L306">      }</span>
+
+      public Priority(final long sequence, final Transaction transaction) {
+<span class="fc" id="L309">        super(sequence, transaction);</span>
+<span class="fc" id="L310">      }</span>
+
+      @Override
+      public PendingTransaction detachedCopy() {
+<span class="fc" id="L314">        return new Priority(getSequence(), getTransaction().detachedCopy());</span>
+      }
+
+      @Override
+      public boolean hasPriority() {
+<span class="fc" id="L319">        return true;</span>
+      }
+    }
+  }
+
+  public static class Remote extends PendingTransaction {
+
+    public Remote(final Transaction transaction, final long addedAt) {
+<span class="fc" id="L327">      super(transaction, addedAt);</span>
+<span class="fc" id="L328">    }</span>
+
+    public Remote(final Transaction transaction) {
+<span class="fc" id="L331">      this(transaction, System.currentTimeMillis());</span>
+<span class="fc" id="L332">    }</span>
+
+    private Remote(final long sequence, final Transaction transaction) {
+<span class="fc" id="L335">      super(transaction, System.currentTimeMillis(), sequence);</span>
+<span class="fc" id="L336">    }</span>
+
+    @Override
+    public PendingTransaction detachedCopy() {
+<span class="fc" id="L340">      return new Remote(getSequence(), getTransaction().detachedCopy());</span>
+    }
+
+    @Override
+    public boolean isReceivedFromLocalSource() {
+<span class="fc" id="L345">      return false;</span>
+    }
+
+    @Override
+    public boolean hasPriority() {
+<span class="fc" id="L350">      return false;</span>
+    }
+
+    public static class Priority extends Remote {
+      public Priority(final Transaction transaction) {
+<span class="nc" id="L355">        this(transaction, System.currentTimeMillis());</span>
+<span class="nc" id="L356">      }</span>
+
+      public Priority(final Transaction transaction, final long addedAt) {
+<span class="fc" id="L359">        super(transaction, addedAt);</span>
+<span class="fc" id="L360">      }</span>
+
+      public Priority(final long sequence, final Transaction transaction) {
+<span class="fc" id="L363">        super(sequence, transaction);</span>
+<span class="fc" id="L364">      }</span>
+
+      @Override
+      public PendingTransaction detachedCopy() {
+<span class="fc" id="L368">        return new Priority(getSequence(), getTransaction().detachedCopy());</span>
+      }
+
+      @Override
+      public boolean hasPriority() {
+<span class="fc" id="L373">        return true;</span>
+      }
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

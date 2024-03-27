@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>VmTraceGenerator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.vm</a> &gt; <span class="el_source">VmTraceGenerator.java</span></div><h1>VmTraceGenerator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.vm;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.TransactionTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.Quantity;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.Trace;
+import org.hyperledger.besu.ethereum.debug.TraceFrame;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.code.CodeV0;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.Optional;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class VmTraceGenerator {
+
+<span class="fc" id="L37">  private int currentIndex = 0;</span>
+  private VmTrace currentTrace;
+  private TraceFrame currentTraceFrame;
+  private String currentOperation;
+  private final TransactionTrace transactionTrace;
+<span class="fc" id="L42">  private final VmTrace rootVmTrace = new VmTrace();</span>
+<span class="fc" id="L43">  private final Deque&lt;VmTrace&gt; parentTraces = new ArrayDeque&lt;&gt;();</span>
+<span class="fc" id="L44">  private int lastDepth = 0;</span>
+
+<span class="fc" id="L46">  public VmTraceGenerator(final TransactionTrace transactionTrace) {</span>
+<span class="fc" id="L47">    this.transactionTrace = transactionTrace;</span>
+<span class="fc" id="L48">  }</span>
+
+  /**
+   * Generate a stream of trace result objects.
+   *
+   * @return a representation of generated traces.
+   */
+  public Stream&lt;Trace&gt; generateTraceStream() {
+<span class="fc" id="L56">    return Stream.of(generateTrace());</span>
+  }
+
+  /**
+   * Generate trace representation from the specified transaction trace.
+   *
+   * @return a representation of the trace.
+   */
+  private Trace generateTrace() {
+<span class="fc" id="L65">    parentTraces.add(rootVmTrace);</span>
+<span class="pc bpc" id="L66" title="2 of 4 branches missed.">    if (transactionTrace != null &amp;&amp; !transactionTrace.getTraceFrames().isEmpty()) {</span>
+<span class="fc" id="L67">      transactionTrace</span>
+<span class="fc" id="L68">          .getTransaction()</span>
+<span class="fc" id="L69">          .getInit()</span>
+<span class="fc" id="L70">          .map(Bytes::toHexString)</span>
+<span class="fc" id="L71">          .ifPresent(rootVmTrace::setCode);</span>
+<span class="fc" id="L72">      final Iterator&lt;TraceFrame&gt; iter = transactionTrace.getTraceFrames().iterator();</span>
+      Optional&lt;TraceFrame&gt; nextTraceFrame =
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">          iter.hasNext() ? Optional.of(iter.next()) : Optional.empty();</span>
+<span class="fc bfc" id="L75" title="All 2 branches covered.">      while (nextTraceFrame.isPresent()) {</span>
+<span class="fc" id="L76">        final TraceFrame traceFrame = nextTraceFrame.get();</span>
+<span class="fc bfc" id="L77" title="All 2 branches covered.">        nextTraceFrame = iter.hasNext() ? Optional.of(iter.next()) : Optional.empty();</span>
+<span class="fc" id="L78">        addFrame(traceFrame, nextTraceFrame);</span>
+<span class="fc" id="L79">      }</span>
+    }
+<span class="fc" id="L81">    return rootVmTrace;</span>
+  }
+
+  /**
+   * Add a trace frame to the VmTrace result object.
+   *
+   * @param frame the current trace frame
+   */
+  private void addFrame(final TraceFrame frame, final Optional&lt;TraceFrame&gt; nextTraceFrame) {
+<span class="fc" id="L90">    handleDepthDecreased(frame);</span>
+<span class="fc bfc" id="L91" title="All 2 branches covered.">    if (!mustIgnore(frame)) {</span>
+<span class="fc" id="L92">      initStep(frame);</span>
+<span class="fc" id="L93">      final VmOperation op = buildVmOperation();</span>
+<span class="fc" id="L94">      final VmOperationExecutionReport report = generateExecutionReport();</span>
+<span class="fc" id="L95">      generateTracingMemory(report);</span>
+<span class="fc" id="L96">      generateTracingPush(report);</span>
+<span class="fc" id="L97">      generateTracingStorage(report);</span>
+<span class="fc" id="L98">      handleDepthIncreased(op, report, nextTraceFrame);</span>
+<span class="fc" id="L99">      completeStep(frame, op, report);</span>
+<span class="fc" id="L100">      lastDepth = frame.getDepth();</span>
+    }
+<span class="fc" id="L102">  }</span>
+
+  private boolean mustIgnore(final TraceFrame frame) {
+<span class="fc bfc" id="L105" title="All 4 branches covered.">    if (&quot;STOP&quot;.equals(frame.getOpcode()) &amp;&amp; transactionTrace.getTraceFrames().size() == 1) {</span>
+<span class="fc" id="L106">      return true;</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">    } else if (frame.getExceptionalHaltReason().isPresent()) {</span>
+<span class="fc" id="L108">      final Optional&lt;ExceptionalHaltReason&gt; haltReason = frame.getExceptionalHaltReason();</span>
+<span class="fc bfc" id="L109" title="All 2 branches covered.">      return haltReason.get() != ExceptionalHaltReason.INVALID_JUMP_DESTINATION</span>
+<span class="fc bfc" id="L110" title="All 2 branches covered.">          &amp;&amp; haltReason.get() != ExceptionalHaltReason.INSUFFICIENT_GAS</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">          &amp;&amp; haltReason.get() != ExceptionalHaltReason.ILLEGAL_STATE_CHANGE;</span>
+    } else {
+<span class="fc" id="L113">      return frame.isVirtualOperation();</span>
+    }
+  }
+
+  private void completeStep(
+      final TraceFrame frame, final VmOperation op, final VmOperationExecutionReport report) {
+    // add the operation representation to the list of traces
+<span class="fc" id="L120">    final Optional&lt;ExceptionalHaltReason&gt; exceptionalHaltReason = frame.getExceptionalHaltReason();</span>
+<span class="fc bfc" id="L121" title="All 2 branches covered.">    if (frame.getDepth() &gt; 0</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">        &amp;&amp; exceptionalHaltReason.isPresent()</span>
+<span class="pc bpc" id="L123" title="1 of 2 branches missed.">        &amp;&amp; exceptionalHaltReason.get() == ExceptionalHaltReason.INSUFFICIENT_GAS) {</span>
+<span class="fc" id="L124">      op.setVmOperationExecutionReport(null);</span>
+    } else {
+<span class="fc" id="L126">      op.setVmOperationExecutionReport(report);</span>
+    }
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">    if (currentTrace != null) {</span>
+<span class="fc" id="L129">      currentTrace.add(op);</span>
+    }
+<span class="fc" id="L131">    currentIndex++;</span>
+<span class="fc" id="L132">  }</span>
+
+  private void handleDepthIncreased(
+      final VmOperation op,
+      final VmOperationExecutionReport report,
+      final Optional&lt;TraceFrame&gt; nextTraceFrame) {
+    // check if next frame depth has increased i.e the current operation is a call
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    switch (currentOperation) {</span>
+      case &quot;STATICCALL&quot;:
+      case &quot;DELEGATECALL&quot;:
+      case &quot;CALLCODE&quot;:
+      case &quot;CALL&quot;:
+      case &quot;CREATE&quot;:
+      case &quot;CREATE2&quot;:
+<span class="fc bfc" id="L146" title="All 4 branches covered.">        if (currentOperation.equals(&quot;CALL&quot;) || currentOperation.equals(&quot;DELEGATECALL&quot;)) {</span>
+<span class="fc" id="L147">          findReturnInCall(currentTraceFrame, currentIndex)</span>
+<span class="fc" id="L148">              .map(output -&gt; new Mem(output.getOutputData().toHexString(), 0))</span>
+<span class="fc" id="L149">              .ifPresent(report::setMem);</span>
+        }
+
+<span class="fc" id="L152">        findLastFrameInCall(currentTraceFrame, currentIndex)</span>
+<span class="fc" id="L153">            .ifPresent(</span>
+                lastFrameInCall -&gt; {
+<span class="fc" id="L155">                  report.setUsed(lastFrameInCall.getGasRemaining());</span>
+<span class="fc" id="L156">                  lastFrameInCall</span>
+<span class="fc" id="L157">                      .getStack()</span>
+<span class="pc bpc" id="L158" title="1 of 2 branches missed.">                      .filter(stack -&gt; stack.length &gt; 0)</span>
+<span class="fc" id="L159">                      .map(stack -&gt; stack[stack.length - 1])</span>
+<span class="fc" id="L160">                      .map(last -&gt; Quantity.create(UInt256.fromHexString(last.toHexString())))</span>
+<span class="fc" id="L161">                      .ifPresent(report::singlePush);</span>
+<span class="fc bfc" id="L162" title="All 2 branches covered.">                  if (!currentOperation.startsWith(&quot;CREATE&quot;)) {</span>
+<span class="fc" id="L163">                    lastFrameInCall</span>
+<span class="fc" id="L164">                        .getMaybeUpdatedMemory()</span>
+<span class="fc" id="L165">                        .map(mem -&gt; new Mem(mem.getValue().toHexString(), mem.getOffset()))</span>
+<span class="fc" id="L166">                        .ifPresent(report::setMem);</span>
+                  }
+<span class="fc" id="L168">                });</span>
+
+<span class="fc bfc" id="L170" title="All 2 branches covered.">        if (currentTraceFrame.getMaybeCode().map(Code::getSize).orElse(0) &gt; 0) {</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">          if (nextTraceFrame.map(TraceFrame::getDepth).orElse(0) &gt; currentTraceFrame.getDepth()) {</span>
+<span class="fc" id="L172">            op.setCost(currentTraceFrame.getGasRemainingPostExecution() + op.getCost());</span>
+<span class="fc" id="L173">            final VmTrace newSubTrace = new VmTrace();</span>
+<span class="fc" id="L174">            parentTraces.addLast(newSubTrace);</span>
+<span class="fc" id="L175">            op.setSub(newSubTrace);</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">          } else if (currentTraceFrame.getDepth() == 0) {</span>
+<span class="fc" id="L177">            op.setCost(</span>
+<span class="fc" id="L178">                currentTraceFrame.getGasRemaining()</span>
+<span class="fc" id="L179">                    - currentTraceFrame.getGasRemainingPostExecution());</span>
+<span class="fc" id="L180">            currentTraceFrame</span>
+<span class="fc" id="L181">                .getMaybeCode()</span>
+<span class="fc" id="L182">                .ifPresent(</span>
+                    code -&gt;
+<span class="fc" id="L184">                        op.setSub(</span>
+                            new VmTrace(
+<span class="fc" id="L186">                                currentTraceFrame.getMaybeCode().get().getBytes().toHexString())));</span>
+          } else {
+<span class="fc" id="L188">            op.setCost(op.getCost());</span>
+<span class="fc" id="L189">            op.setSub(null);</span>
+          }
+        } else {
+<span class="pc bpc" id="L192" title="1 of 2 branches missed.">          if (currentTraceFrame.getPrecompiledGasCost().isPresent()) {</span>
+<span class="nc" id="L193">            op.setCost(op.getCost() + currentTraceFrame.getPrecompiledGasCost().orElse(0L));</span>
+<span class="pc bpc" id="L194" title="1 of 4 branches missed.">          } else if ((currentOperation.equals(&quot;STATICCALL&quot;) || currentOperation.equals(&quot;CALL&quot;))</span>
+<span class="fc" id="L195">              &amp;&amp; nextTraceFrame.map(TraceFrame::getDepth).orElse(0)</span>
+<span class="pc bpc" id="L196" title="1 of 2 branches missed.">                  &gt; currentTraceFrame.getDepth()) {</span>
+<span class="fc" id="L197">            op.setCost(currentTraceFrame.getGasRemainingPostExecution() + op.getCost());</span>
+          }
+<span class="fc" id="L199">          op.setSub(new VmTrace());</span>
+        }
+<span class="fc" id="L201">        break;</span>
+      default:
+        break;
+    }
+<span class="fc" id="L205">  }</span>
+
+  private void handleDepthDecreased(final TraceFrame frame) {
+    // check if next frame depth has decreased i.e the current operation closes the parent trace
+<span class="fc bfc" id="L209" title="All 4 branches covered.">    if (currentTraceFrame != null &amp;&amp; frame.getDepth() &lt; lastDepth) {</span>
+<span class="fc" id="L210">      currentTrace = parentTraces.removeLast();</span>
+    }
+<span class="fc" id="L212">  }</span>
+
+  private VmOperation buildVmOperation() {
+<span class="fc" id="L215">    final VmOperation op = new VmOperation();</span>
+    // set gas cost and program counter
+<span class="fc" id="L217">    op.setCost(currentTraceFrame.getGasCost().orElse(0L));</span>
+<span class="fc" id="L218">    op.setPc(currentTraceFrame.getPc());</span>
+    // op.setOperation(currentOperation);
+<span class="fc" id="L220">    return op;</span>
+  }
+
+  private VmOperationExecutionReport generateExecutionReport() {
+<span class="fc" id="L224">    final VmOperationExecutionReport report = new VmOperationExecutionReport();</span>
+    // set gas remaining
+<span class="fc" id="L226">    report.setUsed(</span>
+<span class="fc" id="L227">        currentTraceFrame.getGasRemaining() - (currentTraceFrame.getGasCost().orElse(0L)));</span>
+<span class="fc" id="L228">    return report;</span>
+  }
+
+  private void generateTracingMemory(final VmOperationExecutionReport report) {
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    switch (currentOperation) {</span>
+      case &quot;CALLDATACOPY&quot;:
+      case &quot;CODECOPY&quot;:
+      case &quot;EXTCODECOPY&quot;:
+      case &quot;MLOAD&quot;:
+      case &quot;MSTORE&quot;:
+      case &quot;MSTORE8&quot;:
+      case &quot;RETURNDATACOPY&quot;:
+<span class="fc" id="L240">        currentTraceFrame</span>
+<span class="fc" id="L241">            .getMaybeUpdatedMemory()</span>
+<span class="fc" id="L242">            .map(</span>
+                updatedMemory -&gt;
+<span class="fc" id="L244">                    new Mem(updatedMemory.getValue().toHexString(), updatedMemory.getOffset()))</span>
+<span class="fc" id="L245">            .ifPresent(report::setMem);</span>
+<span class="fc" id="L246">        break;</span>
+      default:
+        break;
+    }
+<span class="fc" id="L250">  }</span>
+
+  private void generateTracingPush(final VmOperationExecutionReport report) {
+    // set push from stack elements if some elements have been produced
+<span class="fc bfc" id="L254" title="All 2 branches covered.">    if (currentTraceFrame.getStackItemsProduced() &gt; 0) {</span>
+<span class="fc" id="L255">      currentTraceFrame</span>
+<span class="fc" id="L256">          .getStackPostExecution()</span>
+<span class="pc bpc" id="L257" title="1 of 2 branches missed.">          .filter(stack -&gt; stack.length &gt; 0)</span>
+<span class="fc" id="L258">          .ifPresent(</span>
+              stack -&gt;
+<span class="fc" id="L260">                  IntStream.range(0, currentTraceFrame.getStackItemsProduced())</span>
+<span class="fc" id="L261">                      .mapToObj(i -&gt; Bytes.wrap(stack[stack.length - i - 1]).trimLeadingZeros())</span>
+<span class="fc" id="L262">                      .map(value -&gt; Quantity.create(UInt256.fromHexString(value.toHexString())))</span>
+<span class="fc" id="L263">                      .forEach(report::addPush));</span>
+    }
+<span class="fc" id="L265">  }</span>
+
+  private void generateTracingStorage(final VmOperationExecutionReport report) {
+    // set storage if updated
+<span class="fc" id="L269">    currentTraceFrame</span>
+<span class="fc" id="L270">        .getMaybeUpdatedStorage()</span>
+<span class="fc" id="L271">        .ifPresent(</span>
+            entry -&gt;
+<span class="fc" id="L273">                report.setStore(</span>
+                    new Store(
+<span class="fc" id="L275">                        entry.getOffset().toQuantityHexString(),</span>
+<span class="fc" id="L276">                        entry.getValue().toQuantityHexString())));</span>
+<span class="fc" id="L277">  }</span>
+
+  /**
+   * Set current trace from parents queue and retrieve next frame.
+   *
+   * @param frame the trace frame.
+   */
+  private void initStep(final TraceFrame frame) {
+<span class="fc" id="L285">    this.currentTraceFrame = frame;</span>
+<span class="fc" id="L286">    this.currentOperation = frame.getOpcode();</span>
+<span class="fc" id="L287">    currentTrace = parentTraces.peekLast();</span>
+    // set smart contract code
+<span class="pc bpc" id="L289" title="1 of 4 branches missed.">    if (currentTrace != null &amp;&amp; &quot;0x&quot;.equals(currentTrace.getCode())) {</span>
+<span class="fc" id="L290">      currentTrace.setCode(</span>
+<span class="fc" id="L291">          currentTraceFrame.getMaybeCode().orElse(CodeV0.EMPTY_CODE).getBytes().toHexString());</span>
+    }
+<span class="fc" id="L293">  }</span>
+
+  /**
+   * Find the last frame in the call.
+   *
+   * @param callFrame the CALL frame
+   * @param callIndex the CALL frame index
+   * @return an {@link Optional} of {@link TraceFrame} containing the last frame in the call.
+   */
+  private Optional&lt;TraceFrame&gt; findLastFrameInCall(
+      final TraceFrame callFrame, final int callIndex) {
+<span class="fc bfc" id="L304" title="All 2 branches covered.">    for (int i = callIndex; i &lt; transactionTrace.getTraceFrames().size(); i++) {</span>
+<span class="fc bfc" id="L305" title="All 2 branches covered.">      if (i + 1 &lt; transactionTrace.getTraceFrames().size()) {</span>
+<span class="fc" id="L306">        final TraceFrame next = transactionTrace.getTraceFrames().get(i + 1);</span>
+<span class="fc bfc" id="L307" title="All 4 branches covered.">        if (next.getPc() == (callFrame.getPc() + 1) &amp;&amp; next.getDepth() == callFrame.getDepth()) {</span>
+<span class="fc" id="L308">          return Optional.of(next);</span>
+        }
+      }
+    }
+<span class="fc" id="L312">    return Optional.empty();</span>
+  }
+
+  private Optional&lt;TraceFrame&gt; findReturnInCall(final TraceFrame callFrame, final int callIndex) {
+<span class="fc bfc" id="L316" title="All 2 branches covered.">    for (int i = callIndex; i &lt; transactionTrace.getTraceFrames().size(); i++) {</span>
+<span class="fc bfc" id="L317" title="All 2 branches covered.">      if (i + 1 &lt; transactionTrace.getTraceFrames().size()) {</span>
+<span class="fc" id="L318">        final TraceFrame next = transactionTrace.getTraceFrames().get(i + 1);</span>
+<span class="fc bfc" id="L319" title="All 4 branches covered.">        if (next.getOpcode().equals(&quot;RETURN&quot;) &amp;&amp; next.getDepth() == callFrame.getDepth()) {</span>
+<span class="fc" id="L320">          return Optional.of(next);</span>
+        }
+      }
+    }
+<span class="fc" id="L324">    return Optional.empty();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

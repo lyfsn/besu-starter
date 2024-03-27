@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractSequentialTransactionsLayer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.layered</a> &gt; <span class="el_source">AbstractSequentialTransactionsLayer.java</span></div><h1>AbstractSequentialTransactionsLayer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.layered;
+
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.EVICTED;
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.FOLLOW_INVALIDATED;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.OptionalLong;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.function.BiFunction;
+
+<span class="fc" id="L33">public abstract class AbstractSequentialTransactionsLayer extends AbstractTransactionsLayer {</span>
+
+  public AbstractSequentialTransactionsLayer(
+      final TransactionPoolConfiguration poolConfig,
+      final TransactionsLayer nextLayer,
+      final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
+          transactionReplacementTester,
+      final TransactionPoolMetrics metrics,
+      final BlobCache blobCache) {
+<span class="fc" id="L42">    super(poolConfig, nextLayer, transactionReplacementTester, metrics, blobCache);</span>
+<span class="fc" id="L43">  }</span>
+
+  @Override
+  public void remove(final PendingTransaction invalidatedTx, final RemovalReason reason) {
+<span class="fc" id="L47">    nextLayer.remove(invalidatedTx, reason);</span>
+
+<span class="fc" id="L49">    final var senderTxs = txsBySender.get(invalidatedTx.getSender());</span>
+<span class="fc" id="L50">    final long invalidNonce = invalidatedTx.getNonce();</span>
+<span class="fc bfc" id="L51" title="All 4 branches covered.">    if (senderTxs != null &amp;&amp; invalidNonce &lt;= senderTxs.lastKey()) {</span>
+      // on sequential layers we need to push to next layer all the txs following the invalid one,
+      // even if it belongs to a previous layer
+
+<span class="fc bfc" id="L55" title="All 2 branches covered.">      if (senderTxs.remove(invalidNonce) != null) {</span>
+        // invalid tx removed in this layer
+<span class="fc" id="L57">        processRemove(senderTxs, invalidatedTx.getTransaction(), reason);</span>
+      }
+
+      // push following to next layer
+<span class="fc" id="L61">      pushDown(senderTxs, invalidNonce, 1);</span>
+
+<span class="fc bfc" id="L63" title="All 2 branches covered.">      if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L64">        txsBySender.remove(invalidatedTx.getSender());</span>
+      }
+    }
+<span class="fc" id="L67">  }</span>
+
+  private void pushDown(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final long afterNonce,
+      final int gap) {
+<span class="fc" id="L73">    senderTxs.tailMap(afterNonce, false).values().stream().toList().stream()</span>
+<span class="fc" id="L74">        .peek(</span>
+            txToRemove -&gt; {
+<span class="fc" id="L76">              senderTxs.remove(txToRemove.getNonce());</span>
+<span class="fc" id="L77">              processRemove(senderTxs, txToRemove.getTransaction(), FOLLOW_INVALIDATED);</span>
+<span class="fc" id="L78">            })</span>
+<span class="fc" id="L79">        .forEach(followingTx -&gt; nextLayer.add(followingTx, gap));</span>
+<span class="fc" id="L80">  }</span>
+
+  @Override
+  protected boolean gapsAllowed() {
+<span class="fc" id="L84">    return false;</span>
+  }
+
+  @Override
+  protected void internalConfirmed(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final Address sender,
+      final long maxConfirmedNonce,
+      final PendingTransaction highestNonceRemovedTx) {
+    // no -op
+<span class="fc" id="L94">  }</span>
+
+  @Override
+  protected void internalEvict(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs, final PendingTransaction evictedTx) {
+<span class="fc" id="L99">    internalRemove(senderTxs, evictedTx, EVICTED);</span>
+<span class="fc" id="L100">  }</span>
+
+  @Override
+  public OptionalLong getNextNonceFor(final Address sender) {
+<span class="fc" id="L104">    final OptionalLong nextLayerRes = nextLayer.getNextNonceFor(sender);</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">    if (nextLayerRes.isEmpty()) {</span>
+<span class="fc" id="L106">      final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">      if (senderTxs != null) {</span>
+<span class="fc" id="L108">        return OptionalLong.of(senderTxs.lastKey() + 1);</span>
+      }
+    }
+<span class="fc" id="L111">    return nextLayerRes;</span>
+  }
+
+  @Override
+  public OptionalLong getCurrentNonceFor(final Address sender) {
+<span class="fc" id="L116">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    if (senderTxs != null) {</span>
+<span class="fc" id="L118">      return OptionalLong.of(senderTxs.firstKey());</span>
+    }
+<span class="fc" id="L120">    return nextLayer.getCurrentNonceFor(sender);</span>
+  }
+
+  @Override
+  protected void internalNotifyAdded(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction pendingTransaction) {
+    // no-op
+<span class="nc" id="L128">  }</span>
+
+  protected boolean hasExpectedNonce(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction pendingTransaction,
+      final long gap) {
+<span class="fc bfc" id="L134" title="All 2 branches covered.">    if (senderTxs == null) {</span>
+<span class="fc bfc" id="L135" title="All 2 branches covered.">      return gap == 0;</span>
+    }
+
+    // true if prepend or append
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    return (senderTxs.lastKey() + 1) == pendingTransaction.getNonce()</span>
+<span class="fc bfc" id="L140" title="All 2 branches covered.">        || (senderTxs.firstKey() - 1) == pendingTransaction.getNonce();</span>
+  }
+
+  @Override
+  protected void internalConsistencyCheck(
+      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
+<span class="nc" id="L146">    txsBySender.values().stream()</span>
+<span class="nc bnc" id="L147" title="All 2 branches missed.">        .filter(senderTxs -&gt; senderTxs.size() &gt; 1)</span>
+<span class="nc" id="L148">        .map(NavigableMap::entrySet)</span>
+<span class="nc" id="L149">        .map(Set::iterator)</span>
+<span class="nc" id="L150">        .forEach(</span>
+            itNonce -&gt; {
+<span class="nc" id="L152">              PendingTransaction firstTx = itNonce.next().getValue();</span>
+
+<span class="nc" id="L154">              prevLayerTxsBySender.computeIfPresent(</span>
+<span class="nc" id="L155">                  firstTx.getSender(),</span>
+                  (sender, txsByNonce) -&gt; {
+<span class="nc bnc" id="L157" title="All 2 branches missed.">                    assert txsByNonce.lastKey() + 1 == firstTx.getNonce()</span>
+                        : &quot;first nonce is not sequential with previous layer last nonce&quot;;
+<span class="nc" id="L159">                    return txsByNonce;</span>
+                  });
+
+<span class="nc" id="L162">              long prevNonce = firstTx.getNonce();</span>
+
+<span class="nc bnc" id="L164" title="All 2 branches missed.">              while (itNonce.hasNext()) {</span>
+<span class="nc" id="L165">                final long currNonce = itNonce.next().getKey();</span>
+<span class="nc bnc" id="L166" title="All 2 branches missed.">                assert prevNonce + 1 == currNonce : &quot;non sequential nonce&quot;;</span>
+<span class="nc" id="L167">                prevNonce = currNonce;</span>
+<span class="nc" id="L168">              }</span>
+<span class="nc" id="L169">            });</span>
+<span class="nc" id="L170">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

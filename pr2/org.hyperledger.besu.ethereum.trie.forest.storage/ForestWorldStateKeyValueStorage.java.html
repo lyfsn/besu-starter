@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ForestWorldStateKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.forest.storage</a> &gt; <span class="el_source">ForestWorldStateKeyValueStorage.java</span></div><h1>ForestWorldStateKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.forest.storage;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class ForestWorldStateKeyValueStorage implements WorldStateKeyValueStorage {
+
+<span class="fc" id="L39">  private final Subscribers&lt;NodesAddedListener&gt; nodeAddedListeners = Subscribers.create();</span>
+  private final KeyValueStorage keyValueStorage;
+<span class="fc" id="L41">  private final ReentrantLock lock = new ReentrantLock();</span>
+
+<span class="fc" id="L43">  public ForestWorldStateKeyValueStorage(final KeyValueStorage keyValueStorage) {</span>
+<span class="fc" id="L44">    this.keyValueStorage = keyValueStorage;</span>
+<span class="fc" id="L45">  }</span>
+
+  @Override
+  public DataStorageFormat getDataStorageFormat() {
+<span class="fc" id="L49">    return DataStorageFormat.FOREST;</span>
+  }
+
+  public Optional&lt;Bytes&gt; getCode(final Hash codeHash) {
+<span class="fc bfc" id="L53" title="All 2 branches covered.">    if (codeHash.equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L54">      return Optional.of(Bytes.EMPTY);</span>
+    } else {
+<span class="fc" id="L56">      return keyValueStorage.get(codeHash.toArrayUnsafe()).map(Bytes::wrap);</span>
+    }
+  }
+
+  public Optional&lt;Bytes&gt; getAccountStateTrieNode(final Bytes32 nodeHash) {
+<span class="fc" id="L61">    return getTrieNode(nodeHash);</span>
+  }
+
+  public Optional&lt;Bytes&gt; getAccountStorageTrieNode(final Bytes32 nodeHash) {
+<span class="fc" id="L65">    return getTrieNode(nodeHash);</span>
+  }
+
+  private Optional&lt;Bytes&gt; getTrieNode(final Bytes32 nodeHash) {
+<span class="fc bfc" id="L69" title="All 2 branches covered.">    if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+<span class="fc" id="L70">      return Optional.of(MerkleTrie.EMPTY_TRIE_NODE);</span>
+    } else {
+<span class="fc" id="L72">      return keyValueStorage.get(nodeHash.toArrayUnsafe()).map(Bytes::wrap);</span>
+    }
+  }
+
+  public boolean contains(final Bytes32 hash) {
+    // we don't have location info
+<span class="fc" id="L78">    return getNodeData(hash).isPresent();</span>
+  }
+
+  public Optional&lt;Bytes&gt; getNodeData(final Bytes32 hash) {
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (hash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+<span class="fc" id="L83">      return Optional.of(MerkleTrie.EMPTY_TRIE_NODE);</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    } else if (hash.equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L85">      return Optional.of(Bytes.EMPTY);</span>
+    } else {
+<span class="fc" id="L87">      return keyValueStorage.get(hash.toArrayUnsafe()).map(Bytes::wrap);</span>
+    }
+  }
+
+  public boolean isWorldStateAvailable(final Bytes32 rootHash) {
+<span class="fc" id="L92">    return getAccountStateTrieNode(rootHash).isPresent();</span>
+  }
+
+  @Override
+  public void clear() {
+<span class="nc" id="L97">    keyValueStorage.clear();</span>
+<span class="nc" id="L98">  }</span>
+
+  @Override
+  public Updater updater() {
+<span class="fc" id="L102">    return new Updater(lock, keyValueStorage.startTransaction(), nodeAddedListeners);</span>
+  }
+
+  public long prune(final Predicate&lt;byte[]&gt; inUseCheck) {
+<span class="fc" id="L106">    final AtomicInteger prunedKeys = new AtomicInteger(0);</span>
+<span class="fc" id="L107">    try (final Stream&lt;byte[]&gt; entry = keyValueStorage.streamKeys()) {</span>
+<span class="fc" id="L108">      entry.forEach(</span>
+          key -&gt; {
+<span class="fc" id="L110">            lock.lock();</span>
+            try {
+<span class="pc bpc" id="L112" title="1 of 4 branches missed.">              if (!inUseCheck.test(key) &amp;&amp; keyValueStorage.tryDelete(key)) {</span>
+<span class="fc" id="L113">                prunedKeys.incrementAndGet();</span>
+              }
+            } finally {
+<span class="fc" id="L116">              lock.unlock();</span>
+            }
+<span class="fc" id="L118">          });</span>
+    }
+
+<span class="fc" id="L121">    return prunedKeys.get();</span>
+  }
+
+  public long addNodeAddedListener(final NodesAddedListener listener) {
+<span class="nc" id="L125">    return nodeAddedListeners.subscribe(listener);</span>
+  }
+
+  public void removeNodeAddedListener(final long id) {
+<span class="nc" id="L129">    nodeAddedListeners.unsubscribe(id);</span>
+<span class="nc" id="L130">  }</span>
+
+  public static class Updater implements WorldStateKeyValueStorage.Updater {
+
+    private final KeyValueStorageTransaction transaction;
+    private final Subscribers&lt;NodesAddedListener&gt; nodeAddedListeners;
+<span class="fc" id="L136">    private final Set&lt;Bytes32&gt; addedNodes = new HashSet&lt;&gt;();</span>
+    private final Lock lock;
+
+    public Updater(
+        final Lock lock,
+        final KeyValueStorageTransaction transaction,
+<span class="fc" id="L142">        final Subscribers&lt;NodesAddedListener&gt; nodeAddedListeners) {</span>
+<span class="fc" id="L143">      this.lock = lock;</span>
+<span class="fc" id="L144">      this.transaction = transaction;</span>
+<span class="fc" id="L145">      this.nodeAddedListeners = nodeAddedListeners;</span>
+<span class="fc" id="L146">    }</span>
+
+    public Updater putCode(final Bytes code) {
+      // Skip the hash calculation for empty code
+<span class="fc bfc" id="L150" title="All 2 branches covered.">      final Hash codeHash = code.size() == 0 ? Hash.EMPTY : Hash.hash(code);</span>
+<span class="fc" id="L151">      return putCode(codeHash, code);</span>
+    }
+
+    public Updater putCode(final Bytes32 codeHash, final Bytes code) {
+<span class="fc bfc" id="L155" title="All 2 branches covered.">      if (code.size() == 0) {</span>
+        // Don't save empty values
+<span class="fc" id="L157">        return this;</span>
+      }
+
+<span class="fc" id="L160">      addedNodes.add(codeHash);</span>
+<span class="fc" id="L161">      transaction.put(codeHash.toArrayUnsafe(), code.toArrayUnsafe());</span>
+<span class="fc" id="L162">      return this;</span>
+    }
+
+    public Updater saveWorldState(final Bytes32 nodeHash, final Bytes node) {
+<span class="fc" id="L166">      return putAccountStateTrieNode(nodeHash, node);</span>
+    }
+
+    public Updater putAccountStateTrieNode(final Bytes32 nodeHash, final Bytes node) {
+<span class="fc bfc" id="L170" title="All 2 branches covered.">      if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+        // Don't save empty nodes
+<span class="fc" id="L172">        return this;</span>
+      }
+<span class="fc" id="L174">      addedNodes.add(nodeHash);</span>
+<span class="fc" id="L175">      transaction.put(nodeHash.toArrayUnsafe(), node.toArrayUnsafe());</span>
+<span class="fc" id="L176">      return this;</span>
+    }
+
+    public WorldStateKeyValueStorage.Updater removeAccountStateTrieNode(final Bytes32 nodeHash) {
+<span class="fc" id="L180">      transaction.remove(nodeHash.toArrayUnsafe());</span>
+<span class="fc" id="L181">      return this;</span>
+    }
+
+    public Updater putAccountStorageTrieNode(final Bytes32 nodeHash, final Bytes node) {
+<span class="fc bfc" id="L185" title="All 2 branches covered.">      if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+        // Don't save empty nodes
+<span class="fc" id="L187">        return this;</span>
+      }
+<span class="fc" id="L189">      addedNodes.add(nodeHash);</span>
+<span class="fc" id="L190">      transaction.put(nodeHash.toArrayUnsafe(), node.toArrayUnsafe());</span>
+<span class="fc" id="L191">      return this;</span>
+    }
+
+    @Override
+    public void commit() {
+<span class="fc" id="L196">      lock.lock();</span>
+      try {
+<span class="pc" id="L198">        nodeAddedListeners.forEach(listener -&gt; listener.onNodesAdded(addedNodes));</span>
+<span class="fc" id="L199">        transaction.commit();</span>
+      } finally {
+<span class="fc" id="L201">        lock.unlock();</span>
+      }
+<span class="fc" id="L203">    }</span>
+
+    public void rollback() {
+<span class="nc" id="L206">      addedNodes.clear();</span>
+<span class="nc" id="L207">      transaction.rollback();</span>
+<span class="nc" id="L208">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

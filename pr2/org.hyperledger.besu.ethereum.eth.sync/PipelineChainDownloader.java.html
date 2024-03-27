@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PipelineChainDownloader.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync</a> &gt; <span class="el_source">PipelineChainDownloader.java</span></div><h1>PipelineChainDownloader.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+import static org.hyperledger.besu.util.FutureUtils.exceptionallyCompose;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.EthTaskException;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncTarget;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.exceptions.InvalidBlockException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.time.Duration;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PipelineChainDownloader implements ChainDownloader {
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(PipelineChainDownloader.class);</span>
+<span class="fc" id="L44">  static final Duration PAUSE_AFTER_ERROR_DURATION = Duration.ofSeconds(2);</span>
+  private final SyncState syncState;
+  private final AbstractSyncTargetManager syncTargetManager;
+  private final DownloadPipelineFactory downloadPipelineFactory;
+  private final EthScheduler scheduler;
+
+<span class="fc" id="L50">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L51">  private final AtomicBoolean cancelled = new AtomicBoolean(false);</span>
+  private final Counter pipelineCompleteCounter;
+  private final Counter pipelineErrorCounter;
+  private Pipeline&lt;?&gt; currentDownloadPipeline;
+
+  public PipelineChainDownloader(
+      final SyncState syncState,
+      final AbstractSyncTargetManager syncTargetManager,
+      final DownloadPipelineFactory downloadPipelineFactory,
+      final EthScheduler scheduler,
+<span class="fc" id="L61">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L62">    this.syncState = syncState;</span>
+<span class="fc" id="L63">    this.syncTargetManager = syncTargetManager;</span>
+<span class="fc" id="L64">    this.downloadPipelineFactory = downloadPipelineFactory;</span>
+<span class="fc" id="L65">    this.scheduler = scheduler;</span>
+
+<span class="fc" id="L67">    final LabelledMetric&lt;Counter&gt; labelledCounter =</span>
+<span class="fc" id="L68">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.SYNCHRONIZER,
+            &quot;chain_download_pipeline_restarts&quot;,
+            &quot;Number of times the chain download pipeline has been restarted&quot;,
+            &quot;reason&quot;);
+<span class="fc" id="L73">    pipelineCompleteCounter = labelledCounter.labels(&quot;complete&quot;);</span>
+<span class="fc" id="L74">    pipelineErrorCounter = labelledCounter.labels(&quot;error&quot;);</span>
+<span class="fc" id="L75">  }</span>
+
+  @Override
+  public CompletableFuture&lt;Void&gt; start() {
+<span class="pc bpc" id="L79" title="1 of 2 branches missed.">    if (!started.compareAndSet(false, true)) {</span>
+<span class="nc" id="L80">      throw new IllegalStateException(&quot;Cannot start a chain download twice&quot;);</span>
+    }
+<span class="fc" id="L82">    return performDownload();</span>
+  }
+
+  @Override
+  public synchronized void cancel() {
+<span class="fc" id="L87">    cancelled.set(true);</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">    if (currentDownloadPipeline != null) {</span>
+<span class="fc" id="L89">      currentDownloadPipeline.abort();</span>
+    }
+<span class="fc" id="L91">  }</span>
+
+  private CompletableFuture&lt;Void&gt; performDownload() {
+<span class="fc" id="L94">    return exceptionallyCompose(selectSyncTargetAndDownload(), this::handleFailedDownload)</span>
+<span class="fc" id="L95">        .thenCompose(this::repeatUnlessDownloadComplete);</span>
+  }
+
+  private CompletableFuture&lt;Void&gt; selectSyncTargetAndDownload() {
+<span class="fc" id="L99">    return syncTargetManager</span>
+<span class="fc" id="L100">        .findSyncTarget()</span>
+<span class="fc" id="L101">        .thenCompose(this::startDownloadForSyncTarget)</span>
+<span class="fc" id="L102">        .thenRun(pipelineCompleteCounter::inc);</span>
+  }
+
+  private CompletionStage&lt;Void&gt; repeatUnlessDownloadComplete(
+      @SuppressWarnings(&quot;unused&quot;) final Void result) {
+<span class="fc" id="L107">    syncState.clearSyncTarget();</span>
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    if (syncTargetManager.shouldContinueDownloading()</span>
+<span class="pc bpc" id="L109" title="1 of 2 branches missed.">        &amp;&amp; !syncState.hasReachedTerminalDifficulty().orElse(Boolean.FALSE)) {</span>
+<span class="fc" id="L110">      return performDownload();</span>
+    } else {
+<span class="fc" id="L112">      LOG.info(&quot;PipelineChain download complete&quot;);</span>
+<span class="fc" id="L113">      return completedFuture(null);</span>
+    }
+  }
+
+  private CompletionStage&lt;Void&gt; handleFailedDownload(final Throwable error) {
+<span class="fc" id="L118">    pipelineErrorCounter.inc();</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    if (ExceptionUtils.rootCause(error) instanceof InvalidBlockException) {</span>
+<span class="fc" id="L120">      LOG.warn(</span>
+          &quot;Invalid block detected (BREACH_OF_PROTOCOL). Disconnecting from sync target. {}&quot;,
+<span class="fc" id="L122">          ExceptionUtils.rootCause(error).getMessage());</span>
+<span class="fc" id="L123">      syncState.disconnectSyncTarget(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+    }
+
+<span class="fc bfc" id="L126" title="All 4 branches covered.">    if (!cancelled.get() &amp;&amp; syncTargetManager.shouldContinueDownloading()) {</span>
+<span class="fc" id="L127">      logDownloadFailure(&quot;Chain download failed. Restarting after short delay.&quot;, error);</span>
+      // Allowing the normal looping logic to retry after a brief delay.
+<span class="fc" id="L129">      return scheduler.scheduleFutureTask(() -&gt; completedFuture(null), PAUSE_AFTER_ERROR_DURATION);</span>
+    }
+
+<span class="fc" id="L132">    logDownloadFailure(&quot;Chain download failed.&quot;, error);</span>
+    // Propagate the error out, terminating this chain download.
+<span class="fc" id="L134">    return CompletableFuture.failedFuture(error);</span>
+  }
+
+  private void logDownloadFailure(final String message, final Throwable error) {
+<span class="fc" id="L138">    final Throwable rootCause = ExceptionUtils.rootCause(error);</span>
+<span class="pc bpc" id="L139" title="3 of 8 branches missed.">    if (rootCause instanceof CancellationException</span>
+        || rootCause instanceof InterruptedException
+        || rootCause instanceof EthTaskException
+        || rootCause instanceof IllegalArgumentException) {
+<span class="fc" id="L143">      LOG.debug(message, error);</span>
+<span class="fc bfc" id="L144" title="All 2 branches covered.">    } else if (rootCause instanceof InvalidBlockException) {</span>
+<span class="fc" id="L145">      LOG.warn(message, error);</span>
+    } else {
+<span class="fc" id="L147">      LOG.error(message, error);</span>
+    }
+<span class="fc" id="L149">  }</span>
+
+  private synchronized CompletionStage&lt;Void&gt; startDownloadForSyncTarget(final SyncTarget target) {
+<span class="pc bpc" id="L152" title="1 of 4 branches missed.">    if (cancelled.get() || syncState.hasReachedTerminalDifficulty().orElse(Boolean.FALSE)) {</span>
+<span class="fc" id="L153">      return CompletableFuture.failedFuture(</span>
+          new CancellationException(&quot;Chain download was cancelled&quot;));
+    }
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    if (!syncTargetManager.shouldContinueDownloading()) {</span>
+<span class="fc" id="L157">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L160">    syncState.setSyncTarget(target.peer(), target.commonAncestor());</span>
+<span class="fc" id="L161">    LOG.atDebug()</span>
+<span class="fc" id="L162">        .setMessage(&quot;Starting download pipeline for sync target {}, common ancestor {} ({})&quot;)</span>
+<span class="fc" id="L163">        .addArgument(target)</span>
+<span class="pc" id="L164">        .addArgument(() -&gt; target.commonAncestor().getNumber())</span>
+<span class="pc" id="L165">        .addArgument(() -&gt; target.commonAncestor().getBlockHash())</span>
+<span class="fc" id="L166">        .log();</span>
+<span class="fc" id="L167">    currentDownloadPipeline = downloadPipelineFactory.createDownloadPipelineForSyncTarget(target);</span>
+<span class="fc" id="L168">    return downloadPipelineFactory.startPipeline(</span>
+        scheduler, syncState, target, currentDownloadPipeline);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

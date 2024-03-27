@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NatService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.nat</a> &gt; <span class="el_source">NatService.java</span></div><h1>NatService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.nat;
+
+import org.hyperledger.besu.nat.core.NatManager;
+import org.hyperledger.besu.nat.core.NatMethodDetector;
+import org.hyperledger.besu.nat.core.domain.NatPortMapping;
+import org.hyperledger.besu.nat.core.domain.NatServiceType;
+import org.hyperledger.besu.nat.core.domain.NetworkProtocol;
+
+import java.util.Arrays;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Utility class to help interacting with various {@link NatManager}. */
+public class NatService {
+
+<span class="fc" id="L34">  private static final Logger LOG = LoggerFactory.getLogger(NatService.class);</span>
+
+  private static final boolean DEFAULT_FALLBACK_STATUS = true;
+
+  private NatMethod currentNatMethod;
+  private Optional&lt;NatManager&gt; currentNatManager;
+  private final boolean fallbackEnabled;
+
+  /**
+   * Instantiates a new Nat service.
+   *
+   * @param natManager the nat manager
+   * @param fallbackEnabled the fallback enabled
+   */
+<span class="fc" id="L48">  public NatService(final Optional&lt;NatManager&gt; natManager, final boolean fallbackEnabled) {</span>
+<span class="fc" id="L49">    this.currentNatMethod = retrieveNatMethod(natManager);</span>
+<span class="fc" id="L50">    this.currentNatManager = natManager;</span>
+<span class="fc" id="L51">    this.fallbackEnabled = fallbackEnabled;</span>
+<span class="fc" id="L52">  }</span>
+
+  /**
+   * Instantiates a new Nat service.
+   *
+   * @param natManager the nat manager
+   */
+  public NatService(final Optional&lt;NatManager&gt; natManager) {
+<span class="fc" id="L60">    this(natManager, DEFAULT_FALLBACK_STATUS);</span>
+<span class="fc" id="L61">  }</span>
+
+  /**
+   * Returns whether or not the Besu node is running under a NAT environment.
+   *
+   * @return true if Besu node is running under NAT environment, false otherwise.
+   */
+  public boolean isNatEnvironment() {
+<span class="fc bfc" id="L69" title="All 2 branches covered.">    return currentNatMethod != NatMethod.NONE;</span>
+  }
+
+  /**
+   * If nat environment is present, performs the given action, otherwise does nothing.
+   *
+   * @param natMethod specific on which only this action must be performed
+   * @param action the action to be performed, if a nat environment is present
+   */
+  public void ifNatEnvironment(
+      final NatMethod natMethod, final Consumer&lt;? super NatManager&gt; action) {
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (isNatEnvironment()) {</span>
+<span class="fc" id="L81">      currentNatManager.filter(s -&gt; natMethod.equals(s.getNatMethod())).ifPresent(action);</span>
+    }
+<span class="fc" id="L83">  }</span>
+
+  /**
+   * Returns the NAT method.
+   *
+   * @return the current NatMethod.
+   */
+  public NatMethod getNatMethod() {
+<span class="fc" id="L91">    return currentNatMethod;</span>
+  }
+
+  /**
+   * Returns the NAT manager associated to the current NAT method.
+   *
+   * @return an {@link Optional} wrapping the {@link NatManager} or empty if not found.
+   */
+  public Optional&lt;NatManager&gt; getNatManager() {
+<span class="fc" id="L100">    return currentNatManager;</span>
+  }
+
+  /** Starts the manager or service. */
+  public void start() {
+<span class="fc bfc" id="L105" title="All 2 branches covered.">    if (isNatEnvironment()) {</span>
+      try {
+<span class="nc" id="L107">        getNatManager().orElseThrow().start();</span>
+<span class="fc" id="L108">      } catch (Exception e) {</span>
+<span class="fc" id="L109">        LOG.warn(</span>
+            &quot;Nat manager failed to configure itself automatically due to the following reason : {}. {}&quot;,
+            e,
+<span class="fc bfc" id="L112" title="All 2 branches covered.">            (fallbackEnabled)</span>
+<span class="fc" id="L113">                ? &quot;NONE mode will be used as a fallback (set --Xnat-method-fallback-enabled=false to disable)&quot;</span>
+<span class="fc" id="L114">                : &quot;&quot;);</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">        if (fallbackEnabled) {</span>
+<span class="fc" id="L116">          disableNatManager();</span>
+        } else {
+<span class="fc" id="L118">          throw new IllegalStateException(e.getMessage(), e);</span>
+        }
+<span class="pc" id="L120">      }</span>
+    } else {
+<span class="fc" id="L122">      LOG.info(&quot;No NAT environment detected so no service could be started&quot;);</span>
+    }
+<span class="fc" id="L124">  }</span>
+
+  /** Stops the manager or service. */
+  public void stop() {
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">    if (isNatEnvironment()) {</span>
+      try {
+<span class="nc" id="L130">        getNatManager().orElseThrow().stop();</span>
+<span class="nc" id="L131">      } catch (Exception e) {</span>
+<span class="nc" id="L132">        LOG.warn(&quot;Caught exception while trying to stop the manager or service&quot;, e);</span>
+<span class="nc" id="L133">      }</span>
+    } else {
+<span class="fc" id="L135">      LOG.info(&quot;No NAT environment detected so no service could be stopped&quot;);</span>
+    }
+<span class="fc" id="L137">  }</span>
+
+  /**
+   * Returns a {@link Optional} wrapping the advertised IP address.
+   *
+   * @param fallbackValue the advertised IP address fallback value
+   * @return The advertised IP address wrapped in a {@link Optional}. Empty if
+   *     `isNatExternalIpUsageEnabled` is false
+   */
+  public String queryExternalIPAddress(final String fallbackValue) {
+<span class="fc bfc" id="L147" title="All 2 branches covered.">    if (isNatEnvironment()) {</span>
+      try {
+<span class="fc" id="L149">        final NatManager natManager = getNatManager().orElseThrow();</span>
+<span class="fc" id="L150">        LOG.debug(</span>
+            &quot;Waiting for up to {} seconds to detect external IP address...&quot;,
+<span class="fc" id="L152">            NatManager.TIMEOUT_SECONDS);</span>
+<span class="fc" id="L153">        return Optional.ofNullable(</span>
+                natManager
+<span class="fc" id="L155">                    .queryExternalIPAddress()</span>
+<span class="fc" id="L156">                    .get(NatManager.TIMEOUT_SECONDS, TimeUnit.SECONDS))</span>
+<span class="fc" id="L157">            .orElseThrow();</span>
+
+<span class="nc" id="L159">      } catch (Exception e) {</span>
+<span class="nc" id="L160">        LOG.debug(&quot;Caught exception while trying to query NAT external IP address (ignoring)&quot;, e);</span>
+<span class="nc" id="L161">        LOG.warn(</span>
+            &quot;Unable to query NAT external IP address. Using the fallback value : {} &quot;,
+            fallbackValue);
+      }
+    }
+<span class="fc" id="L166">    return fallbackValue;</span>
+  }
+
+  /**
+   * Returns a {@link Optional} wrapping the local IP address.
+   *
+   * @param fallbackValue the advertised IP address fallback value
+   * @return The local IP address wrapped in a {@link Optional}.
+   * @throws RuntimeException the runtime exception
+   */
+  public String queryLocalIPAddress(final String fallbackValue) throws RuntimeException {
+<span class="fc bfc" id="L177" title="All 2 branches covered.">    if (isNatEnvironment()) {</span>
+      try {
+<span class="fc" id="L179">        final NatManager natManager = getNatManager().orElseThrow();</span>
+<span class="fc" id="L180">        LOG.debug(</span>
+            &quot;Waiting for up to {} seconds to detect local IP address...&quot;,
+<span class="fc" id="L182">            NatManager.TIMEOUT_SECONDS);</span>
+<span class="fc" id="L183">        return Optional.ofNullable(</span>
+<span class="fc" id="L184">                natManager.queryLocalIPAddress().get(NatManager.TIMEOUT_SECONDS, TimeUnit.SECONDS))</span>
+<span class="fc" id="L185">            .orElseThrow();</span>
+<span class="nc" id="L186">      } catch (Exception e) {</span>
+<span class="nc" id="L187">        LOG.debug(&quot;Caught exception while trying to query NAT local IP address (ignoring)&quot;, e);</span>
+<span class="nc" id="L188">        LOG.warn(</span>
+            &quot;Unable to query NAT local IP address. Using the fallback value : {} &quot;, fallbackValue);
+      }
+    }
+<span class="fc" id="L192">    return fallbackValue;</span>
+  }
+
+  /**
+   * Returns the port mapping associated to the passed service type.
+   *
+   * @param serviceType The service type {@link NatServiceType}.
+   * @param networkProtocol The network protocol {@link NetworkProtocol}.
+   * @return The port mapping {@link NatPortMapping}
+   */
+  public Optional&lt;NatPortMapping&gt; getPortMapping(
+      final NatServiceType serviceType, final NetworkProtocol networkProtocol) {
+<span class="fc bfc" id="L204" title="All 2 branches covered.">    if (isNatEnvironment()) {</span>
+      try {
+<span class="fc" id="L206">        final NatManager natManager = getNatManager().orElseThrow();</span>
+<span class="fc" id="L207">        return Optional.of(natManager.getPortMapping(serviceType, networkProtocol));</span>
+<span class="nc" id="L208">      } catch (Exception e) {</span>
+<span class="nc" id="L209">        LOG.warn(</span>
+<span class="nc" id="L210">            &quot;Caught exception while trying to query port mapping (ignoring): {}&quot;, e.toString());</span>
+      }
+    }
+<span class="fc" id="L213">    return Optional.empty();</span>
+  }
+
+  /** Disable the natManager */
+  private void disableNatManager() {
+<span class="fc" id="L218">    currentNatMethod = NatMethod.NONE;</span>
+<span class="fc" id="L219">    currentNatManager = Optional.empty();</span>
+<span class="fc" id="L220">  }</span>
+
+  /**
+   * Retrieve the current NatMethod.
+   *
+   * @param natManager The natManager wrapped in a {@link Optional}.
+   * @return the current NatMethod.
+   */
+  private NatMethod retrieveNatMethod(final Optional&lt;NatManager&gt; natManager) {
+<span class="fc" id="L229">    return natManager.map(NatManager::getNatMethod).orElse(NatMethod.NONE);</span>
+  }
+
+  /**
+   * Attempts to automatically detect the Nat method by applying nat method detectors. Will return
+   * the first one that succeeds in its detection.
+   *
+   * @param natMethodDetectors list of nat method auto detections
+   * @return a {@link NatMethod} equal to NONE if no Nat method has been detected automatically.
+   */
+  public static NatMethod autoDetectNatMethod(final NatMethodDetector... natMethodDetectors) {
+<span class="fc" id="L240">    return Arrays.stream(natMethodDetectors)</span>
+<span class="fc" id="L241">        .flatMap(natMethodDetector -&gt; natMethodDetector.detect().stream())</span>
+<span class="fc" id="L242">        .findFirst()</span>
+<span class="fc" id="L243">        .orElse(NatMethod.NONE);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

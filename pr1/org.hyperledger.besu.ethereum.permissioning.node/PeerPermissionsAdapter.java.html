@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PeerPermissionsAdapter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning.node</a> &gt; <span class="el_source">PeerPermissionsAdapter.java</span></div><h1>PeerPermissionsAdapter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning.node;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.permissions.PeerPermissions;
+import org.hyperledger.besu.ethereum.permissioning.node.provider.SyncStatusNodePermissioningProvider;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+
+import java.util.List;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PeerPermissionsAdapter extends PeerPermissions {
+<span class="fc" id="L32">  private static final Logger LOG = LoggerFactory.getLogger(PeerPermissionsAdapter.class);</span>
+
+  private final NodePermissioningController nodePermissioningController;
+  private final List&lt;EnodeURL&gt; bootnodes;
+  private final Blockchain blockchain;
+  private final long blockchainListenId;
+  private final long nodePermissioningListenId;
+
+  public PeerPermissionsAdapter(
+      final NodePermissioningController nodePermissioningController,
+      final List&lt;EnodeURL&gt; bootnodes,
+<span class="fc" id="L43">      final Blockchain blockchain) {</span>
+<span class="fc" id="L44">    checkNotNull(nodePermissioningController);</span>
+<span class="fc" id="L45">    checkNotNull(bootnodes);</span>
+<span class="fc" id="L46">    checkNotNull(blockchain);</span>
+
+<span class="fc" id="L48">    this.nodePermissioningController = nodePermissioningController;</span>
+<span class="fc" id="L49">    this.bootnodes = bootnodes;</span>
+<span class="fc" id="L50">    this.blockchain = blockchain;</span>
+
+    // TODO: These events should be more targeted
+<span class="fc" id="L53">    blockchainListenId =</span>
+<span class="fc" id="L54">        blockchain.observeBlockAdded(evt -&gt; dispatchUpdate(true, Optional.empty()));</span>
+<span class="fc" id="L55">    nodePermissioningListenId =</span>
+<span class="fc" id="L56">        this.nodePermissioningController.subscribeToUpdates(</span>
+<span class="nc" id="L57">            () -&gt; dispatchUpdate(true, Optional.empty()));</span>
+<span class="fc" id="L58">  }</span>
+
+  @Override
+  public boolean isPermitted(final Peer localNode, final Peer remotePeer, final Action action) {
+<span class="pc bpc" id="L62" title="1 of 8 branches missed.">    switch (action) {</span>
+      case DISCOVERY_ALLOW_IN_PEER_TABLE:
+<span class="fc" id="L64">        return outboundIsPermitted(localNode, remotePeer);</span>
+      case DISCOVERY_ALLOW_OUTBOUND_NEIGHBORS_REQUEST:
+<span class="fc" id="L66">        return allowOutboundNeighborsRequests(localNode, remotePeer);</span>
+      case DISCOVERY_ALLOW_OUTBOUND_BONDING:
+<span class="fc" id="L68">        return allowOutboundBonding(localNode, remotePeer);</span>
+      case DISCOVERY_ACCEPT_INBOUND_BONDING:
+      case DISCOVERY_SERVE_INBOUND_NEIGHBORS_REQUEST:
+      case RLPX_ALLOW_NEW_INBOUND_CONNECTION:
+<span class="fc" id="L72">        return inboundIsPermitted(localNode, remotePeer);</span>
+      case RLPX_ALLOW_NEW_OUTBOUND_CONNECTION:
+<span class="fc" id="L74">        return outboundIsPermitted(localNode, remotePeer);</span>
+      case RLPX_ALLOW_ONGOING_LOCALLY_INITIATED_CONNECTION:
+<span class="fc" id="L76">        return outboundIsPermitted(localNode, remotePeer);</span>
+      case RLPX_ALLOW_ONGOING_REMOTELY_INITIATED_CONNECTION:
+<span class="fc" id="L78">        return inboundIsPermitted(localNode, remotePeer);</span>
+      default:
+        // Return false for unknown / unhandled permissions
+<span class="nc" id="L81">        LOG.error(</span>
+            &quot;Permissions denied for unknown action {}&quot;,
+<span class="nc" id="L83">            action.name(),</span>
+<span class="nc" id="L84">            new IllegalStateException(&quot;Unhandled permissions action &quot; + action.name()));</span>
+<span class="nc" id="L85">        return false;</span>
+    }
+  }
+
+  private boolean allowOutboundBonding(final Peer localNode, final Peer remotePeer) {
+<span class="fc" id="L90">    final boolean outboundMessagingAllowed = outboundIsPermitted(localNode, remotePeer);</span>
+<span class="fc bfc" id="L91" title="All 2 branches covered.">    if (!nodePermissioningController.getSyncStatusNodePermissioningProvider().isPresent()) {</span>
+<span class="fc" id="L92">      return outboundMessagingAllowed;</span>
+    }
+
+    // We're using smart-contract based permissioning
+    // If we're out of sync, only allow bonding to our bootnodes
+<span class="fc" id="L97">    final SyncStatusNodePermissioningProvider syncStatus =</span>
+<span class="fc" id="L98">        nodePermissioningController.getSyncStatusNodePermissioningProvider().get();</span>
+<span class="fc bfc" id="L99" title="All 2 branches covered.">    return outboundMessagingAllowed</span>
+<span class="fc bfc" id="L100" title="All 4 branches covered.">        &amp;&amp; (syncStatus.hasReachedSync() || bootnodes.contains(remotePeer.getEnodeURL()));</span>
+  }
+
+  private boolean allowOutboundNeighborsRequests(final Peer localNode, final Peer remotePeer) {
+<span class="fc" id="L104">    final boolean outboundMessagingAllowed = outboundIsPermitted(localNode, remotePeer);</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">    if (!nodePermissioningController.getSyncStatusNodePermissioningProvider().isPresent()) {</span>
+<span class="fc" id="L106">      return outboundMessagingAllowed;</span>
+    }
+
+    // We're using smart-contract based permissioning
+    // Only allow neighbors requests if we're in sync
+<span class="fc" id="L111">    final SyncStatusNodePermissioningProvider syncStatus =</span>
+<span class="fc" id="L112">        nodePermissioningController.getSyncStatusNodePermissioningProvider().get();</span>
+<span class="fc bfc" id="L113" title="All 4 branches covered.">    return outboundMessagingAllowed &amp;&amp; syncStatus.hasReachedSync();</span>
+  }
+
+  private boolean outboundIsPermitted(final Peer localNode, final Peer remotePeer) {
+<span class="fc" id="L117">    return nodePermissioningController.isPermitted(</span>
+<span class="fc" id="L118">        localNode.getEnodeURL(), remotePeer.getEnodeURL());</span>
+  }
+
+  private boolean inboundIsPermitted(final Peer localNode, final Peer remotePeer) {
+<span class="fc" id="L122">    return nodePermissioningController.isPermitted(</span>
+<span class="fc" id="L123">        remotePeer.getEnodeURL(), localNode.getEnodeURL());</span>
+  }
+
+  @Override
+  public void close() {
+<span class="nc" id="L128">    blockchain.removeObserver(blockchainListenId);</span>
+<span class="nc" id="L129">    nodePermissioningController.unsubscribeFromUpdates(nodePermissioningListenId);</span>
+<span class="nc" id="L130">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateTransactionSimulator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateTransactionSimulator.java</span></div><h1>PrivateTransactionSimulator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.transaction.CallParameter;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.plugin.data.Restriction;
+
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/*
+ * Used to process transactions for priv_call.
+ *
+ * The processing won't affect the private world state, it is used to execute read operations on the
+ * blockchain.
+ */
+public class PrivateTransactionSimulator {
+
+<span class="fc" id="L52">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L53">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  // Dummy signature for transactions to not fail being processed.
+<span class="fc" id="L56">  private static final SECPSignature FAKE_SIGNATURE =</span>
+      SIGNATURE_ALGORITHM
+<span class="fc" id="L58">          .get()</span>
+<span class="fc" id="L59">          .createSignature(</span>
+<span class="fc" id="L60">              SIGNATURE_ALGORITHM.get().getHalfCurveOrder(),</span>
+<span class="fc" id="L61">              SIGNATURE_ALGORITHM.get().getHalfCurveOrder(),</span>
+              (byte) 0);
+
+<span class="fc" id="L64">  private static final Address DEFAULT_FROM = Address.ZERO;</span>
+
+  private final Blockchain blockchain;
+  private final WorldStateArchive worldStateArchive;
+  private final ProtocolSchedule protocolSchedule;
+  private final PrivacyParameters privacyParameters;
+  private final PrivateStateRootResolver privateStateRootResolver;
+
+  public PrivateTransactionSimulator(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule,
+<span class="fc" id="L76">      final PrivacyParameters privacyParameters) {</span>
+<span class="fc" id="L77">    this.blockchain = blockchain;</span>
+<span class="fc" id="L78">    this.worldStateArchive = worldStateArchive;</span>
+<span class="fc" id="L79">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L80">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L81">    this.privateStateRootResolver = privacyParameters.getPrivateStateRootResolver();</span>
+<span class="fc" id="L82">  }</span>
+
+  public Optional&lt;TransactionProcessingResult&gt; process(
+      final String privacyGroupId, final CallParameter callParams) {
+<span class="nc" id="L86">    final BlockHeader header = blockchain.getChainHeadHeader();</span>
+<span class="nc" id="L87">    return process(privacyGroupId, callParams, header);</span>
+  }
+
+  public Optional&lt;TransactionProcessingResult&gt; process(
+      final String privacyGroupId, final CallParameter callParams, final Hash blockHeaderHash) {
+<span class="nc" id="L92">    final BlockHeader header = blockchain.getBlockHeader(blockHeaderHash).orElse(null);</span>
+<span class="nc" id="L93">    return process(privacyGroupId, callParams, header);</span>
+  }
+
+  public Optional&lt;TransactionProcessingResult&gt; process(
+      final String privacyGroupId, final CallParameter callParams, final long blockNumber) {
+<span class="nc" id="L98">    final BlockHeader header = blockchain.getBlockHeader(blockNumber).orElse(null);</span>
+<span class="nc" id="L99">    return process(privacyGroupId, callParams, header);</span>
+  }
+
+  private Optional&lt;TransactionProcessingResult&gt; process(
+      final String privacyGroupIdString, final CallParameter callParams, final BlockHeader header) {
+<span class="nc bnc" id="L104" title="All 2 branches missed.">    if (header == null) {</span>
+<span class="nc" id="L105">      return Optional.empty();</span>
+    }
+
+<span class="nc" id="L108">    final MutableWorldState publicWorldState =</span>
+<span class="nc" id="L109">        worldStateArchive.getMutable(header.getStateRoot(), header.getHash()).orElse(null);</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">    if (publicWorldState == null) {</span>
+<span class="nc" id="L111">      return Optional.empty();</span>
+    }
+
+    // get the last world state root hash or create a new one
+<span class="nc" id="L115">    final Bytes32 privacyGroupId = Bytes32.wrap(Bytes.fromBase64String(privacyGroupIdString));</span>
+<span class="nc" id="L116">    final Hash lastRootHash =</span>
+<span class="nc" id="L117">        privateStateRootResolver.resolveLastStateRoot(privacyGroupId, header.getHash());</span>
+
+<span class="nc" id="L119">    final MutableWorldState disposablePrivateState =</span>
+        privacyParameters
+<span class="nc" id="L121">            .getPrivateWorldStateArchive()</span>
+<span class="nc" id="L122">            .getMutable(lastRootHash, header.getHash())</span>
+<span class="nc" id="L123">            .get();</span>
+
+<span class="nc" id="L125">    final PrivateTransaction transaction =</span>
+<span class="nc" id="L126">        getPrivateTransaction(callParams, header, privacyGroupId, disposablePrivateState);</span>
+
+<span class="nc" id="L128">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+
+<span class="nc" id="L130">    final PrivateTransactionProcessor privateTransactionProcessor =</span>
+<span class="nc" id="L131">        protocolSpec.getPrivateTransactionProcessor();</span>
+
+<span class="nc" id="L133">    final TransactionProcessingResult result =</span>
+<span class="nc" id="L134">        privateTransactionProcessor.processTransaction(</span>
+<span class="nc" id="L135">            publicWorldState.updater(),</span>
+<span class="nc" id="L136">            disposablePrivateState.updater(),</span>
+            header,
+            Hash.ZERO, // Corresponding PMT hash not needed as this private transaction doesn't
+            // exist
+            transaction,
+<span class="nc" id="L141">            protocolSpec.getMiningBeneficiaryCalculator().calculateBeneficiary(header),</span>
+            OperationTracer.NO_TRACING,
+            new CachingBlockHashLookup(header, blockchain),
+            privacyGroupId);
+
+<span class="nc" id="L146">    return Optional.of(result);</span>
+  }
+
+  private PrivateTransaction getPrivateTransaction(
+      final CallParameter callParams,
+      final BlockHeader header,
+      final Bytes privacyGroupId,
+      final MutableWorldState disposablePrivateState) {
+    final Address senderAddress =
+<span class="nc bnc" id="L155" title="All 2 branches missed.">        callParams.getFrom() != null ? callParams.getFrom() : DEFAULT_FROM;</span>
+<span class="nc" id="L156">    final Account sender = disposablePrivateState.get(senderAddress);</span>
+<span class="nc bnc" id="L157" title="All 2 branches missed.">    final long nonce = sender != null ? sender.getNonce() : 0L;</span>
+    final long gasLimit =
+<span class="nc bnc" id="L159" title="All 2 branches missed.">        callParams.getGasLimit() &gt;= 0 ? callParams.getGasLimit() : header.getGasLimit();</span>
+<span class="nc bnc" id="L160" title="All 2 branches missed.">    final Wei gasPrice = callParams.getGasPrice() != null ? callParams.getGasPrice() : Wei.ZERO;</span>
+<span class="nc bnc" id="L161" title="All 2 branches missed.">    final Wei value = callParams.getValue() != null ? callParams.getValue() : Wei.ZERO;</span>
+<span class="nc bnc" id="L162" title="All 2 branches missed.">    final Bytes payload = callParams.getPayload() != null ? callParams.getPayload() : Bytes.EMPTY;</span>
+
+<span class="nc" id="L164">    return PrivateTransaction.builder()</span>
+<span class="nc" id="L165">        .privateFrom(Bytes.EMPTY)</span>
+<span class="nc" id="L166">        .privacyGroupId(privacyGroupId)</span>
+<span class="nc" id="L167">        .restriction(Restriction.RESTRICTED)</span>
+<span class="nc" id="L168">        .nonce(nonce)</span>
+<span class="nc" id="L169">        .gasPrice(gasPrice)</span>
+<span class="nc" id="L170">        .gasLimit(gasLimit)</span>
+<span class="nc" id="L171">        .to(callParams.getTo())</span>
+<span class="nc" id="L172">        .sender(senderAddress)</span>
+<span class="nc" id="L173">        .value(value)</span>
+<span class="nc" id="L174">        .payload(payload)</span>
+<span class="nc" id="L175">        .signature(FAKE_SIGNATURE)</span>
+<span class="nc" id="L176">        .build();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

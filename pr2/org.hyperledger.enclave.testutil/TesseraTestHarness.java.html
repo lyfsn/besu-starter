@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TesseraTestHarness.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.enclave.testutil</a> &gt; <span class="el_source">TesseraTestHarness.java</span></div><h1>TesseraTestHarness.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.enclave.testutil;
+
+import static com.google.common.io.Files.readLines;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import com.google.common.base.Charsets;
+import io.vertx.core.json.JsonArray;
+import org.assertj.core.util.Files;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.utility.MountableFile;
+
+/** The Tessera test harness. */
+public class TesseraTestHarness implements EnclaveTestHarness {
+<span class="fc" id="L44">  private static final Logger LOG = LoggerFactory.getLogger(TesseraTestHarness.class);</span>
+
+  private final EnclaveConfiguration enclaveConfiguration;
+
+  private boolean isRunning;
+  private URI nodeURI;
+  private URI q2TUri;
+  private URI thirdPartyUri;
+
+  /** The constant TESSERA_VERSION. */
+  public static final String TESSERA_VERSION = &quot;22.10.0&quot;;
+
+<span class="fc" id="L56">  private final int thirdPartyPort = 9081;</span>
+<span class="fc" id="L57">  private final int q2TPort = 9082;</span>
+  /** The constant p2pPort. */
+  public static final int p2pPort = 9001;
+
+<span class="fc" id="L61">  private final String containerKeyDir = &quot;/tmp/keys/&quot;;</span>
+
+  @SuppressWarnings(&quot;rawtypes&quot;)
+  private GenericContainer tesseraContainer;
+
+  private final Optional&lt;Network&gt; containerNetwork;
+  private final String containerName;
+
+  /**
+   * Instantiates a new Tessera test harness.
+   *
+   * @param enclaveConfiguration the enclave configuration
+   * @param containerNetwork the container network
+   */
+  protected TesseraTestHarness(
+<span class="fc" id="L76">      final EnclaveConfiguration enclaveConfiguration, final Optional&lt;Network&gt; containerNetwork) {</span>
+<span class="fc" id="L77">    this.enclaveConfiguration = enclaveConfiguration;</span>
+<span class="fc" id="L78">    this.containerNetwork = containerNetwork;</span>
+<span class="fc" id="L79">    this.containerName = enclaveConfiguration.getName();</span>
+<span class="fc" id="L80">    Runtime.getRuntime().addShutdownHook(new Thread(this::stop));</span>
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public void start() {
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (!isRunning) {</span>
+<span class="fc" id="L86">      final File tempFolder = Files.newTemporaryFolder();</span>
+<span class="fc" id="L87">      LOG.info(&quot;Temporary directory: &quot; + tempFolder.getAbsolutePath());</span>
+<span class="fc" id="L88">      final String configFile = createConfigFile(enclaveConfiguration.getName());</span>
+
+<span class="fc" id="L90">      tesseraContainer = buildTesseraContainer(configFile);</span>
+<span class="pc" id="L91">      containerNetwork.ifPresent(network -&gt; addNetwork(tesseraContainer, containerName, network));</span>
+<span class="nc" id="L92">      tesseraContainer.start();</span>
+<span class="nc" id="L93">      isRunning = true;</span>
+
+      try {
+<span class="nc" id="L96">        final String host = &quot;http://&quot; + tesseraContainer.getHost();</span>
+<span class="nc" id="L97">        nodeURI = new URI(host + &quot;:&quot; + tesseraContainer.getMappedPort(p2pPort));</span>
+<span class="nc" id="L98">        LOG.info(&quot;Tessera node URI: {}&quot;, nodeURI);</span>
+<span class="nc" id="L99">        q2TUri = new URI(host + ':' + tesseraContainer.getMappedPort(q2TPort));</span>
+<span class="nc" id="L100">        LOG.info(&quot;Tessera client URI: {}&quot;, q2TUri);</span>
+<span class="nc" id="L101">        thirdPartyUri = new URI(host + ':' + tesseraContainer.getMappedPort(thirdPartyPort));</span>
+<span class="nc" id="L102">        LOG.info(&quot;Tessera thirdParty URI: {}&quot;, thirdPartyUri);</span>
+<span class="nc" id="L103">      } catch (final URISyntaxException e) {</span>
+<span class="nc" id="L104">        throw new RuntimeException(e);</span>
+<span class="nc" id="L105">      }</span>
+    }
+<span class="nc" id="L107">  }</span>
+
+  @Override
+  public void stop() {
+<span class="pc bpc" id="L111" title="1 of 2 branches missed.">    if (isRunning) {</span>
+<span class="nc" id="L112">      tesseraContainer.stop();</span>
+<span class="nc" id="L113">      isRunning = false;</span>
+    }
+<span class="fc" id="L115">  }</span>
+
+  @Override
+  public void close() {
+<span class="fc" id="L119">    stop();</span>
+<span class="fc" id="L120">  }</span>
+
+  @Override
+  public List&lt;Path&gt; getPublicKeyPaths() {
+<span class="nc" id="L124">    return Arrays.asList(enclaveConfiguration.getPublicKeys());</span>
+  }
+
+  @Override
+  public String getDefaultPublicKey() {
+<span class="nc" id="L129">    return readFile(enclaveConfiguration.getPublicKeys()[0]);</span>
+  }
+
+  @Override
+  public List&lt;String&gt; getPublicKeys() {
+<span class="nc" id="L134">    return Arrays.stream(enclaveConfiguration.getPublicKeys())</span>
+<span class="nc" id="L135">        .map(TesseraTestHarness::readFile)</span>
+<span class="nc" id="L136">        .collect(Collectors.toList());</span>
+  }
+
+  private static String readFile(final Path path) {
+    try {
+<span class="nc" id="L141">      return readLines(path.toFile(), Charsets.UTF_8).get(0);</span>
+<span class="nc" id="L142">    } catch (final IOException e) {</span>
+<span class="nc" id="L143">      e.printStackTrace();</span>
+<span class="nc" id="L144">      return &quot;&quot;;</span>
+    }
+  }
+
+  @Override
+  public URI clientUrl() {
+<span class="nc" id="L150">    return q2TUri;</span>
+  }
+
+  @Override
+  public URI nodeUrl() {
+<span class="nc" id="L155">    return nodeURI;</span>
+  }
+
+  @Override
+  public void addOtherNode(final URI otherNode) {
+<span class="nc" id="L160">    enclaveConfiguration.addOtherNode(otherNode.toString());</span>
+<span class="nc" id="L161">  }</span>
+
+  @Override
+  public EnclaveType getEnclaveType() {
+<span class="nc" id="L165">    return EnclaveType.TESSERA;</span>
+  }
+
+  private String createConfigFile(final String nodeName) {
+    // create a config file
+
+    // @formatter:off
+<span class="fc" id="L172">    String confString =</span>
+        &quot;{\n&quot;
+            + &quot;    \&quot;mode\&quot; : \&quot;orion\&quot;,\n&quot;
+<span class="fc" id="L175">            + enclaveConfiguration.getEnclaveEncryptorType().toTesseraEncryptorConfigJSON()</span>
+            + &quot;    \&quot;useWhiteList\&quot;: false,\n&quot;
+            + &quot;    \&quot;jdbc\&quot;: {\n&quot;
+            + &quot;        \&quot;username\&quot;: \&quot;sa\&quot;,\n&quot;
+            + &quot;        \&quot;password\&quot;: \&quot;\&quot;,\n&quot;
+            + &quot;        \&quot;url\&quot;: \&quot;jdbc:h2:/tmp/db;MODE=Oracle;TRACE_LEVEL_SYSTEM_OUT=0\&quot;,\n&quot;
+            + &quot;        \&quot;autoCreateTables\&quot;: true\n&quot;
+            + &quot;    },\n&quot;
+            + &quot;    \&quot;serverConfigs\&quot;:[\n&quot;
+            + &quot;        {\n&quot;
+            + &quot;            \&quot;app\&quot;:\&quot;ThirdParty\&quot;,\n&quot;
+            + &quot;            \&quot;enabled\&quot;: true,\n&quot;
+            + &quot;            \&quot;serverAddress\&quot;: \&quot;http://&quot;
+            + nodeName
+            + &quot;:&quot;
+            + thirdPartyPort
+            + &quot;\&quot;,\n&quot;
+            + &quot;            \&quot;cors\&quot; : {\n&quot;
+            + &quot;                \&quot;allowedMethods\&quot; : [\&quot;GET\&quot;, \&quot;OPTIONS\&quot;],\n&quot;
+            + &quot;                \&quot;allowedOrigins\&quot; : [\&quot;*\&quot;]\n&quot;
+            + &quot;            },\n&quot;
+            + &quot;            \&quot;communicationType\&quot; : \&quot;REST\&quot;\n&quot;
+            + &quot;        },\n&quot;
+            + &quot;        {\n&quot;
+            + &quot;            \&quot;app\&quot;:\&quot;Q2T\&quot;,\n&quot;
+            + &quot;            \&quot;enabled\&quot;: true,\n&quot;
+            + &quot;            \&quot;serverAddress\&quot;:\&quot;http://&quot;
+            + nodeName
+            + &quot;:&quot;
+            + q2TPort
+            + &quot;\&quot;,\n&quot;
+            + &quot;            \&quot;communicationType\&quot; : \&quot;REST\&quot;\n&quot;
+            + &quot;        },\n&quot;
+            + &quot;        {\n&quot;
+            + &quot;            \&quot;app\&quot;:\&quot;P2P\&quot;,\n&quot;
+            + &quot;            \&quot;enabled\&quot;: true,\n&quot;
+            + &quot;            \&quot;serverAddress\&quot;:\&quot;http://&quot;
+            + nodeName
+            + &quot;:&quot;
+            + p2pPort
+            + &quot;\&quot;,\n&quot;
+            + &quot;            \&quot;communicationType\&quot; : \&quot;REST\&quot;\n&quot;
+            + &quot;        }\n&quot;
+            + &quot;    ],\n&quot;
+            + &quot;    \&quot;keys\&quot;: {\n&quot;
+            + &quot;        \&quot;passwords\&quot;: [],\n&quot;
+            + &quot;        \&quot;keyData\&quot;: &quot;
+<span class="fc" id="L222">            + buildKeyConfig()</span>
+            + &quot;\n&quot;
+            + &quot;    },\n&quot;
+            + &quot;    \&quot;alwaysSendTo\&quot;: []&quot;;
+
+<span class="pc bpc" id="L227" title="1 of 2 branches missed.">    if (enclaveConfiguration.getOtherNodes().size() != 0) {</span>
+<span class="nc" id="L228">      confString +=</span>
+          &quot;,\n&quot;
+              + &quot;    \&quot;peer\&quot;: [\n&quot;
+              + &quot;        {\n&quot;
+              + &quot;            \&quot;url\&quot;: \&quot;&quot;
+<span class="nc" id="L233">              + enclaveConfiguration.getOtherNodes().get(0)</span>
+              + &quot;\&quot;\n&quot;
+              + &quot;        }\n&quot;
+              + &quot;    ]&quot;;
+    } else {
+<span class="fc" id="L238">      confString += &quot;,\n&quot; + &quot;    \&quot;peer\&quot;: []&quot;;</span>
+    }
+
+<span class="fc" id="L241">    confString += &quot;\n}&quot;;</span>
+
+<span class="fc" id="L243">    final File configFile = Files.newTemporaryFile();</span>
+    try {
+<span class="fc" id="L245">      final FileWriter fw = new FileWriter(configFile, StandardCharsets.UTF_8);</span>
+<span class="fc" id="L246">      fw.write(confString);</span>
+<span class="fc" id="L247">      fw.close();</span>
+<span class="nc" id="L248">    } catch (final IOException e) {</span>
+<span class="nc" id="L249">      throw new RuntimeException(e);</span>
+<span class="fc" id="L250">    }</span>
+
+<span class="fc" id="L252">    return configFile.getAbsolutePath();</span>
+  }
+
+  private String buildKeyConfig() {
+<span class="fc" id="L256">    final JsonArray keyArray = new JsonArray();</span>
+<span class="fc" id="L257">    final List&lt;Path&gt; pubKeysPaths = Arrays.asList(enclaveConfiguration.getPublicKeys());</span>
+<span class="fc" id="L258">    final List&lt;Path&gt; privKeyPaths = Arrays.asList(enclaveConfiguration.getPrivateKeys());</span>
+
+<span class="fc bfc" id="L260" title="All 2 branches covered.">    for (int count = 0; count &lt; pubKeysPaths.size(); count++) {</span>
+<span class="fc" id="L261">      final HashMap&lt;String, String&gt; stringStringHashMap = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L262">      stringStringHashMap.put(</span>
+<span class="fc" id="L263">          &quot;publicKeyPath&quot;, containerKeyDir + pubKeysPaths.get(count).getFileName());</span>
+<span class="fc" id="L264">      stringStringHashMap.put(</span>
+<span class="fc" id="L265">          &quot;privateKeyPath&quot;, containerKeyDir + privKeyPaths.get(count).getFileName());</span>
+<span class="fc" id="L266">      keyArray.add(stringStringHashMap);</span>
+    }
+
+<span class="fc" id="L269">    return keyArray.toString();</span>
+  }
+
+  @SuppressWarnings(&quot;rawtypes&quot;)
+  private GenericContainer buildTesseraContainer(final String configFilePath) {
+<span class="fc" id="L274">    final String containerConfigFilePath = &quot;/tmp/config.json&quot;;</span>
+<span class="fc" id="L275">    final String keyDir = enclaveConfiguration.getTempDir().toString();</span>
+<span class="fc" id="L276">    return new GenericContainer&lt;&gt;(&quot;quorumengineering/tessera:&quot; + TESSERA_VERSION)</span>
+<span class="fc" id="L277">        .withCopyFileToContainer(MountableFile.forHostPath(configFilePath), containerConfigFilePath)</span>
+<span class="fc" id="L278">        .withFileSystemBind(keyDir, containerKeyDir)</span>
+<span class="fc" id="L279">        .withCommand(&quot;--configfile &quot; + containerConfigFilePath)</span>
+<span class="fc" id="L280">        .withExposedPorts(p2pPort, q2TPort, thirdPartyPort)</span>
+<span class="fc" id="L281">        .waitingFor(Wait.forHttp(&quot;/upcheck&quot;).withMethod(&quot;GET&quot;).forStatusCode(200));</span>
+  }
+
+  @SuppressWarnings(&quot;rawtypes&quot;)
+  private void addNetwork(
+      final GenericContainer container, final String containerName, final Network network) {
+<span class="nc" id="L287">    container.withNetwork(network).withNetworkAliases(containerName);</span>
+<span class="nc" id="L288">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

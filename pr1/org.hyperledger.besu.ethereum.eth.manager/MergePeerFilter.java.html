@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MergePeerFilter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">MergePeerFilter.java</span></div><h1>MergePeerFilter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ *  the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.consensus.merge.ForkchoiceEvent;
+import org.hyperledger.besu.consensus.merge.MergeStateHandler;
+import org.hyperledger.besu.consensus.merge.UnverifiedForkchoiceListener;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV62;
+import org.hyperledger.besu.ethereum.eth.messages.StatusMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.StampedLock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="fc" id="L35">public class MergePeerFilter implements MergeStateHandler, UnverifiedForkchoiceListener {</span>
+
+<span class="fc" id="L37">  private Optional&lt;Difficulty&gt; powTerminalDifficulty = Optional.of(Difficulty.MAX_VALUE);</span>
+<span class="fc" id="L38">  private final StampedLock powTerminalDifficultyLock = new StampedLock();</span>
+<span class="fc" id="L39">  private final AtomicBoolean finalized = new AtomicBoolean(false);</span>
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(MergePeerFilter.class);</span>
+
+  public boolean disconnectIfPoW(final StatusMessage status, final EthPeer peer) {
+<span class="fc" id="L43">    long lockStamp = this.powTerminalDifficultyLock.readLock();</span>
+    try {
+<span class="pc bpc" id="L45" title="1 of 2 branches missed.">      if (this.powTerminalDifficulty.isPresent()</span>
+<span class="fc bfc" id="L46" title="All 2 branches covered.">          &amp;&amp; status.totalDifficulty().greaterThan(this.powTerminalDifficulty.get())) {</span>
+<span class="fc" id="L47">        LOG.debug(</span>
+            &quot;Disconnecting peer with difficulty {}, likely still on PoW chain&quot;,
+<span class="fc" id="L49">            status.totalDifficulty());</span>
+<span class="fc" id="L50">        peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="fc" id="L51">        return true;</span>
+      } else {
+<span class="fc" id="L53">        return false;</span>
+      }
+    } finally {
+<span class="fc" id="L56">      this.powTerminalDifficultyLock.unlockRead(lockStamp);</span>
+    }
+  }
+
+  public boolean disconnectIfGossipingBlocks(final Message message, final EthPeer peer) {
+<span class="nc" id="L61">    final int code = message.getData().getCode();</span>
+<span class="nc bnc" id="L62" title="All 6 branches missed.">    if (isFinalized() &amp;&amp; (code == EthPV62.NEW_BLOCK || code == EthPV62.NEW_BLOCK_HASHES)) {</span>
+<span class="nc" id="L63">      LOG.debug(&quot;disconnecting peer for sending new blocks after transition to PoS&quot;);</span>
+<span class="nc" id="L64">      peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="nc" id="L65">      return true;</span>
+    } else {
+<span class="nc" id="L67">      return false;</span>
+    }
+  }
+
+  private boolean isFinalized() {
+<span class="nc" id="L72">    return this.finalized.get();</span>
+  }
+
+  @Override
+  public void onNewUnverifiedForkchoice(final ForkchoiceEvent event) {
+<span class="fc" id="L77">    if (event</span>
+<span class="pc bpc" id="L78" title="1 of 2 branches missed.">        .hasValidFinalizedBlockHash()) { // forkchoices send finalized as 0 after ttd, but before an</span>
+      // epoch is
+      // finalized
+<span class="fc" id="L81">      this.finalized.set(true);</span>
+    }
+<span class="fc" id="L83">  }</span>
+
+  @Override
+  public void mergeStateChanged(
+      final boolean isPoS,
+      final Optional&lt;Boolean&gt; oldState,
+      final Optional&lt;Difficulty&gt; difficultyStoppedAt) {
+<span class="pc bpc" id="L90" title="1 of 4 branches missed.">    if (isPoS &amp;&amp; difficultyStoppedAt.isPresent()) {</span>
+<span class="fc" id="L91">      LOG.debug(&quot;terminal difficulty set to {}&quot;, difficultyStoppedAt.get().getValue());</span>
+<span class="fc" id="L92">      long lockStamp = this.powTerminalDifficultyLock.writeLock();</span>
+      try {
+<span class="fc" id="L94">        this.powTerminalDifficulty = difficultyStoppedAt;</span>
+      } finally {
+<span class="fc" id="L96">        this.powTerminalDifficultyLock.unlockWrite(lockStamp);</span>
+      }
+    }
+<span class="fc" id="L99">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

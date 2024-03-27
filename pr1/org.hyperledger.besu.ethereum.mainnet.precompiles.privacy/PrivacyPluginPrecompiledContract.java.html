@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivacyPluginPrecompiledContract.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet.precompiles.privacy</a> &gt; <span class="el_source">PrivacyPluginPrecompiledContract.java</span></div><h1>PrivacyPluginPrecompiledContract.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet.precompiles.privacy;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransaction;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionReceipt;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.Optional;
+import javax.annotation.Nonnull;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivacyPluginPrecompiledContract extends PrivacyPrecompiledContract {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(PrivacyPluginPrecompiledContract.class);</span>
+  private final PrivacyParameters privacyParameters;
+
+  public PrivacyPluginPrecompiledContract(
+      final GasCalculator gasCalculator, final PrivacyParameters privacyParameters) {
+<span class="fc" id="L43">    super(gasCalculator, privacyParameters, &quot;PluginPrivacy&quot;);</span>
+<span class="fc" id="L44">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L45">  }</span>
+
+  @Nonnull
+  @Override
+  public PrecompileContractResult computePrecompile(
+      final Bytes input, @Nonnull final MessageFrame messageFrame) {
+<span class="pc bpc" id="L51" title="1 of 2 branches missed.">    if (skipContractExecution(messageFrame)) {</span>
+<span class="nc" id="L52">      return NO_RESULT;</span>
+    }
+
+<span class="fc" id="L55">    final Optional&lt;org.hyperledger.besu.plugin.data.PrivateTransaction&gt; pluginPrivateTransaction =</span>
+        privacyParameters
+<span class="fc" id="L57">            .getPrivacyService()</span>
+<span class="fc" id="L58">            .getPayloadProvider()</span>
+<span class="fc" id="L59">            .getPrivateTransactionFromPayload(</span>
+<span class="fc" id="L60">                messageFrame.getContextVariable(PrivateStateUtils.KEY_TRANSACTION));</span>
+
+<span class="pc bpc" id="L62" title="1 of 2 branches missed.">    if (pluginPrivateTransaction.isEmpty()) {</span>
+<span class="nc" id="L63">      return NO_RESULT;</span>
+    }
+
+<span class="fc" id="L66">    final PrivateTransaction privateTransaction =</span>
+<span class="fc" id="L67">        PrivateTransaction.readFrom(pluginPrivateTransaction.get());</span>
+
+<span class="fc" id="L69">    final Bytes32 privacyGroupId = privateTransaction.determinePrivacyGroupId();</span>
+<span class="fc" id="L70">    final Hash pmtHash = messageFrame.getContextVariable(PrivateStateUtils.KEY_TRANSACTION_HASH);</span>
+
+<span class="fc" id="L72">    LOG.debug(</span>
+        &quot;Processing unrestricted private transaction {} in privacy group {}&quot;,
+        pmtHash,
+        privacyGroupId);
+
+<span class="fc" id="L77">    final PrivateMetadataUpdater privateMetadataUpdater =</span>
+<span class="fc" id="L78">        messageFrame.getContextVariable(PrivateStateUtils.KEY_PRIVATE_METADATA_UPDATER);</span>
+<span class="fc" id="L79">    final Hash lastRootHash =</span>
+<span class="fc" id="L80">        privateStateRootResolver.resolveLastStateRoot(privacyGroupId, privateMetadataUpdater);</span>
+
+<span class="fc" id="L82">    final MutableWorldState disposablePrivateState =</span>
+<span class="fc" id="L83">        privateWorldStateArchive.getMutable(lastRootHash, null).get();</span>
+
+<span class="fc" id="L85">    final WorldUpdater privateWorldStateUpdater = disposablePrivateState.updater();</span>
+
+<span class="fc" id="L87">    maybeApplyGenesisToPrivateWorldState(</span>
+        lastRootHash,
+        disposablePrivateState,
+        privateWorldStateUpdater,
+        privacyGroupId,
+<span class="fc" id="L92">        messageFrame.getBlockValues().getNumber());</span>
+
+<span class="fc" id="L94">    final TransactionProcessingResult result =</span>
+<span class="fc" id="L95">        processPrivateTransaction(</span>
+            messageFrame, privateTransaction, privacyGroupId, privateWorldStateUpdater);
+
+<span class="pc bpc" id="L98" title="2 of 4 branches missed.">    if (result.isInvalid() || !result.isSuccessful()) {</span>
+<span class="nc" id="L99">      LOG.error(</span>
+          &quot;Failed to process unrestricted private transaction {}: {}&quot;,
+          pmtHash,
+<span class="nc" id="L102">          result.getValidationResult().getErrorMessage());</span>
+
+<span class="nc" id="L104">      privateMetadataUpdater.putTransactionReceipt(pmtHash, new PrivateTransactionReceipt(result));</span>
+
+<span class="nc" id="L106">      return NO_RESULT;</span>
+    }
+
+<span class="pc bpc" id="L109" title="1 of 2 branches missed.">    if (messageFrame.getContextVariable(PrivateStateUtils.KEY_IS_PERSISTING_PRIVATE_STATE, false)) {</span>
+
+<span class="nc" id="L111">      privateWorldStateUpdater.commit();</span>
+<span class="nc" id="L112">      disposablePrivateState.persist(null);</span>
+
+<span class="nc" id="L114">      storePrivateMetadata(</span>
+          pmtHash, privacyGroupId, disposablePrivateState, privateMetadataUpdater, result);
+    }
+
+<span class="fc" id="L118">    return new PrecompileContractResult(</span>
+<span class="fc" id="L119">        result.getOutput(), true, MessageFrame.State.CODE_EXECUTING, Optional.empty());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

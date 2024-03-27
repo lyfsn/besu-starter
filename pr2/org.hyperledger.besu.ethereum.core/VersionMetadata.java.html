@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>VersionMetadata.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.core</a> &gt; <span class="el_source">VersionMetadata.java</span></div><h1>VersionMetadata.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.core;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.nio.file.Path;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.maven.artifact.versioning.ComparableVersion;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class VersionMetadata {
+<span class="fc" id="L31">  private static final Logger LOG = LoggerFactory.getLogger(VersionMetadata.class);</span>
+
+  /** Represents an unknown Besu version in the version metadata file */
+  public static final String BESU_VERSION_UNKNOWN = &quot;UNKNOWN&quot;;
+
+  private static final String METADATA_FILENAME = &quot;VERSION_METADATA.json&quot;;
+<span class="fc" id="L37">  private static final ObjectMapper MAPPER = new ObjectMapper();</span>
+  private final String besuVersion;
+
+  /**
+   * Get the version of Besu that is running.
+   *
+   * @return the version of Besu
+   */
+  public static String getRuntimeVersion() {
+<span class="fc bfc" id="L46" title="All 2 branches covered.">    return VersionMetadata.class.getPackage().getImplementationVersion() == null</span>
+<span class="fc" id="L47">        ? BESU_VERSION_UNKNOWN</span>
+<span class="fc" id="L48">        : VersionMetadata.class.getPackage().getImplementationVersion();</span>
+  }
+
+  @JsonCreator
+<span class="fc" id="L52">  public VersionMetadata(@JsonProperty(&quot;besuVersion&quot;) final String besuVersion) {</span>
+<span class="fc" id="L53">    this.besuVersion = besuVersion;</span>
+<span class="fc" id="L54">  }</span>
+
+  public String getBesuVersion() {
+<span class="fc" id="L57">    return besuVersion;</span>
+  }
+
+  public static VersionMetadata lookUpFrom(final Path dataDir) throws IOException {
+<span class="fc" id="L61">    LOG.info(&quot;Lookup version metadata file in data directory: {}&quot;, dataDir);</span>
+<span class="fc" id="L62">    return resolveVersionMetadata(getDefaultMetadataFile(dataDir));</span>
+  }
+
+  public void writeToDirectory(final Path dataDir) throws IOException {
+<span class="fc" id="L66">    MAPPER.writeValue(getDefaultMetadataFile(dataDir), this);</span>
+<span class="fc" id="L67">  }</span>
+
+  private static File getDefaultMetadataFile(final Path dataDir) {
+<span class="fc" id="L70">    File metaDataFile = dataDir.resolve(METADATA_FILENAME).toFile();</span>
+
+    // Create the data dir here if it doesn't exist yet
+<span class="fc bfc" id="L73" title="All 2 branches covered.">    if (!metaDataFile.getParentFile().exists()) {</span>
+<span class="fc" id="L74">      LOG.info(&quot;Data directory {} does not exist - creating it&quot;, dataDir);</span>
+<span class="fc" id="L75">      metaDataFile.getParentFile().mkdirs();</span>
+    }
+<span class="fc" id="L77">    return metaDataFile;</span>
+  }
+
+  private static VersionMetadata resolveVersionMetadata(final File metadataFile)
+      throws IOException {
+    VersionMetadata versionMetadata;
+    try {
+<span class="fc" id="L84">      versionMetadata = MAPPER.readValue(metadataFile, VersionMetadata.class);</span>
+<span class="fc" id="L85">      LOG.info(&quot;Existing version data detected. Besu version {}&quot;, versionMetadata.besuVersion);</span>
+<span class="fc" id="L86">    } catch (FileNotFoundException fnfe) {</span>
+<span class="fc" id="L87">      versionMetadata = new VersionMetadata(BESU_VERSION_UNKNOWN);</span>
+<span class="nc" id="L88">    } catch (JsonProcessingException jpe) {</span>
+<span class="nc" id="L89">      throw new IllegalStateException(</span>
+<span class="nc" id="L90">          String.format(&quot;Invalid metadata file %s&quot;, metadataFile.getAbsolutePath()), jpe);</span>
+<span class="fc" id="L91">    }</span>
+<span class="fc" id="L92">    return versionMetadata;</span>
+  }
+
+  /**
+   * This function is designed to protect a Besu instance from being unintentionally started at a
+   * version of Besu that might be incompatible with the version that last modified the specified
+   * data directory. Currently this check is limited to checking that the version is &gt;= the previous
+   * version, to avoid accidentally running a lower version of Besu and potentially corrupting data,
+   * but the method could be extended to perform any other version-to-version compatibility checks
+   * necessary. If the --version-compatibility-protection flag is set to true and the compatibility
+   * checks pass, the version metadata is updated to the current version of Besu.
+   */
+  public static void versionCompatibilityChecks(
+      final boolean enforceCompatibilityProtection, final Path dataDir) throws IOException {
+<span class="fc" id="L106">    final VersionMetadata versionMetaData = VersionMetadata.lookUpFrom(dataDir);</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">    if (versionMetaData.getBesuVersion().equals(VersionMetadata.BESU_VERSION_UNKNOWN)) {</span>
+      // The version isn't known, potentially because the file doesn't exist. Write the latest
+      // version to the metadata file.
+<span class="fc" id="L110">      LOG.info(</span>
+          &quot;No version data detected. Writing Besu version {} to metadata file&quot;,
+<span class="fc" id="L112">          VersionMetadata.getRuntimeVersion());</span>
+<span class="fc" id="L113">      new VersionMetadata(VersionMetadata.getRuntimeVersion()).writeToDirectory(dataDir);</span>
+    } else {
+      // Check the runtime version against the most recent version as recorded in the version
+      // metadata file
+<span class="fc" id="L117">      final String installedVersion = VersionMetadata.getRuntimeVersion().split(&quot;-&quot;, 2)[0];</span>
+<span class="fc" id="L118">      final String metadataVersion = versionMetaData.getBesuVersion().split(&quot;-&quot;, 2)[0];</span>
+<span class="fc" id="L119">      final int versionComparison =</span>
+<span class="fc" id="L120">          new ComparableVersion(installedVersion).compareTo(new ComparableVersion(metadataVersion));</span>
+<span class="fc bfc" id="L121" title="All 2 branches covered.">      if (versionComparison == 0) {</span>
+        // Versions match - no-op
+<span class="fc bfc" id="L123" title="All 2 branches covered.">      } else if (versionComparison &lt; 0) {</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        if (!enforceCompatibilityProtection) {</span>
+<span class="fc" id="L125">          LOG.warn(</span>
+              &quot;Besu version {} is lower than version {} that last started. Allowing startup because --version-compatibility-protection has been disabled.&quot;,
+              installedVersion,
+              metadataVersion);
+          // We've allowed startup at an older version of Besu. Since the version in the metadata
+          // file records the latest version of
+          // Besu to write to the database we'll update the metadata version to this
+          // downgraded-version.
+<span class="fc" id="L133">          new VersionMetadata(VersionMetadata.getRuntimeVersion()).writeToDirectory(dataDir);</span>
+        } else {
+<span class="fc" id="L135">          final String message =</span>
+              &quot;Besu version &quot;
+                  + installedVersion
+                  + &quot; is lower than version &quot;
+                  + metadataVersion
+                  + &quot; that last started. Remove --version-compatibility-protection option to allow Besu to start at &quot;
+                  + &quot; the lower version (warning - this may have unrecoverable effects on the database).&quot;;
+<span class="fc" id="L142">          LOG.error(message, installedVersion, metadataVersion);</span>
+<span class="fc" id="L143">          throw new IllegalStateException(message);</span>
+        }
+      } else {
+<span class="fc" id="L146">        LOG.info(</span>
+            &quot;Besu version {} is higher than version {} that last started. Updating version metadata.&quot;,
+            installedVersion,
+            metadataVersion);
+<span class="fc" id="L150">        new VersionMetadata(VersionMetadata.getRuntimeVersion()).writeToDirectory(dataDir);</span>
+      }
+    }
+<span class="fc" id="L153">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

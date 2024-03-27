@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ForwardSyncStep.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.backwardsync</a> &gt; <span class="el_source">ForwardSyncStep.java</span></div><h1>ForwardSyncStep.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.backwardsync;
+
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.RetryingGetBlocksFromPeersTask;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ForwardSyncStep {
+
+<span class="fc" id="L33">  private static final Logger LOG = LoggerFactory.getLogger(ForwardSyncStep.class);</span>
+  private final BackwardSyncContext context;
+  private final BackwardChain backwardChain;
+
+<span class="fc" id="L37">  public ForwardSyncStep(final BackwardSyncContext context, final BackwardChain backwardChain) {</span>
+<span class="fc" id="L38">    this.context = context;</span>
+<span class="fc" id="L39">    this.backwardChain = backwardChain;</span>
+<span class="fc" id="L40">  }</span>
+
+  public CompletableFuture&lt;Void&gt; executeAsync() {
+<span class="fc" id="L43">    return CompletableFuture.supplyAsync(</span>
+<span class="fc" id="L44">            () -&gt; backwardChain.getFirstNAncestorHeaders(context.getBatchSize()))</span>
+<span class="fc" id="L45">        .thenCompose(this::possibleRequestBodies);</span>
+  }
+
+  @VisibleForTesting
+  public CompletableFuture&lt;Void&gt; possibleRequestBodies(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc bfc" id="L50" title="All 2 branches covered.">    if (blockHeaders.isEmpty()) {</span>
+<span class="fc" id="L51">      return CompletableFuture.completedFuture(null);</span>
+    } else {
+<span class="fc" id="L53">      LOG.atDebug()</span>
+<span class="fc" id="L54">          .setMessage(&quot;Requesting {} blocks {}-&gt;{} ({})&quot;)</span>
+<span class="fc" id="L55">          .addArgument(blockHeaders::size)</span>
+<span class="pc" id="L56">          .addArgument(() -&gt; blockHeaders.get(0).getNumber())</span>
+<span class="pc" id="L57">          .addArgument(() -&gt; blockHeaders.get(blockHeaders.size() - 1).getNumber())</span>
+<span class="pc" id="L58">          .addArgument(() -&gt; blockHeaders.get(0).getHash().toHexString())</span>
+<span class="fc" id="L59">          .log();</span>
+<span class="fc" id="L60">      return requestBodies(blockHeaders)</span>
+<span class="fc" id="L61">          .thenApply(this::saveBlocks)</span>
+<span class="fc" id="L62">          .exceptionally(</span>
+              throwable -&gt; {
+<span class="nc" id="L64">                context.halveBatchSize();</span>
+<span class="nc" id="L65">                LOG.atDebug()</span>
+<span class="nc" id="L66">                    .setMessage(</span>
+                        &quot;Getting {} blocks from peers failed with reason {}, reducing batch size to {}&quot;)
+<span class="nc" id="L68">                    .addArgument(blockHeaders::size)</span>
+<span class="nc" id="L69">                    .addArgument(throwable::getMessage)</span>
+<span class="nc" id="L70">                    .addArgument(context::getBatchSize)</span>
+<span class="nc" id="L71">                    .log();</span>
+<span class="nc" id="L72">                return null;</span>
+              });
+    }
+  }
+
+  @VisibleForTesting
+  protected CompletableFuture&lt;List&lt;Block&gt;&gt; requestBodies(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L79">    final RetryingGetBlocksFromPeersTask getBodiesFromPeerTask =</span>
+<span class="fc" id="L80">        RetryingGetBlocksFromPeersTask.forHeaders(</span>
+<span class="fc" id="L81">            context.getProtocolSchedule(),</span>
+<span class="fc" id="L82">            context.getEthContext(),</span>
+<span class="fc" id="L83">            context.getMetricsSystem(),</span>
+<span class="fc" id="L84">            context.getEthContext().getEthPeers().peerCount(),</span>
+            blockHeaders);
+
+<span class="fc" id="L87">    final CompletableFuture&lt;AbstractPeerTask.PeerTaskResult&lt;List&lt;Block&gt;&gt;&gt; run =</span>
+<span class="fc" id="L88">        getBodiesFromPeerTask.run();</span>
+<span class="fc" id="L89">    return run.thenApply(AbstractPeerTask.PeerTaskResult::getResult)</span>
+<span class="fc" id="L90">        .thenApply(</span>
+            blocks -&gt; {
+<span class="fc" id="L92">              LOG.debug(&quot;Got {} blocks from peers&quot;, blocks.size());</span>
+<span class="fc" id="L93">              blocks.sort(Comparator.comparing(block -&gt; block.getHeader().getNumber()));</span>
+<span class="fc" id="L94">              return blocks;</span>
+            });
+  }
+
+  @VisibleForTesting
+  protected Void saveBlocks(final List&lt;Block&gt; blocks) {
+<span class="pc bpc" id="L100" title="1 of 2 branches missed.">    if (blocks.isEmpty()) {</span>
+<span class="nc" id="L101">      context.halveBatchSize();</span>
+<span class="nc" id="L102">      LOG.debug(&quot;No blocks to save, reducing batch size to {}&quot;, context.getBatchSize());</span>
+<span class="nc" id="L103">      return null;</span>
+    }
+
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    for (Block block : blocks) {</span>
+<span class="fc" id="L107">      final Optional&lt;BlockHeader&gt; parent =</span>
+          context
+<span class="fc" id="L109">              .getProtocolContext()</span>
+<span class="fc" id="L110">              .getBlockchain()</span>
+<span class="fc" id="L111">              .getBlockHeader(block.getHeader().getParentHash());</span>
+
+<span class="pc bpc" id="L113" title="1 of 2 branches missed.">      if (parent.isEmpty()) {</span>
+<span class="nc" id="L114">        context.halveBatchSize();</span>
+<span class="nc" id="L115">        LOG.atDebug()</span>
+<span class="nc" id="L116">            .setMessage(</span>
+                &quot;Parent block {} not found, while saving block {}, reducing batch size to {}&quot;)
+<span class="nc" id="L118">            .addArgument(block.getHeader().getParentHash())</span>
+<span class="nc" id="L119">            .addArgument(block::toLogString)</span>
+<span class="nc" id="L120">            .addArgument(context::getBatchSize)</span>
+<span class="nc" id="L121">            .log();</span>
+<span class="nc" id="L122">        return null;</span>
+      } else {
+<span class="fc" id="L124">        context.saveBlock(block);</span>
+      }
+<span class="fc" id="L126">    }</span>
+
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">    if (blocks.size() == context.getBatchSize()) {</span>
+      // reset the batch size only if we got a full batch
+<span class="fc" id="L130">      context.resetBatchSize();</span>
+    }
+<span class="fc" id="L132">    return null;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JWTAuthOptionsFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.authentication</a> &gt; <span class="el_source">JWTAuthOptionsFactory.java</span></div><h1>JWTAuthOptionsFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.authentication;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+
+import io.vertx.core.buffer.Buffer;
+import io.vertx.ext.auth.JWTOptions;
+import io.vertx.ext.auth.PubSecKeyOptions;
+import io.vertx.ext.auth.impl.Codec;
+import io.vertx.ext.auth.jwt.JWTAuthOptions;
+import org.apache.tuweni.bytes.Bytes32;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
+
+<span class="fc" id="L36">public class JWTAuthOptionsFactory {</span>
+
+<span class="fc" id="L38">  private static final JwtAlgorithm DEFAULT = JwtAlgorithm.RS256;</span>
+
+  public JWTAuthOptions createForExternalPublicKey(final File externalPublicKeyFile) {
+<span class="fc" id="L41">    return createForExternalPublicKeyWithAlgorithm(externalPublicKeyFile, DEFAULT);</span>
+  }
+
+  public JWTAuthOptions createForExternalPublicKeyWithAlgorithm(
+      final File externalPublicKeyFile, final JwtAlgorithm algorithm) {
+<span class="fc" id="L46">    final byte[] externalJwtPublicKey = readPublicKey(externalPublicKeyFile);</span>
+<span class="fc" id="L47">    return new JWTAuthOptions()</span>
+<span class="fc" id="L48">        .addPubSecKey(</span>
+            new PubSecKeyOptions()
+<span class="fc" id="L50">                .setAlgorithm(algorithm.toString())</span>
+<span class="fc" id="L51">                .setBuffer(keyPairToPublicPemString(externalJwtPublicKey)));</span>
+  }
+
+  public JWTAuthOptions createWithGeneratedKeyPair(final JwtAlgorithm jwtAlgorithm) {
+<span class="pc bpc" id="L55" title="1 of 2 branches missed.">    if (jwtAlgorithm.toString().startsWith(&quot;H&quot;)) {</span>
+<span class="nc" id="L56">      throw new IllegalArgumentException(</span>
+          &quot;Cannot use keypairs with HMAC tokens, please call createWithGeneratedKey&quot;);
+    }
+<span class="fc" id="L59">    final KeyPair keypair = generateRsaKeyPair();</span>
+<span class="fc" id="L60">    return new JWTAuthOptions()</span>
+<span class="fc" id="L61">        .addPubSecKey(</span>
+            new PubSecKeyOptions()
+<span class="fc" id="L63">                .setAlgorithm(jwtAlgorithm.toString())</span>
+<span class="fc" id="L64">                .setBuffer(keyPairToPublicPemString(keypair.getPublic().getEncoded())))</span>
+<span class="fc" id="L65">        .addPubSecKey(</span>
+            new PubSecKeyOptions()
+<span class="fc" id="L67">                .setAlgorithm(jwtAlgorithm.toString())</span>
+<span class="fc" id="L68">                .setBuffer(keyPairToPrivatePemString(keypair)));</span>
+  }
+
+  public JWTAuthOptions engineApiJWTOptions(final JwtAlgorithm jwtAlgorithm) {
+<span class="fc" id="L72">    byte[] ephemeralKey = Bytes32.random().toArray();</span>
+<span class="fc" id="L73">    return new JWTAuthOptions()</span>
+<span class="fc" id="L74">        .setJWTOptions(new JWTOptions().setIgnoreExpiration(true).setLeeway(5))</span>
+<span class="fc" id="L75">        .addPubSecKey(</span>
+            new PubSecKeyOptions()
+<span class="fc" id="L77">                .setAlgorithm(jwtAlgorithm.toString())</span>
+<span class="fc" id="L78">                .setBuffer(Buffer.buffer(ephemeralKey)));</span>
+  }
+
+  public JWTAuthOptions createWithGeneratedKeyPair() {
+<span class="fc" id="L82">    return createWithGeneratedKeyPair(JwtAlgorithm.RS256);</span>
+  }
+
+  private byte[] readPublicKey(final File publicKeyFile) {
+<span class="fc" id="L86">    try (final BufferedReader reader = Files.newBufferedReader(publicKeyFile.toPath(), UTF_8);</span>
+<span class="fc" id="L87">        final PemReader pemReader = new PemReader(reader)) {</span>
+<span class="fc" id="L88">      final PemObject pemObject = pemReader.readPemObject();</span>
+<span class="fc bfc" id="L89" title="All 2 branches covered.">      if (pemObject == null) {</span>
+<span class="fc" id="L90">        throw new IllegalStateException(&quot;Authentication RPC public key file format is invalid&quot;);</span>
+      }
+<span class="fc" id="L92">      return pemObject.getContent();</span>
+<span class="fc" id="L93">    } catch (IOException e) {</span>
+<span class="fc" id="L94">      throw new IllegalStateException(&quot;Authentication RPC public key could not be read&quot;, e);</span>
+    }
+  }
+
+  private KeyPair generateRsaKeyPair() {
+    final KeyPairGenerator keyGenerator;
+    try {
+<span class="fc" id="L101">      keyGenerator = KeyPairGenerator.getInstance(&quot;RSA&quot;);</span>
+<span class="fc" id="L102">      keyGenerator.initialize(2048);</span>
+<span class="nc" id="L103">    } catch (final NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L104">      throw new RuntimeException(e);</span>
+<span class="fc" id="L105">    }</span>
+
+<span class="fc" id="L107">    return keyGenerator.generateKeyPair();</span>
+  }
+
+  private String keyPairToPublicPemString(final byte[] publicKey) {
+<span class="fc" id="L111">    StringBuilder pemBuffer = new StringBuilder();</span>
+<span class="fc" id="L112">    pemBuffer.append(&quot;-----BEGIN PUBLIC KEY-----\r\n&quot;);</span>
+<span class="fc" id="L113">    pemBuffer.append(Codec.base64MimeEncode(publicKey));</span>
+<span class="fc" id="L114">    pemBuffer.append(&quot;\r\n&quot;);</span>
+<span class="fc" id="L115">    pemBuffer.append(&quot;-----END PUBLIC KEY-----\r\n&quot;);</span>
+<span class="fc" id="L116">    return pemBuffer.toString();</span>
+  }
+
+  private String keyPairToPrivatePemString(final KeyPair kp) {
+<span class="fc" id="L120">    StringBuilder pemBuffer = new StringBuilder();</span>
+<span class="fc" id="L121">    pemBuffer.append(&quot;-----BEGIN PRIVATE KEY-----\r\n&quot;);</span>
+<span class="fc" id="L122">    pemBuffer.append(Codec.base64MimeEncode(kp.getPrivate().getEncoded()));</span>
+<span class="fc" id="L123">    pemBuffer.append(&quot;\r\n&quot;);</span>
+<span class="fc" id="L124">    pemBuffer.append(&quot;-----END PRIVATE KEY-----\r\n&quot;);</span>
+<span class="fc" id="L125">    return pemBuffer.toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

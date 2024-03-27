@@ -1,0 +1,494 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ProtocolSpecBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">ProtocolSpecBuilder.java</span></div><h1>ProtocolSpecBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.DEFAULT_PRIVACY;
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.FLEXIBLE_PRIVACY;
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.PLUGIN_PRIVACY;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.BlockValidator;
+import org.hyperledger.besu.ethereum.GasLimitCalculator;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.mainnet.precompiles.privacy.FlexiblePrivacyPrecompiledContract;
+import org.hyperledger.besu.ethereum.mainnet.precompiles.privacy.PrivacyPluginPrecompiledContract;
+import org.hyperledger.besu.ethereum.mainnet.precompiles.privacy.PrivacyPrecompiledContract;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionProcessor;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionValidator;
+import org.hyperledger.besu.evm.EVM;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.precompile.PrecompileContractRegistry;
+import org.hyperledger.besu.evm.processor.AbstractMessageProcessor;
+
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+<span class="fc" id="L46">public class ProtocolSpecBuilder {</span>
+  private Supplier&lt;GasCalculator&gt; gasCalculatorBuilder;
+  private Function&lt;FeeMarket, GasLimitCalculator&gt; gasLimitCalculatorBuilder;
+  private Wei blockReward;
+  private boolean skipZeroBlockRewards;
+  private BlockHeaderFunctions blockHeaderFunctions;
+  private AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory;
+  private DifficultyCalculator difficultyCalculator;
+  private EvmConfiguration evmConfiguration;
+  private BiFunction&lt;GasCalculator, EvmConfiguration, EVM&gt; evmBuilder;
+  private TransactionValidatorFactoryBuilder transactionValidatorFactoryBuilder;
+  private Function&lt;FeeMarket, BlockHeaderValidator.Builder&gt; blockHeaderValidatorBuilder;
+  private Function&lt;FeeMarket, BlockHeaderValidator.Builder&gt; ommerHeaderValidatorBuilder;
+  private Function&lt;ProtocolSchedule, BlockBodyValidator&gt; blockBodyValidatorBuilder;
+  private BiFunction&lt;GasCalculator, EVM, AbstractMessageProcessor&gt; contractCreationProcessorBuilder;
+  private Function&lt;PrecompiledContractConfiguration, PrecompileContractRegistry&gt;
+      precompileContractRegistryBuilder;
+  private BiFunction&lt;EVM, PrecompileContractRegistry, AbstractMessageProcessor&gt;
+      messageCallProcessorBuilder;
+  private TransactionProcessorBuilder transactionProcessorBuilder;
+  private BlockProcessorBuilder blockProcessorBuilder;
+  private BlockValidatorBuilder blockValidatorBuilder;
+  private BlockImporterBuilder blockImporterBuilder;
+  private String name;
+  private MiningBeneficiaryCalculator miningBeneficiaryCalculator;
+  private PrivacyParameters privacyParameters;
+  private PrivateTransactionProcessorBuilder privateTransactionProcessorBuilder;
+  private PrivateTransactionValidatorBuilder privateTransactionValidatorBuilder;
+<span class="fc" id="L74">  private WithdrawalsValidator withdrawalsValidator =</span>
+      new WithdrawalsValidator.ProhibitedWithdrawals();
+  private WithdrawalsProcessor withdrawalsProcessor;
+
+<span class="fc" id="L78">  private DepositsValidator depositsValidator = new DepositsValidator.ProhibitedDeposits();</span>
+<span class="fc" id="L79">  private FeeMarket feeMarket = FeeMarket.legacy();</span>
+  private BadBlockManager badBlockManager;
+<span class="fc" id="L81">  private PoWHasher powHasher = PoWHasher.ETHASH_LIGHT;</span>
+<span class="fc" id="L82">  private boolean isPoS = false;</span>
+<span class="fc" id="L83">  private boolean isReplayProtectionSupported = false;</span>
+
+  public ProtocolSpecBuilder gasCalculator(final Supplier&lt;GasCalculator&gt; gasCalculatorBuilder) {
+<span class="fc" id="L86">    this.gasCalculatorBuilder = gasCalculatorBuilder;</span>
+<span class="fc" id="L87">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder gasLimitCalculatorBuilder(
+      final Function&lt;FeeMarket, GasLimitCalculator&gt; gasLimitCalculatorBuilder) {
+<span class="fc" id="L92">    this.gasLimitCalculatorBuilder = gasLimitCalculatorBuilder;</span>
+<span class="fc" id="L93">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockReward(final Wei blockReward) {
+<span class="fc" id="L97">    this.blockReward = blockReward;</span>
+<span class="fc" id="L98">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder skipZeroBlockRewards(final boolean skipZeroBlockRewards) {
+<span class="fc" id="L102">    this.skipZeroBlockRewards = skipZeroBlockRewards;</span>
+<span class="fc" id="L103">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockHeaderFunctions(final BlockHeaderFunctions blockHeaderFunctions) {
+<span class="fc" id="L107">    this.blockHeaderFunctions = blockHeaderFunctions;</span>
+<span class="fc" id="L108">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder transactionReceiptFactory(
+      final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory) {
+<span class="fc" id="L113">    this.transactionReceiptFactory = transactionReceiptFactory;</span>
+<span class="fc" id="L114">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder difficultyCalculator(final DifficultyCalculator difficultyCalculator) {
+<span class="fc" id="L118">    this.difficultyCalculator = difficultyCalculator;</span>
+<span class="fc" id="L119">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder evmBuilder(
+      final BiFunction&lt;GasCalculator, EvmConfiguration, EVM&gt; evmBuilder) {
+<span class="fc" id="L124">    this.evmBuilder = evmBuilder;</span>
+<span class="fc" id="L125">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder transactionValidatorFactoryBuilder(
+      final TransactionValidatorFactoryBuilder transactionValidatorFactoryBuilder) {
+<span class="fc" id="L130">    this.transactionValidatorFactoryBuilder = transactionValidatorFactoryBuilder;</span>
+<span class="fc" id="L131">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockHeaderValidatorBuilder(
+      final Function&lt;FeeMarket, BlockHeaderValidator.Builder&gt; blockHeaderValidatorBuilder) {
+<span class="fc" id="L136">    this.blockHeaderValidatorBuilder = blockHeaderValidatorBuilder;</span>
+<span class="fc" id="L137">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder ommerHeaderValidatorBuilder(
+      final Function&lt;FeeMarket, BlockHeaderValidator.Builder&gt; ommerHeaderValidatorBuilder) {
+<span class="fc" id="L142">    this.ommerHeaderValidatorBuilder = ommerHeaderValidatorBuilder;</span>
+<span class="fc" id="L143">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockBodyValidatorBuilder(
+      final Function&lt;ProtocolSchedule, BlockBodyValidator&gt; blockBodyValidatorBuilder) {
+<span class="fc" id="L148">    this.blockBodyValidatorBuilder = blockBodyValidatorBuilder;</span>
+<span class="fc" id="L149">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder contractCreationProcessorBuilder(
+      final BiFunction&lt;GasCalculator, EVM, AbstractMessageProcessor&gt;
+          contractCreationProcessorBuilder) {
+<span class="fc" id="L155">    this.contractCreationProcessorBuilder = contractCreationProcessorBuilder;</span>
+<span class="fc" id="L156">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder precompileContractRegistryBuilder(
+      final Function&lt;PrecompiledContractConfiguration, PrecompileContractRegistry&gt;
+          precompileContractRegistryBuilder) {
+<span class="fc" id="L162">    this.precompileContractRegistryBuilder =</span>
+        (precompiledContractConfiguration) -&gt; {
+<span class="fc" id="L164">          final PrecompileContractRegistry registry =</span>
+<span class="fc" id="L165">              precompileContractRegistryBuilder.apply(precompiledContractConfiguration);</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">          if (precompiledContractConfiguration.getPrivacyParameters().isEnabled()) {</span>
+<span class="fc" id="L167">            MainnetPrecompiledContractRegistries.appendPrivacy(</span>
+                registry, precompiledContractConfiguration);
+          }
+<span class="fc" id="L170">          return registry;</span>
+        };
+<span class="fc" id="L172">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder messageCallProcessorBuilder(
+      final BiFunction&lt;EVM, PrecompileContractRegistry, AbstractMessageProcessor&gt;
+          messageCallProcessorBuilder) {
+<span class="fc" id="L178">    this.messageCallProcessorBuilder = messageCallProcessorBuilder;</span>
+<span class="fc" id="L179">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder transactionProcessorBuilder(
+      final TransactionProcessorBuilder transactionProcessorBuilder) {
+<span class="fc" id="L184">    this.transactionProcessorBuilder = transactionProcessorBuilder;</span>
+<span class="fc" id="L185">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder privateTransactionProcessorBuilder(
+      final PrivateTransactionProcessorBuilder privateTransactionProcessorBuilder) {
+<span class="fc" id="L190">    this.privateTransactionProcessorBuilder = privateTransactionProcessorBuilder;</span>
+<span class="fc" id="L191">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder privateTransactionValidatorBuilder(
+      final PrivateTransactionValidatorBuilder privateTransactionValidatorBuilder) {
+<span class="fc" id="L196">    this.privateTransactionValidatorBuilder = privateTransactionValidatorBuilder;</span>
+<span class="fc" id="L197">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockProcessorBuilder(
+      final BlockProcessorBuilder blockProcessorBuilder) {
+<span class="fc" id="L202">    this.blockProcessorBuilder = blockProcessorBuilder;</span>
+<span class="fc" id="L203">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockImporterBuilder(final BlockImporterBuilder blockImporterBuilder) {
+<span class="fc" id="L207">    this.blockImporterBuilder = blockImporterBuilder;</span>
+<span class="fc" id="L208">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder blockValidatorBuilder(
+      final BlockValidatorBuilder blockValidatorBuilder) {
+<span class="fc" id="L213">    this.blockValidatorBuilder = blockValidatorBuilder;</span>
+<span class="fc" id="L214">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder miningBeneficiaryCalculator(
+      final MiningBeneficiaryCalculator miningBeneficiaryCalculator) {
+<span class="fc" id="L219">    this.miningBeneficiaryCalculator = miningBeneficiaryCalculator;</span>
+<span class="fc" id="L220">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder name(final String name) {
+<span class="fc" id="L224">    this.name = name;</span>
+<span class="fc" id="L225">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder privacyParameters(final PrivacyParameters privacyParameters) {
+<span class="fc" id="L229">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L230">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder feeMarket(final FeeMarket feeMarket) {
+<span class="fc" id="L234">    this.feeMarket = feeMarket;</span>
+<span class="fc" id="L235">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder badBlocksManager(final BadBlockManager badBlockManager) {
+<span class="fc" id="L239">    this.badBlockManager = badBlockManager;</span>
+<span class="fc" id="L240">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder powHasher(final PoWHasher powHasher) {
+<span class="nc" id="L244">    this.powHasher = powHasher;</span>
+<span class="nc" id="L245">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder evmConfiguration(final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L249">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L250">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder withdrawalsValidator(final WithdrawalsValidator withdrawalsValidator) {
+<span class="fc" id="L254">    this.withdrawalsValidator = withdrawalsValidator;</span>
+<span class="fc" id="L255">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder withdrawalsProcessor(final WithdrawalsProcessor withdrawalsProcessor) {
+<span class="fc" id="L259">    this.withdrawalsProcessor = withdrawalsProcessor;</span>
+<span class="fc" id="L260">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder depositsValidator(final DepositsValidator depositsValidator) {
+<span class="fc" id="L264">    this.depositsValidator = depositsValidator;</span>
+<span class="fc" id="L265">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder isPoS(final boolean isPoS) {
+<span class="fc" id="L269">    this.isPoS = isPoS;</span>
+<span class="fc" id="L270">    return this;</span>
+  }
+
+  public ProtocolSpecBuilder isReplayProtectionSupported(
+      final boolean isReplayProtectionSupported) {
+<span class="fc" id="L275">    this.isReplayProtectionSupported = isReplayProtectionSupported;</span>
+<span class="fc" id="L276">    return this;</span>
+  }
+
+  public ProtocolSpec build(final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L280">    checkNotNull(gasCalculatorBuilder, &quot;Missing gasCalculator&quot;);</span>
+<span class="fc" id="L281">    checkNotNull(gasLimitCalculatorBuilder, &quot;Missing gasLimitCalculatorBuilder&quot;);</span>
+<span class="fc" id="L282">    checkNotNull(evmBuilder, &quot;Missing operation registry&quot;);</span>
+<span class="fc" id="L283">    checkNotNull(evmConfiguration, &quot;Missing evm configuration&quot;);</span>
+<span class="fc" id="L284">    checkNotNull(transactionValidatorFactoryBuilder, &quot;Missing transaction validator&quot;);</span>
+<span class="fc" id="L285">    checkNotNull(privateTransactionValidatorBuilder, &quot;Missing private transaction validator&quot;);</span>
+<span class="fc" id="L286">    checkNotNull(contractCreationProcessorBuilder, &quot;Missing contract creation processor&quot;);</span>
+<span class="fc" id="L287">    checkNotNull(precompileContractRegistryBuilder, &quot;Missing precompile contract registry&quot;);</span>
+<span class="fc" id="L288">    checkNotNull(messageCallProcessorBuilder, &quot;Missing message call processor&quot;);</span>
+<span class="fc" id="L289">    checkNotNull(transactionProcessorBuilder, &quot;Missing transaction processor&quot;);</span>
+<span class="fc" id="L290">    checkNotNull(privateTransactionProcessorBuilder, &quot;Missing private transaction processor&quot;);</span>
+<span class="fc" id="L291">    checkNotNull(blockHeaderValidatorBuilder, &quot;Missing block header validator&quot;);</span>
+<span class="fc" id="L292">    checkNotNull(blockBodyValidatorBuilder, &quot;Missing block body validator&quot;);</span>
+<span class="fc" id="L293">    checkNotNull(blockProcessorBuilder, &quot;Missing block processor&quot;);</span>
+<span class="fc" id="L294">    checkNotNull(blockImporterBuilder, &quot;Missing block importer&quot;);</span>
+<span class="fc" id="L295">    checkNotNull(blockValidatorBuilder, &quot;Missing block validator&quot;);</span>
+<span class="fc" id="L296">    checkNotNull(blockHeaderFunctions, &quot;Missing block hash function&quot;);</span>
+<span class="fc" id="L297">    checkNotNull(blockReward, &quot;Missing block reward&quot;);</span>
+<span class="fc" id="L298">    checkNotNull(difficultyCalculator, &quot;Missing difficulty calculator&quot;);</span>
+<span class="fc" id="L299">    checkNotNull(transactionReceiptFactory, &quot;Missing transaction receipt factory&quot;);</span>
+<span class="fc" id="L300">    checkNotNull(name, &quot;Missing name&quot;);</span>
+<span class="fc" id="L301">    checkNotNull(miningBeneficiaryCalculator, &quot;Missing Mining Beneficiary Calculator&quot;);</span>
+<span class="fc" id="L302">    checkNotNull(protocolSchedule, &quot;Missing protocol schedule&quot;);</span>
+<span class="fc" id="L303">    checkNotNull(privacyParameters, &quot;Missing privacy parameters&quot;);</span>
+<span class="fc" id="L304">    checkNotNull(feeMarket, &quot;Missing fee market&quot;);</span>
+<span class="fc" id="L305">    checkNotNull(badBlockManager, &quot;Missing bad blocks manager&quot;);</span>
+
+<span class="fc" id="L307">    final GasCalculator gasCalculator = gasCalculatorBuilder.get();</span>
+<span class="fc" id="L308">    final GasLimitCalculator gasLimitCalculator = gasLimitCalculatorBuilder.apply(feeMarket);</span>
+<span class="fc" id="L309">    final EVM evm = evmBuilder.apply(gasCalculator, evmConfiguration);</span>
+<span class="fc" id="L310">    final PrecompiledContractConfiguration precompiledContractConfiguration =</span>
+        new PrecompiledContractConfiguration(gasCalculator, privacyParameters);
+<span class="fc" id="L312">    final TransactionValidatorFactory transactionValidatorFactory =</span>
+<span class="fc" id="L313">        transactionValidatorFactoryBuilder.apply(gasCalculator, gasLimitCalculator, feeMarket);</span>
+<span class="fc" id="L314">    final AbstractMessageProcessor contractCreationProcessor =</span>
+<span class="fc" id="L315">        contractCreationProcessorBuilder.apply(gasCalculator, evm);</span>
+<span class="fc" id="L316">    final PrecompileContractRegistry precompileContractRegistry =</span>
+<span class="fc" id="L317">        precompileContractRegistryBuilder.apply(precompiledContractConfiguration);</span>
+<span class="fc" id="L318">    final AbstractMessageProcessor messageCallProcessor =</span>
+<span class="fc" id="L319">        messageCallProcessorBuilder.apply(evm, precompileContractRegistry);</span>
+<span class="fc" id="L320">    final MainnetTransactionProcessor transactionProcessor =</span>
+<span class="fc" id="L321">        transactionProcessorBuilder.apply(</span>
+            gasCalculator,
+            feeMarket,
+            transactionValidatorFactory,
+            contractCreationProcessor,
+            messageCallProcessor);
+
+<span class="fc" id="L328">    final BlockHeaderValidator blockHeaderValidator =</span>
+<span class="fc" id="L329">        createBlockHeaderValidator(blockHeaderValidatorBuilder);</span>
+
+<span class="fc" id="L331">    final BlockHeaderValidator ommerHeaderValidator =</span>
+<span class="fc" id="L332">        createBlockHeaderValidator(ommerHeaderValidatorBuilder);</span>
+
+<span class="fc" id="L334">    final BlockBodyValidator blockBodyValidator = blockBodyValidatorBuilder.apply(protocolSchedule);</span>
+
+<span class="fc" id="L336">    BlockProcessor blockProcessor = createBlockProcessor(transactionProcessor, protocolSchedule);</span>
+    // Set private Tx Processor
+<span class="fc" id="L338">    PrivateTransactionProcessor privateTransactionProcessor =</span>
+<span class="fc" id="L339">        createPrivateTransactionProcessor(</span>
+            transactionValidatorFactory,
+            contractCreationProcessor,
+            messageCallProcessor,
+            precompileContractRegistry);
+
+<span class="fc bfc" id="L345" title="All 2 branches covered.">    if (privacyParameters.isEnabled()) {</span>
+<span class="fc" id="L346">      blockProcessor =</span>
+          new PrivacyBlockProcessor(
+              blockProcessor,
+              protocolSchedule,
+<span class="fc" id="L350">              privacyParameters.getEnclave(),</span>
+<span class="fc" id="L351">              privacyParameters.getPrivateStateStorage(),</span>
+<span class="fc" id="L352">              privacyParameters.getPrivateWorldStateArchive(),</span>
+<span class="fc" id="L353">              privacyParameters.getPrivateStateRootResolver(),</span>
+<span class="fc" id="L354">              privacyParameters.getPrivateStateGenesisAllocator());</span>
+    }
+
+<span class="fc" id="L357">    final BlockValidator blockValidator =</span>
+<span class="fc" id="L358">        blockValidatorBuilder.apply(</span>
+            blockHeaderValidator, blockBodyValidator, blockProcessor, badBlockManager);
+<span class="fc" id="L360">    final BlockImporter blockImporter = blockImporterBuilder.apply(blockValidator);</span>
+<span class="fc" id="L361">    return new ProtocolSpec(</span>
+        name,
+        evm,
+        transactionValidatorFactory,
+        transactionProcessor,
+        privateTransactionProcessor,
+        blockHeaderValidator,
+        ommerHeaderValidator,
+        blockBodyValidator,
+        blockProcessor,
+        blockImporter,
+        blockValidator,
+        blockHeaderFunctions,
+        transactionReceiptFactory,
+        difficultyCalculator,
+        blockReward,
+        miningBeneficiaryCalculator,
+        precompileContractRegistry,
+        skipZeroBlockRewards,
+        gasCalculator,
+        gasLimitCalculator,
+        feeMarket,
+<span class="fc" id="L383">        Optional.ofNullable(powHasher),</span>
+        withdrawalsValidator,
+<span class="fc" id="L385">        Optional.ofNullable(withdrawalsProcessor),</span>
+        depositsValidator,
+        isPoS,
+        isReplayProtectionSupported);
+  }
+
+  private PrivateTransactionProcessor createPrivateTransactionProcessor(
+      final TransactionValidatorFactory transactionValidatorFactory,
+      final AbstractMessageProcessor contractCreationProcessor,
+      final AbstractMessageProcessor messageCallProcessor,
+      final PrecompileContractRegistry precompileContractRegistry) {
+<span class="fc" id="L396">    PrivateTransactionProcessor privateTransactionProcessor = null;</span>
+<span class="fc bfc" id="L397" title="All 2 branches covered.">    if (privacyParameters.isEnabled()) {</span>
+<span class="fc" id="L398">      final PrivateTransactionValidator privateTransactionValidator =</span>
+<span class="fc" id="L399">          privateTransactionValidatorBuilder.apply();</span>
+<span class="fc" id="L400">      privateTransactionProcessor =</span>
+<span class="fc" id="L401">          privateTransactionProcessorBuilder.apply(</span>
+              transactionValidatorFactory,
+              contractCreationProcessor,
+              messageCallProcessor,
+              privateTransactionValidator);
+
+<span class="pc bpc" id="L407" title="1 of 2 branches missed.">      if (privacyParameters.isPrivacyPluginEnabled()) {</span>
+<span class="nc" id="L408">        final PrivacyPluginPrecompiledContract privacyPluginPrecompiledContract =</span>
+<span class="nc" id="L409">            (PrivacyPluginPrecompiledContract) precompileContractRegistry.get(PLUGIN_PRIVACY);</span>
+<span class="nc" id="L410">        privacyPluginPrecompiledContract.setPrivateTransactionProcessor(</span>
+            privateTransactionProcessor);
+<span class="pc bfc" id="L412" title="All 2 branches covered.">      } else if (privacyParameters.isFlexiblePrivacyGroupsEnabled()) {</span>
+<span class="fc" id="L413">        final FlexiblePrivacyPrecompiledContract flexiblePrivacyPrecompiledContract =</span>
+<span class="fc" id="L414">            (FlexiblePrivacyPrecompiledContract) precompileContractRegistry.get(FLEXIBLE_PRIVACY);</span>
+<span class="fc" id="L415">        flexiblePrivacyPrecompiledContract.setPrivateTransactionProcessor(</span>
+            privateTransactionProcessor);
+<span class="fc" id="L417">      } else {</span>
+<span class="fc" id="L418">        final PrivacyPrecompiledContract privacyPrecompiledContract =</span>
+<span class="fc" id="L419">            (PrivacyPrecompiledContract) precompileContractRegistry.get(DEFAULT_PRIVACY);</span>
+<span class="fc" id="L420">        privacyPrecompiledContract.setPrivateTransactionProcessor(privateTransactionProcessor);</span>
+      }
+    }
+<span class="fc" id="L423">    return privateTransactionProcessor;</span>
+  }
+
+  private BlockProcessor createBlockProcessor(
+      final MainnetTransactionProcessor transactionProcessor,
+      final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L429">    return blockProcessorBuilder.apply(</span>
+        transactionProcessor,
+        transactionReceiptFactory,
+        blockReward,
+        miningBeneficiaryCalculator,
+        skipZeroBlockRewards,
+        protocolSchedule);
+  }
+
+  private BlockHeaderValidator createBlockHeaderValidator(
+      final Function&lt;FeeMarket, BlockHeaderValidator.Builder&gt; blockHeaderValidatorBuilder) {
+<span class="fc" id="L440">    return blockHeaderValidatorBuilder</span>
+<span class="fc" id="L441">        .apply(feeMarket)</span>
+<span class="fc" id="L442">        .difficultyCalculator(difficultyCalculator)</span>
+<span class="fc" id="L443">        .build();</span>
+  }
+
+  public interface TransactionProcessorBuilder {
+    MainnetTransactionProcessor apply(
+        GasCalculator gasCalculator,
+        FeeMarket feeMarket,
+        TransactionValidatorFactory transactionValidatorFactory,
+        AbstractMessageProcessor contractCreationProcessor,
+        AbstractMessageProcessor messageCallProcessor);
+  }
+
+  public interface PrivateTransactionProcessorBuilder {
+    PrivateTransactionProcessor apply(
+        TransactionValidatorFactory transactionValidatorFactory,
+        AbstractMessageProcessor contractCreationProcessor,
+        AbstractMessageProcessor messageCallProcessor,
+        PrivateTransactionValidator privateTransactionValidator);
+  }
+
+  public interface PrivateTransactionValidatorBuilder {
+    PrivateTransactionValidator apply();
+  }
+
+  public interface BlockProcessorBuilder {
+    BlockProcessor apply(
+        MainnetTransactionProcessor transactionProcessor,
+        AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory,
+        Wei blockReward,
+        MiningBeneficiaryCalculator miningBeneficiaryCalculator,
+        boolean skipZeroBlockRewards,
+        ProtocolSchedule protocolSchedule);
+  }
+
+  public interface BlockValidatorBuilder {
+    BlockValidator apply(
+        BlockHeaderValidator blockHeaderValidator,
+        BlockBodyValidator blockBodyValidator,
+        BlockProcessor blockProcessor,
+        BadBlockManager badBlockManager);
+  }
+
+  public interface BlockImporterBuilder {
+    BlockImporter apply(BlockValidator blockValidator);
+  }
+
+  public interface TransactionValidatorFactoryBuilder {
+    TransactionValidatorFactory apply(
+        GasCalculator gasCalculator, GasLimitCalculator gasLimitCalculator, FeeMarket feeMarket);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

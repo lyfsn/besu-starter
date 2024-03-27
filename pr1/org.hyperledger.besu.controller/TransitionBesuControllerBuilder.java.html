@@ -1,0 +1,439 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransitionBesuControllerBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">TransitionBesuControllerBuilder.java</span></div><h1>TransitionBesuControllerBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import org.hyperledger.besu.config.GenesisConfigFile;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.merge.MergeContext;
+import org.hyperledger.besu.consensus.merge.PostMergeContext;
+import org.hyperledger.besu.consensus.merge.TransitionBackwardSyncContext;
+import org.hyperledger.besu.consensus.merge.TransitionContext;
+import org.hyperledger.besu.consensus.merge.TransitionProtocolSchedule;
+import org.hyperledger.besu.consensus.merge.blockcreation.TransitionCoordinator;
+import org.hyperledger.besu.consensus.qbft.pki.PkiBlockCreationConfiguration;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ConsensusContext;
+import org.hyperledger.besu.ethereum.ConsensusContextFactory;
+import org.hyperledger.besu.ethereum.GasLimitCalculator;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.manager.MergePeerFilter;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.eth.sync.DefaultSynchronizer;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.BackwardSyncContext;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.Pruner;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.PrunerConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.plugin.services.permissioning.NodeMessagePermissioningProvider;
+
+import java.math.BigInteger;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Transition besu controller builder. */
+public class TransitionBesuControllerBuilder extends BesuControllerBuilder {
+  private final BesuControllerBuilder preMergeBesuControllerBuilder;
+  private final MergeBesuControllerBuilder mergeBesuControllerBuilder;
+
+<span class="fc" id="L80">  private static final Logger LOG = LoggerFactory.getLogger(TransitionBesuControllerBuilder.class);</span>
+  private TransitionProtocolSchedule transitionProtocolSchedule;
+
+  /**
+   * Instantiates a new Transition besu controller builder.
+   *
+   * @param preMergeBesuControllerBuilder the pre merge besu controller builder
+   * @param mergeBesuControllerBuilder the merge besu controller builder
+   */
+  public TransitionBesuControllerBuilder(
+      final BesuControllerBuilder preMergeBesuControllerBuilder,
+<span class="fc" id="L91">      final MergeBesuControllerBuilder mergeBesuControllerBuilder) {</span>
+<span class="fc" id="L92">    this.preMergeBesuControllerBuilder = preMergeBesuControllerBuilder;</span>
+<span class="fc" id="L93">    this.mergeBesuControllerBuilder = mergeBesuControllerBuilder;</span>
+<span class="fc" id="L94">  }</span>
+
+  @Override
+  protected void prepForBuild() {
+<span class="fc" id="L98">    preMergeBesuControllerBuilder.prepForBuild();</span>
+<span class="fc" id="L99">    mergeBesuControllerBuilder.prepForBuild();</span>
+<span class="fc" id="L100">  }</span>
+
+  @Override
+  protected MiningCoordinator createMiningCoordinator(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParameters,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager) {
+
+    // cast to transition schedule for explicit access to pre and post objects:
+<span class="fc" id="L112">    final TransitionProtocolSchedule transitionProtocolSchedule =</span>
+        (TransitionProtocolSchedule) protocolSchedule;
+
+    // PoA consensus mines by default, get consensus-specific mining parameters for
+    // TransitionCoordinator:
+<span class="fc" id="L117">    MiningParameters transitionMiningParameters =</span>
+<span class="fc" id="L118">        preMergeBesuControllerBuilder.getMiningParameterOverrides(miningParameters);</span>
+
+    // construct a transition backward sync context
+<span class="fc" id="L121">    BackwardSyncContext transitionBackwardsSyncContext =</span>
+        new TransitionBackwardSyncContext(
+            protocolContext,
+            transitionProtocolSchedule,
+            metricsSystem,
+<span class="fc" id="L126">            ethProtocolManager.ethContext(),</span>
+            syncState,
+            storageProvider);
+
+<span class="fc" id="L130">    final TransitionCoordinator composedCoordinator =</span>
+        new TransitionCoordinator(
+<span class="fc" id="L132">            preMergeBesuControllerBuilder.createMiningCoordinator(</span>
+<span class="fc" id="L133">                transitionProtocolSchedule.getPreMergeSchedule(),</span>
+                protocolContext,
+                transactionPool,
+                MiningParameters.MINING_DISABLED,
+                syncState,
+                ethProtocolManager),
+<span class="fc" id="L139">            mergeBesuControllerBuilder.createTransitionMiningCoordinator(</span>
+                transitionProtocolSchedule,
+                protocolContext,
+                transactionPool,
+                transitionMiningParameters,
+                syncState,
+                transitionBackwardsSyncContext,
+<span class="fc" id="L146">                ethProtocolManager.ethContext().getScheduler()));</span>
+<span class="fc" id="L147">    initTransitionWatcher(protocolContext, composedCoordinator);</span>
+<span class="fc" id="L148">    return composedCoordinator;</span>
+  }
+
+  @Override
+  protected EthProtocolManager createEthProtocolManager(
+      final ProtocolContext protocolContext,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthContext ethContext,
+      final EthMessages ethMessages,
+      final EthScheduler scheduler,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter) {
+<span class="fc" id="L163">    return mergeBesuControllerBuilder.createEthProtocolManager(</span>
+        protocolContext,
+        synchronizerConfiguration,
+        transactionPool,
+        ethereumWireProtocolConfiguration,
+        ethPeers,
+        ethContext,
+        ethMessages,
+        scheduler,
+        peerValidators,
+        mergePeerFilter);
+  }
+
+  @Override
+  protected ProtocolSchedule createProtocolSchedule() {
+<span class="fc" id="L178">    transitionProtocolSchedule =</span>
+        new TransitionProtocolSchedule(
+<span class="fc" id="L180">            preMergeBesuControllerBuilder.createProtocolSchedule(),</span>
+<span class="fc" id="L181">            mergeBesuControllerBuilder.createProtocolSchedule(),</span>
+<span class="fc" id="L182">            PostMergeContext.get());</span>
+<span class="fc" id="L183">    return transitionProtocolSchedule;</span>
+  }
+
+  @Override
+  protected ProtocolContext createProtocolContext(
+      final MutableBlockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule,
+      final ConsensusContextFactory consensusContextFactory) {
+<span class="fc" id="L192">    final ProtocolContext protocolContext =</span>
+<span class="fc" id="L193">        super.createProtocolContext(</span>
+            blockchain, worldStateArchive, protocolSchedule, consensusContextFactory);
+<span class="fc" id="L195">    transitionProtocolSchedule.setProtocolContext(protocolContext);</span>
+<span class="fc" id="L196">    return protocolContext;</span>
+  }
+
+  @Override
+  protected ConsensusContext createConsensusContext(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L204">    return new TransitionContext(</span>
+<span class="fc" id="L205">        preMergeBesuControllerBuilder.createConsensusContext(</span>
+            blockchain, worldStateArchive, protocolSchedule),
+<span class="fc" id="L207">        mergeBesuControllerBuilder.createConsensusContext(</span>
+            blockchain, worldStateArchive, protocolSchedule));
+  }
+
+  @Override
+  protected PluginServiceFactory createAdditionalPluginServices(
+      final Blockchain blockchain, final ProtocolContext protocolContext) {
+<span class="fc" id="L214">    return new NoopPluginServiceFactory();</span>
+  }
+
+  @Override
+  protected Synchronizer createSynchronizer(
+      final ProtocolSchedule protocolSchedule,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final ProtocolContext protocolContext,
+      final Optional&lt;Pruner&gt; maybePruner,
+      final EthContext ethContext,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager,
+      final PivotBlockSelector pivotBlockSelector) {
+
+<span class="fc" id="L228">    DefaultSynchronizer sync =</span>
+        (DefaultSynchronizer)
+<span class="fc" id="L230">            super.createSynchronizer(</span>
+                protocolSchedule,
+                worldStateStorageCoordinator,
+                protocolContext,
+                maybePruner,
+                ethContext,
+                syncState,
+                ethProtocolManager,
+                pivotBlockSelector);
+<span class="fc" id="L239">    final GenesisConfigOptions maybeForTTD = configOptionsSupplier.get();</span>
+
+<span class="pc bpc" id="L241" title="1 of 2 branches missed.">    if (maybeForTTD.getTerminalTotalDifficulty().isPresent()) {</span>
+<span class="fc" id="L242">      LOG.info(</span>
+          &quot;TTD present, creating DefaultSynchronizer that stops propagating after finalization&quot;);
+<span class="fc" id="L244">      protocolContext</span>
+<span class="fc" id="L245">          .getConsensusContext(MergeContext.class)</span>
+<span class="fc" id="L246">          .addNewUnverifiedForkchoiceListener(sync);</span>
+    }
+
+<span class="fc" id="L249">    return sync;</span>
+  }
+
+  private void initTransitionWatcher(
+      final ProtocolContext protocolContext, final TransitionCoordinator composedCoordinator) {
+
+<span class="fc" id="L255">    PostMergeContext postMergeContext = protocolContext.getConsensusContext(PostMergeContext.class);</span>
+<span class="fc" id="L256">    postMergeContext.observeNewIsPostMergeState(</span>
+        (isPoS, priorState, difficultyStoppedAt) -&gt; {
+<span class="pc bpc" id="L258" title="1 of 2 branches missed.">          if (isPoS) {</span>
+            // if we transitioned to post-merge, stop and disable any mining
+<span class="nc" id="L260">            composedCoordinator.getPreMergeObject().disable();</span>
+<span class="nc" id="L261">            composedCoordinator.getPreMergeObject().stop();</span>
+            // set the blockchoiceRule to never reorg, rely on forkchoiceUpdated instead
+<span class="nc" id="L263">            protocolContext</span>
+<span class="nc" id="L264">                .getBlockchain()</span>
+<span class="nc" id="L265">                .setBlockChoiceRule((newBlockHeader, currentBlockHeader) -&gt; -1);</span>
+
+<span class="pc bpc" id="L267" title="1 of 2 branches missed.">          } else if (composedCoordinator.isMiningBeforeMerge()) {</span>
+            // if our merge state is set to mine pre-merge and we are mining, start mining
+<span class="nc" id="L269">            composedCoordinator.getPreMergeObject().enable();</span>
+<span class="nc" id="L270">            composedCoordinator.getPreMergeObject().start();</span>
+          }
+<span class="fc" id="L272">        });</span>
+
+    // initialize our merge context merge status before we would start either
+<span class="fc" id="L275">    Blockchain blockchain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L276">    blockchain</span>
+<span class="fc" id="L277">        .getTotalDifficultyByHash(blockchain.getChainHeadHash())</span>
+<span class="fc" id="L278">        .ifPresent(postMergeContext::setIsPostMerge);</span>
+<span class="fc" id="L279">  }</span>
+
+  @Override
+  public BesuControllerBuilder storageProvider(final StorageProvider storageProvider) {
+<span class="fc" id="L283">    super.storageProvider(storageProvider);</span>
+<span class="fc" id="L284">    return propagateConfig(z -&gt; z.storageProvider(storageProvider));</span>
+  }
+
+  @Override
+  public BesuController build() {
+<span class="fc" id="L289">    final BesuController controller = super.build();</span>
+<span class="fc" id="L290">    PostMergeContext.get().setSyncState(controller.getSyncState());</span>
+<span class="fc" id="L291">    return controller;</span>
+  }
+
+  @Override
+  public BesuControllerBuilder evmConfiguration(final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L296">    super.evmConfiguration(evmConfiguration);</span>
+<span class="fc" id="L297">    return propagateConfig(z -&gt; z.evmConfiguration(evmConfiguration));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder genesisConfigFile(final GenesisConfigFile genesisConfig) {
+<span class="fc" id="L302">    super.genesisConfigFile(genesisConfig);</span>
+<span class="fc" id="L303">    return propagateConfig(z -&gt; z.genesisConfigFile(genesisConfig));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder synchronizerConfiguration(
+      final SynchronizerConfiguration synchronizerConfig) {
+<span class="fc" id="L309">    super.synchronizerConfiguration(synchronizerConfig);</span>
+<span class="fc" id="L310">    return propagateConfig(z -&gt; z.synchronizerConfiguration(synchronizerConfig));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder ethProtocolConfiguration(
+      final EthProtocolConfiguration ethProtocolConfiguration) {
+<span class="fc" id="L316">    super.ethProtocolConfiguration(ethProtocolConfiguration);</span>
+<span class="fc" id="L317">    return propagateConfig(z -&gt; z.ethProtocolConfiguration(ethProtocolConfiguration));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder networkId(final BigInteger networkId) {
+<span class="fc" id="L322">    super.networkId(networkId);</span>
+<span class="fc" id="L323">    return propagateConfig(z -&gt; z.networkId(networkId));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder miningParameters(final MiningParameters miningParameters) {
+<span class="fc" id="L328">    super.miningParameters(miningParameters);</span>
+<span class="fc" id="L329">    return propagateConfig(z -&gt; z.miningParameters(miningParameters));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder messagePermissioningProviders(
+      final List&lt;NodeMessagePermissioningProvider&gt; messagePermissioningProviders) {
+<span class="nc" id="L335">    super.messagePermissioningProviders(messagePermissioningProviders);</span>
+<span class="nc" id="L336">    return propagateConfig(z -&gt; z.messagePermissioningProviders(messagePermissioningProviders));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder nodeKey(final NodeKey nodeKey) {
+<span class="fc" id="L341">    super.nodeKey(nodeKey);</span>
+<span class="fc" id="L342">    return propagateConfig(z -&gt; z.nodeKey(nodeKey));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder metricsSystem(final ObservableMetricsSystem metricsSystem) {
+<span class="fc" id="L347">    super.metricsSystem(metricsSystem);</span>
+<span class="fc" id="L348">    return propagateConfig(z -&gt; z.metricsSystem(metricsSystem));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder privacyParameters(final PrivacyParameters privacyParameters) {
+<span class="fc" id="L353">    super.privacyParameters(privacyParameters);</span>
+<span class="fc" id="L354">    return propagateConfig(z -&gt; z.privacyParameters(privacyParameters));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder pkiBlockCreationConfiguration(
+      final Optional&lt;PkiBlockCreationConfiguration&gt; pkiBlockCreationConfiguration) {
+<span class="nc" id="L360">    super.pkiBlockCreationConfiguration(pkiBlockCreationConfiguration);</span>
+<span class="nc" id="L361">    return propagateConfig(z -&gt; z.pkiBlockCreationConfiguration(pkiBlockCreationConfiguration));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder dataDirectory(final Path dataDirectory) {
+<span class="fc" id="L366">    super.dataDirectory(dataDirectory);</span>
+<span class="fc" id="L367">    return propagateConfig(z -&gt; z.dataDirectory(dataDirectory));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder clock(final Clock clock) {
+<span class="fc" id="L372">    super.clock(clock);</span>
+<span class="fc" id="L373">    return propagateConfig(z -&gt; z.clock(clock));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder transactionPoolConfiguration(
+      final TransactionPoolConfiguration transactionPoolConfiguration) {
+<span class="fc" id="L379">    super.transactionPoolConfiguration(transactionPoolConfiguration);</span>
+<span class="fc" id="L380">    return propagateConfig(z -&gt; z.transactionPoolConfiguration(transactionPoolConfiguration));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder isRevertReasonEnabled(final boolean isRevertReasonEnabled) {
+<span class="nc" id="L385">    super.isRevertReasonEnabled(isRevertReasonEnabled);</span>
+<span class="nc" id="L386">    return propagateConfig(z -&gt; z.isRevertReasonEnabled(isRevertReasonEnabled));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder isPruningEnabled(final boolean isPruningEnabled) {
+<span class="nc" id="L391">    super.isPruningEnabled(isPruningEnabled);</span>
+<span class="nc" id="L392">    return propagateConfig(z -&gt; z.isPruningEnabled(isPruningEnabled));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder pruningConfiguration(final PrunerConfiguration prunerConfiguration) {
+<span class="nc" id="L397">    super.pruningConfiguration(prunerConfiguration);</span>
+<span class="nc" id="L398">    return propagateConfig(z -&gt; z.pruningConfiguration(prunerConfiguration));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder genesisConfigOverrides(
+      final Map&lt;String, String&gt; genesisConfigOverrides) {
+<span class="nc" id="L404">    super.genesisConfigOverrides(genesisConfigOverrides);</span>
+<span class="nc" id="L405">    return propagateConfig(z -&gt; z.genesisConfigOverrides(genesisConfigOverrides));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder gasLimitCalculator(final GasLimitCalculator gasLimitCalculator) {
+<span class="fc" id="L410">    super.gasLimitCalculator(gasLimitCalculator);</span>
+<span class="fc" id="L411">    return propagateConfig(z -&gt; z.gasLimitCalculator(gasLimitCalculator));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder requiredBlocks(final Map&lt;Long, Hash&gt; requiredBlocks) {
+<span class="nc" id="L416">    super.requiredBlocks(requiredBlocks);</span>
+<span class="nc" id="L417">    return propagateConfig(z -&gt; z.requiredBlocks(requiredBlocks));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder reorgLoggingThreshold(final long reorgLoggingThreshold) {
+<span class="nc" id="L422">    super.reorgLoggingThreshold(reorgLoggingThreshold);</span>
+<span class="nc" id="L423">    return propagateConfig(z -&gt; z.reorgLoggingThreshold(reorgLoggingThreshold));</span>
+  }
+
+  @Override
+  public BesuControllerBuilder dataStorageConfiguration(
+      final DataStorageConfiguration dataStorageConfiguration) {
+<span class="fc" id="L429">    super.dataStorageConfiguration(dataStorageConfiguration);</span>
+<span class="fc" id="L430">    return propagateConfig(z -&gt; z.dataStorageConfiguration(dataStorageConfiguration));</span>
+  }
+
+  private BesuControllerBuilder propagateConfig(final Consumer&lt;BesuControllerBuilder&gt; toPropogate) {
+<span class="fc" id="L434">    toPropogate.accept(preMergeBesuControllerBuilder);</span>
+<span class="fc" id="L435">    toPropogate.accept(mergeBesuControllerBuilder);</span>
+<span class="fc" id="L436">    return this;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

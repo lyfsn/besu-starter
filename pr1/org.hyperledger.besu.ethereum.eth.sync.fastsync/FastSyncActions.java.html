@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastSyncActions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">FastSyncActions.java</span></div><h1>FastSyncActions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.task.WaitForPeersTask;
+import org.hyperledger.besu.ethereum.eth.sync.ChainDownloader;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.RetryingGetHeaderFromPeerByHashTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+
+import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FastSyncActions {
+
+<span class="fc" id="L44">  private static final Logger LOG = LoggerFactory.getLogger(FastSyncActions.class);</span>
+  protected final SynchronizerConfiguration syncConfig;
+  protected final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  protected final ProtocolSchedule protocolSchedule;
+  protected final ProtocolContext protocolContext;
+  protected final EthContext ethContext;
+  protected final SyncState syncState;
+  protected final PivotBlockSelector pivotBlockSelector;
+  protected final MetricsSystem metricsSystem;
+  protected final Counter pivotBlockSelectionCounter;
+<span class="fc" id="L54">  protected final AtomicLong pivotBlockGauge = new AtomicLong(0);</span>
+
+  public FastSyncActions(
+      final SynchronizerConfiguration syncConfig,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final SyncState syncState,
+      final PivotBlockSelector pivotBlockSelector,
+<span class="fc" id="L64">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L65">    this.syncConfig = syncConfig;</span>
+<span class="fc" id="L66">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L67">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L68">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L69">    this.ethContext = ethContext;</span>
+<span class="fc" id="L70">    this.syncState = syncState;</span>
+<span class="fc" id="L71">    this.pivotBlockSelector = pivotBlockSelector;</span>
+<span class="fc" id="L72">    this.metricsSystem = metricsSystem;</span>
+
+<span class="fc" id="L74">    pivotBlockSelectionCounter =</span>
+<span class="fc" id="L75">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.SYNCHRONIZER,
+            &quot;fast_sync_pivot_block_selected_count&quot;,
+            &quot;Number of times a fast sync pivot block has been selected&quot;);
+<span class="fc" id="L79">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;fast_sync_pivot_block_current&quot;,
+        &quot;The current fast sync pivot block&quot;,
+<span class="fc" id="L83">        pivotBlockGauge::get);</span>
+<span class="fc" id="L84">  }</span>
+
+  public SyncState getSyncState() {
+<span class="nc" id="L87">    return syncState;</span>
+  }
+
+  public long getBestChainHeight() {
+<span class="nc" id="L91">    return pivotBlockSelector.getBestChainHeight();</span>
+  }
+
+  public CompletableFuture&lt;FastSyncState&gt; selectPivotBlock(final FastSyncState fastSyncState) {
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    return fastSyncState.hasPivotBlockHeader()</span>
+<span class="fc" id="L96">        ? completedFuture(fastSyncState)</span>
+<span class="fc" id="L97">        : selectNewPivotBlock();</span>
+  }
+
+  private CompletableFuture&lt;FastSyncState&gt; selectNewPivotBlock() {
+
+<span class="fc" id="L102">    return pivotBlockSelector</span>
+<span class="fc" id="L103">        .selectNewPivotBlock()</span>
+<span class="fc" id="L104">        .map(CompletableFuture::completedFuture)</span>
+<span class="fc" id="L105">        .orElseGet(this::retrySelectPivotBlockAfterDelay);</span>
+  }
+
+  &lt;T&gt; CompletableFuture&lt;T&gt; scheduleFutureTask(
+      final Supplier&lt;CompletableFuture&lt;T&gt;&gt; future, final Duration duration) {
+<span class="nc" id="L110">    return ethContext.getScheduler().scheduleFutureTask(future, duration);</span>
+  }
+
+  private CompletableFuture&lt;FastSyncState&gt; retrySelectPivotBlockAfterDelay() {
+<span class="fc" id="L114">    return ethContext</span>
+<span class="fc" id="L115">        .getScheduler()</span>
+<span class="fc" id="L116">        .scheduleFutureTask(pivotBlockSelector::prepareRetry, Duration.ofSeconds(5))</span>
+<span class="fc" id="L117">        .thenCompose(ignore -&gt; selectNewPivotBlock());</span>
+  }
+
+  public CompletableFuture&lt;FastSyncState&gt; downloadPivotBlockHeader(
+      final FastSyncState currentState) {
+<span class="fc" id="L122">    return internalDownloadPivotBlockHeader(currentState).thenApply(this::updateStats);</span>
+  }
+
+  private CompletableFuture&lt;FastSyncState&gt; internalDownloadPivotBlockHeader(
+      final FastSyncState currentState) {
+<span class="fc bfc" id="L127" title="All 2 branches covered.">    if (currentState.hasPivotBlockHeader()) {</span>
+<span class="fc" id="L128">      LOG.debug(&quot;Initial sync state {} already contains the block header&quot;, currentState);</span>
+<span class="fc" id="L129">      return completedFuture(currentState);</span>
+    }
+
+<span class="fc" id="L132">    return waitForPeers(1)</span>
+<span class="fc" id="L133">        .thenCompose(</span>
+            unused -&gt;
+                currentState
+<span class="fc" id="L136">                    .getPivotBlockHash()</span>
+<span class="fc" id="L137">                    .map(this::downloadPivotBlockHeader)</span>
+<span class="fc" id="L138">                    .orElseGet(</span>
+                        () -&gt;
+<span class="fc" id="L140">                            new PivotBlockRetriever(</span>
+                                    protocolSchedule,
+                                    ethContext,
+                                    metricsSystem,
+<span class="fc" id="L144">                                    currentState.getPivotBlockNumber().getAsLong(),</span>
+<span class="fc" id="L145">                                    syncConfig.getFastSyncMinimumPeerCount(),</span>
+<span class="fc" id="L146">                                    syncConfig.getFastSyncPivotDistance())</span>
+<span class="fc" id="L147">                                .downloadPivotBlockHeader()));</span>
+  }
+
+  private FastSyncState updateStats(final FastSyncState fastSyncState) {
+<span class="fc" id="L151">    pivotBlockSelectionCounter.inc();</span>
+<span class="fc" id="L152">    fastSyncState</span>
+<span class="fc" id="L153">        .getPivotBlockHeader()</span>
+<span class="fc" id="L154">        .ifPresent(blockHeader -&gt; pivotBlockGauge.set(blockHeader.getNumber()));</span>
+<span class="fc" id="L155">    return fastSyncState;</span>
+  }
+
+  public ChainDownloader createChainDownloader(final FastSyncState currentState) {
+<span class="fc" id="L159">    return FastSyncChainDownloader.create(</span>
+        syncConfig,
+        worldStateStorageCoordinator,
+        protocolSchedule,
+        protocolContext,
+        ethContext,
+        syncState,
+        metricsSystem,
+        currentState);
+  }
+
+  private CompletableFuture&lt;FastSyncState&gt; downloadPivotBlockHeader(final Hash hash) {
+<span class="fc" id="L171">    LOG.debug(&quot;Downloading pivot block header by hash {}&quot;, hash);</span>
+<span class="fc" id="L172">    return RetryingGetHeaderFromPeerByHashTask.byHash(</span>
+            protocolSchedule,
+            ethContext,
+            hash,
+<span class="fc" id="L176">            pivotBlockSelector.getMinRequiredBlockNumber(),</span>
+            metricsSystem)
+<span class="fc" id="L178">        .getHeader()</span>
+<span class="fc" id="L179">        .whenComplete(</span>
+            (blockHeader, throwable) -&gt; {
+<span class="pc bpc" id="L181" title="1 of 2 branches missed.">              if (throwable != null) {</span>
+<span class="nc" id="L182">                LOG.debug(&quot;Error downloading block header by hash {}&quot;, hash);</span>
+              } else {
+<span class="fc" id="L184">                LOG.atDebug()</span>
+<span class="fc" id="L185">                    .setMessage(&quot;Successfully downloaded pivot block header by hash {}&quot;)</span>
+<span class="fc" id="L186">                    .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L187">                    .log();</span>
+              }
+<span class="fc" id="L189">            })</span>
+<span class="fc" id="L190">        .thenApply(FastSyncState::new);</span>
+  }
+
+  public boolean isBlockchainBehind(final long blockNumber) {
+<span class="nc bnc" id="L194" title="All 2 branches missed.">    return protocolContext.getBlockchain().getChainHeadHeader().getNumber() &lt; blockNumber;</span>
+  }
+
+  private CompletableFuture&lt;Void&gt; waitForPeers(final int count) {
+
+<span class="fc" id="L199">    final WaitForPeersTask waitForPeersTask =</span>
+<span class="fc" id="L200">        WaitForPeersTask.create(ethContext, count, metricsSystem);</span>
+<span class="fc" id="L201">    return waitForPeersTask.run();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

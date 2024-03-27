@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapWorldStateDownloader.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">SnapWorldStateDownloader.java</span></div><h1>SnapWorldStateDownloader.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncMetricsManager.Step.DOWNLOAD;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest.createAccountRangeDataRequest;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncActions;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.context.SnapSyncStatePersistenceManager;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.AccountRangeDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloader;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.services.tasks.InMemoryTasksPriorityQueues;
+
+import java.time.Clock;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.IntSupplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class SnapWorldStateDownloader implements WorldStateDownloader {
+
+<span class="nc" id="L54">  private static final Logger LOG = LoggerFactory.getLogger(SnapWorldStateDownloader.class);</span>
+  private final long minMillisBeforeStalling;
+  private final Clock clock;
+  private final MetricsSystem metricsSystem;
+
+  private final EthContext ethContext;
+  private final SnapSyncStatePersistenceManager snapContext;
+  private final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt; snapTaskCollection;
+  private final SnapSyncConfiguration snapSyncConfiguration;
+  private final int maxOutstandingRequests;
+  private final int maxNodeRequestsWithoutProgress;
+  private final ProtocolContext protocolContext;
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+
+<span class="nc" id="L68">  private final AtomicReference&lt;SnapWorldDownloadState&gt; downloadState = new AtomicReference&lt;&gt;();</span>
+
+  public SnapWorldStateDownloader(
+      final EthContext ethContext,
+      final SnapSyncStatePersistenceManager snapContext,
+      final ProtocolContext protocolContext,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt; snapTaskCollection,
+      final SnapSyncConfiguration snapSyncConfiguration,
+      final int maxOutstandingRequests,
+      final int maxNodeRequestsWithoutProgress,
+      final long minMillisBeforeStalling,
+      final Clock clock,
+<span class="nc" id="L81">      final MetricsSystem metricsSystem) {</span>
+<span class="nc" id="L82">    this.ethContext = ethContext;</span>
+<span class="nc" id="L83">    this.protocolContext = protocolContext;</span>
+<span class="nc" id="L84">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="nc" id="L85">    this.snapContext = snapContext;</span>
+<span class="nc" id="L86">    this.snapTaskCollection = snapTaskCollection;</span>
+<span class="nc" id="L87">    this.snapSyncConfiguration = snapSyncConfiguration;</span>
+<span class="nc" id="L88">    this.maxOutstandingRequests = maxOutstandingRequests;</span>
+<span class="nc" id="L89">    this.maxNodeRequestsWithoutProgress = maxNodeRequestsWithoutProgress;</span>
+<span class="nc" id="L90">    this.minMillisBeforeStalling = minMillisBeforeStalling;</span>
+<span class="nc" id="L91">    this.clock = clock;</span>
+<span class="nc" id="L92">    this.metricsSystem = metricsSystem;</span>
+
+<span class="nc" id="L94">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_node_requests_since_last_progress_current&quot;,
+        &quot;Number of world state requests made since the last time new data was returned&quot;,
+<span class="nc" id="L98">        downloadStateValue(SnapWorldDownloadState::getRequestsSinceLastProgress));</span>
+
+<span class="nc" id="L100">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_inflight_requests_current&quot;,
+        &quot;Number of in progress requests for world state data&quot;,
+<span class="nc" id="L104">        downloadStateValue(SnapWorldDownloadState::getOutstandingTaskCount));</span>
+<span class="nc" id="L105">  }</span>
+
+  private IntSupplier downloadStateValue(final Function&lt;SnapWorldDownloadState, Integer&gt; getter) {
+<span class="nc" id="L108">    return () -&gt; {</span>
+<span class="nc" id="L109">      final SnapWorldDownloadState state = this.downloadState.get();</span>
+<span class="nc bnc" id="L110" title="All 2 branches missed.">      return state != null ? getter.apply(state) : 0;</span>
+    };
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; run(
+      final FastSyncActions fastSyncActions, final FastSyncState fastSyncState) {
+<span class="nc" id="L117">    synchronized (this) {</span>
+<span class="nc" id="L118">      final SnapWorldDownloadState oldDownloadState = this.downloadState.get();</span>
+<span class="nc bnc" id="L119" title="All 4 branches missed.">      if (oldDownloadState != null &amp;&amp; oldDownloadState.isDownloading()) {</span>
+<span class="nc" id="L120">        final CompletableFuture&lt;Void&gt; failed = new CompletableFuture&lt;&gt;();</span>
+<span class="nc" id="L121">        failed.completeExceptionally(</span>
+            new IllegalStateException(
+<span class="nc" id="L123">                &quot;Cannot run an already running &quot; + this.getClass().getSimpleName()));</span>
+<span class="nc" id="L124">        return failed;</span>
+      }
+
+<span class="nc" id="L127">      final SnapSyncProcessState snapSyncState = (SnapSyncProcessState) fastSyncState;</span>
+<span class="nc" id="L128">      final BlockHeader header = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="nc" id="L129">      final Hash stateRoot = header.getStateRoot();</span>
+<span class="nc" id="L130">      LOG.info(</span>
+          &quot;Downloading world state from peers for pivot block {}. State root {} pending requests {}&quot;,
+<span class="nc" id="L132">          header.toLogString(),</span>
+          stateRoot,
+<span class="nc" id="L134">          snapTaskCollection.size());</span>
+
+<span class="nc" id="L136">      final SnapSyncMetricsManager snapsyncMetricsManager =</span>
+          new SnapSyncMetricsManager(metricsSystem, ethContext);
+
+<span class="nc" id="L139">      final SnapWorldDownloadState newDownloadState =</span>
+          new SnapWorldDownloadState(
+              worldStateStorageCoordinator,
+              snapContext,
+<span class="nc" id="L143">              protocolContext.getBlockchain(),</span>
+              snapSyncState,
+              snapTaskCollection,
+              maxNodeRequestsWithoutProgress,
+              minMillisBeforeStalling,
+              snapsyncMetricsManager,
+              clock);
+
+<span class="nc" id="L151">      final Map&lt;Bytes32, Bytes32&gt; ranges = RangeManager.generateAllRanges(16);</span>
+<span class="nc" id="L152">      snapsyncMetricsManager.initRange(ranges);</span>
+
+<span class="nc" id="L154">      final List&lt;AccountRangeDataRequest&gt; currentAccountRange =</span>
+<span class="nc" id="L155">          snapContext.getCurrentAccountRange();</span>
+<span class="nc" id="L156">      final HashSet&lt;Bytes&gt; inconsistentAccounts = snapContext.getAccountsHealingList();</span>
+
+<span class="nc bnc" id="L158" title="All 2 branches missed.">      if (!currentAccountRange.isEmpty()) { // continue to download worldstate ranges</span>
+<span class="nc" id="L159">        newDownloadState.setAccountsHealingList(inconsistentAccounts);</span>
+<span class="nc" id="L160">        snapContext</span>
+<span class="nc" id="L161">            .getCurrentAccountRange()</span>
+<span class="nc" id="L162">            .forEach(</span>
+                snapDataRequest -&gt; {
+<span class="nc" id="L164">                  snapsyncMetricsManager.notifyRangeProgress(</span>
+<span class="nc" id="L165">                      DOWNLOAD, snapDataRequest.getStartKeyHash(), snapDataRequest.getEndKeyHash());</span>
+<span class="nc" id="L166">                  newDownloadState.enqueueRequest(snapDataRequest);</span>
+<span class="nc" id="L167">                });</span>
+<span class="nc bnc" id="L168" title="All 2 branches missed.">      } else if (!snapContext.getAccountsHealingList().isEmpty()) { // restart only the heal step</span>
+<span class="nc" id="L169">        snapSyncState.setHealTrieStatus(true);</span>
+<span class="nc" id="L170">        worldStateStorageCoordinator.applyOnMatchingStrategy(</span>
+            DataStorageFormat.BONSAI,
+            strategy -&gt; {
+<span class="nc" id="L173">              BonsaiWorldStateKeyValueStorage onBonsai = (BonsaiWorldStateKeyValueStorage) strategy;</span>
+<span class="nc" id="L174">              onBonsai.clearFlatDatabase();</span>
+<span class="nc" id="L175">              onBonsai.clearTrieLog();</span>
+<span class="nc" id="L176">            });</span>
+
+<span class="nc" id="L178">        newDownloadState.setAccountsHealingList(inconsistentAccounts);</span>
+<span class="nc" id="L179">        newDownloadState.enqueueRequest(</span>
+<span class="nc" id="L180">            SnapDataRequest.createAccountTrieNodeDataRequest(</span>
+<span class="nc" id="L181">                stateRoot, Bytes.EMPTY, snapContext.getAccountsHealingList()));</span>
+      } else {
+        // start from scratch
+<span class="nc" id="L184">        worldStateStorageCoordinator.clear();</span>
+        // we have to upgrade to full flat db mode if we are in bonsai mode
+<span class="nc bnc" id="L186" title="All 2 branches missed.">        if (snapSyncConfiguration.isFlatDbHealingEnabled()) {</span>
+<span class="nc" id="L187">          worldStateStorageCoordinator.applyOnMatchingStrategy(</span>
+              DataStorageFormat.BONSAI,
+              strategy -&gt; {
+<span class="nc" id="L190">                BonsaiWorldStateKeyValueStorage onBonsai =</span>
+                    (BonsaiWorldStateKeyValueStorage) strategy;
+<span class="nc" id="L192">                onBonsai.upgradeToFullFlatDbMode();</span>
+<span class="nc" id="L193">              });</span>
+        }
+<span class="nc" id="L195">        ranges.forEach(</span>
+            (key, value) -&gt;
+<span class="nc" id="L197">                newDownloadState.enqueueRequest(</span>
+<span class="nc" id="L198">                    createAccountRangeDataRequest(stateRoot, key, value)));</span>
+      }
+
+<span class="nc" id="L201">      Optional&lt;CompleteTaskStep&gt; maybeCompleteTask =</span>
+<span class="nc" id="L202">          Optional.of(new CompleteTaskStep(snapSyncState, metricsSystem));</span>
+
+<span class="nc" id="L204">      final DynamicPivotBlockSelector dynamicPivotBlockManager =</span>
+          new DynamicPivotBlockSelector(
+              ethContext,
+              fastSyncActions,
+              snapSyncState,
+<span class="nc" id="L209">              snapSyncConfiguration.getPivotBlockWindowValidity(),</span>
+<span class="nc" id="L210">              snapSyncConfiguration.getPivotBlockDistanceBeforeCaching());</span>
+
+      SnapWorldStateDownloadProcess downloadProcess =
+<span class="nc" id="L213">          SnapWorldStateDownloadProcess.builder()</span>
+<span class="nc" id="L214">              .configuration(snapSyncConfiguration)</span>
+<span class="nc" id="L215">              .maxOutstandingRequests(maxOutstandingRequests)</span>
+<span class="nc" id="L216">              .dynamicPivotBlockSelector(dynamicPivotBlockManager)</span>
+<span class="nc" id="L217">              .loadLocalDataStep(</span>
+                  new LoadLocalDataStep(
+                      worldStateStorageCoordinator,
+                      newDownloadState,
+                      snapSyncConfiguration,
+                      metricsSystem,
+                      snapSyncState))
+<span class="nc" id="L224">              .requestDataStep(</span>
+                  new RequestDataStep(
+                      ethContext,
+                      worldStateStorageCoordinator,
+                      snapSyncState,
+                      newDownloadState,
+                      snapSyncConfiguration,
+                      metricsSystem))
+<span class="nc" id="L232">              .persistDataStep(</span>
+                  new PersistDataStep(
+                      snapSyncState,
+                      worldStateStorageCoordinator,
+                      newDownloadState,
+                      snapSyncConfiguration))
+<span class="nc" id="L238">              .completeTaskStep(maybeCompleteTask.get())</span>
+<span class="nc" id="L239">              .downloadState(newDownloadState)</span>
+<span class="nc" id="L240">              .fastSyncState(snapSyncState)</span>
+<span class="nc" id="L241">              .metricsSystem(metricsSystem)</span>
+<span class="nc" id="L242">              .build();</span>
+
+<span class="nc" id="L244">      newDownloadState.setPivotBlockSelector(dynamicPivotBlockManager);</span>
+
+<span class="nc" id="L246">      return newDownloadState.startDownload(downloadProcess, ethContext.getScheduler());</span>
+    }
+  }
+
+  @Override
+  public void cancel() {
+<span class="nc" id="L252">    synchronized (this) {</span>
+<span class="nc" id="L253">      final SnapWorldDownloadState downloadState = this.downloadState.get();</span>
+<span class="nc bnc" id="L254" title="All 2 branches missed.">      if (downloadState != null) {</span>
+<span class="nc" id="L255">        downloadState.getDownloadFuture().cancel(true);</span>
+      }
+<span class="nc" id="L257">    }</span>
+<span class="nc" id="L258">  }</span>
+
+  @Override
+  public Optional&lt;Long&gt; getPulledStates() {
+<span class="nc" id="L262">    return Optional.empty();</span>
+  }
+
+  @Override
+  public Optional&lt;Long&gt; getKnownStates() {
+<span class="nc" id="L267">    return Optional.empty();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

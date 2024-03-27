@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateWebSocketMethodsFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.websocket.methods</a> &gt; <span class="el_source">PrivateWebSocketMethodsFactory.java</span></div><h1>PrivateWebSocketMethodsFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.websocket.methods;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.PrivacyIdProvider;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.SubscriptionManager;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.request.SubscriptionRequestMapper;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.privacy.ChainHeadPrivateNonceProvider;
+import org.hyperledger.besu.ethereum.privacy.FlexiblePrivacyController;
+import org.hyperledger.besu.ethereum.privacy.MultiTenancyPrivacyController;
+import org.hyperledger.besu.ethereum.privacy.PluginPrivacyController;
+import org.hyperledger.besu.ethereum.privacy.PrivacyController;
+import org.hyperledger.besu.ethereum.privacy.PrivateNonceProvider;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionSimulator;
+import org.hyperledger.besu.ethereum.privacy.RestrictedDefaultPrivacyController;
+
+import java.math.BigInteger;
+import java.util.Collection;
+import java.util.Optional;
+import java.util.Set;
+
+public class PrivateWebSocketMethodsFactory {
+
+  private final PrivacyParameters privacyParameters;
+  private final SubscriptionManager subscriptionManager;
+  private final ProtocolSchedule protocolSchedule;
+  private final BlockchainQueries blockchainQueries;
+
+  public PrivateWebSocketMethodsFactory(
+      final PrivacyParameters privacyParameters,
+      final SubscriptionManager subscriptionManager,
+      final ProtocolSchedule protocolSchedule,
+<span class="nc" id="L49">      final BlockchainQueries blockchainQueries) {</span>
+<span class="nc" id="L50">    this.privacyParameters = privacyParameters;</span>
+<span class="nc" id="L51">    this.subscriptionManager = subscriptionManager;</span>
+<span class="nc" id="L52">    this.protocolSchedule = protocolSchedule;</span>
+<span class="nc" id="L53">    this.blockchainQueries = blockchainQueries;</span>
+<span class="nc" id="L54">  }</span>
+
+  public Collection&lt;JsonRpcMethod&gt; methods() {
+<span class="nc" id="L57">    final SubscriptionRequestMapper subscriptionRequestMapper = new SubscriptionRequestMapper();</span>
+<span class="nc" id="L58">    final PrivacyIdProvider privacyIdProvider = PrivacyIdProvider.build(privacyParameters);</span>
+<span class="nc" id="L59">    final PrivacyController privacyController = createPrivacyController();</span>
+
+<span class="nc" id="L61">    return Set.of(</span>
+        new PrivSubscribe(
+            subscriptionManager, subscriptionRequestMapper, privacyController, privacyIdProvider),
+        new PrivUnsubscribe(
+            subscriptionManager, subscriptionRequestMapper, privacyController, privacyIdProvider));
+  }
+
+  private PrivacyController createPrivacyController() {
+<span class="nc" id="L69">    final Optional&lt;BigInteger&gt; chainId = protocolSchedule.getChainId();</span>
+<span class="nc bnc" id="L70" title="All 2 branches missed.">    if (privacyParameters.isPrivacyPluginEnabled()) {</span>
+<span class="nc" id="L71">      return new PluginPrivacyController(</span>
+<span class="nc" id="L72">          blockchainQueries.getBlockchain(),</span>
+          privacyParameters,
+          chainId,
+<span class="nc" id="L75">          createPrivateTransactionSimulator(),</span>
+<span class="nc" id="L76">          createPrivateNonceProvider(),</span>
+<span class="nc" id="L77">          privacyParameters.getPrivateWorldStateReader());</span>
+    } else {
+      final PrivacyController restrictedPrivacyController;
+<span class="nc bnc" id="L80" title="All 2 branches missed.">      if (privacyParameters.isFlexiblePrivacyGroupsEnabled()) {</span>
+<span class="nc" id="L81">        restrictedPrivacyController =</span>
+            new FlexiblePrivacyController(
+<span class="nc" id="L83">                blockchainQueries.getBlockchain(),</span>
+                privacyParameters,
+                chainId,
+<span class="nc" id="L86">                createPrivateTransactionSimulator(),</span>
+<span class="nc" id="L87">                createPrivateNonceProvider(),</span>
+<span class="nc" id="L88">                privacyParameters.getPrivateWorldStateReader());</span>
+      } else {
+<span class="nc" id="L90">        restrictedPrivacyController =</span>
+            new RestrictedDefaultPrivacyController(
+<span class="nc" id="L92">                blockchainQueries.getBlockchain(),</span>
+                privacyParameters,
+                chainId,
+<span class="nc" id="L95">                createPrivateTransactionSimulator(),</span>
+<span class="nc" id="L96">                createPrivateNonceProvider(),</span>
+<span class="nc" id="L97">                privacyParameters.getPrivateWorldStateReader());</span>
+      }
+<span class="nc bnc" id="L99" title="All 2 branches missed.">      return privacyParameters.isMultiTenancyEnabled()</span>
+<span class="nc" id="L100">          ? new MultiTenancyPrivacyController(restrictedPrivacyController)</span>
+<span class="nc" id="L101">          : restrictedPrivacyController;</span>
+    }
+  }
+
+  private PrivateTransactionSimulator createPrivateTransactionSimulator() {
+<span class="nc" id="L106">    return new PrivateTransactionSimulator(</span>
+<span class="nc" id="L107">        blockchainQueries.getBlockchain(),</span>
+<span class="nc" id="L108">        blockchainQueries.getWorldStateArchive(),</span>
+        protocolSchedule,
+        privacyParameters);
+  }
+
+  private PrivateNonceProvider createPrivateNonceProvider() {
+<span class="nc" id="L114">    return new ChainHeadPrivateNonceProvider(</span>
+<span class="nc" id="L115">        blockchainQueries.getBlockchain(),</span>
+<span class="nc" id="L116">        privacyParameters.getPrivateStateRootResolver(),</span>
+<span class="nc" id="L117">        privacyParameters.getPrivateWorldStateArchive());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

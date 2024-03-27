@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>T8nServerSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evmtool</a> &gt; <span class="el_source">T8nServerSubCommand.java</span></div><h1>T8nServerSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.evmtool;
+
+import static org.hyperledger.besu.evmtool.T8nExecutor.extractTransactions;
+
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestEnv;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestWorldState;
+import org.hyperledger.besu.evm.EvmSpecVersion;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evmtool.T8nExecutor.RejectedTransaction;
+import org.hyperledger.besu.util.LogConfigurator;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpServerRequest;
+import picocli.CommandLine;
+
+@CommandLine.Command(
+    name = &quot;t8n-server&quot;,
+    description = &quot;Run Ethereum State Test server&quot;,
+    versionProvider = VersionProvider.class)
+<span class="fc" id="L57">public class T8nServerSubCommand implements Runnable {</span>
+
+<span class="fc" id="L59">  @CommandLine.Option(</span>
+      names = {&quot;--host&quot;},
+      description = &quot;Host to bind to&quot;)
+  private String host = &quot;localhost&quot;;
+
+<span class="fc" id="L64">  @CommandLine.Option(</span>
+      names = {&quot;--port&quot;},
+      description = &quot;Port to bind to&quot;)
+  private int port = 3000;
+
+  @Override
+  public void run() {
+<span class="nc" id="L71">    LogConfigurator.setLevel(&quot;&quot;, &quot;OFF&quot;);</span>
+    // presume ethereum mainnet for reference and state tests
+<span class="nc" id="L73">    SignatureAlgorithmFactory.setDefaultInstance();</span>
+<span class="nc" id="L74">    Vertx.vertx()</span>
+<span class="nc" id="L75">        .createHttpServer(</span>
+            new HttpServerOptions()
+<span class="nc" id="L77">                .setHost(host)</span>
+<span class="nc" id="L78">                .setPort(port)</span>
+<span class="nc" id="L79">                .setHandle100ContinueAutomatically(true)</span>
+<span class="nc" id="L80">                .setCompressionSupported(true))</span>
+<span class="nc" id="L81">        .requestHandler(req -&gt; req.bodyHandler(body -&gt; handle(req, body)))</span>
+<span class="nc" id="L82">        .listen()</span>
+<span class="nc" id="L83">        .onSuccess(</span>
+<span class="nc" id="L84">            server -&gt; System.out.println(&quot;Transition server listening on &quot; + server.actualPort()))</span>
+<span class="nc" id="L85">        .onFailure(</span>
+<span class="nc" id="L86">            err -&gt; System.err.println(&quot;Failed to start transition server: &quot; + err.getMessage()));</span>
+<span class="nc" id="L87">  }</span>
+
+  void handle(final HttpServerRequest req, final Buffer body) {
+<span class="nc" id="L90">    ObjectMapper objectMapper = JsonUtils.createObjectMapper();</span>
+<span class="nc" id="L91">    final ObjectReader t8nReader = objectMapper.reader();</span>
+    try {
+<span class="nc" id="L93">      var t8nRequest = t8nReader.readTree(body.toString());</span>
+<span class="nc" id="L94">      JsonNode state = t8nRequest.get(&quot;state&quot;);</span>
+<span class="nc" id="L95">      JsonNode input = t8nRequest.get(&quot;input&quot;);</span>
+
+<span class="nc bnc" id="L97" title="All 4 branches missed.">      if (state != null &amp;&amp; input != null) {</span>
+<span class="nc" id="L98">        handleT8nRequest(req, objectMapper, state, input);</span>
+      } else {
+<span class="nc" id="L100">        sendHelp(req, objectMapper);</span>
+      }
+<span class="nc" id="L102">      req.response().send();</span>
+<span class="nc" id="L103">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L104">      req.response().setStatusCode(500).end(e.getMessage());</span>
+<span class="nc" id="L105">    }</span>
+<span class="nc" id="L106">  }</span>
+
+  void handleT8nRequest(
+      final HttpServerRequest req,
+      final ObjectMapper objectMapper,
+      final JsonNode state,
+      final JsonNode input) {
+    try {
+<span class="nc" id="L114">      String fork = state.get(&quot;fork&quot;).asText();</span>
+<span class="nc" id="L115">      Long chainId = Long.valueOf(state.get(&quot;chainid&quot;).asText());</span>
+<span class="nc" id="L116">      String reward = state.get(&quot;reward&quot;).asText();</span>
+
+<span class="nc" id="L118">      ReferenceTestEnv referenceTestEnv =</span>
+<span class="nc" id="L119">          objectMapper.convertValue(input.get(&quot;env&quot;), ReferenceTestEnv.class);</span>
+<span class="nc" id="L120">      Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts =</span>
+<span class="nc" id="L121">          objectMapper.convertValue(input.get(&quot;alloc&quot;), new TypeReference&lt;&gt;() {});</span>
+
+      final T8nExecutor.T8nResult result;
+<span class="nc" id="L124">      try (ReferenceTestWorldState initialWorldState =</span>
+<span class="nc" id="L125">          ReferenceTestWorldState.create(accounts, EvmConfiguration.DEFAULT)) {</span>
+<span class="nc" id="L126">        initialWorldState.persist(null);</span>
+<span class="nc" id="L127">        List&lt;Transaction&gt; transactions = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L128">        List&lt;RejectedTransaction&gt; rejections = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L129">        JsonNode txs = input.get(&quot;txs&quot;);</span>
+<span class="nc bnc" id="L130" title="All 2 branches missed.">        if (txs != null) {</span>
+<span class="nc bnc" id="L131" title="All 2 branches missed.">          if (txs instanceof ArrayNode txsArray) {</span>
+<span class="nc" id="L132">            extractTransactions(</span>
+                new PrintWriter(System.err, true, StandardCharsets.UTF_8),
+<span class="nc" id="L134">                txsArray.elements(),</span>
+                transactions,
+                rejections);
+<span class="nc bnc" id="L137" title="All 2 branches missed.">          } else if (txs instanceof TextNode txt) {</span>
+<span class="nc" id="L138">            transactions =</span>
+<span class="nc" id="L139">                extractTransactions(</span>
+                    new PrintWriter(System.err, true, StandardCharsets.UTF_8),
+<span class="nc" id="L141">                    List.&lt;JsonNode&gt;of(txt).iterator(),</span>
+                    transactions,
+                    rejections);
+          }
+        }
+
+<span class="nc" id="L147">        result =</span>
+<span class="nc" id="L148">            T8nExecutor.runTest(</span>
+                chainId,
+                fork,
+                reward,
+                objectMapper,
+                referenceTestEnv,
+                initialWorldState,
+                transactions,
+                rejections,
+<span class="nc" id="L157">                new T8nExecutor.TracerManager() {</span>
+                  @Override
+                  public OperationTracer getManagedTracer(final int txIndex, final Hash txHash) {
+<span class="nc" id="L160">                    return OperationTracer.NO_TRACING;</span>
+                  }
+
+                  @Override
+                  public void disposeTracer(final OperationTracer tracer) {
+                    // No output streams to dispose of
+<span class="nc" id="L166">                  }</span>
+                });
+      }
+
+<span class="nc" id="L170">      ObjectNode outputObject = objectMapper.createObjectNode();</span>
+<span class="nc" id="L171">      outputObject.set(&quot;alloc&quot;, result.allocObject());</span>
+<span class="nc" id="L172">      outputObject.set(&quot;body&quot;, result.bodyBytes());</span>
+<span class="nc" id="L173">      outputObject.set(&quot;result&quot;, result.resultObject());</span>
+
+      try {
+<span class="nc" id="L176">        String response =</span>
+<span class="nc" id="L177">            objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(outputObject);</span>
+<span class="nc" id="L178">        req.response().setChunked(true);</span>
+<span class="nc" id="L179">        req.response().putHeader(&quot;Content-Type&quot;, &quot;application/json&quot;).send(response);</span>
+<span class="nc" id="L180">      } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L181">        req.response().setStatusCode(500).end(e.getMessage());</span>
+<span class="nc" id="L182">      }</span>
+<span class="fc" id="L183">    } catch (Throwable t) {</span>
+<span class="fc" id="L184">      ByteArrayOutputStream baos = new ByteArrayOutputStream();</span>
+<span class="fc" id="L185">      PrintStream ps = new PrintStream(baos, true, StandardCharsets.UTF_8);</span>
+<span class="fc" id="L186">      t.printStackTrace(ps);</span>
+<span class="fc" id="L187">      ObjectNode json = objectMapper.createObjectNode();</span>
+<span class="fc" id="L188">      json.put(&quot;error&quot;, t.getMessage());</span>
+<span class="fc" id="L189">      json.put(&quot;stacktrace&quot;, baos.toString(StandardCharsets.UTF_8).replaceAll(&quot;\\s&quot;, &quot; &quot;));</span>
+
+<span class="fc" id="L191">      t.printStackTrace(System.out);</span>
+
+<span class="fc" id="L193">      req.response().setStatusCode(500).end(json.toString());</span>
+<span class="nc" id="L194">    }</span>
+<span class="fc" id="L195">  }</span>
+
+  private void sendHelp(final HttpServerRequest req, final ObjectMapper objectMapper) {
+<span class="nc" id="L198">    ObjectNode outputObject = objectMapper.createObjectNode();</span>
+<span class="nc" id="L199">    outputObject.set(&quot;version&quot;, TextNode.valueOf(new VersionProvider().getVersion()[0]));</span>
+<span class="nc" id="L200">    ArrayNode forks = objectMapper.createArrayNode();</span>
+<span class="nc" id="L201">    outputObject.set(&quot;forks&quot;, forks);</span>
+<span class="nc bnc" id="L202" title="All 2 branches missed.">    for (var fork : EvmSpecVersion.values()) {</span>
+<span class="nc" id="L203">      forks.add(TextNode.valueOf(fork.getName()));</span>
+    }
+<span class="nc" id="L205">    outputObject.set(&quot;error&quot;, TextNode.valueOf(&quot;Both 'state' and 'input' fields must be set&quot;));</span>
+
+    try {
+<span class="nc" id="L208">      req.response()</span>
+<span class="nc" id="L209">          .putHeader(&quot;Content-Type&quot;, &quot;application/json&quot;)</span>
+<span class="nc" id="L210">          .end(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(outputObject));</span>
+
+<span class="nc" id="L212">    } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L213">      req.response().setStatusCode(500).end(e.getMessage());</span>
+<span class="nc" id="L214">    }</span>
+<span class="nc" id="L215">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

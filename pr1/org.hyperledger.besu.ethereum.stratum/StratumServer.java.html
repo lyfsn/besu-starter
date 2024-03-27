@@ -1,0 +1,337 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StratumServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.stratum</a> &gt; <span class="el_source">StratumServer.java</span></div><h1>StratumServer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.stratum;
+
+import org.hyperledger.besu.ethereum.blockcreation.PoWMiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.PoWObserver;
+import org.hyperledger.besu.ethereum.mainnet.EthHash;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolution;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolverInputs;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+
+import com.google.common.util.concurrent.AtomicDouble;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.DecoderResultProvider;
+import io.netty.handler.codec.LineBasedFrameDecoder;
+import io.netty.handler.codec.MessageToMessageDecoder;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.HttpContent;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpRequestDecoder;
+import io.netty.handler.codec.http.HttpResponseEncoder;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.string.StringEncoder;
+import io.netty.util.CharsetUtil;
+import io.vertx.core.Future;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.net.NetServer;
+import io.vertx.core.net.NetServerOptions;
+import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.impl.NetSocketInternal;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * TCP server allowing miners to connect to the client over persistent TCP connections, using the
+ * various Stratum protocols.
+ */
+public class StratumServer implements PoWObserver {
+
+<span class="fc" id="L70">  private static final Logger logger = LoggerFactory.getLogger(StratumServer.class);</span>
+  private static final String VERTX_HANDLER_NAME = &quot;handler&quot;;
+
+  private final Vertx vertx;
+  private final int port;
+  private final String networkInterface;
+<span class="fc" id="L76">  protected final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L77">  private final AtomicLong numberOfMiners = new AtomicLong(0);</span>
+<span class="fc" id="L78">  private final AtomicDouble currentDifficulty = new AtomicDouble(0.0);</span>
+  private final StratumProtocol[] protocols;
+  private final Counter connectionsCount;
+  private final Counter disconnectionsCount;
+  private NetServer server;
+
+  public StratumServer(
+      final Vertx vertx,
+      final PoWMiningCoordinator miningCoordinator,
+      final int port,
+      final String networkInterface,
+      final String extraNonce,
+<span class="fc" id="L90">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L91">    this.vertx = vertx;</span>
+<span class="fc" id="L92">    this.port = port;</span>
+<span class="fc" id="L93">    this.networkInterface = networkInterface;</span>
+<span class="fc" id="L94">    protocols =</span>
+        new StratumProtocol[] {
+<span class="fc" id="L96">          new GetWorkProtocol(miningCoordinator.getEpochCalculator()),</span>
+          new Stratum1Protocol(extraNonce, miningCoordinator),
+          new Stratum1EthProxyProtocol(miningCoordinator)
+        };
+<span class="fc" id="L100">    metricsSystem.createLongGauge(</span>
+<span class="fc" id="L101">        BesuMetricCategory.STRATUM, &quot;miners&quot;, &quot;Number of miners connected&quot;, numberOfMiners::get);</span>
+<span class="fc" id="L102">    metricsSystem.createGauge(</span>
+        BesuMetricCategory.STRATUM,
+        &quot;difficulty&quot;,
+        &quot;Current mining difficulty&quot;,
+<span class="fc" id="L106">        currentDifficulty::get);</span>
+<span class="fc" id="L107">    this.connectionsCount =</span>
+<span class="fc" id="L108">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.STRATUM, &quot;connections&quot;, &quot;Number of connections over time&quot;);
+<span class="fc" id="L110">    this.disconnectionsCount =</span>
+<span class="fc" id="L111">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.STRATUM, &quot;disconnections&quot;, &quot;Number of disconnections over time&quot;);
+<span class="fc" id="L113">  }</span>
+
+  public Future&lt;NetServer&gt; start() {
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">    if (started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L117">      server =</span>
+<span class="fc" id="L118">          vertx.createNetServer(</span>
+<span class="fc" id="L119">              new NetServerOptions().setPort(port).setHost(networkInterface).setTcpKeepAlive(true));</span>
+<span class="fc" id="L120">      server.connectHandler(this::handle);</span>
+<span class="fc" id="L121">      return server</span>
+<span class="fc" id="L122">          .listen()</span>
+<span class="fc" id="L123">          .onSuccess(</span>
+              v -&gt;
+<span class="fc" id="L125">                  logger.info(&quot;Stratum server started on {}:{}&quot;, networkInterface, v.actualPort()));</span>
+    }
+<span class="nc" id="L127">    return Future.succeededFuture(server);</span>
+  }
+
+  private void handle(final NetSocket socket) {
+<span class="fc" id="L131">    connectionsCount.inc();</span>
+<span class="fc" id="L132">    numberOfMiners.incrementAndGet();</span>
+<span class="fc" id="L133">    NetSocketInternal internalSocket = (NetSocketInternal) socket;</span>
+<span class="fc" id="L134">    StratumConnection conn =</span>
+        new StratumConnection(
+<span class="nc" id="L136">            protocols, response -&gt; sendLineBasedResponse(internalSocket, response));</span>
+<span class="fc" id="L137">    ChannelPipeline pipeline = internalSocket.channelHandlerContext().pipeline();</span>
+<span class="fc" id="L138">    pipeline.addBefore(</span>
+        VERTX_HANDLER_NAME,
+        &quot;stratumDecoder&quot;,
+<span class="fc" id="L141">        new HttpRequestDecoder() {</span>
+          @Override
+          protected void decode(
+              final ChannelHandlerContext ctx, final ByteBuf in, final List&lt;Object&gt; out)
+              throws Exception {
+<span class="fc" id="L146">            ByteBuf inputCopy = in.copy();</span>
+<span class="fc" id="L147">            int indexBeforeDecode = inputCopy.readerIndex();</span>
+<span class="fc" id="L148">            super.decode(ctx, inputCopy, out);</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">            if (out.isEmpty()) { // to process last chunk</span>
+<span class="fc" id="L150">              super.decode(ctx, inputCopy, out);</span>
+            }
+<span class="fc" id="L152">            DecoderResultProvider httpDecodingResult =</span>
+<span class="fc" id="L153">                (DecoderResultProvider) out.get(out.size() - 1);</span>
+<span class="fc" id="L154">            ChannelPipeline pipeline = ctx.pipeline();</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">            if (httpDecodingResult.decoderResult().isFailure()) {</span>
+<span class="fc" id="L156">              logger.trace(&quot;Received non-HTTP request, switching to line-based protocol&quot;);</span>
+<span class="fc" id="L157">              out.remove(httpDecodingResult);</span>
+<span class="fc" id="L158">              pipeline.addBefore(</span>
+                  VERTX_HANDLER_NAME, &quot;frameDecoder&quot;, new LineBasedFrameDecoder(240));
+<span class="fc" id="L160">              pipeline.addBefore(</span>
+                  VERTX_HANDLER_NAME,
+                  &quot;lineTrimmer&quot;,
+<span class="fc" id="L163">                  new MessageToMessageDecoder&lt;ByteBuf&gt;() {</span>
+                    @Override
+                    protected void decode(
+                        final ChannelHandlerContext ctx,
+                        final ByteBuf message,
+                        final List&lt;Object&gt; out) {
+<span class="fc bfc" id="L169" title="All 2 branches covered.">                      if (message.readableBytes() &gt; 0</span>
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">                          &amp;&amp; message.getByte(message.readableBytes() - 1) == '\n') {</span>
+<span class="nc bnc" id="L171" title="All 2 branches missed.">                        if (message.readableBytes() &gt; 1</span>
+<span class="nc bnc" id="L172" title="All 2 branches missed.">                            &amp;&amp; message.getByte(message.readableBytes() - 2) == '\r') {</span>
+<span class="nc" id="L173">                          out.add(message.readRetainedSlice(message.readableBytes() - 2));</span>
+                        } else {
+<span class="nc" id="L175">                          out.add(message.readRetainedSlice(message.readableBytes() - 1));</span>
+                        }
+                      } else {
+<span class="fc" id="L178">                        out.add(message.retain());</span>
+                      }
+<span class="fc" id="L180">                    }</span>
+                  });
+<span class="fc" id="L182">              pipeline.addBefore(</span>
+                  VERTX_HANDLER_NAME, &quot;stringEncoder&quot;, new StringEncoder(CharsetUtil.UTF_8));
+<span class="fc" id="L184">              pipeline.remove(this);</span>
+            } else {
+<span class="fc" id="L186">              String httpEncoderHandlerName = &quot;httpEncoder&quot;;</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">              if (pipeline.get(httpEncoderHandlerName) == null) {</span>
+<span class="fc" id="L188">                logger.trace(&quot;Received HTTP request, switching to HTTP protocol&quot;);</span>
+<span class="fc" id="L189">                pipeline.addBefore(</span>
+                    VERTX_HANDLER_NAME, httpEncoderHandlerName, new HttpResponseEncoder());
+              }
+<span class="fc bfc" id="L192" title="All 2 branches covered.">              if (httpDecodingResult instanceof HttpRequest request</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">                  &amp;&amp; !request.method().equals(HttpMethod.POST)) {</span>
+<span class="fc" id="L194">                logger.debug(&quot;Received non-POST request&quot;);</span>
+<span class="fc" id="L195">                in.skipBytes(in.readableBytes()); // skip body decode</span>
+              } else {
+<span class="fc" id="L197">                in.skipBytes(inputCopy.readerIndex() - indexBeforeDecode);</span>
+              }
+            }
+<span class="fc" id="L200">          }</span>
+        });
+<span class="fc" id="L202">    Buffer requestBody = Buffer.buffer();</span>
+<span class="fc" id="L203">    internalSocket.messageHandler(</span>
+        obj -&gt; {
+          try {
+<span class="fc bfc" id="L206" title="All 4 branches covered.">            if (obj instanceof HttpRequest request &amp;&amp; !request.method().equals(HttpMethod.POST)) {</span>
+<span class="fc" id="L207">              sendHttpResponse(</span>
+                  internalSocket, HttpResponseStatus.METHOD_NOT_ALLOWED, Unpooled.EMPTY_BUFFER);
+<span class="fc bfc" id="L209" title="All 2 branches covered.">            } else if (obj instanceof HttpContent httpContent) {</span>
+<span class="fc" id="L210">              requestBody.appendBuffer(Buffer.buffer(httpContent.content()));</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">              if (obj instanceof LastHttpContent) {</span>
+                try {
+<span class="fc" id="L213">                  conn.handleBuffer(</span>
+                      requestBody,
+                      response -&gt;
+<span class="fc" id="L216">                          sendHttpResponse(</span>
+                              internalSocket,
+                              HttpResponseStatus.OK,
+<span class="fc" id="L219">                              Unpooled.wrappedBuffer(response.getBytes(CharsetUtil.UTF_8))));</span>
+<span class="fc" id="L220">                } catch (IllegalArgumentException e) {</span>
+<span class="fc" id="L221">                  logger.warn(&quot;Invalid message {}&quot;, requestBody);</span>
+<span class="fc" id="L222">                  sendHttpResponse(</span>
+                      internalSocket, HttpResponseStatus.BAD_REQUEST, Unpooled.EMPTY_BUFFER);
+<span class="nc" id="L224">                } catch (Exception e) {</span>
+<span class="nc" id="L225">                  logger.warn(&quot;Unexpected error&quot;, e);</span>
+<span class="nc" id="L226">                  sendHttpResponse(</span>
+                      internalSocket,
+                      HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                      Unpooled.EMPTY_BUFFER);
+                } finally {
+<span class="fc" id="L231">                  conn.close();</span>
+<span class="fc" id="L232">                }</span>
+              }
+<span class="fc bfc" id="L234" title="All 4 branches covered.">            } else if (obj instanceof ByteBuf value &amp;&amp; value.readableBytes() &gt; 0) {</span>
+              try {
+<span class="fc" id="L236">                conn.handleBuffer(</span>
+<span class="fc" id="L237">                    Buffer.buffer(value),</span>
+<span class="fc" id="L238">                    response -&gt; sendLineBasedResponse(internalSocket, response));</span>
+<span class="fc" id="L239">              } catch (Exception e) {</span>
+<span class="fc" id="L240">                logger.error(&quot;Error handling request&quot;, e);</span>
+<span class="pc" id="L241">                internalSocket.close().onFailure(ex -&gt; logger.error(&quot;Error closing socket&quot;, ex));</span>
+<span class="fc" id="L242">              }</span>
+            }
+<span class="nc" id="L244">          } catch (Exception e) {</span>
+<span class="nc" id="L245">            pipeline.fireExceptionCaught(e);</span>
+<span class="fc" id="L246">          }</span>
+<span class="fc" id="L247">        });</span>
+<span class="fc" id="L248">    internalSocket.exceptionHandler(</span>
+        ex -&gt; {
+<span class="nc" id="L250">          logger.error(&quot;Unknown error&quot;, ex);</span>
+<span class="nc" id="L251">          internalSocket</span>
+<span class="nc" id="L252">              .close()</span>
+<span class="nc" id="L253">              .onFailure(</span>
+<span class="nc" id="L254">                  closingException -&gt; logger.error(&quot;Error closing socket&quot;, closingException));</span>
+<span class="nc" id="L255">        });</span>
+<span class="fc" id="L256">    socket.closeHandler(</span>
+        (aVoid) -&gt; {
+<span class="fc" id="L258">          logger.debug(&quot;Socket closed&quot;);</span>
+<span class="fc" id="L259">          conn.close();</span>
+<span class="fc" id="L260">          numberOfMiners.decrementAndGet();</span>
+<span class="fc" id="L261">          disconnectionsCount.inc();</span>
+<span class="fc" id="L262">        });</span>
+<span class="fc" id="L263">  }</span>
+
+  private static void sendHttpResponse(
+      final NetSocketInternal internalSocket,
+      final HttpResponseStatus responseStatus,
+      final ByteBuf content) {
+<span class="fc" id="L269">    ByteBuf contentResponse = content;</span>
+<span class="pc bpc" id="L270" title="1 of 2 branches missed.">    if (logger.isTraceEnabled()) {</span>
+<span class="nc" id="L271">      contentResponse = content.copy();</span>
+    }
+<span class="fc" id="L273">    internalSocket</span>
+<span class="fc" id="L274">        .writeMessage(</span>
+            new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, responseStatus, contentResponse))
+<span class="pc" id="L276">        .onFailure(ex -&gt; logger.error(&quot;Failed to write response&quot;, ex))</span>
+<span class="fc" id="L277">        .onSuccess(</span>
+            writeResult -&gt;
+<span class="fc" id="L279">                internalSocket</span>
+<span class="fc" id="L280">                    .close()</span>
+<span class="fc" id="L281">                    .onSuccess(</span>
+                        v -&gt;
+<span class="fc" id="L283">                            logger.trace(</span>
+                                &quot;&lt;&lt; {}&quot;,
+<span class="pc bpc" id="L285" title="1 of 2 branches missed.">                                content.isReadable()</span>
+<span class="nc" id="L286">                                    ? content.toString(StandardCharsets.UTF_8)</span>
+<span class="fc" id="L287">                                    : &quot;no content&quot;))</span>
+<span class="pc" id="L288">                    .onFailure(ex -&gt; logger.error(&quot;Failed to close socket&quot;, ex)));</span>
+<span class="fc" id="L289">  }</span>
+
+  private static Future&lt;Void&gt; sendLineBasedResponse(
+      final NetSocketInternal internalSocket, final String response) {
+<span class="fc" id="L293">    return internalSocket</span>
+<span class="fc" id="L294">        .writeMessage(response + '\n') // response is delimited by a newline</span>
+<span class="fc" id="L295">        .onSuccess(v -&gt; logger.trace(&quot;&lt;&lt; {}&quot;, response))</span>
+<span class="pc" id="L296">        .onFailure(ex -&gt; logger.error(&quot;Failed to send response: {}&quot;, response, ex));</span>
+  }
+
+  public Future&lt;Void&gt; stop() {
+<span class="pc bpc" id="L300" title="1 of 2 branches missed.">    if (started.compareAndSet(true, false)) {</span>
+<span class="fc" id="L301">      return server.close();</span>
+    }
+<span class="nc" id="L303">    logger.debug(&quot;Stopping StratumServer that was not running&quot;);</span>
+<span class="nc" id="L304">    return Future.succeededFuture();</span>
+  }
+
+  @Override
+  public void newJob(final PoWSolverInputs poWSolverInputs) {
+<span class="pc bpc" id="L309" title="1 of 2 branches missed.">    if (!started.get()) {</span>
+<span class="nc" id="L310">      logger.debug(&quot;Discarding {} as stratum server is not started&quot;, poWSolverInputs);</span>
+<span class="nc" id="L311">      return;</span>
+    }
+<span class="fc" id="L313">    logger.debug(&quot;stratum newJob with inputs: {}&quot;, poWSolverInputs);</span>
+<span class="fc bfc" id="L314" title="All 2 branches covered.">    for (StratumProtocol protocol : protocols) {</span>
+<span class="fc" id="L315">      protocol.setCurrentWorkTask(poWSolverInputs);</span>
+    }
+
+    // reverse the target calculation to get the difficulty
+    // and ensure we do not get divide by zero:
+<span class="fc" id="L320">    UInt256 difficulty =</span>
+<span class="fc" id="L321">        Optional.of(poWSolverInputs.getTarget().toUnsignedBigInteger())</span>
+<span class="fc bfc" id="L322" title="All 2 branches covered.">            .filter(td -&gt; td.compareTo(BigInteger.ONE) &gt; 0)</span>
+<span class="fc" id="L323">            .map(EthHash.TARGET_UPPER_BOUND::divide)</span>
+<span class="fc" id="L324">            .map(UInt256::valueOf)</span>
+<span class="fc" id="L325">            .orElse(UInt256.MAX_VALUE);</span>
+
+<span class="fc" id="L327">    currentDifficulty.set(difficulty.toUnsignedBigInteger().doubleValue());</span>
+<span class="fc" id="L328">  }</span>
+
+  @Override
+  public void setSubmitWorkCallback(final Function&lt;PoWSolution, Boolean&gt; submitSolutionCallback) {
+<span class="nc bnc" id="L332" title="All 2 branches missed.">    for (StratumProtocol protocol : protocols) {</span>
+<span class="nc" id="L333">      protocol.setSubmitCallback(submitSolutionCallback);</span>
+    }
+<span class="nc" id="L335">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

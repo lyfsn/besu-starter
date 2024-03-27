@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InMemoryStoragePlugin.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.kvstore</a> &gt; <span class="el_source">InMemoryStoragePlugin.java</span></div><h1>InMemoryStoragePlugin.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.kvstore;
+
+import org.hyperledger.besu.plugin.BesuContext;
+import org.hyperledger.besu.plugin.BesuPlugin;
+import org.hyperledger.besu.plugin.services.BesuConfiguration;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.StorageService;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageFactory;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The In memory storage plugin. */
+<span class="fc" id="L36">public class InMemoryStoragePlugin implements BesuPlugin {</span>
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(InMemoryStoragePlugin.class);</span>
+  private BesuContext context;
+  private InMemoryKeyValueStorageFactory factory;
+  private InMemoryKeyValueStorageFactory privacyFactory;
+
+  @Override
+  public void register(final BesuContext context) {
+<span class="fc" id="L45">    LOG.debug(&quot;Registering plugin&quot;);</span>
+<span class="fc" id="L46">    this.context = context;</span>
+
+<span class="fc" id="L48">    createFactoriesAndRegisterWithStorageService();</span>
+
+<span class="fc" id="L50">    LOG.debug(&quot;Plugin registered.&quot;);</span>
+<span class="fc" id="L51">  }</span>
+
+  @Override
+  public void start() {
+<span class="nc" id="L55">    LOG.debug(&quot;Starting plugin.&quot;);</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">    if (factory == null) {</span>
+<span class="nc" id="L57">      createFactoriesAndRegisterWithStorageService();</span>
+    }
+<span class="nc" id="L59">  }</span>
+
+  @Override
+  public void stop() {
+<span class="nc" id="L63">    LOG.debug(&quot;Stopping plugin.&quot;);</span>
+
+<span class="nc bnc" id="L65" title="All 2 branches missed.">    if (factory != null) {</span>
+<span class="nc" id="L66">      factory.close();</span>
+<span class="nc" id="L67">      factory = null;</span>
+    }
+
+<span class="nc bnc" id="L70" title="All 2 branches missed.">    if (privacyFactory != null) {</span>
+<span class="nc" id="L71">      privacyFactory.close();</span>
+<span class="nc" id="L72">      privacyFactory = null;</span>
+    }
+<span class="nc" id="L74">  }</span>
+
+  private void createAndRegister(final StorageService service) {
+
+<span class="fc" id="L78">    factory = new InMemoryKeyValueStorageFactory(&quot;memory&quot;);</span>
+<span class="fc" id="L79">    privacyFactory = new InMemoryKeyValueStorageFactory(&quot;memory-privacy&quot;);</span>
+
+<span class="fc" id="L81">    service.registerKeyValueStorage(factory);</span>
+<span class="fc" id="L82">    service.registerKeyValueStorage(privacyFactory);</span>
+<span class="fc" id="L83">  }</span>
+
+  private void createFactoriesAndRegisterWithStorageService() {
+<span class="fc" id="L86">    context</span>
+<span class="fc" id="L87">        .getService(StorageService.class)</span>
+<span class="fc" id="L88">        .ifPresentOrElse(</span>
+            this::createAndRegister,
+<span class="nc" id="L90">            () -&gt; LOG.error(&quot;Failed to register KeyValueFactory due to missing StorageService.&quot;));</span>
+<span class="fc" id="L91">  }</span>
+
+  /** The Memory key value storage factory. */
+  public static class InMemoryKeyValueStorageFactory implements KeyValueStorageFactory {
+
+    private final String name;
+<span class="fc" id="L97">    private final Map&lt;List&lt;SegmentIdentifier&gt;, SegmentedInMemoryKeyValueStorage&gt; storageMap =</span>
+        new HashMap&lt;&gt;();
+
+    /**
+     * Instantiates a new Memory key value storage factory.
+     *
+     * @param name the name
+     */
+<span class="fc" id="L105">    public InMemoryKeyValueStorageFactory(final String name) {</span>
+<span class="fc" id="L106">      this.name = name;</span>
+<span class="fc" id="L107">    }</span>
+
+    @Override
+    public String getName() {
+<span class="nc" id="L111">      return name;</span>
+    }
+
+    @Override
+    public KeyValueStorage create(
+        final SegmentIdentifier segment,
+        final BesuConfiguration configuration,
+        final MetricsSystem metricsSystem)
+        throws StorageException {
+<span class="nc" id="L120">      var kvStorage =</span>
+<span class="nc" id="L121">          storageMap.computeIfAbsent(</span>
+<span class="nc" id="L122">              List.of(segment), seg -&gt; new SegmentedInMemoryKeyValueStorage(seg));</span>
+<span class="nc" id="L123">      return new SegmentedKeyValueStorageAdapter(segment, kvStorage);</span>
+    }
+
+    @Override
+    public SegmentedKeyValueStorage create(
+        final List&lt;SegmentIdentifier&gt; segments,
+        final BesuConfiguration configuration,
+        final MetricsSystem metricsSystem)
+        throws StorageException {
+<span class="nc" id="L132">      var kvStorage =</span>
+<span class="nc" id="L133">          storageMap.computeIfAbsent(segments, __ -&gt; new SegmentedInMemoryKeyValueStorage());</span>
+<span class="nc" id="L134">      return kvStorage;</span>
+    }
+
+    @Override
+    public boolean isSegmentIsolationSupported() {
+<span class="nc" id="L139">      return true;</span>
+    }
+
+    @Override
+    public boolean isSnapshotIsolationSupported() {
+<span class="nc" id="L144">      return true;</span>
+    }
+
+    @Override
+    public void close() {
+<span class="nc" id="L149">      storageMap.clear();</span>
+<span class="nc" id="L150">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

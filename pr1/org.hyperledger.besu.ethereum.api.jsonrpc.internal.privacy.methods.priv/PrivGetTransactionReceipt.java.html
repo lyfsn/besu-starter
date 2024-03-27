@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivGetTransactionReceipt.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.priv</a> &gt; <span class="el_source">PrivGetTransactionReceipt.java</span></div><h1>PrivGetTransactionReceipt.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.priv;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.enclave.EnclaveClientException;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcEnclaveErrorConverter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.privacy.methods.PrivacyIdProvider;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.Quantity;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.privacy.PrivateTransactionReceiptResult;
+import org.hyperledger.besu.ethereum.privacy.ExecutedPrivateTransaction;
+import org.hyperledger.besu.ethereum.privacy.PrivacyController;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransaction;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionReceipt;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivGetTransactionReceipt implements JsonRpcMethod {
+
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(PrivGetTransactionReceipt.class);</span>
+
+  private final PrivateStateStorage privateStateStorage;
+  private final PrivacyController privacyController;
+  private final PrivacyIdProvider privacyIdProvider;
+
+  public PrivGetTransactionReceipt(
+      final PrivateStateStorage privateStateStorage,
+      final PrivacyController privacyController,
+<span class="fc" id="L55">      final PrivacyIdProvider privacyIdProvider) {</span>
+<span class="fc" id="L56">    this.privateStateStorage = privateStateStorage;</span>
+<span class="fc" id="L57">    this.privacyController = privacyController;</span>
+<span class="fc" id="L58">    this.privacyIdProvider = privacyIdProvider;</span>
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L63">    return RpcMethod.PRIV_GET_TRANSACTION_RECEIPT.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L68">    LOG.trace(&quot;Executing {}&quot;, RpcMethod.PRIV_GET_TRANSACTION_RECEIPT.getMethodName());</span>
+<span class="fc" id="L69">    final Hash pmtTransactionHash = requestContext.getRequiredParameter(0, Hash.class);</span>
+<span class="fc" id="L70">    final String enclaveKey = privacyIdProvider.getPrivacyUserId(requestContext.getUser());</span>
+
+    final ExecutedPrivateTransaction privateTransaction;
+    try {
+<span class="fc" id="L74">      privateTransaction =</span>
+          privacyController
+<span class="fc" id="L76">              .findPrivateTransactionByPmtHash(pmtTransactionHash, enclaveKey)</span>
+<span class="fc" id="L77">              .orElse(null);</span>
+<span class="fc" id="L78">    } catch (final EnclaveClientException e) {</span>
+<span class="nc" id="L79">      return handleEnclaveException(requestContext, e);</span>
+<span class="fc" id="L80">    }</span>
+
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (privateTransaction == null) {</span>
+<span class="fc" id="L83">      return new JsonRpcSuccessResponse(requestContext.getRequest().getId(), null);</span>
+    }
+
+<span class="fc" id="L86">    final String contractAddress = calculateContractAddress(privateTransaction);</span>
+
+<span class="fc" id="L88">    LOG.trace(&quot;Calculated contractAddress: {}&quot;, contractAddress);</span>
+
+<span class="fc" id="L90">    final Hash blockHash = privateTransaction.getBlockHash();</span>
+
+<span class="fc" id="L92">    final PrivateTransactionReceipt privateTransactionReceipt =</span>
+        privateStateStorage
+<span class="fc" id="L94">            .getTransactionReceipt(blockHash, pmtTransactionHash)</span>
+            // backwards compatibility - private receipts indexed by private transaction hash key
+<span class="fc" id="L96">            .or(</span>
+                () -&gt;
+<span class="nc" id="L98">                    findPrivateReceiptByPrivateTxHash(</span>
+                        privateStateStorage, blockHash, privateTransaction))
+<span class="fc" id="L100">            .orElse(PrivateTransactionReceipt.FAILED);</span>
+
+<span class="fc" id="L102">    LOG.trace(&quot;Processed private transaction receipt&quot;);</span>
+
+<span class="fc" id="L104">    final PrivateTransactionReceiptResult result =</span>
+<span class="fc" id="L105">        buildPrivateTransactionReceiptResult(privateTransaction, privateTransactionReceipt);</span>
+
+<span class="fc" id="L107">    LOG.trace(</span>
+        &quot;Created Private Transaction Receipt Result from given Transaction Hash {}&quot;,
+<span class="fc" id="L109">        privateTransaction.getPmtHash());</span>
+
+<span class="fc" id="L111">    return new JsonRpcSuccessResponse(requestContext.getRequest().getId(), result);</span>
+  }
+
+  private PrivateTransactionReceiptResult buildPrivateTransactionReceiptResult(
+      final ExecutedPrivateTransaction privateTransaction,
+      final PrivateTransactionReceipt privateTransactionReceipt) {
+<span class="fc" id="L117">    return new PrivateTransactionReceiptResult(</span>
+<span class="fc" id="L118">        calculateContractAddress(privateTransaction),</span>
+<span class="fc" id="L119">        privateTransaction.getSender().toString(),</span>
+<span class="fc" id="L120">        privateTransaction.getTo().map(Address::toString).orElse(null),</span>
+<span class="fc" id="L121">        privateTransactionReceipt.getLogs(),</span>
+<span class="fc" id="L122">        privateTransactionReceipt.getOutput(),</span>
+<span class="fc" id="L123">        privateTransaction.getBlockHash(),</span>
+<span class="fc" id="L124">        privateTransaction.getBlockNumber(),</span>
+<span class="fc" id="L125">        privateTransaction.getPmtIndex(),</span>
+<span class="fc" id="L126">        privateTransaction.getPmtHash(),</span>
+<span class="fc" id="L127">        privateTransaction.getPrivateFrom(),</span>
+<span class="fc" id="L128">        privateTransaction.getPrivateFor().orElse(null),</span>
+<span class="fc" id="L129">        privateTransaction.getPrivacyGroupId().orElse(null),</span>
+<span class="fc" id="L130">        privateTransactionReceipt.getRevertReason().orElse(null),</span>
+<span class="fc" id="L131">        Quantity.create(privateTransactionReceipt.getStatus()));</span>
+  }
+
+  private String calculateContractAddress(final ExecutedPrivateTransaction privateTransaction) {
+<span class="pc bpc" id="L135" title="1 of 2 branches missed.">    if (privateTransaction.getTo().isEmpty()) {</span>
+<span class="fc" id="L136">      final Address sender = privateTransaction.getSender();</span>
+<span class="fc" id="L137">      final long nonce = privateTransaction.getNonce();</span>
+<span class="fc" id="L138">      final Bytes privacyGroupId =</span>
+          privateTransaction
+<span class="fc" id="L140">              .getPrivacyGroupId()</span>
+<span class="fc" id="L141">              .orElse(Bytes.fromBase64String(privateTransaction.getInternalPrivacyGroup()));</span>
+<span class="fc" id="L142">      final Address contractAddress = Address.privateContractAddress(sender, nonce, privacyGroupId);</span>
+
+<span class="fc" id="L144">      return contractAddress.toString();</span>
+    } else {
+<span class="nc" id="L146">      return null;</span>
+    }
+  }
+
+  private Optional&lt;? extends PrivateTransactionReceipt&gt; findPrivateReceiptByPrivateTxHash(
+      final PrivateStateStorage privateStateStorage,
+      final Hash blockHash,
+      final PrivateTransaction privateTransaction) {
+<span class="nc" id="L154">    final Bytes rlpEncoded = RLP.encode(privateTransaction::writeTo);</span>
+<span class="nc" id="L155">    final Bytes32 txHash = org.hyperledger.besu.crypto.Hash.keccak256(rlpEncoded);</span>
+
+<span class="nc" id="L157">    return privateStateStorage.getTransactionReceipt(blockHash, txHash);</span>
+  }
+
+  private JsonRpcResponse handleEnclaveException(
+      final JsonRpcRequestContext requestContext, final EnclaveClientException e) {
+<span class="fc" id="L162">    final RpcErrorType jsonRpcError =</span>
+<span class="fc" id="L163">        JsonRpcEnclaveErrorConverter.convertEnclaveInvalidReason(e.getMessage());</span>
+<span class="pc bpc" id="L164" title="2 of 3 branches missed.">    switch (jsonRpcError) {</span>
+      case ENCLAVE_PAYLOAD_NOT_FOUND:
+        {
+<span class="nc" id="L167">          return new JsonRpcSuccessResponse(requestContext.getRequest().getId(), null);</span>
+        }
+      case ENCLAVE_KEYS_CANNOT_DECRYPT_PAYLOAD:
+        {
+<span class="fc" id="L171">          LOG.warn(</span>
+              &quot;Unable to decrypt payload with configured privacy node key. Check if your 'privacy-public-key-file' property matches your Enclave public key.&quot;);
+        }
+        // fall through
+      default:
+<span class="fc" id="L176">        throw e;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,386 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionSimulator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.transaction</a> &gt; <span class="el_source">TransactionSimulator.java</span></div><h1>TransactionSimulator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.transaction;
+
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderBuilder;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.ethereum.vm.DebugOperationTracer;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.math.BigInteger;
+import java.util.Optional;
+import java.util.function.Supplier;
+import javax.annotation.Nonnull;
+
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/*
+ * Used to process transactions for eth_call and eth_estimateGas.
+ *
+ * The processing won't affect the world state, it is used to execute read operations on the
+ * blockchain or to estimate the transaction gas cost.
+ */
+public class TransactionSimulator {
+<span class="fc" id="L61">  private static final Logger LOG = LoggerFactory.getLogger(TransactionSimulator.class);</span>
+<span class="fc" id="L62">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L63">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  // Dummy signature for transactions to not fail being processed.
+<span class="fc" id="L66">  private static final SECPSignature FAKE_SIGNATURE =</span>
+      SIGNATURE_ALGORITHM
+<span class="fc" id="L68">          .get()</span>
+<span class="fc" id="L69">          .createSignature(</span>
+<span class="fc" id="L70">              SIGNATURE_ALGORITHM.get().getHalfCurveOrder(),</span>
+<span class="fc" id="L71">              SIGNATURE_ALGORITHM.get().getHalfCurveOrder(),</span>
+              (byte) 0);
+
+  // TODO: Identify a better default from account to use, such as the registered
+  // coinbase or an account currently unlocked by the client.
+<span class="fc" id="L76">  private static final Address DEFAULT_FROM =</span>
+<span class="fc" id="L77">      Address.fromHexString(&quot;0x0000000000000000000000000000000000000000&quot;);</span>
+
+  private final Blockchain blockchain;
+  private final WorldStateArchive worldStateArchive;
+  private final ProtocolSchedule protocolSchedule;
+  private final long rpcGasCap;
+
+  public TransactionSimulator(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule,
+<span class="fc" id="L88">      final long rpcGasCap) {</span>
+<span class="fc" id="L89">    this.blockchain = blockchain;</span>
+<span class="fc" id="L90">    this.worldStateArchive = worldStateArchive;</span>
+<span class="fc" id="L91">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L92">    this.rpcGasCap = rpcGasCap;</span>
+<span class="fc" id="L93">  }</span>
+
+  public Optional&lt;TransactionSimulatorResult&gt; process(
+      final CallParameter callParams,
+      final TransactionValidationParams transactionValidationParams,
+      final OperationTracer operationTracer,
+      final long blockNumber) {
+<span class="fc" id="L100">    final BlockHeader header = blockchain.getBlockHeader(blockNumber).orElse(null);</span>
+<span class="fc" id="L101">    return process(</span>
+        callParams,
+        transactionValidationParams,
+        operationTracer,
+<span class="fc" id="L105">        (mutableWorldState, transactionSimulatorResult) -&gt; transactionSimulatorResult,</span>
+        header);
+  }
+
+  public Optional&lt;TransactionSimulatorResult&gt; process(
+      final CallParameter callParams,
+      final TransactionValidationParams transactionValidationParams,
+      final OperationTracer operationTracer,
+      final BlockHeader blockHeader) {
+<span class="nc" id="L114">    return process(</span>
+        callParams,
+        transactionValidationParams,
+        operationTracer,
+<span class="nc" id="L118">        (mutableWorldState, transactionSimulatorResult) -&gt; transactionSimulatorResult,</span>
+        blockHeader);
+  }
+
+  public Optional&lt;TransactionSimulatorResult&gt; processAtHead(final CallParameter callParams) {
+<span class="fc" id="L123">    final var chainHeadHash = blockchain.getChainHeadHash();</span>
+<span class="fc" id="L124">    return process(</span>
+        callParams,
+<span class="fc" id="L126">        ImmutableTransactionValidationParams.builder()</span>
+<span class="fc" id="L127">            .from(TransactionValidationParams.transactionSimulator())</span>
+<span class="fc" id="L128">            .isAllowExceedingBalance(true)</span>
+<span class="fc" id="L129">            .build(),</span>
+        OperationTracer.NO_TRACING,
+<span class="fc" id="L131">        (mutableWorldState, transactionSimulatorResult) -&gt; transactionSimulatorResult,</span>
+        blockchain
+<span class="fc" id="L133">            .getBlockHeader(chainHeadHash)</span>
+<span class="pc" id="L134">            .or(() -&gt; blockchain.getBlockHeaderSafe(chainHeadHash))</span>
+<span class="fc" id="L135">            .orElse(null));</span>
+  }
+
+  /**
+   * Processes a transaction simulation with the provided parameters and executes pre-worldstate
+   * close actions.
+   *
+   * @param callParams The call parameters for the transaction.
+   * @param transactionValidationParams The validation parameters for the transaction.
+   * @param operationTracer The tracer for capturing operations during processing.
+   * @param preWorldStateCloseGuard The pre-worldstate close guard for executing pre-close actions.
+   * @param header The block header.
+   * @return An Optional containing the result of the processing.
+   */
+  public &lt;U&gt; Optional&lt;U&gt; process(
+      final CallParameter callParams,
+      final TransactionValidationParams transactionValidationParams,
+      final OperationTracer operationTracer,
+      final PreCloseStateHandler&lt;U&gt; preWorldStateCloseGuard,
+      final BlockHeader header) {
+<span class="fc bfc" id="L155" title="All 2 branches covered.">    if (header == null) {</span>
+<span class="fc" id="L156">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L159">    try (final MutableWorldState ws = getWorldState(header)) {</span>
+
+<span class="fc" id="L161">      WorldUpdater updater = getEffectiveWorldStateUpdater(header, ws);</span>
+
+      // in order to trace the state diff we need to make sure that
+      // the world updater always has a parent
+<span class="fc bfc" id="L165" title="All 2 branches covered.">      if (operationTracer instanceof DebugOperationTracer) {</span>
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">        updater = updater.parentUpdater().isPresent() ? updater : updater.updater();</span>
+      }
+
+<span class="fc" id="L169">      return preWorldStateCloseGuard.apply(</span>
+          ws,
+<span class="fc" id="L171">          processWithWorldUpdater(</span>
+              callParams, transactionValidationParams, operationTracer, header, updater));
+
+<span class="nc" id="L174">    } catch (final Exception e) {</span>
+<span class="nc" id="L175">      return Optional.empty();</span>
+    }
+  }
+
+  public Optional&lt;TransactionSimulatorResult&gt; process(
+      final CallParameter callParams, final Hash blockHeaderHash) {
+<span class="fc" id="L181">    final BlockHeader header = blockchain.getBlockHeader(blockHeaderHash).orElse(null);</span>
+<span class="fc" id="L182">    return process(</span>
+        callParams,
+<span class="fc" id="L184">        TransactionValidationParams.transactionSimulator(),</span>
+        OperationTracer.NO_TRACING,
+<span class="fc" id="L186">        (mutableWorldState, transactionSimulatorResult) -&gt; transactionSimulatorResult,</span>
+        header);
+  }
+
+  public Optional&lt;TransactionSimulatorResult&gt; process(
+      final CallParameter callParams, final long blockNumber) {
+<span class="fc" id="L192">    return process(</span>
+        callParams,
+<span class="fc" id="L194">        TransactionValidationParams.transactionSimulator(),</span>
+        OperationTracer.NO_TRACING,
+        blockNumber);
+  }
+
+  private MutableWorldState getWorldState(final BlockHeader header) {
+<span class="fc" id="L200">    return worldStateArchive</span>
+<span class="fc" id="L201">        .getMutable(header, false)</span>
+<span class="fc" id="L202">        .orElseThrow(</span>
+            () -&gt;
+<span class="nc" id="L204">                new IllegalArgumentException(</span>
+<span class="nc" id="L205">                    &quot;Public world state not available for block &quot; + header.toLogString()));</span>
+  }
+
+  @Nonnull
+  public Optional&lt;TransactionSimulatorResult&gt; processWithWorldUpdater(
+      final CallParameter callParams,
+      final TransactionValidationParams transactionValidationParams,
+      final OperationTracer operationTracer,
+      final BlockHeader header,
+      final WorldUpdater updater) {
+<span class="fc" id="L215">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+
+    final Address senderAddress =
+<span class="fc bfc" id="L218" title="All 2 branches covered.">        callParams.getFrom() != null ? callParams.getFrom() : DEFAULT_FROM;</span>
+
+<span class="fc" id="L220">    BlockHeader blockHeaderToProcess = header;</span>
+
+<span class="fc bfc" id="L222" title="All 4 branches covered.">    if (transactionValidationParams.isAllowExceedingBalance() &amp;&amp; header.getBaseFee().isPresent()) {</span>
+<span class="fc" id="L223">      blockHeaderToProcess =</span>
+<span class="fc" id="L224">          BlockHeaderBuilder.fromHeader(header)</span>
+<span class="fc" id="L225">              .baseFee(Wei.ZERO)</span>
+<span class="fc" id="L226">              .blockHeaderFunctions(protocolSpec.getBlockHeaderFunctions())</span>
+<span class="fc" id="L227">              .buildBlockHeader();</span>
+    }
+
+<span class="fc" id="L230">    final Account sender = updater.get(senderAddress);</span>
+<span class="fc bfc" id="L231" title="All 2 branches covered.">    final long nonce = sender != null ? sender.getNonce() : 0L;</span>
+
+    long gasLimit =
+<span class="fc bfc" id="L234" title="All 2 branches covered.">        callParams.getGasLimit() &gt;= 0</span>
+<span class="fc" id="L235">            ? callParams.getGasLimit()</span>
+<span class="fc" id="L236">            : blockHeaderToProcess.getGasLimit();</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">    if (rpcGasCap &gt; 0) {</span>
+<span class="fc" id="L238">      final long gasCap = rpcGasCap;</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">      if (gasCap &lt; gasLimit) {</span>
+<span class="fc" id="L240">        gasLimit = gasCap;</span>
+<span class="fc" id="L241">        LOG.info(&quot;Capping gasLimit to &quot; + gasCap);</span>
+      }
+    }
+<span class="fc bfc" id="L244" title="All 2 branches covered.">    final Wei value = callParams.getValue() != null ? callParams.getValue() : Wei.ZERO;</span>
+<span class="fc bfc" id="L245" title="All 2 branches covered.">    final Bytes payload = callParams.getPayload() != null ? callParams.getPayload() : Bytes.EMPTY;</span>
+
+<span class="fc" id="L247">    final MainnetTransactionProcessor transactionProcessor =</span>
+<span class="fc" id="L248">        protocolSchedule.getByBlockHeader(blockHeaderToProcess).getTransactionProcessor();</span>
+
+<span class="fc" id="L250">    final Optional&lt;BlockHeader&gt; maybeParentHeader =</span>
+<span class="fc" id="L251">        blockchain.getBlockHeader(blockHeaderToProcess.getParentHash());</span>
+    final Wei blobGasPrice =
+<span class="fc bfc" id="L253" title="All 2 branches covered.">        transactionValidationParams.isAllowExceedingBalance()</span>
+<span class="fc" id="L254">            ? Wei.ZERO</span>
+            : protocolSpec
+<span class="fc" id="L256">                .getFeeMarket()</span>
+<span class="fc" id="L257">                .blobGasPricePerGas(</span>
+                    maybeParentHeader
+<span class="fc" id="L259">                        .map(parent -&gt; calculateExcessBlobGasForParent(protocolSpec, parent))</span>
+<span class="fc" id="L260">                        .orElse(BlobGas.ZERO));</span>
+
+<span class="fc" id="L262">    final Optional&lt;Transaction&gt; maybeTransaction =</span>
+<span class="fc" id="L263">        buildTransaction(</span>
+            callParams,
+            transactionValidationParams,
+            header,
+            senderAddress,
+            nonce,
+            gasLimit,
+            value,
+            payload,
+            blobGasPrice);
+<span class="pc bpc" id="L273" title="1 of 2 branches missed.">    if (maybeTransaction.isEmpty()) {</span>
+<span class="nc" id="L274">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L277">    final Transaction transaction = maybeTransaction.get();</span>
+<span class="fc" id="L278">    final TransactionProcessingResult result =</span>
+<span class="fc" id="L279">        transactionProcessor.processTransaction(</span>
+            blockchain,
+            updater,
+            blockHeaderToProcess,
+            transaction,
+            protocolSpec
+<span class="fc" id="L285">                .getMiningBeneficiaryCalculator()</span>
+<span class="fc" id="L286">                .calculateBeneficiary(blockHeaderToProcess),</span>
+            new CachingBlockHashLookup(blockHeaderToProcess, blockchain),
+<span class="fc" id="L288">            false,</span>
+            transactionValidationParams,
+            operationTracer,
+            blobGasPrice);
+
+<span class="fc" id="L293">    return Optional.of(new TransactionSimulatorResult(transaction, result));</span>
+  }
+
+  private Optional&lt;Transaction&gt; buildTransaction(
+      final CallParameter callParams,
+      final TransactionValidationParams transactionValidationParams,
+      final BlockHeader header,
+      final Address senderAddress,
+      final long nonce,
+      final long gasLimit,
+      final Wei value,
+      final Bytes payload,
+      final Wei blobGasPrice) {
+    final Transaction.Builder transactionBuilder =
+<span class="fc" id="L307">        Transaction.builder()</span>
+<span class="fc" id="L308">            .nonce(nonce)</span>
+<span class="fc" id="L309">            .gasLimit(gasLimit)</span>
+<span class="fc" id="L310">            .to(callParams.getTo())</span>
+<span class="fc" id="L311">            .sender(senderAddress)</span>
+<span class="fc" id="L312">            .value(value)</span>
+<span class="fc" id="L313">            .payload(payload)</span>
+<span class="fc" id="L314">            .signature(FAKE_SIGNATURE);</span>
+
+    // Set access list if present
+<span class="fc" id="L317">    callParams.getAccessList().ifPresent(transactionBuilder::accessList);</span>
+    // Set versioned hashes if present
+<span class="fc" id="L319">    callParams.getBlobVersionedHashes().ifPresent(transactionBuilder::versionedHashes);</span>
+
+    final Wei gasPrice;
+    final Wei maxFeePerGas;
+    final Wei maxPriorityFeePerGas;
+    final Wei maxFeePerBlobGas;
+<span class="fc bfc" id="L325" title="All 2 branches covered.">    if (transactionValidationParams.isAllowExceedingBalance()) {</span>
+<span class="fc" id="L326">      gasPrice = Wei.ZERO;</span>
+<span class="fc" id="L327">      maxFeePerGas = Wei.ZERO;</span>
+<span class="fc" id="L328">      maxPriorityFeePerGas = Wei.ZERO;</span>
+<span class="fc" id="L329">      maxFeePerBlobGas = Wei.ZERO;</span>
+    } else {
+<span class="fc bfc" id="L331" title="All 2 branches covered.">      gasPrice = callParams.getGasPrice() != null ? callParams.getGasPrice() : Wei.ZERO;</span>
+<span class="fc" id="L332">      maxFeePerGas = callParams.getMaxFeePerGas().orElse(gasPrice);</span>
+<span class="fc" id="L333">      maxPriorityFeePerGas = callParams.getMaxPriorityFeePerGas().orElse(gasPrice);</span>
+<span class="fc" id="L334">      maxFeePerBlobGas = callParams.getMaxFeePerBlobGas().orElse(blobGasPrice);</span>
+    }
+<span class="fc bfc" id="L336" title="All 2 branches covered.">    if (header.getBaseFee().isEmpty()) {</span>
+<span class="fc" id="L337">      transactionBuilder.gasPrice(gasPrice);</span>
+<span class="pc bpc" id="L338" title="1 of 2 branches missed.">    } else if (protocolSchedule.getChainId().isPresent()) {</span>
+<span class="fc" id="L339">      transactionBuilder.maxFeePerGas(maxFeePerGas).maxPriorityFeePerGas(maxPriorityFeePerGas);</span>
+    } else {
+<span class="nc" id="L341">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L344">    transactionBuilder.guessType();</span>
+<span class="fc bfc" id="L345" title="All 2 branches covered.">    if (transactionBuilder.getTransactionType().supportsBlob()) {</span>
+<span class="fc" id="L346">      transactionBuilder.maxFeePerBlobGas(maxFeePerBlobGas);</span>
+    }
+<span class="fc bfc" id="L348" title="All 2 branches covered.">    if (transactionBuilder.getTransactionType().requiresChainId()) {</span>
+<span class="fc" id="L349">      transactionBuilder.chainId(</span>
+          protocolSchedule
+<span class="fc" id="L351">              .getChainId()</span>
+<span class="fc" id="L352">              .orElse(BigInteger.ONE)); // needed to make some transactions valid</span>
+    }
+
+<span class="fc" id="L355">    final Transaction transaction = transactionBuilder.build();</span>
+<span class="fc" id="L356">    return Optional.ofNullable(transaction);</span>
+  }
+
+  public WorldUpdater getEffectiveWorldStateUpdater(
+      final BlockHeader header, final MutableWorldState publicWorldState) {
+<span class="fc" id="L361">    return publicWorldState.updater();</span>
+  }
+
+  public Optional&lt;Boolean&gt; doesAddressExistAtHead(final Address address) {
+<span class="fc" id="L365">    final BlockHeader header = blockchain.getChainHeadHeader();</span>
+<span class="fc" id="L366">    try (final MutableWorldState worldState =</span>
+<span class="fc" id="L367">        worldStateArchive.getMutable(header, false).orElseThrow()) {</span>
+<span class="fc" id="L368">      return doesAddressExist(worldState, address, header);</span>
+<span class="nc" id="L369">    } catch (final Exception ex) {</span>
+<span class="nc" id="L370">      return Optional.empty();</span>
+    }
+  }
+
+  public Optional&lt;Boolean&gt; doesAddressExist(
+      final MutableWorldState worldState, final Address address, final BlockHeader header) {
+<span class="pc bpc" id="L376" title="1 of 2 branches missed.">    if (header == null) {</span>
+<span class="nc" id="L377">      return Optional.empty();</span>
+    }
+<span class="pc bpc" id="L379" title="1 of 2 branches missed.">    if (worldState == null) {</span>
+<span class="nc" id="L380">      return Optional.empty();</span>
+    }
+
+<span class="fc bfc" id="L383" title="All 2 branches covered.">    return Optional.of(worldState.get(address) != null);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

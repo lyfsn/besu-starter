@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DebugOperationTracer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.vm</a> &gt; <span class="el_source">DebugOperationTracer.java</span></div><h1>DebugOperationTracer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.vm;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.debug.TraceFrame;
+import org.hyperledger.besu.ethereum.debug.TraceOptions;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.operation.AbstractCallOperation;
+import org.hyperledger.besu.evm.operation.Operation;
+import org.hyperledger.besu.evm.operation.Operation.OperationResult;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.TreeMap;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class DebugOperationTracer implements OperationTracer {
+
+  private final TraceOptions options;
+
+  /**
+   * A flag to indicate if call operations should trace just the operation cost (false, Geth style,
+   * debug_ series RPCs) or the operation cost and all gas granted to the child call (true, Parity
+   * style, trace_ series RPCs)
+   */
+  private final boolean recordChildCallGas;
+
+<span class="fc" id="L51">  private List&lt;TraceFrame&gt; traceFrames = new ArrayList&lt;&gt;();</span>
+  private TraceFrame lastFrame;
+
+  private Optional&lt;Bytes[]&gt; preExecutionStack;
+  private long gasRemaining;
+  private Bytes inputData;
+  private int pc;
+  private int depth;
+
+  /**
+   * Creates the operation tracer.
+   *
+   * @param options The options, as passed in through the RPC
+   * @param recordChildCallGas A flag on whether to produce geth style (true) or parity style
+   *     (false) gas amounts for call operations
+   */
+<span class="fc" id="L67">  public DebugOperationTracer(final TraceOptions options, final boolean recordChildCallGas) {</span>
+<span class="fc" id="L68">    this.options = options;</span>
+<span class="fc" id="L69">    this.recordChildCallGas = recordChildCallGas;</span>
+<span class="fc" id="L70">  }</span>
+
+  @Override
+  public void tracePreExecution(final MessageFrame frame) {
+<span class="fc" id="L74">    preExecutionStack = captureStack(frame);</span>
+<span class="fc" id="L75">    gasRemaining = frame.getRemainingGas();</span>
+<span class="fc bfc" id="L76" title="All 4 branches covered.">    if (lastFrame != null &amp;&amp; frame.getDepth() &gt; lastFrame.getDepth())</span>
+<span class="fc" id="L77">      inputData = frame.getInputData().copy();</span>
+<span class="fc" id="L78">    else inputData = frame.getInputData();</span>
+<span class="fc" id="L79">    pc = frame.getPC();</span>
+<span class="fc" id="L80">    depth = frame.getDepth();</span>
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public void tracePostExecution(final MessageFrame frame, final OperationResult operationResult) {
+<span class="fc" id="L85">    final Operation currentOperation = frame.getCurrentOperation();</span>
+<span class="fc" id="L86">    final String opcode = currentOperation.getName();</span>
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">    final int opcodeNumber = (opcode != null) ? currentOperation.getOpcode() : Integer.MAX_VALUE;</span>
+<span class="fc" id="L88">    final WorldUpdater worldUpdater = frame.getWorldUpdater();</span>
+<span class="fc" id="L89">    final Bytes outputData = frame.getOutputData();</span>
+<span class="fc" id="L90">    final Optional&lt;Bytes[]&gt; memory = captureMemory(frame);</span>
+<span class="fc" id="L91">    final Optional&lt;Bytes[]&gt; stackPostExecution = captureStack(frame);</span>
+
+<span class="fc bfc" id="L93" title="All 2 branches covered.">    if (lastFrame != null) {</span>
+<span class="fc" id="L94">      lastFrame.setGasRemainingPostExecution(gasRemaining);</span>
+    }
+<span class="fc" id="L96">    final Optional&lt;Map&lt;UInt256, UInt256&gt;&gt; storage = captureStorage(frame);</span>
+    final Optional&lt;Map&lt;Address, Wei&gt;&gt; maybeRefunds =
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        frame.getRefunds().isEmpty() ? Optional.empty() : Optional.of(frame.getRefunds());</span>
+<span class="fc" id="L99">    long thisGasCost = operationResult.getGasCost();</span>
+<span class="fc bfc" id="L100" title="All 4 branches covered.">    if (recordChildCallGas &amp;&amp; currentOperation instanceof AbstractCallOperation) {</span>
+<span class="fc" id="L101">      thisGasCost += frame.getMessageFrameStack().getFirst().getRemainingGas();</span>
+    }
+<span class="fc" id="L103">    lastFrame =</span>
+        new TraceFrame(
+            pc,
+<span class="fc" id="L106">            Optional.of(opcode),</span>
+            opcodeNumber,
+            gasRemaining,
+<span class="fc bfc" id="L109" title="All 2 branches covered.">            thisGasCost == 0 ? OptionalLong.empty() : OptionalLong.of(thisGasCost),</span>
+<span class="fc" id="L110">            frame.getGasRefund(),</span>
+            depth,
+<span class="fc" id="L112">            Optional.ofNullable(operationResult.getHaltReason())</span>
+<span class="fc" id="L113">                .or(frame::getExceptionalHaltReason),</span>
+<span class="fc" id="L114">            frame.getRecipientAddress(),</span>
+<span class="fc" id="L115">            frame.getApparentValue(),</span>
+            inputData,
+            outputData,
+            preExecutionStack,
+            memory,
+            storage,
+            worldUpdater,
+<span class="fc" id="L122">            frame.getRevertReason(),</span>
+            maybeRefunds,
+<span class="fc" id="L124">            Optional.ofNullable(frame.getMessageFrameStack().peek()).map(MessageFrame::getCode),</span>
+<span class="fc" id="L125">            frame.getCurrentOperation().getStackItemsProduced(),</span>
+            stackPostExecution,
+<span class="fc" id="L127">            currentOperation.isVirtualOperation(),</span>
+<span class="fc" id="L128">            frame.getMaybeUpdatedMemory(),</span>
+<span class="fc" id="L129">            frame.getMaybeUpdatedStorage());</span>
+<span class="fc" id="L130">    traceFrames.add(lastFrame);</span>
+<span class="fc" id="L131">    frame.reset();</span>
+<span class="fc" id="L132">  }</span>
+
+  @Override
+  public void tracePrecompileCall(
+      final MessageFrame frame, final long gasRequirement, final Bytes output) {
+<span class="pc bpc" id="L137" title="1 of 2 branches missed.">    if (traceFrames.isEmpty()) {</span>
+<span class="fc" id="L138">      final TraceFrame traceFrame =</span>
+          new TraceFrame(
+<span class="fc" id="L140">              frame.getPC(),</span>
+<span class="fc" id="L141">              Optional.empty(),</span>
+              Integer.MAX_VALUE,
+<span class="fc" id="L143">              frame.getRemainingGas(),</span>
+<span class="fc" id="L144">              OptionalLong.empty(),</span>
+<span class="fc" id="L145">              frame.getGasRefund(),</span>
+<span class="fc" id="L146">              frame.getDepth(),</span>
+<span class="fc" id="L147">              Optional.empty(),</span>
+<span class="fc" id="L148">              frame.getRecipientAddress(),</span>
+<span class="fc" id="L149">              frame.getValue(),</span>
+<span class="fc" id="L150">              frame.getInputData().copy(),</span>
+<span class="fc" id="L151">              frame.getOutputData(),</span>
+<span class="fc" id="L152">              Optional.empty(),</span>
+<span class="fc" id="L153">              Optional.empty(),</span>
+<span class="fc" id="L154">              Optional.empty(),</span>
+<span class="fc" id="L155">              frame.getWorldUpdater(),</span>
+<span class="fc" id="L156">              Optional.empty(),</span>
+<span class="fc" id="L157">              Optional.ofNullable(frame.getRefunds()),</span>
+<span class="fc" id="L158">              Optional.ofNullable(frame.getCode()),</span>
+<span class="fc" id="L159">              frame.getMaxStackSize(),</span>
+<span class="fc" id="L160">              Optional.empty(),</span>
+              true,
+<span class="fc" id="L162">              Optional.empty(),</span>
+<span class="fc" id="L163">              Optional.empty());</span>
+<span class="fc" id="L164">      traceFrames.add(traceFrame);</span>
+    }
+<span class="fc" id="L166">    traceFrames.get(traceFrames.size() - 1).setPrecompiledGasCost(OptionalLong.of(gasRequirement));</span>
+<span class="fc" id="L167">  }</span>
+
+  @Override
+  public void traceAccountCreationResult(
+      final MessageFrame frame, final Optional&lt;ExceptionalHaltReason&gt; haltReason) {
+<span class="fc" id="L172">    haltReason.ifPresent(</span>
+        exceptionalHaltReason -&gt; {
+<span class="pc bpc" id="L174" title="1 of 2 branches missed.">          if (!traceFrames.isEmpty()) {</span>
+<span class="fc" id="L175">            TraceFrame foundTraceFrame = null;</span>
+<span class="fc" id="L176">            int frameIndex = traceFrames.size() - 1;</span>
+            do {
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">              if (!traceFrames.get(frameIndex).getOpcode().equals(&quot;RETURN&quot;)) {</span>
+<span class="fc" id="L179">                foundTraceFrame = traceFrames.get(frameIndex);</span>
+              }
+<span class="fc" id="L181">              frameIndex--;</span>
+<span class="pc bpc" id="L182" title="1 of 2 branches missed.">            } while (foundTraceFrame == null);</span>
+<span class="fc" id="L183">            foundTraceFrame.setExceptionalHaltReason(exceptionalHaltReason);</span>
+<span class="fc" id="L184">          } else {</span>
+<span class="nc" id="L185">            final TraceFrame traceFrame =</span>
+                new TraceFrame(
+<span class="nc" id="L187">                    frame.getPC(),</span>
+<span class="nc" id="L188">                    Optional.empty(),</span>
+                    Integer.MAX_VALUE,
+<span class="nc" id="L190">                    frame.getRemainingGas(),</span>
+<span class="nc" id="L191">                    OptionalLong.empty(),</span>
+<span class="nc" id="L192">                    frame.getGasRefund(),</span>
+<span class="nc" id="L193">                    frame.getDepth(),</span>
+<span class="nc" id="L194">                    Optional.of(exceptionalHaltReason),</span>
+<span class="nc" id="L195">                    frame.getRecipientAddress(),</span>
+<span class="nc" id="L196">                    frame.getValue(),</span>
+<span class="nc" id="L197">                    frame.getInputData().copy(),</span>
+<span class="nc" id="L198">                    frame.getOutputData(),</span>
+<span class="nc" id="L199">                    Optional.empty(),</span>
+<span class="nc" id="L200">                    Optional.empty(),</span>
+<span class="nc" id="L201">                    Optional.empty(),</span>
+<span class="nc" id="L202">                    frame.getWorldUpdater(),</span>
+<span class="nc" id="L203">                    Optional.empty(),</span>
+<span class="nc" id="L204">                    Optional.ofNullable(frame.getRefunds()),</span>
+<span class="nc" id="L205">                    Optional.ofNullable(frame.getCode()),</span>
+<span class="nc" id="L206">                    frame.getMaxStackSize(),</span>
+<span class="nc" id="L207">                    Optional.empty(),</span>
+                    true,
+<span class="nc" id="L209">                    Optional.empty(),</span>
+<span class="nc" id="L210">                    Optional.empty());</span>
+<span class="nc" id="L211">            traceFrames.add(traceFrame);</span>
+          }
+<span class="fc" id="L213">        });</span>
+<span class="fc" id="L214">  }</span>
+
+  private Optional&lt;Map&lt;UInt256, UInt256&gt;&gt; captureStorage(final MessageFrame frame) {
+<span class="fc bfc" id="L217" title="All 2 branches covered.">    if (!options.isStorageEnabled()) {</span>
+<span class="fc" id="L218">      return Optional.empty();</span>
+    }
+    try {
+<span class="fc" id="L221">      final Map&lt;UInt256, UInt256&gt; storageContents =</span>
+          new TreeMap&lt;&gt;(
+<span class="fc" id="L223">              frame.getWorldUpdater().getAccount(frame.getRecipientAddress()).getUpdatedStorage());</span>
+
+<span class="fc" id="L225">      return Optional.of(storageContents);</span>
+<span class="nc" id="L226">    } catch (final ModificationNotAllowedException e) {</span>
+<span class="nc" id="L227">      return Optional.of(new TreeMap&lt;&gt;());</span>
+    }
+  }
+
+  private Optional&lt;Bytes[]&gt; captureMemory(final MessageFrame frame) {
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (!options.isMemoryEnabled()) {</span>
+<span class="fc" id="L233">      return Optional.empty();</span>
+    }
+<span class="fc" id="L235">    final Bytes[] memoryContents = new Bytes[frame.memoryWordSize()];</span>
+<span class="fc bfc" id="L236" title="All 2 branches covered.">    for (int i = 0; i &lt; memoryContents.length; i++) {</span>
+<span class="fc" id="L237">      memoryContents[i] = frame.readMemory(i * 32L, 32);</span>
+    }
+<span class="fc" id="L239">    return Optional.of(memoryContents);</span>
+  }
+
+  private Optional&lt;Bytes[]&gt; captureStack(final MessageFrame frame) {
+<span class="fc bfc" id="L243" title="All 2 branches covered.">    if (!options.isStackEnabled()) {</span>
+<span class="fc" id="L244">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L247">    final Bytes[] stackContents = new Bytes[frame.stackSize()];</span>
+<span class="fc bfc" id="L248" title="All 2 branches covered.">    for (int i = 0; i &lt; stackContents.length; i++) {</span>
+      // Record stack contents in reverse
+<span class="fc" id="L250">      stackContents[i] = frame.getStackItem(stackContents.length - i - 1);</span>
+    }
+<span class="fc" id="L252">    return Optional.of(stackContents);</span>
+  }
+
+  public List&lt;TraceFrame&gt; getTraceFrames() {
+<span class="fc" id="L256">    return traceFrames;</span>
+  }
+
+  public void reset() {
+<span class="fc" id="L260">    traceFrames = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L261">    lastFrame = null;</span>
+<span class="fc" id="L262">  }</span>
+
+  public List&lt;TraceFrame&gt; copyTraceFrames() {
+<span class="fc" id="L265">    return new ArrayList&lt;&gt;(traceFrames);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

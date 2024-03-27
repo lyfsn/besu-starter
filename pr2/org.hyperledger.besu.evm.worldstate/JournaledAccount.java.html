@@ -1,0 +1,398 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JournaledAccount.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.worldstate</a> &gt; <span class="el_source">JournaledAccount.java</span></div><h1>JournaledAccount.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evm.worldstate;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.collections.undo.UndoNavigableMap;
+import org.hyperledger.besu.collections.undo.UndoScalar;
+import org.hyperledger.besu.collections.undo.Undoable;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.evm.account.MutableAccount;
+
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import javax.annotation.Nullable;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/**
+ * An implementation of {@link MutableAccount} that tracks updates made to the account since the
+ * creation of the updater this is linked to.
+ *
+ * &lt;p&gt;Note that in practice this only track the modified value of the nonce and balance, but doesn't
+ * remind if those were modified or not (the reason being that any modification of an account imply
+ * the underlying trie node will have to be updated, and so knowing if the nonce and balance where
+ * updated or not doesn't matter, we just need their new value).
+ */
+public class JournaledAccount implements MutableAccount, Undoable {
+  private final Address address;
+  private final Hash addressHash;
+
+  @Nullable private MutableAccount account;
+
+  private long transactionBoundaryMark;
+  private final UndoScalar&lt;Long&gt; nonce;
+  private final UndoScalar&lt;Wei&gt; balance;
+  private final UndoScalar&lt;Bytes&gt; code;
+  private final UndoScalar&lt;Hash&gt; codeHash;
+  private final UndoScalar&lt;Boolean&gt; deleted;
+
+  // Only contains updated storage entries, but may contain entry with a value of 0 to signify
+  // deletion.
+  private final UndoNavigableMap&lt;UInt256, UInt256&gt; updatedStorage;
+<span class="nc" id="L65">  private boolean storageWasCleared = false;</span>
+
+  boolean immutable;
+
+  /**
+   * Instantiates a new Update tracking account.
+   *
+   * @param address the address
+   */
+<span class="nc" id="L74">  JournaledAccount(final Address address) {</span>
+<span class="nc" id="L75">    checkNotNull(address);</span>
+<span class="nc" id="L76">    this.address = address;</span>
+<span class="nc" id="L77">    this.addressHash = this.address.addressHash();</span>
+<span class="nc" id="L78">    this.account = null;</span>
+
+<span class="nc" id="L80">    this.nonce = UndoScalar.of(0L);</span>
+<span class="nc" id="L81">    this.balance = UndoScalar.of(Wei.ZERO);</span>
+
+<span class="nc" id="L83">    this.code = UndoScalar.of(Bytes.EMPTY);</span>
+<span class="nc" id="L84">    this.codeHash = UndoScalar.of(Hash.EMPTY);</span>
+<span class="nc" id="L85">    this.deleted = UndoScalar.of(Boolean.FALSE);</span>
+<span class="nc" id="L86">    this.updatedStorage = UndoNavigableMap.of(new TreeMap&lt;&gt;());</span>
+<span class="nc" id="L87">    this.transactionBoundaryMark = mark();</span>
+<span class="nc" id="L88">  }</span>
+
+  /**
+   * Instantiates a new Update tracking account.
+   *
+   * @param account the account
+   */
+<span class="nc" id="L95">  public JournaledAccount(final MutableAccount account) {</span>
+<span class="nc" id="L96">    checkNotNull(account);</span>
+
+<span class="nc" id="L98">    this.address = account.getAddress();</span>
+<span class="nc" id="L99">    this.addressHash =</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">        (account instanceof JournaledAccount journaledAccount)</span>
+<span class="nc" id="L101">            ? journaledAccount.addressHash</span>
+<span class="nc" id="L102">            : this.address.addressHash();</span>
+<span class="nc" id="L103">    this.account = account;</span>
+
+<span class="nc bnc" id="L105" title="All 2 branches missed.">    if (account instanceof JournaledAccount that) {</span>
+<span class="nc" id="L106">      this.nonce = that.nonce;</span>
+<span class="nc" id="L107">      this.balance = that.balance;</span>
+
+<span class="nc" id="L109">      this.code = that.code;</span>
+<span class="nc" id="L110">      this.codeHash = that.codeHash;</span>
+
+<span class="nc" id="L112">      this.deleted = that.deleted;</span>
+
+<span class="nc" id="L114">      this.updatedStorage = that.updatedStorage;</span>
+    } else {
+<span class="nc" id="L116">      this.nonce = UndoScalar.of(account.getNonce());</span>
+<span class="nc" id="L117">      this.balance = UndoScalar.of(account.getBalance());</span>
+
+<span class="nc" id="L119">      this.code = UndoScalar.of(account.getCode());</span>
+<span class="nc" id="L120">      this.codeHash = UndoScalar.of(account.getCodeHash());</span>
+
+<span class="nc" id="L122">      this.deleted = UndoScalar.of(Boolean.FALSE);</span>
+
+<span class="nc" id="L124">      this.updatedStorage = UndoNavigableMap.of(new TreeMap&lt;&gt;());</span>
+    }
+<span class="nc" id="L126">    transactionBoundaryMark = mark();</span>
+<span class="nc" id="L127">  }</span>
+
+  /**
+   * The original account over which this tracks updates.
+   *
+   * @return The original account over which this tracks updates, or {@code null} if this is a newly
+   *     created account.
+   */
+  public MutableAccount getWrappedAccount() {
+<span class="nc" id="L136">    return account;</span>
+  }
+
+  /**
+   * Sets wrapped account.
+   *
+   * @param account the account
+   */
+  public void setWrappedAccount(final MutableAccount account) {
+<span class="nc bnc" id="L145" title="All 2 branches missed.">    if (this.account == null) {</span>
+<span class="nc" id="L146">      this.account = account;</span>
+<span class="nc" id="L147">      storageWasCleared = false;</span>
+    } else {
+<span class="nc" id="L149">      throw new IllegalStateException(&quot;Already tracking a wrapped account&quot;);</span>
+    }
+<span class="nc" id="L151">  }</span>
+
+  /**
+   * Whether the code of the account was modified.
+   *
+   * @return {@code true} if the code was updated.
+   */
+  public boolean codeWasUpdated() {
+<span class="nc bnc" id="L159" title="All 2 branches missed.">    return code.lastUpdate() &gt;= transactionBoundaryMark;</span>
+  }
+
+  /**
+   * A map of the storage entries that were modified.
+   *
+   * @return a map containing all entries that have been modified. This &lt;b&gt;may&lt;/b&gt; contain entries
+   *     with a value of 0 to signify deletion.
+   */
+  @Override
+  public Map&lt;UInt256, UInt256&gt; getUpdatedStorage() {
+<span class="nc" id="L170">    return updatedStorage;</span>
+  }
+
+  @Override
+  public void becomeImmutable() {
+<span class="nc" id="L175">    immutable = true;</span>
+<span class="nc" id="L176">  }</span>
+
+  @Override
+  public Address getAddress() {
+<span class="nc" id="L180">    return address;</span>
+  }
+
+  @Override
+  public Hash getAddressHash() {
+<span class="nc" id="L185">    return addressHash;</span>
+  }
+
+  @Override
+  public long getNonce() {
+<span class="nc" id="L190">    return nonce.get();</span>
+  }
+
+  @Override
+  public void setNonce(final long value) {
+<span class="nc bnc" id="L195" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L196">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L198">    nonce.set(value);</span>
+<span class="nc" id="L199">  }</span>
+
+  @Override
+  public Wei getBalance() {
+<span class="nc" id="L203">    return balance.get();</span>
+  }
+
+  @Override
+  public void setBalance(final Wei value) {
+<span class="nc bnc" id="L208" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L209">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L211">    balance.set(value);</span>
+<span class="nc" id="L212">  }</span>
+
+  @Override
+  public Bytes getCode() {
+<span class="nc" id="L216">    return code.get();</span>
+  }
+
+  @Override
+  public Hash getCodeHash() {
+<span class="nc" id="L221">    return codeHash.get();</span>
+  }
+
+  @Override
+  public boolean hasCode() {
+<span class="nc bnc" id="L226" title="All 2 branches missed.">    return !code.get().isEmpty();</span>
+  }
+
+  /**
+   * Mark the account as deleted/not deleted
+   *
+   * @param accountDeleted delete or don't delete this account.
+   */
+  public void setDeleted(final boolean accountDeleted) {
+<span class="nc bnc" id="L235" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L236">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L238">    deleted.set(accountDeleted);</span>
+<span class="nc" id="L239">  }</span>
+
+  /**
+   * Is the account marked as deleted?
+   *
+   * @return is the account deleted?
+   */
+  public Boolean getDeleted() {
+<span class="nc" id="L247">    return deleted.get();</span>
+  }
+
+  @Override
+  public void setCode(final Bytes code) {
+<span class="nc bnc" id="L252" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L253">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc bnc" id="L255" title="All 2 branches missed.">    this.code.set(code == null ? Bytes.EMPTY : code);</span>
+<span class="nc bnc" id="L256" title="All 2 branches missed.">    this.codeHash.set(code == null ? Hash.EMPTY : Hash.hash(code));</span>
+<span class="nc" id="L257">  }</span>
+
+  /** Mark transaction boundary. */
+  void markTransactionBoundary() {
+<span class="nc" id="L261">    transactionBoundaryMark = mark();</span>
+<span class="nc" id="L262">  }</span>
+
+  @Override
+  public UInt256 getStorageValue(final UInt256 key) {
+<span class="nc" id="L266">    final UInt256 value = updatedStorage.get(key);</span>
+<span class="nc bnc" id="L267" title="All 2 branches missed.">    if (value != null) {</span>
+<span class="nc" id="L268">      return value;</span>
+    }
+<span class="nc bnc" id="L270" title="All 2 branches missed.">    if (storageWasCleared) {</span>
+<span class="nc" id="L271">      return UInt256.ZERO;</span>
+    }
+
+    // We haven't updated the key-value yet, so either it's a new account, and it doesn't have the
+    // key, or we should query the underlying storage for its existing value (which might be 0).
+<span class="nc bnc" id="L276" title="All 2 branches missed.">    return account == null ? UInt256.ZERO : account.getStorageValue(key);</span>
+  }
+
+  @Override
+  public UInt256 getOriginalStorageValue(final UInt256 key) {
+    // if storage was cleared then it is because it was an empty account, hence zero storage
+    // if we have no backing account, it's a new account, hence zero storage
+    // otherwise ask outside of what we are journaling, journaled change may not be original value
+<span class="nc bnc" id="L284" title="All 4 branches missed.">    return (storageWasCleared || account == null) ? UInt256.ZERO : account.getStorageValue(key);</span>
+  }
+
+  @Override
+  public NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntriesFrom(
+      final Bytes32 startKeyHash, final int limit) {
+    final NavigableMap&lt;Bytes32, AccountStorageEntry&gt; entries;
+<span class="nc bnc" id="L291" title="All 2 branches missed.">    if (account != null) {</span>
+<span class="nc" id="L292">      entries = account.storageEntriesFrom(startKeyHash, limit);</span>
+    } else {
+<span class="nc" id="L294">      entries = new TreeMap&lt;&gt;();</span>
+    }
+<span class="nc" id="L296">    updatedStorage.entrySet().stream()</span>
+<span class="nc" id="L297">        .map(entry -&gt; AccountStorageEntry.forKeyAndValue(entry.getKey(), entry.getValue()))</span>
+<span class="nc bnc" id="L298" title="All 2 branches missed.">        .filter(entry -&gt; entry.getKeyHash().compareTo(startKeyHash) &gt;= 0)</span>
+<span class="nc" id="L299">        .forEach(entry -&gt; entries.put(entry.getKeyHash(), entry));</span>
+
+<span class="nc bnc" id="L301" title="All 2 branches missed.">    while (entries.size() &gt; limit) {</span>
+<span class="nc" id="L302">      entries.remove(entries.lastKey());</span>
+    }
+<span class="nc" id="L304">    return entries;</span>
+  }
+
+  @Override
+  public void setStorageValue(final UInt256 key, final UInt256 value) {
+<span class="nc bnc" id="L309" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L310">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L312">    updatedStorage.put(key, value);</span>
+<span class="nc" id="L313">  }</span>
+
+  @Override
+  public void clearStorage() {
+<span class="nc bnc" id="L317" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L318">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L320">    storageWasCleared = true;</span>
+<span class="nc" id="L321">    updatedStorage.clear();</span>
+<span class="nc" id="L322">  }</span>
+
+  /**
+   * Gets storage was cleared.
+   *
+   * @return boolean if storage was cleared
+   */
+  public boolean getStorageWasCleared() {
+<span class="nc" id="L330">    return storageWasCleared;</span>
+  }
+
+  /**
+   * Sets storage was cleared.
+   *
+   * @param storageWasCleared the storage was cleared
+   */
+  public void setStorageWasCleared(final boolean storageWasCleared) {
+<span class="nc bnc" id="L339" title="All 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L340">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="nc" id="L342">    this.storageWasCleared = storageWasCleared;</span>
+<span class="nc" id="L343">  }</span>
+
+  @Override
+  public String toString() {
+<span class="nc bnc" id="L347" title="All 2 branches missed.">    String storage = updatedStorage.isEmpty() ? &quot;[not updated]&quot; : updatedStorage.toString();</span>
+<span class="nc bnc" id="L348" title="All 4 branches missed.">    if (updatedStorage.isEmpty() &amp;&amp; storageWasCleared) {</span>
+<span class="nc" id="L349">      storage = &quot;[cleared]&quot;;</span>
+    }
+<span class="nc" id="L351">    return String.format(</span>
+        &quot;%s -&gt; {nonce: %s, balance:%s, code:%s, storage:%s }&quot;,
+        address,
+        nonce,
+        balance,
+<span class="nc bnc" id="L356" title="All 2 branches missed.">        code.mark() &gt;= transactionBoundaryMark ? &quot;[not updated]&quot; : code.get(),</span>
+        storage);
+  }
+
+  @Override
+  public long lastUpdate() {
+<span class="nc" id="L362">    return Math.max(</span>
+<span class="nc" id="L363">        nonce.lastUpdate(),</span>
+<span class="nc" id="L364">        Math.max(</span>
+<span class="nc" id="L365">            balance.lastUpdate(),</span>
+<span class="nc" id="L366">            Math.max(</span>
+<span class="nc" id="L367">                code.lastUpdate(), Math.max(codeHash.lastUpdate(), updatedStorage.lastUpdate()))));</span>
+  }
+
+  @Override
+  public void undo(final long mark) {
+<span class="nc" id="L372">    nonce.undo(mark);</span>
+<span class="nc" id="L373">    balance.undo(mark);</span>
+<span class="nc" id="L374">    code.undo(mark);</span>
+<span class="nc" id="L375">    codeHash.undo(mark);</span>
+<span class="nc" id="L376">    deleted.undo(mark);</span>
+<span class="nc" id="L377">    updatedStorage.undo(mark);</span>
+<span class="nc" id="L378">  }</span>
+
+  /** Commit this journaled account entry to the parent, if it is not a journaled account. */
+  public void commit() {
+<span class="nc bnc" id="L382" title="All 2 branches missed.">    if (!(account instanceof JournaledAccount)) {</span>
+<span class="nc bnc" id="L383" title="All 2 branches missed.">      if (nonce.updated()) {</span>
+<span class="nc" id="L384">        account.setNonce(nonce.get());</span>
+      }
+<span class="nc bnc" id="L386" title="All 2 branches missed.">      if (balance.updated()) {</span>
+<span class="nc" id="L387">        account.setBalance(balance.get());</span>
+      }
+<span class="nc bnc" id="L389" title="All 2 branches missed.">      if (code.updated()) {</span>
+<span class="nc bnc" id="L390" title="All 2 branches missed.">        account.setCode(code.get() == null ? Bytes.EMPTY : code.get());</span>
+      }
+<span class="nc bnc" id="L392" title="All 2 branches missed.">      if (updatedStorage.updated()) {</span>
+<span class="nc" id="L393">        updatedStorage.forEach(account::setStorageValue);</span>
+      }
+    }
+<span class="nc" id="L396">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

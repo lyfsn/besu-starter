@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InitiatorHandshakeMessageV4.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies</a> &gt; <span class="el_source">InitiatorHandshakeMessageV4.java</span></div><h1>InitiatorHandshakeMessageV4.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public final class InitiatorHandshakeMessageV4 implements InitiatorHandshakeMessage {
+
+  public static final int VERSION = 4;
+<span class="fc" id="L36">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L37">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  private final SECPPublicKey pubKey;
+  private final SECPSignature signature;
+  private final SECPPublicKey ephPubKey;
+  private final Bytes32 ephPubKeyHash;
+  private final Bytes32 nonce;
+
+  public static InitiatorHandshakeMessageV4 create(
+      final SECPPublicKey ourPubKey,
+      final KeyPair ephKeyPair,
+      final Bytes32 staticSharedSecret,
+      final Bytes32 nonce) {
+<span class="fc" id="L50">    return new InitiatorHandshakeMessageV4(</span>
+        ourPubKey,
+<span class="fc" id="L52">        SIGNATURE_ALGORITHM.get().sign(staticSharedSecret.xor(nonce), ephKeyPair),</span>
+<span class="fc" id="L53">        ephKeyPair.getPublicKey(),</span>
+        nonce);
+  }
+
+  /**
+   * Decodes this message.
+   *
+   * @param bytes The raw bytes.
+   * @param nodeKey Abstraction of the local nodes keys and associated cryptographic operations
+   * @return The decoded message.
+   */
+  public static InitiatorHandshakeMessageV4 decode(final Bytes bytes, final NodeKey nodeKey) {
+<span class="fc" id="L65">    final RLPInput input = new BytesValueRLPInput(bytes, true);</span>
+<span class="fc" id="L66">    input.enterList();</span>
+<span class="fc" id="L67">    final SECPSignature signature = SIGNATURE_ALGORITHM.get().decodeSignature(input.readBytes());</span>
+<span class="fc" id="L68">    final SECPPublicKey pubKey = SIGNATURE_ALGORITHM.get().createPublicKey(input.readBytes());</span>
+<span class="fc" id="L69">    final Bytes32 nonce = input.readBytes32();</span>
+<span class="fc" id="L70">    final Bytes32 staticSharedSecret = nodeKey.calculateECDHKeyAgreement(pubKey);</span>
+<span class="fc" id="L71">    final SECPPublicKey ephPubKey =</span>
+        SIGNATURE_ALGORITHM
+<span class="fc" id="L73">            .get()</span>
+<span class="fc" id="L74">            .recoverPublicKeyFromSignature(staticSharedSecret.xor(nonce), signature)</span>
+<span class="pc" id="L75">            .orElseThrow(() -&gt; new RuntimeException(&quot;Could not recover public key from signature&quot;));</span>
+
+<span class="fc" id="L77">    return new InitiatorHandshakeMessageV4(pubKey, signature, ephPubKey, nonce);</span>
+  }
+
+  private InitiatorHandshakeMessageV4(
+      final SECPPublicKey pubKey,
+      final SECPSignature signature,
+      final SECPPublicKey ephPubKey,
+<span class="fc" id="L84">      final Bytes32 nonce) {</span>
+<span class="fc" id="L85">    this.pubKey = pubKey;</span>
+<span class="fc" id="L86">    this.signature = signature;</span>
+<span class="fc" id="L87">    this.ephPubKey = ephPubKey;</span>
+<span class="fc" id="L88">    this.ephPubKeyHash = Hash.keccak256(ephPubKey.getEncodedBytes());</span>
+<span class="fc" id="L89">    this.nonce = nonce;</span>
+<span class="fc" id="L90">  }</span>
+
+  @Override
+  public Bytes encode() {
+<span class="fc" id="L94">    final BytesValueRLPOutput temp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L95">    temp.startList();</span>
+<span class="fc" id="L96">    temp.writeBytes(signature.encodedBytes());</span>
+<span class="fc" id="L97">    temp.writeBytes(pubKey.getEncodedBytes());</span>
+<span class="fc" id="L98">    temp.writeBytes(nonce);</span>
+<span class="fc" id="L99">    temp.writeIntScalar(VERSION);</span>
+<span class="fc" id="L100">    temp.endList();</span>
+<span class="fc" id="L101">    return temp.encoded();</span>
+  }
+
+  @Override
+  public Bytes32 getNonce() {
+<span class="fc" id="L106">    return nonce;</span>
+  }
+
+  @Override
+  public SECPPublicKey getPubKey() {
+<span class="fc" id="L111">    return pubKey;</span>
+  }
+
+  @Override
+  public SECPPublicKey getEphPubKey() {
+<span class="fc" id="L116">    return ephPubKey;</span>
+  }
+
+  @Override
+  public Bytes32 getEphPubKeyHash() {
+<span class="fc" id="L121">    return ephPubKeyHash;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractCreateOperation.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.operation</a> &gt; <span class="el_source">AbstractCreateOperation.java</span></div><h1>AbstractCreateOperation.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.operation;
+
+import static org.hyperledger.besu.evm.internal.Words.clampedToLong;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.EVM;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.code.CodeFactory;
+import org.hyperledger.besu.evm.code.CodeInvalid;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.internal.Words;
+
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/** The Abstract create operation. */
+public abstract class AbstractCreateOperation extends AbstractOperation {
+
+  /** The constant UNDERFLOW_RESPONSE. */
+<span class="fc" id="L39">  protected static final OperationResult UNDERFLOW_RESPONSE =</span>
+      new OperationResult(0L, ExceptionalHaltReason.INSUFFICIENT_STACK_ITEMS);
+
+  /** The maximum init code size */
+  protected int maxInitcodeSize;
+
+  /**
+   * Instantiates a new Abstract create operation.
+   *
+   * @param opcode the opcode
+   * @param name the name
+   * @param stackItemsConsumed the stack items consumed
+   * @param stackItemsProduced the stack items produced
+   * @param gasCalculator the gas calculator
+   * @param maxInitcodeSize Maximum init code size
+   */
+  protected AbstractCreateOperation(
+      final int opcode,
+      final String name,
+      final int stackItemsConsumed,
+      final int stackItemsProduced,
+      final GasCalculator gasCalculator,
+      final int maxInitcodeSize) {
+<span class="fc" id="L62">    super(opcode, name, stackItemsConsumed, stackItemsProduced, gasCalculator);</span>
+<span class="fc" id="L63">    this.maxInitcodeSize = maxInitcodeSize;</span>
+<span class="fc" id="L64">  }</span>
+
+  @Override
+  public OperationResult execute(final MessageFrame frame, final EVM evm) {
+    // manual check because some reads won't come until the &quot;complete&quot; step.
+<span class="fc bfc" id="L69" title="All 2 branches covered.">    if (frame.stackSize() &lt; getStackItemsConsumed()) {</span>
+<span class="fc" id="L70">      return UNDERFLOW_RESPONSE;</span>
+    }
+
+<span class="fc" id="L73">    final long cost = cost(frame);</span>
+<span class="fc bfc" id="L74" title="All 2 branches covered.">    if (frame.isStatic()) {</span>
+<span class="fc" id="L75">      return new OperationResult(cost, ExceptionalHaltReason.ILLEGAL_STATE_CHANGE);</span>
+<span class="fc bfc" id="L76" title="All 2 branches covered.">    } else if (frame.getRemainingGas() &lt; cost) {</span>
+<span class="fc" id="L77">      return new OperationResult(cost, ExceptionalHaltReason.INSUFFICIENT_GAS);</span>
+    }
+<span class="fc" id="L79">    final Wei value = Wei.wrap(frame.getStackItem(0));</span>
+
+<span class="fc" id="L81">    final Address address = frame.getRecipientAddress();</span>
+<span class="fc" id="L82">    final MutableAccount account = frame.getWorldUpdater().getAccount(address);</span>
+
+<span class="fc" id="L84">    frame.clearReturnData();</span>
+<span class="fc" id="L85">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L86">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">    if (inputSize &gt; maxInitcodeSize) {</span>
+<span class="fc" id="L88">      frame.popStackItems(getStackItemsConsumed());</span>
+<span class="fc" id="L89">      return new OperationResult(cost, ExceptionalHaltReason.CODE_TOO_LARGE);</span>
+    }
+
+<span class="fc bfc" id="L92" title="All 2 branches covered.">    if (value.compareTo(account.getBalance()) &gt; 0</span>
+<span class="fc bfc" id="L93" title="All 2 branches covered.">        || frame.getDepth() &gt;= 1024</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">        || account.getNonce() == -1) {</span>
+<span class="fc" id="L95">      fail(frame);</span>
+    } else {
+<span class="fc" id="L97">      account.incrementNonce();</span>
+
+<span class="fc" id="L99">      final Bytes inputData = frame.readMemory(inputOffset, inputSize);</span>
+      // Never cache CREATEx initcode. The amount of reuse is very low, and caching mostly
+      // addresses disk loading delay, and we already have the code.
+<span class="fc" id="L102">      Code code = evm.getCode(null, inputData);</span>
+
+<span class="pc bpc" id="L104" title="1 of 4 branches missed.">      if (code.isValid() &amp;&amp; frame.getCode().getEofVersion() &lt;= code.getEofVersion()) {</span>
+<span class="fc" id="L105">        frame.decrementRemainingGas(cost);</span>
+<span class="fc" id="L106">        spawnChildMessage(frame, code, evm);</span>
+<span class="fc" id="L107">        frame.incrementRemainingGas(cost);</span>
+      } else {
+<span class="fc" id="L109">        fail(frame);</span>
+      }
+    }
+
+<span class="fc" id="L113">    return new OperationResult(cost, null);</span>
+  }
+
+  /**
+   * Cost operation.
+   *
+   * @param frame the frame
+   * @return the long
+   */
+  protected abstract long cost(final MessageFrame frame);
+
+  /**
+   * Target contract address.
+   *
+   * @param frame the frame
+   * @return the address
+   */
+  protected abstract Address targetContractAddress(MessageFrame frame);
+
+  private void fail(final MessageFrame frame) {
+<span class="fc" id="L133">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L134">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc" id="L135">    frame.readMutableMemory(inputOffset, inputSize);</span>
+<span class="fc" id="L136">    frame.popStackItems(getStackItemsConsumed());</span>
+<span class="fc" id="L137">    frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L138">  }</span>
+
+  private void spawnChildMessage(final MessageFrame parent, final Code code, final EVM evm) {
+<span class="fc" id="L141">    final Wei value = Wei.wrap(parent.getStackItem(0));</span>
+
+<span class="fc" id="L143">    final Address contractAddress = targetContractAddress(parent);</span>
+
+<span class="fc" id="L145">    final long childGasStipend =</span>
+<span class="fc" id="L146">        gasCalculator().gasAvailableForChildCreate(parent.getRemainingGas());</span>
+<span class="fc" id="L147">    parent.decrementRemainingGas(childGasStipend);</span>
+
+    // frame addition is automatically handled by parent messageFrameStack
+<span class="fc" id="L150">    MessageFrame.builder()</span>
+<span class="fc" id="L151">        .parentMessageFrame(parent)</span>
+<span class="fc" id="L152">        .type(MessageFrame.Type.CONTRACT_CREATION)</span>
+<span class="fc" id="L153">        .initialGas(childGasStipend)</span>
+<span class="fc" id="L154">        .address(contractAddress)</span>
+<span class="fc" id="L155">        .contract(contractAddress)</span>
+<span class="fc" id="L156">        .inputData(Bytes.EMPTY)</span>
+<span class="fc" id="L157">        .sender(parent.getRecipientAddress())</span>
+<span class="fc" id="L158">        .value(value)</span>
+<span class="fc" id="L159">        .apparentValue(value)</span>
+<span class="fc" id="L160">        .code(code)</span>
+<span class="fc" id="L161">        .completer(child -&gt; complete(parent, child, evm))</span>
+<span class="fc" id="L162">        .build();</span>
+
+<span class="fc" id="L164">    parent.setState(MessageFrame.State.CODE_SUSPENDED);</span>
+<span class="fc" id="L165">  }</span>
+
+  private void complete(final MessageFrame frame, final MessageFrame childFrame, final EVM evm) {
+<span class="fc" id="L168">    frame.setState(MessageFrame.State.CODE_EXECUTING);</span>
+
+<span class="fc" id="L170">    Code outputCode =</span>
+<span class="fc" id="L171">        CodeFactory.createCode(childFrame.getOutputData(), evm.getMaxEOFVersion(), true);</span>
+<span class="fc" id="L172">    frame.popStackItems(getStackItemsConsumed());</span>
+
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    if (outputCode.isValid()) {</span>
+<span class="fc" id="L175">      frame.incrementRemainingGas(childFrame.getRemainingGas());</span>
+<span class="fc" id="L176">      frame.addLogs(childFrame.getLogs());</span>
+<span class="fc" id="L177">      frame.addSelfDestructs(childFrame.getSelfDestructs());</span>
+<span class="fc" id="L178">      frame.addCreates(childFrame.getCreates());</span>
+<span class="fc" id="L179">      frame.incrementGasRefund(childFrame.getGasRefund());</span>
+
+<span class="fc bfc" id="L181" title="All 2 branches covered.">      if (childFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L182">        Address createdAddress = childFrame.getContractAddress();</span>
+<span class="fc" id="L183">        frame.pushStackItem(Words.fromAddress(createdAddress));</span>
+<span class="fc" id="L184">        onSuccess(frame, createdAddress);</span>
+<span class="fc" id="L185">      } else {</span>
+<span class="fc" id="L186">        frame.setReturnData(childFrame.getOutputData());</span>
+<span class="fc" id="L187">        frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L188">        onFailure(frame, childFrame.getExceptionalHaltReason());</span>
+      }
+    } else {
+<span class="fc" id="L191">      frame.getWorldUpdater().deleteAccount(childFrame.getRecipientAddress());</span>
+<span class="fc" id="L192">      frame.setReturnData(childFrame.getOutputData());</span>
+<span class="fc" id="L193">      frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L194">      onInvalid(frame, (CodeInvalid) outputCode);</span>
+    }
+
+<span class="fc" id="L197">    final int currentPC = frame.getPC();</span>
+<span class="fc" id="L198">    frame.setPC(currentPC + 1);</span>
+<span class="fc" id="L199">  }</span>
+
+  /**
+   * Called when the child {@code CONTRACT_CREATION} message has completed successfully, used to
+   * give library users a chance to do implementation specific logic.
+   *
+   * @param frame the frame running the successful operation
+   * @param createdAddress the address of the newly created contract
+   */
+  protected void onSuccess(final MessageFrame frame, final Address createdAddress) {
+    // no-op by default
+<span class="fc" id="L210">  }</span>
+
+  /**
+   * Called when the child {@code CONTRACT_CREATION} message has failed to execute, used to give
+   * library users a chance to do implementation specific logic.
+   *
+   * @param frame the frame running the successful operation
+   * @param haltReason the exceptional halt reason of the child frame
+   */
+  protected void onFailure(
+      final MessageFrame frame, final Optional&lt;ExceptionalHaltReason&gt; haltReason) {
+    // no-op by default
+<span class="fc" id="L222">  }</span>
+
+  /**
+   * Called when the child {@code CONTRACT_CREATION} message has completed successfully but the
+   * returned contract is invalid per chain rules, used to give library users a chance to do
+   * implementation specific logic.
+   *
+   * @param frame the frame running the successful operation
+   * @param invalidCode the code object containing the invalid code
+   */
+  protected void onInvalid(final MessageFrame frame, final CodeInvalid invalidCode) {
+    // no-op by default
+<span class="nc" id="L234">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

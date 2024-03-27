@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractTraceByBlock.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">AbstractTraceByBlock.java</span></div><h1>AbstractTraceByBlock.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.TraceTypeParameter.TraceType;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.TraceTypeParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.TransactionTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.TraceCallResult;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.diff.StateDiffGenerator;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.diff.StateDiffTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat.FlatTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat.FlatTraceGenerator;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.vm.VmTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.vm.VmTraceGenerator;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.debug.TraceOptions;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulatorResult;
+
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+public abstract class AbstractTraceByBlock extends AbstractBlockParameterMethod
+    implements JsonRpcMethod {
+  protected final ProtocolSchedule protocolSchedule;
+  protected final TransactionSimulator transactionSimulator;
+
+<span class="fc" id="L51">  protected static final ObjectMapper mapper = new ObjectMapper();</span>
+
+  protected AbstractTraceByBlock(
+      final BlockchainQueries blockchainQueries,
+      final ProtocolSchedule protocolSchedule,
+      final TransactionSimulator transactionSimulator) {
+<span class="fc" id="L57">    super(blockchainQueries);</span>
+
+<span class="fc" id="L59">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L60">    this.transactionSimulator = transactionSimulator;</span>
+<span class="fc" id="L61">  }</span>
+
+  @Override
+  protected BlockParameter blockParameter(final JsonRpcRequestContext request) {
+<span class="fc" id="L65">    final Optional&lt;BlockParameter&gt; maybeBlockParameter =</span>
+<span class="fc" id="L66">        request.getOptionalParameter(2, BlockParameter.class);</span>
+
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">    if (maybeBlockParameter.isPresent()) {</span>
+<span class="fc" id="L69">      return maybeBlockParameter.get();</span>
+    }
+
+<span class="nc" id="L72">    return BlockParameter.LATEST;</span>
+  }
+
+  protected JsonNode getTraceCallResult(
+      final ProtocolSchedule protocolSchedule,
+      final Set&lt;TraceTypeParameter.TraceType&gt; traceTypes,
+      final TransactionSimulatorResult simulatorResult,
+      final TransactionTrace transactionTrace,
+      final Block block) {
+<span class="fc" id="L81">    final TraceCallResult.Builder builder = TraceCallResult.builder();</span>
+
+<span class="fc" id="L83">    transactionTrace</span>
+<span class="fc" id="L84">        .getResult()</span>
+<span class="fc" id="L85">        .getRevertReason()</span>
+<span class="fc" id="L86">        .ifPresentOrElse(</span>
+<span class="fc" id="L87">            revertReason -&gt; builder.output(revertReason.toHexString()),</span>
+<span class="fc" id="L88">            () -&gt; builder.output(simulatorResult.getOutput().toString()));</span>
+
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (traceTypes.contains(TraceType.STATE_DIFF)) {</span>
+<span class="fc" id="L91">      new StateDiffGenerator()</span>
+<span class="fc" id="L92">          .generateStateDiff(transactionTrace)</span>
+<span class="fc" id="L93">          .forEachOrdered(stateDiff -&gt; builder.stateDiff((StateDiffTrace) stateDiff));</span>
+    }
+
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    if (traceTypes.contains(TraceType.TRACE)) {</span>
+<span class="fc" id="L97">      FlatTraceGenerator.generateFromTransactionTrace(</span>
+              protocolSchedule, transactionTrace, block, new AtomicInteger(), false)
+<span class="fc" id="L99">          .forEachOrdered(trace -&gt; builder.addTrace((FlatTrace) trace));</span>
+    }
+
+<span class="fc bfc" id="L102" title="All 2 branches covered.">    if (traceTypes.contains(TraceType.VM_TRACE)) {</span>
+<span class="fc" id="L103">      new VmTraceGenerator(transactionTrace)</span>
+<span class="fc" id="L104">          .generateTraceStream()</span>
+<span class="fc" id="L105">          .forEachOrdered(vmTrace -&gt; builder.vmTrace((VmTrace) vmTrace));</span>
+    }
+
+<span class="fc" id="L108">    return mapper.valueToTree(builder.build());</span>
+  }
+
+  protected TransactionValidationParams buildTransactionValidationParams() {
+<span class="fc" id="L112">    return ImmutableTransactionValidationParams.builder()</span>
+<span class="fc" id="L113">        .from(TransactionValidationParams.transactionSimulator())</span>
+<span class="fc" id="L114">        .build();</span>
+  }
+
+  protected TraceOptions buildTraceOptions(final Set&lt;TraceTypeParameter.TraceType&gt; traceTypes) {
+<span class="fc" id="L118">    return new TraceOptions(</span>
+<span class="fc" id="L119">        traceTypes.contains(TraceType.STATE_DIFF),</span>
+        false,
+<span class="fc bfc" id="L121" title="All 4 branches covered.">        traceTypes.contains(TraceType.TRACE) || traceTypes.contains(TraceType.VM_TRACE));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

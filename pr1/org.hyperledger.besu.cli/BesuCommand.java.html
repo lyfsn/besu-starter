@@ -1,0 +1,2795 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BesuCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli</a> &gt; <span class="el_source">BesuCommand.java</span></div><h1>BesuCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Arrays.asList;
+import static java.util.Collections.singletonList;
+import static org.hyperledger.besu.cli.DefaultCommandValues.getDefaultBesuDataPath;
+import static org.hyperledger.besu.cli.config.NetworkName.MAINNET;
+import static org.hyperledger.besu.cli.options.unstable.NetworkingOptions.PEER_LOWER_BOUND_FLAG;
+import static org.hyperledger.besu.cli.util.CommandLineUtils.DEPENDENCY_WARNING_MSG;
+import static org.hyperledger.besu.cli.util.CommandLineUtils.isOptionSet;
+import static org.hyperledger.besu.controller.BesuController.DATABASE_PATH;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration.DEFAULT_ENGINE_JSON_RPC_PORT;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.authentication.EngineAuthService.EPHEMERAL_JWT_FILE;
+import static org.hyperledger.besu.metrics.BesuMetricCategory.DEFAULT_METRIC_CATEGORIES;
+import static org.hyperledger.besu.metrics.MetricsProtocol.PROMETHEUS;
+import static org.hyperledger.besu.metrics.prometheus.MetricsConfiguration.DEFAULT_METRICS_PORT;
+import static org.hyperledger.besu.metrics.prometheus.MetricsConfiguration.DEFAULT_METRICS_PUSH_PORT;
+import static org.hyperledger.besu.nat.kubernetes.KubernetesNatManager.DEFAULT_BESU_SERVICE_NAME_FILTER;
+
+import org.hyperledger.besu.BesuInfo;
+import org.hyperledger.besu.Runner;
+import org.hyperledger.besu.RunnerBuilder;
+import org.hyperledger.besu.chainexport.RlpBlockExporter;
+import org.hyperledger.besu.chainimport.JsonBlockImporter;
+import org.hyperledger.besu.chainimport.RlpBlockImporter;
+import org.hyperledger.besu.cli.config.EthNetworkConfig;
+import org.hyperledger.besu.cli.config.NetworkName;
+import org.hyperledger.besu.cli.config.ProfileName;
+import org.hyperledger.besu.cli.converter.MetricCategoryConverter;
+import org.hyperledger.besu.cli.converter.PercentageConverter;
+import org.hyperledger.besu.cli.custom.JsonRPCAllowlistHostsProperty;
+import org.hyperledger.besu.cli.error.BesuExecutionExceptionHandler;
+import org.hyperledger.besu.cli.error.BesuParameterExceptionHandler;
+import org.hyperledger.besu.cli.options.MiningOptions;
+import org.hyperledger.besu.cli.options.TransactionPoolOptions;
+import org.hyperledger.besu.cli.options.stable.ApiConfigurationOptions;
+import org.hyperledger.besu.cli.options.stable.DataStorageOptions;
+import org.hyperledger.besu.cli.options.stable.EthstatsOptions;
+import org.hyperledger.besu.cli.options.stable.GraphQlOptions;
+import org.hyperledger.besu.cli.options.stable.JsonRpcHttpOptions;
+import org.hyperledger.besu.cli.options.stable.LoggingLevelOption;
+import org.hyperledger.besu.cli.options.stable.NodePrivateKeyFileOption;
+import org.hyperledger.besu.cli.options.stable.P2PTLSConfigOptions;
+import org.hyperledger.besu.cli.options.stable.PermissionsOptions;
+import org.hyperledger.besu.cli.options.stable.RpcWebsocketOptions;
+import org.hyperledger.besu.cli.options.unstable.ChainPruningOptions;
+import org.hyperledger.besu.cli.options.unstable.DnsOptions;
+import org.hyperledger.besu.cli.options.unstable.EthProtocolOptions;
+import org.hyperledger.besu.cli.options.unstable.EvmOptions;
+import org.hyperledger.besu.cli.options.unstable.IpcOptions;
+import org.hyperledger.besu.cli.options.unstable.MetricsCLIOptions;
+import org.hyperledger.besu.cli.options.unstable.NatOptions;
+import org.hyperledger.besu.cli.options.unstable.NativeLibraryOptions;
+import org.hyperledger.besu.cli.options.unstable.NetworkingOptions;
+import org.hyperledger.besu.cli.options.unstable.PkiBlockCreationOptions;
+import org.hyperledger.besu.cli.options.unstable.PrivacyPluginOptions;
+import org.hyperledger.besu.cli.options.unstable.RPCOptions;
+import org.hyperledger.besu.cli.options.unstable.SynchronizerOptions;
+import org.hyperledger.besu.cli.presynctasks.PreSynchronizationTaskRunner;
+import org.hyperledger.besu.cli.presynctasks.PrivateDatabaseMigrationPreSyncTask;
+import org.hyperledger.besu.cli.subcommands.PasswordSubCommand;
+import org.hyperledger.besu.cli.subcommands.PublicKeySubCommand;
+import org.hyperledger.besu.cli.subcommands.RetestethSubCommand;
+import org.hyperledger.besu.cli.subcommands.TxParseSubCommand;
+import org.hyperledger.besu.cli.subcommands.ValidateConfigSubCommand;
+import org.hyperledger.besu.cli.subcommands.blocks.BlocksSubCommand;
+import org.hyperledger.besu.cli.subcommands.operator.OperatorSubCommand;
+import org.hyperledger.besu.cli.subcommands.rlp.RLPSubCommand;
+import org.hyperledger.besu.cli.subcommands.storage.StorageSubCommand;
+import org.hyperledger.besu.cli.util.BesuCommandCustomFactory;
+import org.hyperledger.besu.cli.util.CommandLineUtils;
+import org.hyperledger.besu.cli.util.ConfigOptionSearchAndRunHandler;
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.components.BesuComponent;
+import org.hyperledger.besu.config.CheckpointConfigOptions;
+import org.hyperledger.besu.config.GenesisConfigFile;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.config.MergeConfigOptions;
+import org.hyperledger.besu.consensus.qbft.pki.PkiBlockCreationConfiguration;
+import org.hyperledger.besu.consensus.qbft.pki.PkiBlockCreationConfigurationProvider;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.controller.BesuControllerBuilder;
+import org.hyperledger.besu.crypto.Blake2bfMessageDigest;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.KeyPairUtil;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.crypto.SignatureAlgorithmType;
+import org.hyperledger.besu.cryptoservices.KeyPairSecurityModule;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.enclave.EnclaveFactory;
+import org.hyperledger.besu.ethereum.GasLimitCalculator;
+import org.hyperledger.besu.ethereum.api.ApiConfiguration;
+import org.hyperledger.besu.ethereum.api.graphql.GraphQLConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcApis;
+import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.JwtAlgorithm;
+import org.hyperledger.besu.ethereum.api.jsonrpc.ipc.JsonRpcIpcConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.WebSocketConfiguration;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.MiningParametersMetrics;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.VersionMetadata;
+import org.hyperledger.besu.ethereum.eth.sync.SyncMode;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.ImmutableTransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.mainnet.FrontierTargetingGasLimitCalculator;
+import org.hyperledger.besu.ethereum.p2p.config.DiscoveryConfiguration;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeDnsConfiguration;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeURLImpl;
+import org.hyperledger.besu.ethereum.p2p.peers.StaticNodesParser;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty.TLSConfiguration;
+import org.hyperledger.besu.ethereum.permissioning.LocalPermissioningConfiguration;
+import org.hyperledger.besu.ethereum.permissioning.PermissioningConfiguration;
+import org.hyperledger.besu.ethereum.privacy.storage.keyvalue.PrivacyKeyValueStorageProvider;
+import org.hyperledger.besu.ethereum.privacy.storage.keyvalue.PrivacyKeyValueStorageProviderBuilder;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueStorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueStorageProviderBuilder;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.PrunerConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.evm.precompile.AbstractAltBnPrecompiledContract;
+import org.hyperledger.besu.evm.precompile.BigIntegerModularExponentiationPrecompiledContract;
+import org.hyperledger.besu.evm.precompile.KZGPointEvalPrecompiledContract;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.MetricCategoryRegistryImpl;
+import org.hyperledger.besu.metrics.MetricsProtocol;
+import org.hyperledger.besu.metrics.MetricsSystemFactory;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.metrics.StandardMetricCategory;
+import org.hyperledger.besu.metrics.prometheus.MetricsConfiguration;
+import org.hyperledger.besu.metrics.vertx.VertxMetricsAdapterFactory;
+import org.hyperledger.besu.nat.NatMethod;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.BesuConfiguration;
+import org.hyperledger.besu.plugin.services.BesuEvents;
+import org.hyperledger.besu.plugin.services.BlockchainService;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.PermissioningService;
+import org.hyperledger.besu.plugin.services.PicoCLIOptions;
+import org.hyperledger.besu.plugin.services.PrivacyPluginService;
+import org.hyperledger.besu.plugin.services.RpcEndpointService;
+import org.hyperledger.besu.plugin.services.SecurityModuleService;
+import org.hyperledger.besu.plugin.services.StorageService;
+import org.hyperledger.besu.plugin.services.TraceService;
+import org.hyperledger.besu.plugin.services.TransactionPoolValidatorService;
+import org.hyperledger.besu.plugin.services.TransactionSelectionService;
+import org.hyperledger.besu.plugin.services.TransactionSimulationService;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.metrics.MetricCategory;
+import org.hyperledger.besu.plugin.services.metrics.MetricCategoryRegistry;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModule;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.plugin.services.storage.PrivacyKeyValueStorageFactory;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDBPlugin;
+import org.hyperledger.besu.services.BesuConfigurationImpl;
+import org.hyperledger.besu.services.BesuEventsImpl;
+import org.hyperledger.besu.services.BesuPluginContextImpl;
+import org.hyperledger.besu.services.BlockchainServiceImpl;
+import org.hyperledger.besu.services.PermissioningServiceImpl;
+import org.hyperledger.besu.services.PicoCLIOptionsImpl;
+import org.hyperledger.besu.services.PrivacyPluginServiceImpl;
+import org.hyperledger.besu.services.RpcEndpointServiceImpl;
+import org.hyperledger.besu.services.SecurityModuleServiceImpl;
+import org.hyperledger.besu.services.StorageServiceImpl;
+import org.hyperledger.besu.services.TraceServiceImpl;
+import org.hyperledger.besu.services.TransactionPoolValidatorServiceImpl;
+import org.hyperledger.besu.services.TransactionSelectionServiceImpl;
+import org.hyperledger.besu.services.TransactionSimulationServiceImpl;
+import org.hyperledger.besu.services.kvstore.InMemoryStoragePlugin;
+import org.hyperledger.besu.util.InvalidConfigurationException;
+import org.hyperledger.besu.util.LogConfigurator;
+import org.hyperledger.besu.util.NetworkUtility;
+import org.hyperledger.besu.util.PermissioningConfigurationValidator;
+import org.hyperledger.besu.util.number.Fraction;
+import org.hyperledger.besu.util.number.Percentage;
+import org.hyperledger.besu.util.number.PositiveNumber;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.net.InetAddress;
+import java.net.SocketException;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Strings;
+import com.google.common.base.Suppliers;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.io.Resources;
+import io.vertx.core.Vertx;
+import io.vertx.core.VertxOptions;
+import io.vertx.core.json.DecodeException;
+import io.vertx.core.metrics.MetricsOptions;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import picocli.AutoComplete;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.ExecutionException;
+import picocli.CommandLine.IExecutionStrategy;
+import picocli.CommandLine.Mixin;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParameterException;
+
+/** Represents the main Besu CLI command that runs the Besu Ethereum client full node. */
+@SuppressWarnings(&quot;FieldCanBeLocal&quot;) // because Picocli injected fields report false positives
+@Command(
+    description = &quot;This command runs the Besu Ethereum client full node.&quot;,
+    abbreviateSynopsis = true,
+    name = &quot;besu&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class,
+    header = &quot;@|bold,fg(cyan) Usage:|@&quot;,
+    synopsisHeading = &quot;%n&quot;,
+    descriptionHeading = &quot;%n@|bold,fg(cyan) Description:|@%n%n&quot;,
+    optionListHeading = &quot;%n@|bold,fg(cyan) Options:|@%n&quot;,
+    footerHeading = &quot;%nBesu is licensed under the Apache License 2.0%n&quot;,
+    footer = {
+      &quot;%n%n@|fg(cyan) To get started quickly, just choose a network to sync and a profile to run with suggested defaults:|@&quot;,
+      &quot;%n@|fg(cyan) for Mainnet|@ --network=mainnet --profile=[minimalist_staker|staker]&quot;,
+      &quot;%nMore info and other profiles at https://besu.hyperledger.org%n&quot;
+    })
+public class BesuCommand implements DefaultCommandValues, Runnable {
+
+  @SuppressWarnings(&quot;PrivateStaticFinalLoggers&quot;)
+  // non-static for testing
+  private final Logger logger;
+
+  private CommandLine commandLine;
+
+  private final Supplier&lt;RlpBlockImporter&gt; rlpBlockImporter;
+  private final Function&lt;BesuController, JsonBlockImporter&gt; jsonBlockImporterFactory;
+  private final Function&lt;Blockchain, RlpBlockExporter&gt; rlpBlockExporterFactory;
+
+  // Unstable CLI options
+<span class="fc" id="L281">  final NetworkingOptions unstableNetworkingOptions = NetworkingOptions.create();</span>
+<span class="fc" id="L282">  final SynchronizerOptions unstableSynchronizerOptions = SynchronizerOptions.create();</span>
+<span class="fc" id="L283">  final EthProtocolOptions unstableEthProtocolOptions = EthProtocolOptions.create();</span>
+<span class="fc" id="L284">  final MetricsCLIOptions unstableMetricsCLIOptions = MetricsCLIOptions.create();</span>
+<span class="fc" id="L285">  private final DnsOptions unstableDnsOptions = DnsOptions.create();</span>
+<span class="fc" id="L286">  private final NatOptions unstableNatOptions = NatOptions.create();</span>
+<span class="fc" id="L287">  private final NativeLibraryOptions unstableNativeLibraryOptions = NativeLibraryOptions.create();</span>
+<span class="fc" id="L288">  private final RPCOptions unstableRPCOptions = RPCOptions.create();</span>
+<span class="fc" id="L289">  private final PrivacyPluginOptions unstablePrivacyPluginOptions = PrivacyPluginOptions.create();</span>
+<span class="fc" id="L290">  private final EvmOptions unstableEvmOptions = EvmOptions.create();</span>
+<span class="fc" id="L291">  private final IpcOptions unstableIpcOptions = IpcOptions.create();</span>
+<span class="fc" id="L292">  private final ChainPruningOptions unstableChainPruningOptions = ChainPruningOptions.create();</span>
+
+  // stable CLI options
+<span class="fc" id="L295">  final DataStorageOptions dataStorageOptions = DataStorageOptions.create();</span>
+<span class="fc" id="L296">  private final EthstatsOptions ethstatsOptions = EthstatsOptions.create();</span>
+<span class="fc" id="L297">  private final NodePrivateKeyFileOption nodePrivateKeyFileOption =</span>
+<span class="fc" id="L298">      NodePrivateKeyFileOption.create();</span>
+<span class="fc" id="L299">  private final LoggingLevelOption loggingLevelOption = LoggingLevelOption.create();</span>
+
+<span class="fc" id="L301">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Tx Pool Common Options|@%n&quot;)</span>
+<span class="fc" id="L302">  final TransactionPoolOptions transactionPoolOptions = TransactionPoolOptions.create();</span>
+
+<span class="fc" id="L304">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Block Builder Options|@%n&quot;)</span>
+<span class="fc" id="L305">  final MiningOptions miningOptions = MiningOptions.create();</span>
+
+  private final RunnerBuilder runnerBuilder;
+  private final BesuController.Builder controllerBuilderFactory;
+  private final BesuPluginContextImpl besuPluginContext;
+  private final StorageServiceImpl storageService;
+  private final SecurityModuleServiceImpl securityModuleService;
+  private final PermissioningServiceImpl permissioningService;
+  private final PrivacyPluginServiceImpl privacyPluginService;
+  private final RpcEndpointServiceImpl rpcEndpointServiceImpl;
+
+  private final Map&lt;String, String&gt; environment;
+<span class="fc" id="L317">  private final MetricCategoryRegistryImpl metricCategoryRegistry =</span>
+      new MetricCategoryRegistryImpl();
+<span class="fc" id="L319">  private final MetricCategoryConverter metricCategoryConverter = new MetricCategoryConverter();</span>
+
+<span class="fc" id="L321">  private final PreSynchronizationTaskRunner preSynchronizationTaskRunner =</span>
+      new PreSynchronizationTaskRunner();
+
+<span class="fc" id="L324">  private final Set&lt;Integer&gt; allocatedPorts = new HashSet&lt;&gt;();</span>
+  private final PkiBlockCreationConfigurationProvider pkiBlockCreationConfigProvider;
+  private GenesisConfigOptions genesisConfigOptions;
+
+  private RocksDBPlugin rocksDBPlugin;
+
+  private int maxPeers;
+  private int maxRemoteInitiatedPeers;
+
+  // CLI options defined by user at runtime.
+  // Options parsing is done with CLI library Picocli https://picocli.info/
+
+  // While this variable is never read it is needed for the PicoCLI to create
+  // the config file option that is read elsewhere.
+<span class="fc" id="L338">  @SuppressWarnings(&quot;UnusedVariable&quot;)</span>
+  @CommandLine.Option(
+      names = {CONFIG_FILE_OPTION_NAME},
+      paramLabel = MANDATORY_FILE_FORMAT_HELP,
+      description = &quot;TOML config file (default: none)&quot;)
+  private final File configFile = null;
+
+<span class="fc" id="L345">  @CommandLine.Option(</span>
+      names = {&quot;--data-path&quot;},
+      paramLabel = MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;The path to Besu data directory (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L349">  final Path dataPath = getDefaultBesuDataPath(this);</span>
+
+  // Genesis file path with null default option.
+  // This default is handled by Runner
+  // to use mainnet json file from resources as indicated in the
+  // default network option
+  // Then we ignore genesis default value here.
+<span class="fc" id="L356">  @CommandLine.Option(</span>
+      names = {&quot;--genesis-file&quot;},
+      paramLabel = MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Genesis file for your custom network. Setting this option requires --network-id to be set. (Cannot be used with --network)&quot;)
+  private final File genesisFile = null;
+
+<span class="fc" id="L363">  @Option(</span>
+      names = {&quot;--genesis-state-hash-cache-enabled&quot;},
+      description = &quot;Use genesis state hash from data on startup if specified&quot;)
+<span class="fc" id="L366">  private final Boolean genesisStateHashCacheEnabled = false;</span>
+
+<span class="fc" id="L368">  @Option(</span>
+      names = &quot;--identity&quot;,
+      paramLabel = &quot;&lt;String&gt;&quot;,
+      description = &quot;Identification for this node in the Client ID&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L373">  private final Optional&lt;String&gt; identityString = Optional.empty();</span>
+
+  // P2P Discovery Option Group
+<span class="fc" id="L376">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold P2P Discovery Options|@%n&quot;)</span>
+  P2PDiscoveryOptionGroup p2PDiscoveryOptionGroup = new P2PDiscoveryOptionGroup();
+
+  private final TransactionSelectionServiceImpl transactionSelectionServiceImpl;
+  private final TransactionPoolValidatorServiceImpl transactionValidatorServiceImpl;
+  private final TransactionSimulationServiceImpl transactionSimulationServiceImpl;
+  private final BlockchainServiceImpl blockchainServiceImpl;
+
+<span class="fc" id="L384">  static class P2PDiscoveryOptionGroup {</span>
+
+    // Public IP stored to prevent having to research it each time we need it.
+<span class="fc" id="L387">    private InetAddress autoDiscoveredDefaultIP = null;</span>
+
+    // Completely disables P2P within Besu.
+<span class="fc" id="L390">    @Option(</span>
+        names = {&quot;--p2p-enabled&quot;},
+        description = &quot;Enable P2P functionality (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L394">    private final Boolean p2pEnabled = true;</span>
+
+    // Boolean option to indicate if peers should NOT be discovered, default to
+    // false indicates that
+    // the peers should be discovered by default.
+    //
+    // This negative option is required because of the nature of the option that is
+    // true when
+    // added on the command line. You can't do --option=false, so false is set as
+    // default
+    // and you have not to set the option at all if you want it false.
+    // This seems to be the only way it works with Picocli.
+    // Also many other software use the same negative option scheme for false
+    // defaults
+    // meaning that it's probably the right way to handle disabling options.
+<span class="fc" id="L409">    @Option(</span>
+        names = {&quot;--discovery-enabled&quot;},
+        description = &quot;Enable P2P discovery (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L413">    private final Boolean peerDiscoveryEnabled = true;</span>
+
+    // A list of bootstrap nodes can be passed
+    // and a hardcoded list will be used otherwise by the Runner.
+    // NOTE: we have no control over default value here.
+<span class="fc" id="L418">    @Option(</span>
+        names = {&quot;--bootnodes&quot;},
+        paramLabel = &quot;&lt;enode://id@host:port&gt;&quot;,
+        description =
+            &quot;Comma separated enode URLs for P2P discovery bootstrap. &quot;
+                + &quot;Default is a predefined list.&quot;,
+        split = &quot;,&quot;,
+        arity = &quot;0..*&quot;)
+    private final List&lt;String&gt; bootNodes = null;
+
+<span class="fc" id="L428">    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+    @Option(
+        names = {&quot;--p2p-host&quot;},
+        paramLabel = MANDATORY_HOST_FORMAT_HELP,
+        description = &quot;IP address this node advertises to its peers (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L434">    private String p2pHost = autoDiscoverDefaultIP().getHostAddress();</span>
+
+<span class="fc" id="L436">    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+    @Option(
+        names = {&quot;--p2p-interface&quot;},
+        paramLabel = MANDATORY_HOST_FORMAT_HELP,
+        description =
+            &quot;The network interface address on which this node listens for P2P communication (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private String p2pInterface = NetworkUtility.INADDR_ANY;
+
+<span class="fc" id="L445">    @Option(</span>
+        names = {&quot;--p2p-port&quot;},
+        paramLabel = MANDATORY_PORT_FORMAT_HELP,
+        description = &quot;Port on which to listen for P2P communication (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L450">    private final Integer p2pPort = EnodeURLImpl.DEFAULT_LISTENING_PORT;</span>
+
+<span class="fc" id="L452">    @Option(</span>
+        names = {&quot;--max-peers&quot;, &quot;--p2p-peer-upper-bound&quot;},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description = &quot;Maximum P2P connections that can be established (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L456">    private final Integer maxPeers = DEFAULT_MAX_PEERS;</span>
+
+<span class="fc" id="L458">    @Option(</span>
+        names = {&quot;--remote-connections-limit-enabled&quot;},
+        description =
+            &quot;Whether to limit the number of P2P connections initiated remotely. (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L462">    private final Boolean isLimitRemoteWireConnectionsEnabled = true;</span>
+
+<span class="fc" id="L464">    @Option(</span>
+        names = {&quot;--remote-connections-max-percentage&quot;},
+        paramLabel = MANDATORY_DOUBLE_FORMAT_HELP,
+        description =
+            &quot;The maximum percentage of P2P connections that can be initiated remotely. Must be between 0 and 100 inclusive. (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;,
+        converter = PercentageConverter.class)
+    private final Percentage maxRemoteConnectionsPercentage =
+<span class="fc" id="L472">        Fraction.fromFloat(DEFAULT_FRACTION_REMOTE_WIRE_CONNECTIONS_ALLOWED).toPercentage();</span>
+
+<span class="fc" id="L474">    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+    @CommandLine.Option(
+        names = {&quot;--discovery-dns-url&quot;},
+        description = &quot;Specifies the URL to use for DNS discovery&quot;)
+    private String discoveryDnsUrl = null;
+
+<span class="fc" id="L480">    @Option(</span>
+        names = {&quot;--random-peer-priority-enabled&quot;},
+        description =
+            &quot;Allow for incoming connections to be prioritized randomly. This will prevent (typically small, stable) networks from forming impenetrable peer cliques. (default: ${DEFAULT-VALUE})&quot;)
+    private final Boolean randomPeerPriority = Boolean.FALSE;
+
+    @Option(
+        names = {&quot;--banned-node-ids&quot;, &quot;--banned-node-id&quot;},
+        paramLabel = MANDATORY_NODE_ID_FORMAT_HELP,
+        description = &quot;A list of node IDs to ban from the P2P network.&quot;,
+        split = &quot;,&quot;,
+        arity = &quot;1..*&quot;)
+    void setBannedNodeIds(final List&lt;String&gt; values) {
+      try {
+<span class="fc" id="L494">        bannedNodeIds =</span>
+<span class="fc" id="L495">            values.stream()</span>
+<span class="pc bpc" id="L496" title="1 of 2 branches missed.">                .filter(value -&gt; !value.isEmpty())</span>
+<span class="fc" id="L497">                .map(EnodeURLImpl::parseNodeId)</span>
+<span class="fc" id="L498">                .collect(Collectors.toList());</span>
+<span class="fc" id="L499">      } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L500">        throw new ParameterException(</span>
+            new CommandLine(this),
+<span class="fc" id="L502">            &quot;Invalid ids supplied to '--banned-node-ids'. &quot; + e.getMessage());</span>
+<span class="fc" id="L503">      }</span>
+<span class="fc" id="L504">    }</span>
+
+<span class="fc" id="L506">    private Collection&lt;Bytes&gt; bannedNodeIds = new ArrayList&lt;&gt;();</span>
+
+    // Used to discover the default IP of the client.
+    // Loopback IP is used by default as this is how smokeTests require it to be
+    // and it's probably a good security behaviour to default only on the localhost.
+    private InetAddress autoDiscoverDefaultIP() {
+<span class="fc" id="L512">      autoDiscoveredDefaultIP =</span>
+<span class="fc" id="L513">          Optional.ofNullable(autoDiscoveredDefaultIP).orElseGet(InetAddress::getLoopbackAddress);</span>
+
+<span class="fc" id="L515">      return autoDiscoveredDefaultIP;</span>
+    }
+  }
+
+<span class="fc" id="L519">  @Option(</span>
+      names = {&quot;--sync-mode&quot;},
+      paramLabel = MANDATORY_MODE_FORMAT_HELP,
+      description =
+          &quot;Synchronization mode, possible values are ${COMPLETION-CANDIDATES} (default: SNAP if a --network is supplied and privacy isn't enabled. FULL otherwise.)&quot;)
+  private SyncMode syncMode = null;
+
+<span class="fc" id="L526">  @Option(</span>
+      names = {&quot;--sync-min-peers&quot;, &quot;--fast-sync-min-peers&quot;},
+      paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+      description =
+          &quot;Minimum number of peers required before starting sync. Has effect only on non-PoS networks. (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L531">  private final Integer syncMinPeerCount = SYNC_MIN_PEER_COUNT;</span>
+
+<span class="fc" id="L533">  @Option(</span>
+      names = {&quot;--network&quot;},
+      paramLabel = MANDATORY_NETWORK_FORMAT_HELP,
+      defaultValue = &quot;MAINNET&quot;,
+      description =
+          &quot;Synchronize against the indicated network, possible values are ${COMPLETION-CANDIDATES}.&quot;
+              + &quot; (default: ${DEFAULT-VALUE})&quot;)
+  private final NetworkName network = null;
+
+<span class="fc" id="L542">  @Option(</span>
+      names = {PROFILE_OPTION_NAME},
+      paramLabel = PROFILE_FORMAT_HELP,
+      description =
+          &quot;Overwrite default settings. Possible values are ${COMPLETION-CANDIDATES}. (default: none)&quot;)
+  private final ProfileName profile = null;
+
+<span class="fc" id="L549">  @Option(</span>
+      names = {&quot;--nat-method&quot;},
+      description =
+          &quot;Specify the NAT circumvention method to be used, possible values are ${COMPLETION-CANDIDATES}.&quot;
+              + &quot; NONE disables NAT functionality. (default: ${DEFAULT-VALUE})&quot;)
+  private final NatMethod natMethod = DEFAULT_NAT_METHOD;
+
+<span class="fc" id="L556">  @Option(</span>
+      names = {&quot;--network-id&quot;},
+      paramLabel = &quot;&lt;BIG INTEGER&gt;&quot;,
+      description =
+          &quot;P2P network identifier. (default: the selected network chain ID or custom genesis chain ID)&quot;,
+      arity = &quot;1&quot;)
+  private final BigInteger networkId = null;
+
+<span class="fc" id="L564">  @Option(</span>
+      names = {&quot;--kzg-trusted-setup&quot;},
+      paramLabel = MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Path to file containing the KZG trusted setup, mandatory for custom networks that support data blobs, &quot;
+              + &quot;optional for overriding named networks default.&quot;,
+      arity = &quot;1&quot;)
+  private final Path kzgTrustedSetupFile = null;
+
+<span class="fc" id="L573">  @Option(</span>
+      names = {&quot;--version-compatibility-protection&quot;},
+      description =
+          &quot;Perform compatibility checks between the version of Besu being started and the version of Besu that last started with this data directory. (default: ${DEFAULT-VALUE})&quot;)
+  private Boolean versionCompatibilityProtection = null;
+
+<span class="fc" id="L579">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold GraphQL Options|@%n&quot;)</span>
+  GraphQlOptions graphQlOptions = new GraphQlOptions();
+
+  // Engine JSON-PRC Options
+<span class="fc" id="L583">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Engine JSON-RPC Options|@%n&quot;)</span>
+  EngineRPCOptionGroup engineRPCOptionGroup = new EngineRPCOptionGroup();
+
+<span class="fc" id="L586">  static class EngineRPCOptionGroup {</span>
+<span class="fc" id="L587">    @Option(</span>
+        names = {&quot;--engine-rpc-enabled&quot;},
+        description =
+            &quot;enable the engine api, even in the absence of merge-specific configurations.&quot;)
+<span class="fc" id="L591">    private final Boolean overrideEngineRpcEnabled = false;</span>
+
+<span class="fc" id="L593">    @Option(</span>
+        names = {&quot;--engine-rpc-port&quot;, &quot;--engine-rpc-http-port&quot;},
+        paramLabel = MANDATORY_PORT_FORMAT_HELP,
+        description = &quot;Port to provide consensus client APIS on (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L598">    private final Integer engineRpcPort = DEFAULT_ENGINE_JSON_RPC_PORT;</span>
+
+<span class="fc" id="L600">    @Option(</span>
+        names = {&quot;--engine-jwt-secret&quot;},
+        paramLabel = MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;Path to file containing shared secret key for JWT signature verification&quot;)
+    private final Path engineJwtKeyFile = null;
+
+<span class="fc" id="L606">    @Option(</span>
+        names = {&quot;--engine-jwt-disabled&quot;},
+        description = &quot;Disable authentication for Engine APIs (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L609">    private final Boolean isEngineAuthDisabled = false;</span>
+
+<span class="fc" id="L611">    @Option(</span>
+        names = {&quot;--engine-host-allowlist&quot;},
+        paramLabel = &quot;&lt;hostname&gt;[,&lt;hostname&gt;...]... or * or all&quot;,
+        description =
+            &quot;Comma separated list of hostnames to allow for ENGINE API access (applies to both HTTP and websockets), or * to accept any host (default: ${DEFAULT-VALUE})&quot;,
+        defaultValue = &quot;localhost,127.0.0.1&quot;)
+    private final JsonRPCAllowlistHostsProperty engineHostsAllowlist =
+        new JsonRPCAllowlistHostsProperty();
+  }
+
+  // JSON-RPC HTTP Options
+<span class="fc" id="L622">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold JSON-RPC HTTP Options|@%n&quot;)</span>
+  JsonRpcHttpOptions jsonRpcHttpOptions = new JsonRpcHttpOptions();
+
+  // JSON-RPC Websocket Options
+<span class="fc" id="L626">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold JSON-RPC Websocket Options|@%n&quot;)</span>
+  RpcWebsocketOptions rpcWebsocketOptions = new RpcWebsocketOptions();
+
+  // Privacy Options Group
+<span class="fc" id="L630">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Privacy Options|@%n&quot;)</span>
+  PrivacyOptionGroup privacyOptionGroup = new PrivacyOptionGroup();
+
+<span class="fc" id="L633">  static class PrivacyOptionGroup {</span>
+<span class="fc" id="L634">    @Option(</span>
+        names = {&quot;--privacy-tls-enabled&quot;},
+        paramLabel = MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;Enable TLS for connecting to privacy enclave (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L638">    private final Boolean isPrivacyTlsEnabled = false;</span>
+
+<span class="fc" id="L640">    @Option(</span>
+        names = &quot;--privacy-tls-keystore-file&quot;,
+        paramLabel = MANDATORY_FILE_FORMAT_HELP,
+        description =
+            &quot;Path to a PKCS#12 formatted keystore; used to enable TLS on inbound connections.&quot;)
+    private final Path privacyKeyStoreFile = null;
+
+<span class="fc" id="L647">    @Option(</span>
+        names = &quot;--privacy-tls-keystore-password-file&quot;,
+        paramLabel = MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;Path to a file containing the password used to decrypt the keystore.&quot;)
+    private final Path privacyKeyStorePasswordFile = null;
+
+<span class="fc" id="L653">    @Option(</span>
+        names = &quot;--privacy-tls-known-enclave-file&quot;,
+        paramLabel = MANDATORY_FILE_FORMAT_HELP,
+        description =
+            &quot;Path to a file containing the fingerprints of the authorized privacy enclave.&quot;)
+    private final Path privacyTlsKnownEnclaveFile = null;
+
+<span class="fc" id="L660">    @Option(</span>
+        names = {&quot;--privacy-enabled&quot;},
+        description = &quot;Enable private transactions (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L663">    private final Boolean isPrivacyEnabled = false;</span>
+
+<span class="fc" id="L665">    @Option(</span>
+        names = {&quot;--privacy-multi-tenancy-enabled&quot;},
+        description = &quot;Enable multi-tenant private transactions (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L668">    private final Boolean isPrivacyMultiTenancyEnabled = false;</span>
+
+<span class="fc" id="L670">    @Option(</span>
+        names = {&quot;--privacy-url&quot;},
+        description = &quot;The URL on which the enclave is running&quot;)
+    private final URI privacyUrl = PrivacyParameters.DEFAULT_ENCLAVE_URL;
+
+<span class="fc" id="L675">    @Option(</span>
+        names = {&quot;--privacy-public-key-file&quot;},
+        description = &quot;The enclave's public key file&quot;)
+    private final File privacyPublicKeyFile = null;
+
+<span class="fc" id="L680">    @Option(</span>
+        names = {&quot;--privacy-marker-transaction-signing-key-file&quot;},
+        description =
+            &quot;The name of a file containing the private key used to sign privacy marker transactions. If unset, each will be signed with a random key.&quot;)
+    private final Path privateMarkerTransactionSigningKeyPath = null;
+
+<span class="fc" id="L686">    @Option(</span>
+        names = {&quot;--privacy-enable-database-migration&quot;},
+        description = &quot;Enable private database metadata migration (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L689">    private final Boolean migratePrivateDatabase = false;</span>
+
+<span class="fc" id="L691">    @Option(</span>
+        names = {&quot;--privacy-flexible-groups-enabled&quot;},
+        description = &quot;Enable flexible privacy groups (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L694">    private final Boolean isFlexiblePrivacyGroupsEnabled = false;</span>
+  }
+
+  // Metrics Option Group
+<span class="fc" id="L698">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Metrics Options|@%n&quot;)</span>
+  MetricsOptionGroup metricsOptionGroup = new MetricsOptionGroup();
+
+<span class="fc" id="L701">  static class MetricsOptionGroup {</span>
+<span class="fc" id="L702">    @Option(</span>
+        names = {&quot;--metrics-enabled&quot;},
+        description = &quot;Set to start the metrics exporter (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L705">    private final Boolean isMetricsEnabled = false;</span>
+
+<span class="fc" id="L707">    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+    @Option(
+        names = {&quot;--metrics-protocol&quot;},
+        description =
+            &quot;Metrics protocol, one of PROMETHEUS, OPENTELEMETRY or NONE. (default: ${DEFAULT-VALUE})&quot;)
+    private MetricsProtocol metricsProtocol = PROMETHEUS;
+
+    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.
+    @Option(
+        names = {&quot;--metrics-host&quot;},
+        paramLabel = MANDATORY_HOST_FORMAT_HELP,
+        description = &quot;Host for the metrics exporter to listen on (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private String metricsHost;
+
+<span class="fc" id="L722">    @Option(</span>
+        names = {&quot;--metrics-port&quot;},
+        paramLabel = MANDATORY_PORT_FORMAT_HELP,
+        description = &quot;Port for the metrics exporter to listen on (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L727">    private final Integer metricsPort = DEFAULT_METRICS_PORT;</span>
+
+<span class="fc" id="L729">    @Option(</span>
+        names = {&quot;--metrics-category&quot;, &quot;--metrics-categories&quot;},
+        paramLabel = &quot;&lt;category name&gt;&quot;,
+        split = &quot;,&quot;,
+        arity = &quot;1..*&quot;,
+        description =
+            &quot;Comma separated list of categories to track metrics for (default: ${DEFAULT-VALUE})&quot;)
+    private final Set&lt;MetricCategory&gt; metricCategories = DEFAULT_METRIC_CATEGORIES;
+
+<span class="fc" id="L738">    @Option(</span>
+        names = {&quot;--metrics-push-enabled&quot;},
+        description = &quot;Enable the metrics push gateway integration (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L741">    private final Boolean isMetricsPushEnabled = false;</span>
+
+    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.
+    @Option(
+        names = {&quot;--metrics-push-host&quot;},
+        paramLabel = MANDATORY_HOST_FORMAT_HELP,
+        description =
+            &quot;Host of the Prometheus Push Gateway for push mode (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private String metricsPushHost;
+
+<span class="fc" id="L752">    @Option(</span>
+        names = {&quot;--metrics-push-port&quot;},
+        paramLabel = MANDATORY_PORT_FORMAT_HELP,
+        description =
+            &quot;Port of the Prometheus Push Gateway for push mode (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L758">    private final Integer metricsPushPort = DEFAULT_METRICS_PUSH_PORT;</span>
+
+<span class="fc" id="L760">    @Option(</span>
+        names = {&quot;--metrics-push-interval&quot;},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description =
+            &quot;Interval in seconds to push metrics when in push mode (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L766">    private final Integer metricsPushInterval = 15;</span>
+
+<span class="fc" id="L768">    @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+    @Option(
+        names = {&quot;--metrics-push-prometheus-job&quot;},
+        description = &quot;Job name to use when in push mode (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private String metricsPrometheusJob = &quot;besu-client&quot;;
+  }
+
+<span class="fc" id="L776">  @Option(</span>
+      names = {&quot;--host-allowlist&quot;},
+      paramLabel = &quot;&lt;hostname&gt;[,&lt;hostname&gt;...]... or * or all&quot;,
+      description =
+          &quot;Comma separated list of hostnames to allow for RPC access, or * to accept any host (default: ${DEFAULT-VALUE})&quot;,
+      defaultValue = &quot;localhost,127.0.0.1&quot;)
+  private final JsonRPCAllowlistHostsProperty hostsAllowlist = new JsonRPCAllowlistHostsProperty();
+
+<span class="fc" id="L784">  @Option(</span>
+      names = {&quot;--host-whitelist&quot;},
+      hidden = true,
+      paramLabel = &quot;&lt;hostname&gt;[,&lt;hostname&gt;...]... or * or all&quot;,
+      description =
+          &quot;Deprecated in favor of --host-allowlist. Comma separated list of hostnames to allow for RPC access, or * to accept any host (default: ${DEFAULT-VALUE})&quot;)
+  private final JsonRPCAllowlistHostsProperty hostsWhitelist = new JsonRPCAllowlistHostsProperty();
+
+  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;})
+  @Option(
+      names = {&quot;--color-enabled&quot;},
+      description =
+          &quot;Force color output to be enabled/disabled (default: colorized only if printing to console)&quot;)
+<span class="fc" id="L797">  private static Boolean colorEnabled = null;</span>
+
+<span class="fc" id="L799">  @Option(</span>
+      names = {&quot;--reorg-logging-threshold&quot;},
+      description =
+          &quot;How deep a chain reorganization must be in order for it to be logged (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L803">  private final Long reorgLoggingThreshold = 6L;</span>
+
+<span class="fc" id="L805">  @Option(</span>
+      names = {&quot;--pruning-enabled&quot;},
+      description =
+          &quot;Enable disk-space saving optimization that removes old state that is unlikely to be required (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L809">  private final Boolean pruningEnabled = false;</span>
+
+  // Permission Option Group
+<span class="fc" id="L812">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold Permissions Options|@%n&quot;)</span>
+  PermissionsOptions permissionsOptions = new PermissionsOptions();
+
+<span class="fc" id="L815">  @Option(</span>
+      names = {&quot;--revert-reason-enabled&quot;},
+      description =
+          &quot;Enable passing the revert reason back through TransactionReceipts (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L819">  private final Boolean isRevertReasonEnabled = false;</span>
+
+<span class="fc" id="L821">  @Option(</span>
+      names = {&quot;--required-blocks&quot;, &quot;--required-block&quot;},
+      paramLabel = &quot;BLOCK=HASH&quot;,
+      description = &quot;Block number and hash peers are required to have.&quot;,
+      arity = &quot;*&quot;,
+      split = &quot;,&quot;)
+  private final Map&lt;Long, Hash&gt; requiredBlocks = new HashMap&lt;&gt;();
+
+<span class="fc" id="L829">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @Option(
+      names = {&quot;--key-value-storage&quot;},
+      description = &quot;Identity for the key-value storage to be used.&quot;,
+      arity = &quot;1&quot;)
+  private String keyValueStorageName = DEFAULT_KEY_VALUE_STORAGE_NAME;
+
+<span class="fc" id="L836">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;})</span>
+  @Option(
+      names = {&quot;--security-module&quot;},
+      paramLabel = &quot;&lt;NAME&gt;&quot;,
+      description = &quot;Identity for the Security Module to be used.&quot;,
+      arity = &quot;1&quot;)
+  private String securityModuleName = DEFAULT_SECURITY_MODULE;
+
+<span class="fc" id="L844">  @Option(</span>
+      names = {&quot;--auto-log-bloom-caching-enabled&quot;},
+      description = &quot;Enable automatic log bloom caching (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L848">  private final Boolean autoLogBloomCachingEnabled = true;</span>
+
+<span class="fc" id="L850">  @Option(</span>
+      names = {&quot;--override-genesis-config&quot;},
+      paramLabel = &quot;NAME=VALUE&quot;,
+      description = &quot;Overrides configuration values in the genesis file.  Use with care.&quot;,
+      arity = &quot;*&quot;,
+      hidden = true,
+      split = &quot;,&quot;)
+  private final Map&lt;String, String&gt; genesisConfigOverrides =
+      new TreeMap&lt;&gt;(String.CASE_INSENSITIVE_ORDER);
+
+<span class="fc" id="L860">  @Option(</span>
+      names = {&quot;--pruning-blocks-retained&quot;},
+      paramLabel = &quot;&lt;INTEGER&gt;&quot;,
+      description =
+          &quot;Minimum number of recent blocks for which to keep entire world state (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L866">  private final Integer pruningBlocksRetained = PrunerConfiguration.DEFAULT_PRUNING_BLOCKS_RETAINED;</span>
+
+<span class="fc" id="L868">  @Option(</span>
+      names = {&quot;--pruning-block-confirmations&quot;},
+      paramLabel = &quot;&lt;INTEGER&gt;&quot;,
+      description =
+          &quot;Minimum number of confirmations on a block before marking begins (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private final Integer pruningBlockConfirmations =
+<span class="fc" id="L875">      PrunerConfiguration.DEFAULT_PRUNING_BLOCK_CONFIRMATIONS;</span>
+
+<span class="fc" id="L877">  @CommandLine.Option(</span>
+      names = {&quot;--pid-path&quot;},
+      paramLabel = MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;Path to PID file (optional)&quot;)
+  private final Path pidPath = null;
+
+  // API Configuration Option Group
+<span class="fc" id="L884">  @CommandLine.ArgGroup(validate = false, heading = &quot;@|bold API Configuration Options|@%n&quot;)</span>
+  ApiConfigurationOptions apiConfigurationOptions = new ApiConfigurationOptions();
+
+<span class="fc" id="L887">  @CommandLine.Option(</span>
+      names = {&quot;--static-nodes-file&quot;},
+      paramLabel = MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Specifies the static node file containing the static nodes for this node to connect to&quot;)
+  private final Path staticNodesFile = null;
+
+<span class="fc" id="L894">  @CommandLine.Option(</span>
+      names = {&quot;--cache-last-blocks&quot;},
+      description = &quot;Specifies the number of last blocks to cache  (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L897">  private final Integer numberOfblocksToCache = 0;</span>
+
+  @Mixin private P2PTLSConfigOptions p2pTLSConfigOptions;
+
+  @Mixin private PkiBlockCreationOptions pkiBlockCreationOptions;
+
+  private EthNetworkConfig ethNetworkConfig;
+  private JsonRpcConfiguration jsonRpcConfiguration;
+  private JsonRpcConfiguration engineJsonRpcConfiguration;
+  private GraphQLConfiguration graphQLConfiguration;
+  private WebSocketConfiguration webSocketConfiguration;
+  private JsonRpcIpcConfiguration jsonRpcIpcConfiguration;
+  private ApiConfiguration apiConfiguration;
+  private MetricsConfiguration metricsConfiguration;
+  private Optional&lt;PermissioningConfiguration&gt; permissioningConfiguration;
+  private Optional&lt;TLSConfiguration&gt; p2pTLSConfiguration;
+  private DataStorageConfiguration dataStorageConfiguration;
+  private Collection&lt;EnodeURL&gt; staticNodes;
+  private BesuController besuController;
+  private BesuConfigurationImpl pluginCommonConfiguration;
+  private MiningParameters miningParameters;
+
+  private BesuComponent besuComponent;
+<span class="fc" id="L920">  private final Supplier&lt;ObservableMetricsSystem&gt; metricsSystem =</span>
+<span class="fc" id="L921">      Suppliers.memoize(</span>
+          () -&gt;
+<span class="pc bpc" id="L923" title="2 of 4 branches missed.">              besuComponent == null || besuComponent.getObservableMetricsSystem() == null</span>
+<span class="fc" id="L924">                  ? MetricsSystemFactory.create(metricsConfiguration())</span>
+<span class="nc" id="L925">                  : besuComponent.getObservableMetricsSystem());</span>
+  private Vertx vertx;
+  private EnodeDnsConfiguration enodeDnsConfiguration;
+  private KeyValueStorageProvider keyValueStorageProvider;
+
+  /**
+   * Besu command constructor.
+   *
+   * @param besuComponent BesuComponent which acts as our application context
+   * @param rlpBlockImporter RlpBlockImporter supplier
+   * @param jsonBlockImporterFactory instance of {@code Function&lt;BesuController, JsonBlockImporter&gt;}
+   * @param rlpBlockExporterFactory instance of {@code Function&lt;Blockchain, RlpBlockExporter&gt;}
+   * @param runnerBuilder instance of RunnerBuilder
+   * @param controllerBuilderFactory instance of BesuController.Builder
+   * @param besuPluginContext instance of BesuPluginContextImpl
+   * @param environment Environment variables map
+   */
+  public BesuCommand(
+      final BesuComponent besuComponent,
+      final Supplier&lt;RlpBlockImporter&gt; rlpBlockImporter,
+      final Function&lt;BesuController, JsonBlockImporter&gt; jsonBlockImporterFactory,
+      final Function&lt;Blockchain, RlpBlockExporter&gt; rlpBlockExporterFactory,
+      final RunnerBuilder runnerBuilder,
+      final BesuController.Builder controllerBuilderFactory,
+      final BesuPluginContextImpl besuPluginContext,
+      final Map&lt;String, String&gt; environment) {
+<span class="nc" id="L951">    this(</span>
+        besuComponent,
+        rlpBlockImporter,
+        jsonBlockImporterFactory,
+        rlpBlockExporterFactory,
+        runnerBuilder,
+        controllerBuilderFactory,
+        besuPluginContext,
+        environment,
+        new StorageServiceImpl(),
+        new SecurityModuleServiceImpl(),
+        new PermissioningServiceImpl(),
+        new PrivacyPluginServiceImpl(),
+        new PkiBlockCreationConfigurationProvider(),
+        new RpcEndpointServiceImpl(),
+        new TransactionSelectionServiceImpl(),
+        new TransactionPoolValidatorServiceImpl(),
+        new TransactionSimulationServiceImpl(),
+        new BlockchainServiceImpl());
+<span class="nc" id="L970">  }</span>
+
+  /**
+   * Overloaded Besu command constructor visible for testing.
+   *
+   * @param besuComponent BesuComponent which acts as our application context
+   * @param rlpBlockImporter RlpBlockImporter supplier
+   * @param jsonBlockImporterFactory instance of {@code Function&lt;BesuController, JsonBlockImporter&gt;}
+   * @param rlpBlockExporterFactory instance of {@code Function&lt;Blockchain, RlpBlockExporter&gt;}
+   * @param runnerBuilder instance of RunnerBuilder
+   * @param controllerBuilderFactory instance of BesuController.Builder
+   * @param besuPluginContext instance of BesuPluginContextImpl
+   * @param environment Environment variables map
+   * @param storageService instance of StorageServiceImpl
+   * @param securityModuleService instance of SecurityModuleServiceImpl
+   * @param permissioningService instance of PermissioningServiceImpl
+   * @param privacyPluginService instance of PrivacyPluginServiceImpl
+   * @param pkiBlockCreationConfigProvider instance of PkiBlockCreationConfigurationProvider
+   * @param rpcEndpointServiceImpl instance of RpcEndpointServiceImpl
+   * @param transactionSelectionServiceImpl instance of TransactionSelectionServiceImpl
+   * @param transactionValidatorServiceImpl instance of TransactionValidatorServiceImpl
+   * @param transactionSimulationServiceImpl instance of TransactionSimulationServiceImpl
+   * @param blockchainServiceImpl instance of BlockchainServiceImpl
+   */
+  @VisibleForTesting
+  protected BesuCommand(
+      final BesuComponent besuComponent,
+      final Supplier&lt;RlpBlockImporter&gt; rlpBlockImporter,
+      final Function&lt;BesuController, JsonBlockImporter&gt; jsonBlockImporterFactory,
+      final Function&lt;Blockchain, RlpBlockExporter&gt; rlpBlockExporterFactory,
+      final RunnerBuilder runnerBuilder,
+      final BesuController.Builder controllerBuilderFactory,
+      final BesuPluginContextImpl besuPluginContext,
+      final Map&lt;String, String&gt; environment,
+      final StorageServiceImpl storageService,
+      final SecurityModuleServiceImpl securityModuleService,
+      final PermissioningServiceImpl permissioningService,
+      final PrivacyPluginServiceImpl privacyPluginService,
+      final PkiBlockCreationConfigurationProvider pkiBlockCreationConfigProvider,
+      final RpcEndpointServiceImpl rpcEndpointServiceImpl,
+      final TransactionSelectionServiceImpl transactionSelectionServiceImpl,
+      final TransactionPoolValidatorServiceImpl transactionValidatorServiceImpl,
+      final TransactionSimulationServiceImpl transactionSimulationServiceImpl,
+<span class="fc" id="L1013">      final BlockchainServiceImpl blockchainServiceImpl) {</span>
+<span class="fc" id="L1014">    this.besuComponent = besuComponent;</span>
+<span class="fc" id="L1015">    this.logger = besuComponent.getBesuCommandLogger();</span>
+<span class="fc" id="L1016">    this.rlpBlockImporter = rlpBlockImporter;</span>
+<span class="fc" id="L1017">    this.rlpBlockExporterFactory = rlpBlockExporterFactory;</span>
+<span class="fc" id="L1018">    this.jsonBlockImporterFactory = jsonBlockImporterFactory;</span>
+<span class="fc" id="L1019">    this.runnerBuilder = runnerBuilder;</span>
+<span class="fc" id="L1020">    this.controllerBuilderFactory = controllerBuilderFactory;</span>
+<span class="fc" id="L1021">    this.besuPluginContext = besuPluginContext;</span>
+<span class="fc" id="L1022">    this.environment = environment;</span>
+<span class="fc" id="L1023">    this.storageService = storageService;</span>
+<span class="fc" id="L1024">    this.securityModuleService = securityModuleService;</span>
+<span class="fc" id="L1025">    this.permissioningService = permissioningService;</span>
+<span class="fc" id="L1026">    this.privacyPluginService = privacyPluginService;</span>
+<span class="fc" id="L1027">    this.pluginCommonConfiguration = new BesuConfigurationImpl();</span>
+<span class="fc" id="L1028">    besuPluginContext.addService(BesuConfiguration.class, pluginCommonConfiguration);</span>
+<span class="fc" id="L1029">    this.pkiBlockCreationConfigProvider = pkiBlockCreationConfigProvider;</span>
+<span class="fc" id="L1030">    this.rpcEndpointServiceImpl = rpcEndpointServiceImpl;</span>
+<span class="fc" id="L1031">    this.transactionSelectionServiceImpl = transactionSelectionServiceImpl;</span>
+<span class="fc" id="L1032">    this.transactionValidatorServiceImpl = transactionValidatorServiceImpl;</span>
+<span class="fc" id="L1033">    this.transactionSimulationServiceImpl = transactionSimulationServiceImpl;</span>
+<span class="fc" id="L1034">    this.blockchainServiceImpl = blockchainServiceImpl;</span>
+<span class="fc" id="L1035">  }</span>
+
+  /**
+   * Parse Besu command line arguments. Visible for testing.
+   *
+   * @param resultHandler execution strategy. See PicoCLI. Typical argument is RunLast.
+   * @param parameterExceptionHandler Exception handler for handling parameters
+   * @param executionExceptionHandler Exception handler for business logic
+   * @param in Standard input stream
+   * @param args arguments to Besu command
+   * @return success or failure exit code.
+   */
+  public int parse(
+      final IExecutionStrategy resultHandler,
+      final BesuParameterExceptionHandler parameterExceptionHandler,
+      final BesuExecutionExceptionHandler executionExceptionHandler,
+      final InputStream in,
+      final String... args) {
+
+<span class="fc" id="L1054">    toCommandLine();</span>
+
+    // use terminal width for usage message
+<span class="fc" id="L1057">    commandLine.getCommandSpec().usageMessage().autoWidth(true);</span>
+
+<span class="fc" id="L1059">    handleStableOptions();</span>
+<span class="fc" id="L1060">    addSubCommands(in);</span>
+<span class="fc" id="L1061">    registerConverters();</span>
+<span class="fc" id="L1062">    handleUnstableOptions();</span>
+<span class="fc" id="L1063">    preparePlugins();</span>
+
+<span class="fc" id="L1065">    final int exitCode =</span>
+<span class="fc" id="L1066">        parse(resultHandler, executionExceptionHandler, parameterExceptionHandler, args);</span>
+
+<span class="fc" id="L1068">    return exitCode;</span>
+  }
+
+  /** Used by Dagger to parse all options into a commandline instance. */
+  public void toCommandLine() {
+<span class="fc" id="L1073">    commandLine =</span>
+        new CommandLine(this, new BesuCommandCustomFactory(besuPluginContext))
+<span class="fc" id="L1075">            .setCaseInsensitiveEnumValuesAllowed(true);</span>
+<span class="fc" id="L1076">  }</span>
+
+  @Override
+  public void run() {
+<span class="pc bpc" id="L1080" title="2 of 4 branches missed.">    if (network != null &amp;&amp; network.isDeprecated()) {</span>
+<span class="nc" id="L1081">      logger.warn(NetworkDeprecationMessage.generate(network));</span>
+    }
+    try {
+<span class="fc" id="L1084">      configureLogging(true);</span>
+
+<span class="fc bfc" id="L1086" title="All 2 branches covered.">      if (genesisFile != null) {</span>
+<span class="fc" id="L1087">        genesisConfigOptions = readGenesisConfigOptions();</span>
+      }
+
+      // set merge config on the basis of genesis config
+<span class="fc" id="L1091">      setMergeConfigOptions();</span>
+
+<span class="fc" id="L1093">      setIgnorableStorageSegments();</span>
+
+<span class="fc" id="L1095">      instantiateSignatureAlgorithmFactory();</span>
+
+<span class="fc" id="L1097">      logger.info(&quot;Starting Besu&quot;);</span>
+
+      // Need to create vertx after cmdline has been parsed, such that metricsSystem is configurable
+<span class="fc" id="L1100">      vertx = createVertx(createVertxOptions(metricsSystem.get()));</span>
+
+<span class="fc" id="L1102">      validateOptions();</span>
+
+<span class="fc" id="L1104">      configure();</span>
+
+      // If we're not running against a named network, or if version compat protection has been
+      // explicitly enabled, perform compatibility check
+<span class="fc" id="L1108">      VersionMetadata.versionCompatibilityChecks(versionCompatibilityProtection, dataDir());</span>
+
+<span class="fc" id="L1110">      configureNativeLibs();</span>
+<span class="fc" id="L1111">      besuController = buildController();</span>
+
+<span class="fc" id="L1113">      besuPluginContext.beforeExternalServices();</span>
+
+<span class="fc" id="L1115">      final var runner = buildRunner();</span>
+<span class="fc" id="L1116">      runner.startExternalServices();</span>
+
+<span class="fc" id="L1118">      startPlugins();</span>
+<span class="fc" id="L1119">      validatePluginOptions();</span>
+<span class="fc" id="L1120">      setReleaseMetrics();</span>
+<span class="fc" id="L1121">      preSynchronization();</span>
+
+<span class="fc" id="L1123">      runner.startEthereumMainLoop();</span>
+<span class="fc" id="L1124">      runner.awaitStop();</span>
+
+<span class="fc" id="L1126">    } catch (final Exception e) {</span>
+<span class="fc" id="L1127">      logger.error(&quot;Failed to start Besu&quot;, e);</span>
+<span class="fc" id="L1128">      throw new ParameterException(this.commandLine, e.getMessage(), e);</span>
+<span class="fc" id="L1129">    }</span>
+<span class="fc" id="L1130">  }</span>
+
+  @VisibleForTesting
+  void setBesuConfiguration(final BesuConfigurationImpl pluginCommonConfiguration) {
+<span class="fc" id="L1134">    this.pluginCommonConfiguration = pluginCommonConfiguration;</span>
+<span class="fc" id="L1135">  }</span>
+
+  private void addSubCommands(final InputStream in) {
+<span class="fc" id="L1138">    commandLine.addSubcommand(</span>
+        BlocksSubCommand.COMMAND_NAME,
+        new BlocksSubCommand(
+            rlpBlockImporter,
+            jsonBlockImporterFactory,
+            rlpBlockExporterFactory,
+<span class="fc" id="L1144">            commandLine.getOut()));</span>
+<span class="fc" id="L1145">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1146">        TxParseSubCommand.COMMAND_NAME, new TxParseSubCommand(commandLine.getOut()));</span>
+<span class="fc" id="L1147">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1148">        PublicKeySubCommand.COMMAND_NAME, new PublicKeySubCommand(commandLine.getOut()));</span>
+<span class="fc" id="L1149">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1150">        PasswordSubCommand.COMMAND_NAME, new PasswordSubCommand(commandLine.getOut()));</span>
+<span class="fc" id="L1151">    commandLine.addSubcommand(RetestethSubCommand.COMMAND_NAME, new RetestethSubCommand());</span>
+<span class="fc" id="L1152">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1153">        RLPSubCommand.COMMAND_NAME, new RLPSubCommand(commandLine.getOut(), in));</span>
+<span class="fc" id="L1154">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1155">        OperatorSubCommand.COMMAND_NAME, new OperatorSubCommand(commandLine.getOut()));</span>
+<span class="fc" id="L1156">    commandLine.addSubcommand(</span>
+        ValidateConfigSubCommand.COMMAND_NAME,
+<span class="fc" id="L1158">        new ValidateConfigSubCommand(commandLine, commandLine.getOut()));</span>
+<span class="fc" id="L1159">    commandLine.addSubcommand(</span>
+<span class="fc" id="L1160">        StorageSubCommand.COMMAND_NAME, new StorageSubCommand(commandLine.getOut()));</span>
+<span class="fc" id="L1161">    final String generateCompletionSubcommandName = &quot;generate-completion&quot;;</span>
+<span class="fc" id="L1162">    commandLine.addSubcommand(</span>
+        generateCompletionSubcommandName, AutoComplete.GenerateCompletion.class);
+<span class="fc" id="L1164">    final CommandLine generateCompletionSubcommand =</span>
+<span class="fc" id="L1165">        commandLine.getSubcommands().get(generateCompletionSubcommandName);</span>
+<span class="fc" id="L1166">    generateCompletionSubcommand.getCommandSpec().usageMessage().hidden(true);</span>
+<span class="fc" id="L1167">  }</span>
+
+  private void registerConverters() {
+<span class="fc" id="L1170">    commandLine.registerConverter(Address.class, Address::fromHexStringStrict);</span>
+<span class="fc" id="L1171">    commandLine.registerConverter(Bytes.class, Bytes::fromHexString);</span>
+<span class="fc" id="L1172">    commandLine.registerConverter(MetricsProtocol.class, MetricsProtocol::fromString);</span>
+<span class="fc" id="L1173">    commandLine.registerConverter(UInt256.class, (arg) -&gt; UInt256.valueOf(new BigInteger(arg)));</span>
+<span class="fc" id="L1174">    commandLine.registerConverter(Wei.class, (arg) -&gt; Wei.of(Long.parseUnsignedLong(arg)));</span>
+<span class="fc" id="L1175">    commandLine.registerConverter(PositiveNumber.class, PositiveNumber::fromString);</span>
+<span class="fc" id="L1176">    commandLine.registerConverter(Hash.class, Hash::fromHexString);</span>
+<span class="fc" id="L1177">    commandLine.registerConverter(Optional.class, Optional::of);</span>
+<span class="fc" id="L1178">    commandLine.registerConverter(Double.class, Double::parseDouble);</span>
+
+<span class="fc" id="L1180">    metricCategoryConverter.addCategories(BesuMetricCategory.class);</span>
+<span class="fc" id="L1181">    metricCategoryConverter.addCategories(StandardMetricCategory.class);</span>
+<span class="fc" id="L1182">    commandLine.registerConverter(MetricCategory.class, metricCategoryConverter);</span>
+<span class="fc" id="L1183">  }</span>
+
+  private void handleStableOptions() {
+<span class="fc" id="L1186">    commandLine.addMixin(&quot;Ethstats&quot;, ethstatsOptions);</span>
+<span class="fc" id="L1187">    commandLine.addMixin(&quot;Private key file&quot;, nodePrivateKeyFileOption);</span>
+<span class="fc" id="L1188">    commandLine.addMixin(&quot;Logging level&quot;, loggingLevelOption);</span>
+<span class="fc" id="L1189">    commandLine.addMixin(&quot;Data Storage Options&quot;, dataStorageOptions);</span>
+<span class="fc" id="L1190">  }</span>
+
+  private void handleUnstableOptions() {
+    // Add unstable options
+<span class="fc" id="L1194">    final ImmutableMap.Builder&lt;String, Object&gt; unstableOptionsBuild = ImmutableMap.builder();</span>
+<span class="fc" id="L1195">    final ImmutableMap&lt;String, Object&gt; unstableOptions =</span>
+        unstableOptionsBuild
+<span class="fc" id="L1197">            .put(&quot;Ethereum Wire Protocol&quot;, unstableEthProtocolOptions)</span>
+<span class="fc" id="L1198">            .put(&quot;Metrics&quot;, unstableMetricsCLIOptions)</span>
+<span class="fc" id="L1199">            .put(&quot;P2P Network&quot;, unstableNetworkingOptions)</span>
+<span class="fc" id="L1200">            .put(&quot;RPC&quot;, unstableRPCOptions)</span>
+<span class="fc" id="L1201">            .put(&quot;DNS Configuration&quot;, unstableDnsOptions)</span>
+<span class="fc" id="L1202">            .put(&quot;NAT Configuration&quot;, unstableNatOptions)</span>
+<span class="fc" id="L1203">            .put(&quot;Privacy Plugin Configuration&quot;, unstablePrivacyPluginOptions)</span>
+<span class="fc" id="L1204">            .put(&quot;Synchronizer&quot;, unstableSynchronizerOptions)</span>
+<span class="fc" id="L1205">            .put(&quot;Native Library&quot;, unstableNativeLibraryOptions)</span>
+<span class="fc" id="L1206">            .put(&quot;EVM Options&quot;, unstableEvmOptions)</span>
+<span class="fc" id="L1207">            .put(&quot;IPC Options&quot;, unstableIpcOptions)</span>
+<span class="fc" id="L1208">            .put(&quot;Chain Data Pruning Options&quot;, unstableChainPruningOptions)</span>
+<span class="fc" id="L1209">            .build();</span>
+
+<span class="fc" id="L1211">    UnstableOptionsSubCommand.createUnstableOptions(commandLine, unstableOptions);</span>
+<span class="fc" id="L1212">  }</span>
+
+  private void preparePlugins() {
+<span class="fc" id="L1215">    besuPluginContext.addService(PicoCLIOptions.class, new PicoCLIOptionsImpl(commandLine));</span>
+<span class="fc" id="L1216">    besuPluginContext.addService(SecurityModuleService.class, securityModuleService);</span>
+<span class="fc" id="L1217">    besuPluginContext.addService(StorageService.class, storageService);</span>
+<span class="fc" id="L1218">    besuPluginContext.addService(MetricCategoryRegistry.class, metricCategoryRegistry);</span>
+<span class="fc" id="L1219">    besuPluginContext.addService(PermissioningService.class, permissioningService);</span>
+<span class="fc" id="L1220">    besuPluginContext.addService(PrivacyPluginService.class, privacyPluginService);</span>
+<span class="fc" id="L1221">    besuPluginContext.addService(RpcEndpointService.class, rpcEndpointServiceImpl);</span>
+<span class="fc" id="L1222">    besuPluginContext.addService(</span>
+        TransactionSelectionService.class, transactionSelectionServiceImpl);
+<span class="fc" id="L1224">    besuPluginContext.addService(</span>
+        TransactionPoolValidatorService.class, transactionValidatorServiceImpl);
+<span class="fc" id="L1226">    besuPluginContext.addService(</span>
+        TransactionSimulationService.class, transactionSimulationServiceImpl);
+<span class="fc" id="L1228">    besuPluginContext.addService(BlockchainService.class, blockchainServiceImpl);</span>
+
+    // register built-in plugins
+<span class="fc" id="L1231">    rocksDBPlugin = new RocksDBPlugin();</span>
+<span class="fc" id="L1232">    rocksDBPlugin.register(besuPluginContext);</span>
+<span class="fc" id="L1233">    new InMemoryStoragePlugin().register(besuPluginContext);</span>
+
+<span class="fc" id="L1235">    besuPluginContext.registerPlugins(pluginsDir());</span>
+
+<span class="fc" id="L1237">    metricCategoryRegistry</span>
+<span class="fc" id="L1238">        .getMetricCategories()</span>
+<span class="fc" id="L1239">        .forEach(metricCategoryConverter::addRegistryCategory);</span>
+
+    // register default security module
+<span class="fc" id="L1242">    securityModuleService.register(</span>
+<span class="fc" id="L1243">        DEFAULT_SECURITY_MODULE, Suppliers.memoize(this::defaultSecurityModule));</span>
+<span class="fc" id="L1244">  }</span>
+
+  private SecurityModule defaultSecurityModule() {
+<span class="nc" id="L1247">    return new KeyPairSecurityModule(loadKeyPair(nodePrivateKeyFileOption.getNodePrivateKeyFile()));</span>
+  }
+
+  // loadKeyPair() is public because it is accessed by subcommands
+
+  /**
+   * Load key pair from private key. Visible to be accessed by subcommands.
+   *
+   * @param nodePrivateKeyFile File containing private key
+   * @return KeyPair loaded from private key file
+   */
+  public KeyPair loadKeyPair(final File nodePrivateKeyFile) {
+<span class="fc" id="L1259">    return KeyPairUtil.loadKeyPair(resolveNodePrivateKeyFile(nodePrivateKeyFile));</span>
+  }
+
+  private int parse(
+      final CommandLine.IExecutionStrategy resultHandler,
+      final BesuExecutionExceptionHandler besuExecutionExceptionHandler,
+      final BesuParameterExceptionHandler besuParameterExceptionHandler,
+      final String... args) {
+    // Create a handler that will search for a config file option and use it for
+    // default values
+    // and eventually it will run regular parsing of the remaining options.
+
+<span class="fc" id="L1271">    final ConfigOptionSearchAndRunHandler configParsingHandler =</span>
+        new ConfigOptionSearchAndRunHandler(
+            resultHandler, besuParameterExceptionHandler, environment);
+
+<span class="fc" id="L1275">    return commandLine</span>
+<span class="fc" id="L1276">        .setExecutionStrategy(configParsingHandler)</span>
+<span class="fc" id="L1277">        .setParameterExceptionHandler(besuParameterExceptionHandler)</span>
+<span class="fc" id="L1278">        .setExecutionExceptionHandler(besuExecutionExceptionHandler)</span>
+<span class="fc" id="L1279">        .execute(args);</span>
+  }
+
+  private void preSynchronization() {
+<span class="fc" id="L1283">    preSynchronizationTaskRunner.runTasks(besuController);</span>
+<span class="fc" id="L1284">  }</span>
+
+  private Runner buildRunner() {
+<span class="fc" id="L1287">    return synchronize(</span>
+        besuController,
+<span class="fc" id="L1289">        p2PDiscoveryOptionGroup.p2pEnabled,</span>
+        p2pTLSConfiguration,
+<span class="fc" id="L1291">        p2PDiscoveryOptionGroup.peerDiscoveryEnabled,</span>
+        ethNetworkConfig,
+        p2PDiscoveryOptionGroup.p2pHost,
+        p2PDiscoveryOptionGroup.p2pInterface,
+<span class="fc" id="L1295">        p2PDiscoveryOptionGroup.p2pPort,</span>
+        graphQLConfiguration,
+        jsonRpcConfiguration,
+        engineJsonRpcConfiguration,
+        webSocketConfiguration,
+        jsonRpcIpcConfiguration,
+        apiConfiguration,
+        metricsConfiguration,
+        permissioningConfiguration,
+        staticNodes,
+        pidPath);
+  }
+
+  private void startPlugins() {
+<span class="fc" id="L1309">    blockchainServiceImpl.init(</span>
+<span class="fc" id="L1310">        besuController.getProtocolContext(), besuController.getProtocolSchedule());</span>
+<span class="fc" id="L1311">    transactionSimulationServiceImpl.init(</span>
+<span class="fc" id="L1312">        besuController.getProtocolContext().getBlockchain(),</span>
+        new TransactionSimulator(
+<span class="fc" id="L1314">            besuController.getProtocolContext().getBlockchain(),</span>
+<span class="fc" id="L1315">            besuController.getProtocolContext().getWorldStateArchive(),</span>
+<span class="fc" id="L1316">            besuController.getProtocolSchedule(),</span>
+<span class="fc" id="L1317">            apiConfiguration.getGasCap()));</span>
+
+<span class="fc" id="L1319">    besuPluginContext.addService(</span>
+        BesuEvents.class,
+        new BesuEventsImpl(
+<span class="fc" id="L1322">            besuController.getProtocolContext().getBlockchain(),</span>
+<span class="fc" id="L1323">            besuController.getProtocolManager().getBlockBroadcaster(),</span>
+<span class="fc" id="L1324">            besuController.getTransactionPool(),</span>
+<span class="fc" id="L1325">            besuController.getSyncState()));</span>
+<span class="fc" id="L1326">    besuPluginContext.addService(MetricsSystem.class, getMetricsSystem());</span>
+
+<span class="fc" id="L1328">    besuPluginContext.addService(</span>
+        TraceService.class,
+        new TraceServiceImpl(
+            new BlockchainQueries(
+<span class="fc" id="L1332">                besuController.getProtocolContext().getBlockchain(),</span>
+<span class="fc" id="L1333">                besuController.getProtocolContext().getWorldStateArchive()),</span>
+<span class="fc" id="L1334">            besuController.getProtocolSchedule()));</span>
+
+<span class="fc" id="L1336">    besuController.getAdditionalPluginServices().appendPluginServices(besuPluginContext);</span>
+<span class="fc" id="L1337">    besuPluginContext.startPlugins();</span>
+<span class="fc" id="L1338">  }</span>
+
+  private void validatePluginOptions() {
+    // plugins do not 'wire up' until start has been called
+    // consequently you can only do some configuration checks
+    // after start has been called on plugins
+
+<span class="fc bfc" id="L1345" title="All 2 branches covered.">    if (Boolean.TRUE.equals(privacyOptionGroup.isPrivacyEnabled)) {</span>
+
+<span class="pc bpc" id="L1347" title="1 of 4 branches missed.">      if (privacyOptionGroup.privateMarkerTransactionSigningKeyPath != null</span>
+          &amp;&amp; privacyPluginService != null
+<span class="pc bpc" id="L1349" title="1 of 2 branches missed.">          &amp;&amp; privacyPluginService.getPrivateMarkerTransactionFactory() != null) {</span>
+<span class="fc" id="L1350">        throw new ParameterException(</span>
+            commandLine,
+            &quot;--privacy-marker-transaction-signing-key-file can not be used in conjunction with a plugin that specifies a PrivateMarkerTransactionFactory&quot;);
+      }
+
+<span class="pc bpc" id="L1355" title="2 of 6 branches missed.">      if (Wei.ZERO.compareTo(getMiningParameters().getMinTransactionGasPrice()) &lt; 0</span>
+          &amp;&amp; (privacyOptionGroup.privateMarkerTransactionSigningKeyPath == null
+              &amp;&amp; (privacyPluginService == null
+<span class="fc bfc" id="L1358" title="All 2 branches covered.">                  || privacyPluginService.getPrivateMarkerTransactionFactory() == null))) {</span>
+        // if gas is required, cannot use random keys to sign private tx
+        // ie --privacy-marker-transaction-signing-key-file must be set
+<span class="fc" id="L1361">        throw new ParameterException(</span>
+            commandLine,
+            &quot;Not a free gas network. --privacy-marker-transaction-signing-key-file must be specified and must be a funded account. Private transactions cannot be signed by random (non-funded) accounts in paid gas networks&quot;);
+      }
+
+<span class="pc bpc" id="L1366" title="1 of 4 branches missed.">      if (unstablePrivacyPluginOptions.isPrivacyPluginEnabled()</span>
+          &amp;&amp; privacyPluginService != null
+<span class="pc bpc" id="L1368" title="1 of 2 branches missed.">          &amp;&amp; privacyPluginService.getPayloadProvider() == null) {</span>
+<span class="fc" id="L1369">        throw new ParameterException(</span>
+            commandLine,
+            &quot;No Payload Provider has been provided. You must register one when enabling privacy plugin!&quot;);
+      }
+
+<span class="pc bpc" id="L1374" title="1 of 2 branches missed.">      if (unstablePrivacyPluginOptions.isPrivacyPluginEnabled()</span>
+<span class="nc bnc" id="L1375" title="All 2 branches missed.">          &amp;&amp; privacyOptionGroup.isFlexiblePrivacyGroupsEnabled) {</span>
+<span class="nc" id="L1376">        throw new ParameterException(</span>
+            commandLine, &quot;Privacy Plugin can not be used with flexible privacy groups&quot;);
+      }
+    }
+<span class="fc" id="L1380">  }</span>
+
+  private void setReleaseMetrics() {
+<span class="fc" id="L1383">    metricsSystem</span>
+<span class="fc" id="L1384">        .get()</span>
+<span class="fc" id="L1385">        .createLabelledGauge(</span>
+            StandardMetricCategory.PROCESS, &quot;release&quot;, &quot;Release information&quot;, &quot;version&quot;)
+<span class="pc" id="L1387">        .labels(() -&gt; 1, BesuInfo.version());</span>
+<span class="fc" id="L1388">  }</span>
+
+  /**
+   * Configure logging framework for Besu
+   *
+   * @param announce sets to true to print the logging level on standard output
+   */
+  public void configureLogging(final boolean announce) {
+    // To change the configuration if color was enabled/disabled
+<span class="fc" id="L1397">    LogConfigurator.reconfigure();</span>
+    // set log level per CLI flags
+<span class="fc" id="L1399">    final String logLevel = loggingLevelOption.getLogLevel();</span>
+<span class="fc bfc" id="L1400" title="All 2 branches covered.">    if (logLevel != null) {</span>
+<span class="pc bpc" id="L1401" title="1 of 2 branches missed.">      if (announce) {</span>
+<span class="fc" id="L1402">        System.out.println(&quot;Setting logging level to &quot; + logLevel);</span>
+      }
+<span class="fc" id="L1404">      LogConfigurator.setLevel(&quot;&quot;, logLevel);</span>
+    }
+<span class="fc" id="L1406">  }</span>
+
+  /**
+   * Logging in Color enabled or not.
+   *
+   * @return Optional true or false representing logging color is enabled. Empty if not set.
+   */
+  public static Optional&lt;Boolean&gt; getColorEnabled() {
+<span class="fc" id="L1414">    return Optional.ofNullable(colorEnabled);</span>
+  }
+
+  private void configureNativeLibs() {
+<span class="fc bfc" id="L1418" title="All 2 branches covered.">    if (unstableNativeLibraryOptions.getNativeAltbn128()</span>
+<span class="fc bfc" id="L1419" title="All 2 branches covered.">        &amp;&amp; AbstractAltBnPrecompiledContract.isNative()) {</span>
+<span class="fc" id="L1420">      logger.info(&quot;Using the native implementation of alt bn128&quot;);</span>
+    } else {
+<span class="fc" id="L1422">      AbstractAltBnPrecompiledContract.disableNative();</span>
+<span class="fc" id="L1423">      logger.info(&quot;Using the Java implementation of alt bn128&quot;);</span>
+    }
+
+<span class="pc bpc" id="L1426" title="1 of 2 branches missed.">    if (unstableNativeLibraryOptions.getNativeModExp()</span>
+<span class="pc bpc" id="L1427" title="1 of 2 branches missed.">        &amp;&amp; BigIntegerModularExponentiationPrecompiledContract.maybeEnableNative()) {</span>
+<span class="fc" id="L1428">      logger.info(&quot;Using the native implementation of modexp&quot;);</span>
+    } else {
+<span class="nc" id="L1430">      BigIntegerModularExponentiationPrecompiledContract.disableNative();</span>
+<span class="nc" id="L1431">      logger.info(&quot;Using the Java implementation of modexp&quot;);</span>
+    }
+
+<span class="fc bfc" id="L1434" title="All 2 branches covered.">    if (unstableNativeLibraryOptions.getNativeSecp()</span>
+<span class="pc bpc" id="L1435" title="1 of 2 branches missed.">        &amp;&amp; SignatureAlgorithmFactory.getInstance().isNative()) {</span>
+<span class="fc" id="L1436">      logger.info(&quot;Using the native implementation of the signature algorithm&quot;);</span>
+    } else {
+<span class="fc" id="L1438">      SignatureAlgorithmFactory.getInstance().disableNative();</span>
+<span class="fc" id="L1439">      logger.info(&quot;Using the Java implementation of the signature algorithm&quot;);</span>
+    }
+
+<span class="pc bpc" id="L1442" title="1 of 2 branches missed.">    if (unstableNativeLibraryOptions.getNativeBlake2bf()</span>
+<span class="pc bpc" id="L1443" title="1 of 2 branches missed.">        &amp;&amp; Blake2bfMessageDigest.Blake2bfDigest.isNative()) {</span>
+<span class="nc" id="L1444">      logger.info(&quot;Using the native implementation of the blake2bf algorithm&quot;);</span>
+    } else {
+<span class="fc" id="L1446">      Blake2bfMessageDigest.Blake2bfDigest.disableNative();</span>
+<span class="fc" id="L1447">      logger.info(&quot;Using the Java implementation of the blake2bf algorithm&quot;);</span>
+    }
+
+<span class="fc bfc" id="L1450" title="All 2 branches covered.">    if (getActualGenesisConfigOptions().getCancunTime().isPresent()</span>
+<span class="pc bpc" id="L1451" title="1 of 2 branches missed.">        || getActualGenesisConfigOptions().getPragueTime().isPresent()) {</span>
+<span class="fc bfc" id="L1452" title="All 2 branches covered.">      if (kzgTrustedSetupFile != null) {</span>
+<span class="fc" id="L1453">        KZGPointEvalPrecompiledContract.init(kzgTrustedSetupFile);</span>
+      } else {
+<span class="fc" id="L1455">        KZGPointEvalPrecompiledContract.init();</span>
+      }
+<span class="fc bfc" id="L1457" title="All 2 branches covered.">    } else if (kzgTrustedSetupFile != null) {</span>
+<span class="fc" id="L1458">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;--kzg-trusted-setup can only be specified on networks with data blobs enabled&quot;);
+    }
+<span class="fc" id="L1462">  }</span>
+
+  private void validateOptions() {
+<span class="fc" id="L1465">    validateRequiredOptions();</span>
+<span class="fc" id="L1466">    issueOptionWarnings();</span>
+<span class="fc" id="L1467">    validateP2PInterface(p2PDiscoveryOptionGroup.p2pInterface);</span>
+<span class="fc" id="L1468">    validateMiningParams();</span>
+<span class="fc" id="L1469">    validateNatParams();</span>
+<span class="fc" id="L1470">    validateNetStatsParams();</span>
+<span class="fc" id="L1471">    validateDnsOptionsParams();</span>
+<span class="fc" id="L1472">    ensureValidPeerBoundParams();</span>
+<span class="fc" id="L1473">    validateRpcOptionsParams();</span>
+<span class="fc" id="L1474">    validateRpcWsOptions();</span>
+<span class="fc" id="L1475">    validateChainDataPruningParams();</span>
+<span class="fc" id="L1476">    validatePostMergeCheckpointBlockRequirements();</span>
+<span class="fc" id="L1477">    validateTransactionPoolOptions();</span>
+<span class="fc" id="L1478">    validateDataStorageOptions();</span>
+<span class="fc" id="L1479">    validateGraphQlOptions();</span>
+<span class="fc" id="L1480">    validateApiOptions();</span>
+<span class="fc" id="L1481">    p2pTLSConfigOptions.checkP2PTLSOptionsDependencies(logger, commandLine);</span>
+<span class="fc" id="L1482">    pkiBlockCreationOptions.checkPkiBlockCreationOptionsDependencies(logger, commandLine);</span>
+<span class="fc" id="L1483">  }</span>
+
+  private void validateApiOptions() {
+<span class="fc" id="L1486">    apiConfigurationOptions.validate(commandLine, logger);</span>
+<span class="fc" id="L1487">  }</span>
+
+  private void validateTransactionPoolOptions() {
+<span class="fc" id="L1490">    transactionPoolOptions.validate(commandLine, getActualGenesisConfigOptions());</span>
+<span class="fc" id="L1491">  }</span>
+
+  private void validateDataStorageOptions() {
+<span class="fc" id="L1494">    dataStorageOptions.validate(commandLine);</span>
+<span class="fc" id="L1495">  }</span>
+
+  private void validateRequiredOptions() {
+<span class="fc" id="L1498">    commandLine</span>
+<span class="fc" id="L1499">        .getCommandSpec()</span>
+<span class="fc" id="L1500">        .options()</span>
+<span class="fc" id="L1501">        .forEach(</span>
+            option -&gt; {
+<span class="pc bpc" id="L1503" title="1 of 4 branches missed.">              if (option.required() &amp;&amp; option.stringValues().isEmpty()) {</span>
+<span class="nc" id="L1504">                throw new ParameterException(</span>
+<span class="nc" id="L1505">                    this.commandLine, &quot;Missing required option: &quot; + option.longestName());</span>
+              }
+<span class="fc" id="L1507">            });</span>
+<span class="fc" id="L1508">  }</span>
+
+  private void validateMiningParams() {
+<span class="fc" id="L1511">    miningOptions.validate(commandLine, getActualGenesisConfigOptions(), isMergeEnabled(), logger);</span>
+<span class="fc" id="L1512">  }</span>
+
+  /**
+   * Validates P2P interface IP address/host name. Visible for testing.
+   *
+   * @param p2pInterface IP Address/host name
+   */
+  protected void validateP2PInterface(final String p2pInterface) {
+<span class="nc" id="L1520">    final String failMessage = &quot;The provided --p2p-interface is not available: &quot; + p2pInterface;</span>
+    try {
+<span class="nc bnc" id="L1522" title="All 2 branches missed.">      if (!NetworkUtility.isNetworkInterfaceAvailable(p2pInterface)) {</span>
+<span class="nc" id="L1523">        throw new ParameterException(commandLine, failMessage);</span>
+      }
+<span class="nc" id="L1525">    } catch (final UnknownHostException | SocketException e) {</span>
+<span class="nc" id="L1526">      throw new ParameterException(commandLine, failMessage, e);</span>
+<span class="nc" id="L1527">    }</span>
+<span class="nc" id="L1528">  }</span>
+
+  private void validateGraphQlOptions() {
+<span class="fc" id="L1531">    graphQlOptions.validate(logger, commandLine);</span>
+<span class="fc" id="L1532">  }</span>
+
+  @SuppressWarnings(&quot;ConstantConditions&quot;)
+  private void validateNatParams() {
+<span class="fc bfc" id="L1536" title="All 4 branches covered.">    if (!(natMethod.equals(NatMethod.AUTO) || natMethod.equals(NatMethod.KUBERNETES))</span>
+        &amp;&amp; !unstableNatOptions
+<span class="fc" id="L1538">            .getNatManagerServiceName()</span>
+<span class="fc bfc" id="L1539" title="All 2 branches covered.">            .equals(DEFAULT_BESU_SERVICE_NAME_FILTER)) {</span>
+<span class="fc" id="L1540">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;The `--Xnat-kube-service-name` parameter is only used in kubernetes mode. Either remove --Xnat-kube-service-name&quot;
+              + &quot; or select the KUBERNETES mode (via --nat--method=KUBERNETES)&quot;);
+    }
+<span class="fc bfc" id="L1545" title="All 4 branches covered.">    if (natMethod.equals(NatMethod.AUTO) &amp;&amp; !unstableNatOptions.getNatMethodFallbackEnabled()) {</span>
+<span class="fc" id="L1546">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;The `--Xnat-method-fallback-enabled` parameter cannot be used in AUTO mode. Either remove --Xnat-method-fallback-enabled&quot;
+              + &quot; or select another mode (via --nat--method=XXXX)&quot;);
+    }
+<span class="fc" id="L1551">  }</span>
+
+  private void validateNetStatsParams() {
+<span class="fc bfc" id="L1554" title="All 2 branches covered.">    if (Strings.isNullOrEmpty(ethstatsOptions.getEthstatsUrl())</span>
+<span class="fc bfc" id="L1555" title="All 2 branches covered.">        &amp;&amp; !ethstatsOptions.getEthstatsContact().isEmpty()) {</span>
+<span class="fc" id="L1556">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;The `--ethstats-contact` requires ethstats server URL to be provided. Either remove --ethstats-contact&quot;
+              + &quot; or provide a URL (via --ethstats=nodename:secret@host:port)&quot;);
+    }
+<span class="fc" id="L1561">  }</span>
+
+  private void validateDnsOptionsParams() {
+<span class="fc bfc" id="L1564" title="All 4 branches covered.">    if (!unstableDnsOptions.getDnsEnabled() &amp;&amp; unstableDnsOptions.getDnsUpdateEnabled()) {</span>
+<span class="fc" id="L1565">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;The `--Xdns-update-enabled` requires dns to be enabled. Either remove --Xdns-update-enabled&quot;
+              + &quot; or specify dns is enabled (--Xdns-enabled)&quot;);
+    }
+<span class="fc" id="L1570">  }</span>
+
+  private void ensureValidPeerBoundParams() {
+<span class="fc" id="L1573">    maxPeers = p2PDiscoveryOptionGroup.maxPeers;</span>
+<span class="fc" id="L1574">    final Boolean isLimitRemoteWireConnectionsEnabled =</span>
+        p2PDiscoveryOptionGroup.isLimitRemoteWireConnectionsEnabled;
+<span class="fc bfc" id="L1576" title="All 2 branches covered.">    if (isOptionSet(commandLine, PEER_LOWER_BOUND_FLAG)) {</span>
+<span class="fc" id="L1577">      logger.warn(PEER_LOWER_BOUND_FLAG + &quot; is deprecated and will be removed soon.&quot;);</span>
+    }
+<span class="fc bfc" id="L1579" title="All 2 branches covered.">    if (isLimitRemoteWireConnectionsEnabled) {</span>
+<span class="fc" id="L1580">      final float fraction =</span>
+<span class="fc" id="L1581">          Fraction.fromPercentage(p2PDiscoveryOptionGroup.maxRemoteConnectionsPercentage)</span>
+<span class="fc" id="L1582">              .getValue();</span>
+<span class="pc bpc" id="L1583" title="2 of 4 branches missed.">      checkState(</span>
+          fraction &gt;= 0.0 &amp;&amp; fraction &lt;= 1.0,
+          &quot;Fraction of remote connections allowed must be between 0.0 and 1.0 (inclusive).&quot;);
+<span class="fc" id="L1586">      maxRemoteInitiatedPeers = (int) Math.floor(fraction * maxPeers);</span>
+<span class="fc" id="L1587">    } else {</span>
+<span class="fc" id="L1588">      maxRemoteInitiatedPeers = maxPeers;</span>
+    }
+<span class="fc" id="L1590">  }</span>
+
+  private void validateRpcOptionsParams() {
+<span class="fc" id="L1593">    final Predicate&lt;String&gt; configuredApis =</span>
+        apiName -&gt;
+<span class="fc" id="L1595">            Arrays.stream(RpcApis.values())</span>
+<span class="fc bfc" id="L1596" title="All 2 branches covered.">                    .anyMatch(builtInApi -&gt; apiName.equals(builtInApi.name()))</span>
+<span class="fc bfc" id="L1597" title="All 2 branches covered.">                || rpcEndpointServiceImpl.hasNamespace(apiName);</span>
+<span class="fc" id="L1598">    jsonRpcHttpOptions.validate(logger, commandLine, configuredApis);</span>
+<span class="fc" id="L1599">  }</span>
+
+  private void validateRpcWsOptions() {
+<span class="fc" id="L1602">    final Predicate&lt;String&gt; configuredApis =</span>
+        apiName -&gt;
+<span class="fc" id="L1604">            Arrays.stream(RpcApis.values())</span>
+<span class="fc bfc" id="L1605" title="All 2 branches covered.">                    .anyMatch(builtInApi -&gt; apiName.equals(builtInApi.name()))</span>
+<span class="pc bpc" id="L1606" title="1 of 2 branches missed.">                || rpcEndpointServiceImpl.hasNamespace(apiName);</span>
+<span class="fc" id="L1607">    rpcWebsocketOptions.validate(logger, commandLine, configuredApis);</span>
+<span class="fc" id="L1608">  }</span>
+
+  private void validateChainDataPruningParams() {
+<span class="pc bpc" id="L1611" title="1 of 2 branches missed.">    if (unstableChainPruningOptions.getChainDataPruningEnabled()</span>
+<span class="nc bnc" id="L1612" title="All 2 branches missed.">        &amp;&amp; unstableChainPruningOptions.getChainDataPruningBlocksRetained()</span>
+            &lt; ChainPruningOptions.DEFAULT_CHAIN_DATA_PRUNING_MIN_BLOCKS_RETAINED) {
+<span class="nc" id="L1614">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;--Xchain-pruning-blocks-retained must be &gt;= &quot;
+              + ChainPruningOptions.DEFAULT_CHAIN_DATA_PRUNING_MIN_BLOCKS_RETAINED);
+    }
+<span class="fc" id="L1619">  }</span>
+
+  private GenesisConfigOptions readGenesisConfigOptions() {
+
+    try {
+<span class="fc" id="L1624">      final GenesisConfigFile genesisConfigFile = GenesisConfigFile.fromConfig(genesisConfig());</span>
+<span class="fc" id="L1625">      genesisConfigOptions = genesisConfigFile.getConfigOptions(genesisConfigOverrides);</span>
+<span class="fc" id="L1626">    } catch (final Exception e) {</span>
+<span class="fc" id="L1627">      throw new ParameterException(</span>
+<span class="fc" id="L1628">          this.commandLine, &quot;Unable to load genesis file. &quot; + e.getCause());</span>
+<span class="fc" id="L1629">    }</span>
+    // snap and checkpoint can't be used with BFT but can for clique
+<span class="pc bpc" id="L1631" title="1 of 2 branches missed.">    if (genesisConfigOptions.isIbftLegacy()</span>
+<span class="fc bfc" id="L1632" title="All 2 branches covered.">        || genesisConfigOptions.isIbft2()</span>
+<span class="fc bfc" id="L1633" title="All 2 branches covered.">        || genesisConfigOptions.isQbft()) {</span>
+<span class="fc" id="L1634">      final String errorSuffix = &quot;can't be used with BFT networks&quot;;</span>
+<span class="pc bpc" id="L1635" title="2 of 4 branches missed.">      if (SyncMode.CHECKPOINT.equals(syncMode) || SyncMode.X_CHECKPOINT.equals(syncMode)) {</span>
+<span class="nc" id="L1636">        throw new ParameterException(</span>
+<span class="nc" id="L1637">            commandLine, String.format(&quot;%s %s&quot;, &quot;Checkpoint sync&quot;, errorSuffix));</span>
+      }
+<span class="pc bpc" id="L1639" title="2 of 4 branches missed.">      if (syncMode == SyncMode.SNAP || syncMode == SyncMode.X_SNAP) {</span>
+<span class="nc" id="L1640">        throw new ParameterException(commandLine, String.format(&quot;%s %s&quot;, &quot;Snap sync&quot;, errorSuffix));</span>
+      }
+    }
+<span class="fc" id="L1643">    return genesisConfigOptions;</span>
+  }
+
+  private void issueOptionWarnings() {
+
+    // Check that P2P options are able to work
+<span class="fc" id="L1649">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--p2p-enabled&quot;,
+<span class="fc bfc" id="L1653" title="All 2 branches covered.">        !p2PDiscoveryOptionGroup.p2pEnabled,</span>
+<span class="fc" id="L1654">        asList(</span>
+            &quot;--bootnodes&quot;,
+            &quot;--discovery-enabled&quot;,
+            &quot;--max-peers&quot;,
+            &quot;--banned-node-id&quot;,
+            &quot;--banned-node-ids&quot;,
+            &quot;--p2p-host&quot;,
+            &quot;--p2p-interface&quot;,
+            &quot;--p2p-port&quot;,
+            &quot;--remote-connections-max-percentage&quot;));
+
+<span class="fc bfc" id="L1665" title="All 2 branches covered.">    if (SyncMode.isFullSync(getDefaultSyncModeIfNotSet())</span>
+<span class="fc bfc" id="L1666" title="All 2 branches covered.">        &amp;&amp; isOptionSet(commandLine, &quot;--sync-min-peers&quot;)) {</span>
+<span class="fc" id="L1667">      logger.warn(&quot;--sync-min-peers is ignored in FULL sync-mode&quot;);</span>
+    }
+
+<span class="fc" id="L1670">    CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+        commandLine,
+        &quot;--Xcheckpoint-post-merge-enabled can only be used with CHECKPOINT sync-mode&quot;,
+<span class="fc" id="L1673">        SyncMode.isCheckpointSync(getDefaultSyncModeIfNotSet()),</span>
+<span class="fc" id="L1674">        singletonList(&quot;--Xcheckpoint-post-merge-enabled&quot;));</span>
+
+<span class="fc" id="L1676">    CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+        commandLine,
+        &quot;--Xsnapsync-synchronizer-flat option can only be used when -Xsnapsync-synchronizer-flat-db-healing-enabled is true&quot;,
+<span class="fc" id="L1679">        unstableSynchronizerOptions.isSnapsyncFlatDbHealingEnabled(),</span>
+<span class="fc" id="L1680">        asList(</span>
+            &quot;--Xsnapsync-synchronizer-flat-account-healed-count-per-request&quot;,
+            &quot;--Xsnapsync-synchronizer-flat-slot-healed-count-per-request&quot;));
+
+<span class="pc bpc" id="L1684" title="1 of 2 branches missed.">    if (!securityModuleName.equals(DEFAULT_SECURITY_MODULE)</span>
+<span class="nc bnc" id="L1685" title="All 2 branches missed.">        &amp;&amp; nodePrivateKeyFileOption.getNodePrivateKeyFile() != null) {</span>
+<span class="nc" id="L1686">      logger.warn(</span>
+          DEPENDENCY_WARNING_MSG,
+          &quot;--node-private-key-file&quot;,
+          &quot;--security-module=&quot; + DEFAULT_SECURITY_MODULE);
+    }
+
+<span class="fc bfc" id="L1692" title="All 2 branches covered.">    if (isPruningEnabled()) {</span>
+<span class="fc" id="L1693">      if (dataStorageOptions</span>
+<span class="fc" id="L1694">          .toDomainObject()</span>
+<span class="fc" id="L1695">          .getDataStorageFormat()</span>
+<span class="fc bfc" id="L1696" title="All 2 branches covered.">          .equals(DataStorageFormat.BONSAI)) {</span>
+<span class="fc" id="L1697">        logger.warn(&quot;Forest pruning is ignored with Bonsai data storage format.&quot;);</span>
+      } else {
+<span class="fc" id="L1699">        logger.warn(</span>
+            &quot;Forest pruning is deprecated and will be removed soon. To save disk space consider switching to Bonsai data storage format.&quot;);
+      }
+    }
+<span class="fc" id="L1703">  }</span>
+
+  private void configure() throws Exception {
+<span class="fc" id="L1706">    checkPortClash();</span>
+<span class="fc" id="L1707">    checkIfRequiredPortsAreAvailable();</span>
+<span class="fc" id="L1708">    syncMode = getDefaultSyncModeIfNotSet();</span>
+<span class="fc" id="L1709">    versionCompatibilityProtection = getDefaultVersionCompatibilityProtectionIfNotSet();</span>
+
+<span class="fc" id="L1711">    ethNetworkConfig = updateNetworkConfig(network);</span>
+
+<span class="fc" id="L1713">    jsonRpcConfiguration =</span>
+<span class="fc" id="L1714">        jsonRpcHttpOptions.jsonRpcConfiguration(</span>
+            hostsAllowlist,
+<span class="fc" id="L1716">            p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress(),</span>
+<span class="fc" id="L1717">            unstableRPCOptions.getHttpTimeoutSec());</span>
+<span class="fc bfc" id="L1718" title="All 2 branches covered.">    if (isEngineApiEnabled()) {</span>
+<span class="fc" id="L1719">      engineJsonRpcConfiguration =</span>
+<span class="fc" id="L1720">          createEngineJsonRpcConfiguration(</span>
+              engineRPCOptionGroup.engineRpcPort, engineRPCOptionGroup.engineHostsAllowlist);
+    }
+<span class="fc" id="L1723">    p2pTLSConfiguration = p2pTLSConfigOptions.p2pTLSConfiguration(commandLine);</span>
+<span class="fc" id="L1724">    graphQLConfiguration =</span>
+<span class="fc" id="L1725">        graphQlOptions.graphQLConfiguration(</span>
+            hostsAllowlist,
+<span class="fc" id="L1727">            p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress(),</span>
+<span class="fc" id="L1728">            unstableRPCOptions.getHttpTimeoutSec());</span>
+<span class="fc" id="L1729">    webSocketConfiguration =</span>
+<span class="fc" id="L1730">        rpcWebsocketOptions.webSocketConfiguration(</span>
+            hostsAllowlist,
+<span class="fc" id="L1732">            p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress(),</span>
+<span class="fc" id="L1733">            unstableRPCOptions.getWsTimeoutSec());</span>
+<span class="fc" id="L1734">    jsonRpcIpcConfiguration =</span>
+<span class="fc" id="L1735">        jsonRpcIpcConfiguration(</span>
+<span class="fc" id="L1736">            unstableIpcOptions.isEnabled(),</span>
+<span class="fc" id="L1737">            unstableIpcOptions.getIpcPath(),</span>
+<span class="fc" id="L1738">            unstableIpcOptions.getRpcIpcApis());</span>
+<span class="fc" id="L1739">    apiConfiguration = apiConfigurationOptions.apiConfiguration(getMiningParameters());</span>
+<span class="fc" id="L1740">    dataStorageConfiguration = getDataStorageConfiguration();</span>
+    // hostsWhitelist is a hidden option. If it is specified, add the list to hostAllowlist
+<span class="fc bfc" id="L1742" title="All 2 branches covered.">    if (!hostsWhitelist.isEmpty()) {</span>
+      // if allowlist == default values, remove the default values
+<span class="fc bfc" id="L1744" title="All 2 branches covered.">      if (hostsAllowlist.size() == 2</span>
+<span class="pc bpc" id="L1745" title="1 of 2 branches missed.">          &amp;&amp; hostsAllowlist.containsAll(List.of(&quot;localhost&quot;, &quot;127.0.0.1&quot;))) {</span>
+<span class="fc" id="L1746">        hostsAllowlist.removeAll(List.of(&quot;localhost&quot;, &quot;127.0.0.1&quot;));</span>
+      }
+<span class="fc" id="L1748">      hostsAllowlist.addAll(hostsWhitelist);</span>
+    }
+
+<span class="fc" id="L1751">    permissioningConfiguration = permissioningConfiguration();</span>
+<span class="fc" id="L1752">    staticNodes = loadStaticNodes();</span>
+
+<span class="fc" id="L1754">    final List&lt;EnodeURL&gt; enodeURIs = ethNetworkConfig.getBootNodes();</span>
+<span class="fc" id="L1755">    permissioningConfiguration</span>
+<span class="fc" id="L1756">        .flatMap(PermissioningConfiguration::getLocalConfig)</span>
+<span class="fc" id="L1757">        .ifPresent(p -&gt; ensureAllNodesAreInAllowlist(enodeURIs, p));</span>
+
+<span class="fc" id="L1759">    permissioningConfiguration</span>
+<span class="fc" id="L1760">        .flatMap(PermissioningConfiguration::getLocalConfig)</span>
+<span class="fc" id="L1761">        .ifPresent(p -&gt; ensureAllNodesAreInAllowlist(staticNodes, p));</span>
+<span class="fc" id="L1762">    metricsConfiguration = metricsConfiguration();</span>
+
+<span class="fc" id="L1764">    instantiateSignatureAlgorithmFactory();</span>
+
+<span class="fc" id="L1766">    logger.info(generateConfigurationOverview());</span>
+<span class="fc" id="L1767">    logger.info(&quot;Security Module: {}&quot;, securityModuleName);</span>
+<span class="fc" id="L1768">  }</span>
+
+  private Optional&lt;PermissioningConfiguration&gt; permissioningConfiguration() throws Exception {
+<span class="fc" id="L1771">    return permissionsOptions.permissioningConfiguration(</span>
+        jsonRpcHttpOptions,
+        rpcWebsocketOptions,
+<span class="fc" id="L1774">        getEnodeDnsConfiguration(),</span>
+<span class="fc" id="L1775">        dataDir(),</span>
+        logger,
+        commandLine);
+  }
+
+  private JsonRpcIpcConfiguration jsonRpcIpcConfiguration(
+      final Boolean enabled, final Path ipcPath, final List&lt;String&gt; rpcIpcApis) {
+    final Path actualPath;
+<span class="pc bpc" id="L1783" title="1 of 2 branches missed.">    if (ipcPath == null) {</span>
+<span class="fc" id="L1784">      actualPath = IpcOptions.getDefaultPath(dataDir());</span>
+    } else {
+<span class="nc" id="L1786">      actualPath = ipcPath;</span>
+    }
+<span class="fc" id="L1788">    return new JsonRpcIpcConfiguration(</span>
+<span class="pc bpc" id="L1789" title="2 of 4 branches missed.">        vertx.isNativeTransportEnabled() &amp;&amp; enabled, actualPath, rpcIpcApis);</span>
+  }
+
+  private void ensureAllNodesAreInAllowlist(
+      final Collection&lt;EnodeURL&gt; enodeAddresses,
+      final LocalPermissioningConfiguration permissioningConfiguration) {
+    try {
+<span class="fc" id="L1796">      PermissioningConfigurationValidator.areAllNodesInAllowlist(</span>
+          enodeAddresses, permissioningConfiguration);
+<span class="fc" id="L1798">    } catch (final Exception e) {</span>
+<span class="fc" id="L1799">      throw new ParameterException(this.commandLine, e.getMessage());</span>
+<span class="fc" id="L1800">    }</span>
+<span class="fc" id="L1801">  }</span>
+
+  /**
+   * Builds BesuController
+   *
+   * @return instance of BesuController
+   */
+  public BesuController buildController() {
+    try {
+<span class="pc bpc" id="L1810" title="1 of 2 branches missed.">      return this.besuComponent == null</span>
+<span class="nc" id="L1811">          ? getControllerBuilder().build()</span>
+<span class="fc" id="L1812">          : getControllerBuilder().besuComponent(this.besuComponent).build();</span>
+<span class="fc" id="L1813">    } catch (final Exception e) {</span>
+<span class="fc" id="L1814">      throw new ExecutionException(this.commandLine, e.getMessage(), e);</span>
+    }
+  }
+
+  /**
+   * Builds BesuControllerBuilder which can be used to build BesuController
+   *
+   * @return instance of BesuControllerBuilder
+   */
+  public BesuControllerBuilder getControllerBuilder() {
+<span class="fc" id="L1824">    pluginCommonConfiguration.init(</span>
+<span class="fc" id="L1825">        dataDir(),</span>
+<span class="fc" id="L1826">        dataDir().resolve(DATABASE_PATH),</span>
+<span class="fc" id="L1827">        getDataStorageConfiguration(),</span>
+<span class="fc" id="L1828">        getMiningParameters());</span>
+<span class="fc" id="L1829">    final KeyValueStorageProvider storageProvider = keyValueStorageProvider(keyValueStorageName);</span>
+<span class="fc" id="L1830">    return controllerBuilderFactory</span>
+<span class="fc" id="L1831">        .fromEthNetworkConfig(</span>
+<span class="fc" id="L1832">            updateNetworkConfig(network), genesisConfigOverrides, getDefaultSyncModeIfNotSet())</span>
+<span class="fc" id="L1833">        .synchronizerConfiguration(buildSyncConfig())</span>
+<span class="fc" id="L1834">        .ethProtocolConfiguration(unstableEthProtocolOptions.toDomainObject())</span>
+<span class="fc" id="L1835">        .networkConfiguration(unstableNetworkingOptions.toDomainObject())</span>
+<span class="fc" id="L1836">        .dataDirectory(dataDir())</span>
+<span class="fc" id="L1837">        .dataStorageConfiguration(getDataStorageConfiguration())</span>
+<span class="fc" id="L1838">        .miningParameters(getMiningParameters())</span>
+<span class="fc" id="L1839">        .transactionPoolConfiguration(buildTransactionPoolConfiguration())</span>
+<span class="fc" id="L1840">        .nodeKey(new NodeKey(securityModule()))</span>
+<span class="fc" id="L1841">        .metricsSystem(metricsSystem.get())</span>
+<span class="fc" id="L1842">        .messagePermissioningProviders(permissioningService.getMessagePermissioningProviders())</span>
+<span class="fc" id="L1843">        .privacyParameters(privacyParameters())</span>
+<span class="fc" id="L1844">        .pkiBlockCreationConfiguration(maybePkiBlockCreationConfiguration())</span>
+<span class="fc" id="L1845">        .clock(Clock.systemUTC())</span>
+<span class="fc" id="L1846">        .isRevertReasonEnabled(isRevertReasonEnabled)</span>
+<span class="fc" id="L1847">        .storageProvider(storageProvider)</span>
+<span class="fc" id="L1848">        .isPruningEnabled(isPruningEnabled())</span>
+<span class="fc" id="L1849">        .pruningConfiguration(</span>
+<span class="fc" id="L1850">            new PrunerConfiguration(pruningBlockConfirmations, pruningBlocksRetained))</span>
+<span class="fc" id="L1851">        .genesisConfigOverrides(genesisConfigOverrides)</span>
+<span class="fc" id="L1852">        .gasLimitCalculator(</span>
+<span class="fc bfc" id="L1853" title="All 2 branches covered.">            getMiningParameters().getTargetGasLimit().isPresent()</span>
+<span class="fc" id="L1854">                ? new FrontierTargetingGasLimitCalculator()</span>
+<span class="fc" id="L1855">                : GasLimitCalculator.constant())</span>
+<span class="fc" id="L1856">        .requiredBlocks(requiredBlocks)</span>
+<span class="fc" id="L1857">        .reorgLoggingThreshold(reorgLoggingThreshold)</span>
+<span class="fc" id="L1858">        .evmConfiguration(unstableEvmOptions.toDomainObject())</span>
+<span class="fc" id="L1859">        .maxPeers(p2PDiscoveryOptionGroup.maxPeers)</span>
+<span class="fc" id="L1860">        .maxRemotelyInitiatedPeers(maxRemoteInitiatedPeers)</span>
+<span class="fc" id="L1861">        .randomPeerPriority(p2PDiscoveryOptionGroup.randomPeerPriority)</span>
+<span class="fc" id="L1862">        .chainPruningConfiguration(unstableChainPruningOptions.toDomainObject())</span>
+<span class="fc" id="L1863">        .cacheLastBlocks(numberOfblocksToCache)</span>
+<span class="fc" id="L1864">        .genesisStateHashCacheEnabled(genesisStateHashCacheEnabled);</span>
+  }
+
+  private JsonRpcConfiguration createEngineJsonRpcConfiguration(
+      final Integer engineListenPort, final List&lt;String&gt; allowCallsFrom) {
+<span class="fc" id="L1869">    jsonRpcHttpOptions.checkDependencies(logger, commandLine);</span>
+<span class="fc" id="L1870">    final JsonRpcConfiguration engineConfig =</span>
+<span class="fc" id="L1871">        jsonRpcHttpOptions.jsonRpcConfiguration(</span>
+            allowCallsFrom,
+<span class="fc" id="L1873">            p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress(),</span>
+<span class="fc" id="L1874">            unstableRPCOptions.getWsTimeoutSec());</span>
+<span class="fc" id="L1875">    engineConfig.setPort(engineListenPort);</span>
+<span class="fc" id="L1876">    engineConfig.setRpcApis(Arrays.asList(&quot;ENGINE&quot;, &quot;ETH&quot;));</span>
+<span class="fc" id="L1877">    engineConfig.setEnabled(isEngineApiEnabled());</span>
+<span class="fc bfc" id="L1878" title="All 2 branches covered.">    if (!engineRPCOptionGroup.isEngineAuthDisabled) {</span>
+<span class="fc" id="L1879">      engineConfig.setAuthenticationEnabled(true);</span>
+<span class="fc" id="L1880">      engineConfig.setAuthenticationAlgorithm(JwtAlgorithm.HS256);</span>
+<span class="fc bfc" id="L1881" title="All 2 branches covered.">      if (Objects.nonNull(engineRPCOptionGroup.engineJwtKeyFile)</span>
+<span class="pc bpc" id="L1882" title="1 of 2 branches missed.">          &amp;&amp; java.nio.file.Files.exists(engineRPCOptionGroup.engineJwtKeyFile)) {</span>
+<span class="nc" id="L1883">        engineConfig.setAuthenticationPublicKeyFile(engineRPCOptionGroup.engineJwtKeyFile.toFile());</span>
+      } else {
+<span class="fc" id="L1885">        logger.warn(</span>
+            &quot;Engine API authentication enabled without key file. Expect ephemeral jwt.hex file in datadir&quot;);
+      }
+    }
+<span class="fc" id="L1889">    return engineConfig;</span>
+  }
+
+  private void checkPrivacyTlsOptionsDependencies() {
+<span class="fc" id="L1893">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--privacy-tls-enabled&quot;,
+<span class="fc bfc" id="L1897" title="All 2 branches covered.">        !privacyOptionGroup.isPrivacyTlsEnabled,</span>
+<span class="fc" id="L1898">        asList(</span>
+            &quot;--privacy-tls-keystore-file&quot;,
+            &quot;--privacy-tls-keystore-password-file&quot;,
+            &quot;--privacy-tls-known-enclave-file&quot;));
+<span class="fc" id="L1902">  }</span>
+
+  /**
+   * Metrics Configuration for Besu
+   *
+   * @return instance of MetricsConfiguration.
+   */
+  public MetricsConfiguration metricsConfiguration() {
+<span class="fc bfc" id="L1910" title="All 4 branches covered.">    if (metricsOptionGroup.isMetricsEnabled &amp;&amp; metricsOptionGroup.isMetricsPushEnabled) {</span>
+<span class="fc" id="L1911">      throw new ParameterException(</span>
+          this.commandLine,
+          &quot;--metrics-enabled option and --metrics-push-enabled option can't be used at the same &quot;
+              + &quot;time.  Please refer to CLI reference for more details about this constraint.&quot;);
+    }
+
+<span class="fc" id="L1917">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--metrics-enabled&quot;,
+<span class="fc bfc" id="L1921" title="All 2 branches covered.">        !metricsOptionGroup.isMetricsEnabled,</span>
+<span class="fc" id="L1922">        asList(&quot;--metrics-host&quot;, &quot;--metrics-port&quot;));</span>
+
+<span class="fc" id="L1924">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--metrics-push-enabled&quot;,
+<span class="fc bfc" id="L1928" title="All 2 branches covered.">        !metricsOptionGroup.isMetricsPushEnabled,</span>
+<span class="fc" id="L1929">        asList(</span>
+            &quot;--metrics-push-host&quot;,
+            &quot;--metrics-push-port&quot;,
+            &quot;--metrics-push-interval&quot;,
+            &quot;--metrics-push-prometheus-job&quot;));
+
+<span class="fc" id="L1935">    return unstableMetricsCLIOptions</span>
+<span class="fc" id="L1936">        .toDomainObject()</span>
+<span class="fc" id="L1937">        .enabled(metricsOptionGroup.isMetricsEnabled)</span>
+<span class="fc" id="L1938">        .host(</span>
+<span class="fc bfc" id="L1939" title="All 2 branches covered.">            Strings.isNullOrEmpty(metricsOptionGroup.metricsHost)</span>
+<span class="fc" id="L1940">                ? p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress()</span>
+<span class="fc" id="L1941">                : metricsOptionGroup.metricsHost)</span>
+<span class="fc" id="L1942">        .port(metricsOptionGroup.metricsPort)</span>
+<span class="fc" id="L1943">        .protocol(metricsOptionGroup.metricsProtocol)</span>
+<span class="fc" id="L1944">        .metricCategories(metricsOptionGroup.metricCategories)</span>
+<span class="fc" id="L1945">        .pushEnabled(metricsOptionGroup.isMetricsPushEnabled)</span>
+<span class="fc" id="L1946">        .pushHost(</span>
+<span class="fc bfc" id="L1947" title="All 2 branches covered.">            Strings.isNullOrEmpty(metricsOptionGroup.metricsPushHost)</span>
+<span class="fc" id="L1948">                ? p2PDiscoveryOptionGroup.autoDiscoverDefaultIP().getHostAddress()</span>
+<span class="fc" id="L1949">                : metricsOptionGroup.metricsPushHost)</span>
+<span class="fc" id="L1950">        .pushPort(metricsOptionGroup.metricsPushPort)</span>
+<span class="fc" id="L1951">        .pushInterval(metricsOptionGroup.metricsPushInterval)</span>
+<span class="fc" id="L1952">        .hostsAllowlist(hostsAllowlist)</span>
+<span class="fc" id="L1953">        .prometheusJob(metricsOptionGroup.metricsPrometheusJob)</span>
+<span class="fc" id="L1954">        .build();</span>
+  }
+
+  private PrivacyParameters privacyParameters() {
+
+<span class="fc" id="L1959">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--privacy-enabled&quot;,
+<span class="fc bfc" id="L1963" title="All 2 branches covered.">        !privacyOptionGroup.isPrivacyEnabled,</span>
+<span class="fc" id="L1964">        asList(&quot;--privacy-multi-tenancy-enabled&quot;, &quot;--privacy-tls-enabled&quot;));</span>
+
+<span class="fc" id="L1966">    CommandLineUtils.checkMultiOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--privacy-url and/or --privacy-public-key-file ignored because none of --privacy-enabled was defined.&quot;,
+<span class="fc bfc" id="L1970" title="All 2 branches covered.">        List.of(!privacyOptionGroup.isPrivacyEnabled),</span>
+<span class="fc" id="L1971">        List.of(&quot;--privacy-url&quot;, &quot;--privacy-public-key-file&quot;));</span>
+
+<span class="fc" id="L1973">    checkPrivacyTlsOptionsDependencies();</span>
+
+<span class="fc" id="L1975">    final PrivacyParameters.Builder privacyParametersBuilder = new PrivacyParameters.Builder();</span>
+<span class="fc bfc" id="L1976" title="All 2 branches covered.">    if (Boolean.TRUE.equals(privacyOptionGroup.isPrivacyEnabled)) {</span>
+<span class="fc" id="L1977">      final String errorSuffix = &quot;cannot be enabled with privacy.&quot;;</span>
+<span class="fc bfc" id="L1978" title="All 2 branches covered.">      if (syncMode == SyncMode.FAST) {</span>
+<span class="fc" id="L1979">        throw new ParameterException(commandLine, String.format(&quot;%s %s&quot;, &quot;Fast sync&quot;, errorSuffix));</span>
+      }
+<span class="pc bpc" id="L1981" title="1 of 4 branches missed.">      if (syncMode == SyncMode.SNAP || syncMode == SyncMode.X_SNAP) {</span>
+<span class="fc" id="L1982">        throw new ParameterException(commandLine, String.format(&quot;%s %s&quot;, &quot;Snap sync&quot;, errorSuffix));</span>
+      }
+<span class="pc bpc" id="L1984" title="1 of 4 branches missed.">      if (syncMode == SyncMode.CHECKPOINT || syncMode == SyncMode.X_CHECKPOINT) {</span>
+<span class="fc" id="L1985">        throw new ParameterException(</span>
+<span class="fc" id="L1986">            commandLine, String.format(&quot;%s %s&quot;, &quot;Checkpoint sync&quot;, errorSuffix));</span>
+      }
+<span class="fc bfc" id="L1988" title="All 2 branches covered.">      if (isPruningEnabled()) {</span>
+<span class="fc" id="L1989">        throw new ParameterException(commandLine, String.format(&quot;%s %s&quot;, &quot;Pruning&quot;, errorSuffix));</span>
+      }
+
+<span class="fc bfc" id="L1992" title="All 2 branches covered.">      if (Boolean.TRUE.equals(privacyOptionGroup.isPrivacyMultiTenancyEnabled)</span>
+<span class="fc bfc" id="L1993" title="All 2 branches covered.">          &amp;&amp; Boolean.FALSE.equals(jsonRpcConfiguration.isAuthenticationEnabled())</span>
+<span class="pc bpc" id="L1994" title="1 of 2 branches missed.">          &amp;&amp; Boolean.FALSE.equals(webSocketConfiguration.isAuthenticationEnabled())) {</span>
+<span class="fc" id="L1995">        throw new ParameterException(</span>
+            commandLine,
+            &quot;Privacy multi-tenancy requires either http authentication to be enabled or WebSocket authentication to be enabled&quot;);
+      }
+
+<span class="fc" id="L2000">      privacyParametersBuilder.setEnabled(true);</span>
+<span class="fc" id="L2001">      privacyParametersBuilder.setEnclaveUrl(privacyOptionGroup.privacyUrl);</span>
+<span class="fc" id="L2002">      privacyParametersBuilder.setMultiTenancyEnabled(</span>
+<span class="fc" id="L2003">          privacyOptionGroup.isPrivacyMultiTenancyEnabled);</span>
+<span class="fc" id="L2004">      privacyParametersBuilder.setFlexiblePrivacyGroupsEnabled(</span>
+<span class="fc" id="L2005">          privacyOptionGroup.isFlexiblePrivacyGroupsEnabled);</span>
+<span class="fc" id="L2006">      privacyParametersBuilder.setPrivacyPluginEnabled(</span>
+<span class="fc" id="L2007">          unstablePrivacyPluginOptions.isPrivacyPluginEnabled());</span>
+
+<span class="fc bfc" id="L2009" title="All 2 branches covered.">      final boolean hasPrivacyPublicKey = privacyOptionGroup.privacyPublicKeyFile != null;</span>
+
+<span class="fc bfc" id="L2011" title="All 2 branches covered.">      if (hasPrivacyPublicKey</span>
+<span class="fc bfc" id="L2012" title="All 2 branches covered.">          &amp;&amp; Boolean.TRUE.equals(privacyOptionGroup.isPrivacyMultiTenancyEnabled)) {</span>
+<span class="fc" id="L2013">        throw new ParameterException(</span>
+            commandLine, &quot;Privacy multi-tenancy and privacy public key cannot be used together&quot;);
+      }
+
+<span class="fc bfc" id="L2017" title="All 2 branches covered.">      if (!hasPrivacyPublicKey</span>
+<span class="fc bfc" id="L2018" title="All 2 branches covered.">          &amp;&amp; !privacyOptionGroup.isPrivacyMultiTenancyEnabled</span>
+<span class="fc bfc" id="L2019" title="All 2 branches covered.">          &amp;&amp; !unstablePrivacyPluginOptions.isPrivacyPluginEnabled()) {</span>
+<span class="fc" id="L2020">        throw new ParameterException(</span>
+            commandLine, &quot;Please specify Enclave public key file path to enable privacy&quot;);
+      }
+
+<span class="fc bfc" id="L2024" title="All 2 branches covered.">      if (hasPrivacyPublicKey</span>
+<span class="pc bpc" id="L2025" title="1 of 2 branches missed.">          &amp;&amp; Boolean.FALSE.equals(privacyOptionGroup.isPrivacyMultiTenancyEnabled)) {</span>
+        try {
+<span class="fc" id="L2027">          privacyParametersBuilder.setPrivacyUserIdUsingFile(</span>
+              privacyOptionGroup.privacyPublicKeyFile);
+<span class="fc" id="L2029">        } catch (final IOException e) {</span>
+<span class="fc" id="L2030">          throw new ParameterException(</span>
+<span class="fc" id="L2031">              commandLine, &quot;Problem with privacy-public-key-file: &quot; + e.getMessage(), e);</span>
+<span class="fc" id="L2032">        } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L2033">          throw new ParameterException(</span>
+<span class="fc" id="L2034">              commandLine, &quot;Contents of privacy-public-key-file invalid: &quot; + e.getMessage(), e);</span>
+<span class="fc" id="L2035">        }</span>
+      }
+
+<span class="fc" id="L2038">      privacyParametersBuilder.setPrivateKeyPath(</span>
+          privacyOptionGroup.privateMarkerTransactionSigningKeyPath);
+<span class="fc" id="L2040">      privacyParametersBuilder.setStorageProvider(</span>
+<span class="fc" id="L2041">          privacyKeyStorageProvider(keyValueStorageName + &quot;-privacy&quot;));</span>
+<span class="pc bpc" id="L2042" title="1 of 2 branches missed.">      if (Boolean.TRUE.equals(privacyOptionGroup.isPrivacyTlsEnabled)) {</span>
+<span class="nc" id="L2043">        privacyParametersBuilder.setPrivacyKeyStoreFile(privacyOptionGroup.privacyKeyStoreFile);</span>
+<span class="nc" id="L2044">        privacyParametersBuilder.setPrivacyKeyStorePasswordFile(</span>
+            privacyOptionGroup.privacyKeyStorePasswordFile);
+<span class="nc" id="L2046">        privacyParametersBuilder.setPrivacyTlsKnownEnclaveFile(</span>
+            privacyOptionGroup.privacyTlsKnownEnclaveFile);
+      }
+<span class="fc" id="L2049">      privacyParametersBuilder.setEnclaveFactory(new EnclaveFactory(vertx));</span>
+    }
+
+<span class="fc bfc" id="L2052" title="All 4 branches covered.">    if (Boolean.FALSE.equals(privacyOptionGroup.isPrivacyEnabled) &amp;&amp; anyPrivacyApiEnabled()) {</span>
+<span class="fc" id="L2053">      logger.warn(&quot;Privacy is disabled. Cannot use EEA/PRIV API methods when not using Privacy.&quot;);</span>
+    }
+
+<span class="fc" id="L2056">    privacyParametersBuilder.setPrivacyService(privacyPluginService);</span>
+<span class="fc" id="L2057">    final PrivacyParameters privacyParameters = privacyParametersBuilder.build();</span>
+
+<span class="fc bfc" id="L2059" title="All 2 branches covered.">    if (Boolean.TRUE.equals(privacyOptionGroup.isPrivacyEnabled)) {</span>
+<span class="fc" id="L2060">      preSynchronizationTaskRunner.addTask(</span>
+          new PrivateDatabaseMigrationPreSyncTask(
+<span class="fc" id="L2062">              privacyParameters, privacyOptionGroup.migratePrivateDatabase));</span>
+    }
+
+<span class="fc" id="L2065">    return privacyParameters;</span>
+  }
+
+  private boolean anyPrivacyApiEnabled() {
+<span class="fc bfc" id="L2069" title="All 2 branches covered.">    return jsonRpcHttpOptions.getRpcHttpApis().contains(RpcApis.EEA.name())</span>
+<span class="fc bfc" id="L2070" title="All 2 branches covered.">        || rpcWebsocketOptions.getRpcWsApis().contains(RpcApis.EEA.name())</span>
+<span class="fc bfc" id="L2071" title="All 2 branches covered.">        || jsonRpcHttpOptions.getRpcHttpApis().contains(RpcApis.PRIV.name())</span>
+<span class="fc bfc" id="L2072" title="All 2 branches covered.">        || rpcWebsocketOptions.getRpcWsApis().contains(RpcApis.PRIV.name());</span>
+  }
+
+  private PrivacyKeyValueStorageProvider privacyKeyStorageProvider(final String name) {
+<span class="fc" id="L2076">    return new PrivacyKeyValueStorageProviderBuilder()</span>
+<span class="fc" id="L2077">        .withStorageFactory(privacyKeyValueStorageFactory(name))</span>
+<span class="fc" id="L2078">        .withCommonConfiguration(pluginCommonConfiguration)</span>
+<span class="fc" id="L2079">        .withMetricsSystem(getMetricsSystem())</span>
+<span class="fc" id="L2080">        .build();</span>
+  }
+
+  private PrivacyKeyValueStorageFactory privacyKeyValueStorageFactory(final String name) {
+<span class="fc" id="L2084">    return (PrivacyKeyValueStorageFactory)</span>
+        storageService
+<span class="fc" id="L2086">            .getByName(name)</span>
+<span class="fc" id="L2087">            .orElseThrow(</span>
+<span class="nc" id="L2088">                () -&gt; new StorageException(&quot;No KeyValueStorageFactory found for key: &quot; + name));</span>
+  }
+
+  private KeyValueStorageProvider keyValueStorageProvider(final String name) {
+<span class="fc bfc" id="L2092" title="All 2 branches covered.">    if (this.keyValueStorageProvider == null) {</span>
+<span class="fc" id="L2093">      this.keyValueStorageProvider =</span>
+          new KeyValueStorageProviderBuilder()
+<span class="fc" id="L2095">              .withStorageFactory(</span>
+                  storageService
+<span class="fc" id="L2097">                      .getByName(name)</span>
+<span class="fc" id="L2098">                      .orElseThrow(</span>
+                          () -&gt;
+<span class="nc" id="L2100">                              new StorageException(</span>
+                                  &quot;No KeyValueStorageFactory found for key: &quot; + name)))
+<span class="fc" id="L2102">              .withCommonConfiguration(pluginCommonConfiguration)</span>
+<span class="fc" id="L2103">              .withMetricsSystem(getMetricsSystem())</span>
+<span class="fc" id="L2104">              .build();</span>
+    }
+<span class="fc" id="L2106">    return this.keyValueStorageProvider;</span>
+  }
+
+  /**
+   * Get the storage provider
+   *
+   * @return the storage provider
+   */
+  public StorageProvider getStorageProvider() {
+<span class="nc" id="L2115">    return keyValueStorageProvider(keyValueStorageName);</span>
+  }
+
+  private Optional&lt;PkiBlockCreationConfiguration&gt; maybePkiBlockCreationConfiguration() {
+<span class="fc" id="L2119">    return pkiBlockCreationOptions</span>
+<span class="fc" id="L2120">        .asDomainConfig(commandLine)</span>
+<span class="fc" id="L2121">        .map(pkiBlockCreationConfigProvider::load);</span>
+  }
+
+  private SynchronizerConfiguration buildSyncConfig() {
+<span class="fc" id="L2125">    return unstableSynchronizerOptions</span>
+<span class="fc" id="L2126">        .toDomainObject()</span>
+<span class="fc" id="L2127">        .syncMode(syncMode)</span>
+<span class="fc" id="L2128">        .fastSyncMinimumPeerCount(syncMinPeerCount)</span>
+<span class="fc" id="L2129">        .build();</span>
+  }
+
+  private TransactionPoolConfiguration buildTransactionPoolConfiguration() {
+<span class="fc" id="L2133">    transactionPoolOptions.setPluginTransactionValidatorService(transactionValidatorServiceImpl);</span>
+<span class="fc" id="L2134">    final var txPoolConf = transactionPoolOptions.toDomainObject();</span>
+    final var txPoolConfBuilder =
+<span class="fc" id="L2136">        ImmutableTransactionPoolConfiguration.builder()</span>
+<span class="fc" id="L2137">            .from(txPoolConf)</span>
+<span class="fc" id="L2138">            .saveFile((dataPath.resolve(txPoolConf.getSaveFile().getPath()).toFile()));</span>
+
+<span class="fc bfc" id="L2140" title="All 2 branches covered.">    if (getActualGenesisConfigOptions().isZeroBaseFee()) {</span>
+<span class="fc" id="L2141">      logger.info(</span>
+          &quot;Forcing price bump for transaction replacement to 0, since we are on a zero basefee network&quot;);
+<span class="fc" id="L2143">      txPoolConfBuilder.priceBump(Percentage.ZERO);</span>
+    }
+
+<span class="fc bfc" id="L2146" title="All 2 branches covered.">    if (getMiningParameters().getMinTransactionGasPrice().equals(Wei.ZERO)</span>
+<span class="fc bfc" id="L2147" title="All 2 branches covered.">        &amp;&amp; !transactionPoolOptions.isPriceBumpSet(commandLine)) {</span>
+<span class="fc" id="L2148">      logger.info(</span>
+          &quot;Forcing price bump for transaction replacement to 0, since min-gas-price is set to 0&quot;);
+<span class="fc" id="L2150">      txPoolConfBuilder.priceBump(Percentage.ZERO);</span>
+    }
+
+<span class="fc bfc" id="L2153" title="All 2 branches covered.">    if (getMiningParameters().getMinTransactionGasPrice().lessThan(txPoolConf.getMinGasPrice())) {</span>
+<span class="fc bfc" id="L2154" title="All 2 branches covered.">      if (transactionPoolOptions.isMinGasPriceSet(commandLine)) {</span>
+<span class="fc" id="L2155">        throw new ParameterException(</span>
+            commandLine, &quot;tx-pool-min-gas-price cannot be greater than the value of min-gas-price&quot;);
+
+      } else {
+        // for backward compatibility, if tx-pool-min-gas-price is not set, we adjust its value
+        // to be the same as min-gas-price, so the behavior is as before this change, and we notify
+        // the user of the change
+<span class="fc" id="L2162">        logger.warn(</span>
+            &quot;Forcing tx-pool-min-gas-price=&quot;
+<span class="fc" id="L2164">                + getMiningParameters().getMinTransactionGasPrice().toDecimalString()</span>
+                + &quot;, since it cannot be greater than the value of min-gas-price&quot;);
+<span class="fc" id="L2166">        txPoolConfBuilder.minGasPrice(getMiningParameters().getMinTransactionGasPrice());</span>
+      }
+    }
+
+<span class="fc" id="L2170">    return txPoolConfBuilder.build();</span>
+  }
+
+  private MiningParameters getMiningParameters() {
+<span class="fc bfc" id="L2174" title="All 2 branches covered.">    if (miningParameters == null) {</span>
+<span class="fc" id="L2175">      miningOptions.setTransactionSelectionService(transactionSelectionServiceImpl);</span>
+<span class="fc" id="L2176">      miningParameters = miningOptions.toDomainObject();</span>
+<span class="fc" id="L2177">      getGenesisBlockPeriodSeconds(getActualGenesisConfigOptions())</span>
+<span class="fc" id="L2178">          .ifPresent(miningParameters::setBlockPeriodSeconds);</span>
+<span class="fc" id="L2179">      initMiningParametersMetrics(miningParameters);</span>
+    }
+<span class="fc" id="L2181">    return miningParameters;</span>
+  }
+
+  private DataStorageConfiguration getDataStorageConfiguration() {
+<span class="fc bfc" id="L2185" title="All 2 branches covered.">    if (dataStorageConfiguration == null) {</span>
+<span class="fc" id="L2186">      dataStorageConfiguration = dataStorageOptions.toDomainObject();</span>
+    }
+<span class="fc" id="L2188">    return dataStorageConfiguration;</span>
+  }
+
+  private void initMiningParametersMetrics(final MiningParameters miningParameters) {
+<span class="fc" id="L2192">    new MiningParametersMetrics(getMetricsSystem(), miningParameters);</span>
+<span class="fc" id="L2193">  }</span>
+
+  private OptionalInt getGenesisBlockPeriodSeconds(
+      final GenesisConfigOptions genesisConfigOptions) {
+<span class="fc bfc" id="L2197" title="All 2 branches covered.">    if (genesisConfigOptions.isClique()) {</span>
+<span class="fc" id="L2198">      return OptionalInt.of(genesisConfigOptions.getCliqueConfigOptions().getBlockPeriodSeconds());</span>
+    }
+
+<span class="fc bfc" id="L2201" title="All 2 branches covered.">    if (genesisConfigOptions.isIbft2()) {</span>
+<span class="fc" id="L2202">      return OptionalInt.of(genesisConfigOptions.getBftConfigOptions().getBlockPeriodSeconds());</span>
+    }
+
+<span class="fc bfc" id="L2205" title="All 2 branches covered.">    if (genesisConfigOptions.isQbft()) {</span>
+<span class="fc" id="L2206">      return OptionalInt.of(genesisConfigOptions.getQbftConfigOptions().getBlockPeriodSeconds());</span>
+    }
+
+<span class="fc" id="L2209">    return OptionalInt.empty();</span>
+  }
+
+  private boolean isPruningEnabled() {
+<span class="fc" id="L2213">    return pruningEnabled;</span>
+  }
+
+  // Blockchain synchronization from peers.
+  private Runner synchronize(
+      final BesuController controller,
+      final boolean p2pEnabled,
+      final Optional&lt;TLSConfiguration&gt; p2pTLSConfiguration,
+      final boolean peerDiscoveryEnabled,
+      final EthNetworkConfig ethNetworkConfig,
+      final String p2pAdvertisedHost,
+      final String p2pListenInterface,
+      final int p2pListenPort,
+      final GraphQLConfiguration graphQLConfiguration,
+      final JsonRpcConfiguration jsonRpcConfiguration,
+      final JsonRpcConfiguration engineJsonRpcConfiguration,
+      final WebSocketConfiguration webSocketConfiguration,
+      final JsonRpcIpcConfiguration jsonRpcIpcConfiguration,
+      final ApiConfiguration apiConfiguration,
+      final MetricsConfiguration metricsConfiguration,
+      final Optional&lt;PermissioningConfiguration&gt; permissioningConfiguration,
+      final Collection&lt;EnodeURL&gt; staticNodes,
+      final Path pidPath) {
+
+<span class="fc" id="L2237">    checkNotNull(runnerBuilder);</span>
+
+<span class="fc" id="L2239">    p2pTLSConfiguration.ifPresent(runnerBuilder::p2pTLSConfiguration);</span>
+
+<span class="fc" id="L2241">    final ObservableMetricsSystem metricsSystem = this.metricsSystem.get();</span>
+<span class="fc" id="L2242">    final Runner runner =</span>
+        runnerBuilder
+<span class="fc" id="L2244">            .vertx(vertx)</span>
+<span class="fc" id="L2245">            .besuController(controller)</span>
+<span class="fc" id="L2246">            .p2pEnabled(p2pEnabled)</span>
+<span class="fc" id="L2247">            .natMethod(natMethod)</span>
+<span class="fc" id="L2248">            .natManagerServiceName(unstableNatOptions.getNatManagerServiceName())</span>
+<span class="fc" id="L2249">            .natMethodFallbackEnabled(unstableNatOptions.getNatMethodFallbackEnabled())</span>
+<span class="fc" id="L2250">            .discovery(peerDiscoveryEnabled)</span>
+<span class="fc" id="L2251">            .ethNetworkConfig(ethNetworkConfig)</span>
+<span class="fc" id="L2252">            .permissioningConfiguration(permissioningConfiguration)</span>
+<span class="fc" id="L2253">            .p2pAdvertisedHost(p2pAdvertisedHost)</span>
+<span class="fc" id="L2254">            .p2pListenInterface(p2pListenInterface)</span>
+<span class="fc" id="L2255">            .p2pListenPort(p2pListenPort)</span>
+<span class="fc" id="L2256">            .networkingConfiguration(unstableNetworkingOptions.toDomainObject())</span>
+<span class="fc" id="L2257">            .legacyForkId(unstableEthProtocolOptions.toDomainObject().isLegacyEth64ForkIdEnabled())</span>
+<span class="fc" id="L2258">            .graphQLConfiguration(graphQLConfiguration)</span>
+<span class="fc" id="L2259">            .jsonRpcConfiguration(jsonRpcConfiguration)</span>
+<span class="fc" id="L2260">            .engineJsonRpcConfiguration(engineJsonRpcConfiguration)</span>
+<span class="fc" id="L2261">            .webSocketConfiguration(webSocketConfiguration)</span>
+<span class="fc" id="L2262">            .jsonRpcIpcConfiguration(jsonRpcIpcConfiguration)</span>
+<span class="fc" id="L2263">            .apiConfiguration(apiConfiguration)</span>
+<span class="fc" id="L2264">            .pidPath(pidPath)</span>
+<span class="fc" id="L2265">            .dataDir(dataDir())</span>
+<span class="fc" id="L2266">            .bannedNodeIds(p2PDiscoveryOptionGroup.bannedNodeIds)</span>
+<span class="fc" id="L2267">            .metricsSystem(metricsSystem)</span>
+<span class="fc" id="L2268">            .permissioningService(permissioningService)</span>
+<span class="fc" id="L2269">            .metricsConfiguration(metricsConfiguration)</span>
+<span class="fc" id="L2270">            .staticNodes(staticNodes)</span>
+<span class="fc" id="L2271">            .identityString(identityString)</span>
+<span class="fc" id="L2272">            .besuPluginContext(besuPluginContext)</span>
+<span class="fc" id="L2273">            .autoLogBloomCaching(autoLogBloomCachingEnabled)</span>
+<span class="fc" id="L2274">            .ethstatsOptions(ethstatsOptions)</span>
+<span class="fc" id="L2275">            .storageProvider(keyValueStorageProvider(keyValueStorageName))</span>
+<span class="fc" id="L2276">            .rpcEndpointService(rpcEndpointServiceImpl)</span>
+<span class="fc" id="L2277">            .enodeDnsConfiguration(getEnodeDnsConfiguration())</span>
+<span class="fc" id="L2278">            .build();</span>
+
+<span class="fc" id="L2280">    addShutdownHook(runner);</span>
+
+<span class="fc" id="L2282">    return runner;</span>
+  }
+
+  /**
+   * Builds Vertx instance from VertxOptions. Visible for testing.
+   *
+   * @param vertxOptions Instance of VertxOptions
+   * @return Instance of Vertx.
+   */
+  @VisibleForTesting
+  protected Vertx createVertx(final VertxOptions vertxOptions) {
+<span class="fc" id="L2293">    return Vertx.vertx(vertxOptions);</span>
+  }
+
+  private VertxOptions createVertxOptions(final MetricsSystem metricsSystem) {
+<span class="fc" id="L2297">    return new VertxOptions()</span>
+<span class="fc" id="L2298">        .setPreferNativeTransport(true)</span>
+<span class="fc" id="L2299">        .setMetricsOptions(</span>
+            new MetricsOptions()
+<span class="fc" id="L2301">                .setEnabled(true)</span>
+<span class="fc" id="L2302">                .setFactory(new VertxMetricsAdapterFactory(metricsSystem)));</span>
+  }
+
+  private void addShutdownHook(final Runner runner) {
+<span class="fc" id="L2306">    Runtime.getRuntime()</span>
+<span class="fc" id="L2307">        .addShutdownHook(</span>
+            new Thread(
+                () -&gt; {
+                  try {
+<span class="fc" id="L2311">                    besuPluginContext.stopPlugins();</span>
+<span class="fc" id="L2312">                    runner.close();</span>
+<span class="fc" id="L2313">                    LogConfigurator.shutdown();</span>
+<span class="nc" id="L2314">                  } catch (final Exception e) {</span>
+<span class="nc" id="L2315">                    logger.error(&quot;Failed to stop Besu&quot;);</span>
+<span class="fc" id="L2316">                  }</span>
+<span class="fc" id="L2317">                },</span>
+                &quot;BesuCommand-Shutdown-Hook&quot;));
+<span class="fc" id="L2319">  }</span>
+
+  private EthNetworkConfig updateNetworkConfig(final NetworkName network) {
+<span class="fc" id="L2322">    final EthNetworkConfig.Builder builder =</span>
+<span class="fc" id="L2323">        new EthNetworkConfig.Builder(EthNetworkConfig.getNetworkConfig(network));</span>
+
+<span class="fc bfc" id="L2325" title="All 2 branches covered.">    if (genesisFile != null) {</span>
+<span class="fc bfc" id="L2326" title="All 2 branches covered.">      if (commandLine.getParseResult().hasMatchedOption(&quot;network&quot;)) {</span>
+<span class="fc" id="L2327">        throw new ParameterException(</span>
+            this.commandLine,
+            &quot;--network option and --genesis-file option can't be used at the same time.  Please &quot;
+                + &quot;refer to CLI reference for more details about this constraint.&quot;);
+      }
+
+<span class="fc" id="L2333">      builder.setGenesisConfig(genesisConfig());</span>
+
+<span class="fc bfc" id="L2335" title="All 2 branches covered.">      if (networkId == null) {</span>
+        // If no chain id is found in the genesis, use mainnet network id
+        try {
+<span class="fc" id="L2338">          builder.setNetworkId(</span>
+<span class="fc" id="L2339">              getGenesisConfigFile()</span>
+<span class="fc" id="L2340">                  .getConfigOptions(genesisConfigOverrides)</span>
+<span class="fc" id="L2341">                  .getChainId()</span>
+<span class="fc" id="L2342">                  .orElse(EthNetworkConfig.getNetworkConfig(MAINNET).getNetworkId()));</span>
+<span class="nc" id="L2343">        } catch (final DecodeException e) {</span>
+<span class="nc" id="L2344">          throw new ParameterException(</span>
+<span class="nc" id="L2345">              this.commandLine, String.format(&quot;Unable to parse genesis file %s.&quot;, genesisFile), e);</span>
+<span class="nc" id="L2346">        } catch (final ArithmeticException e) {</span>
+<span class="nc" id="L2347">          throw new ParameterException(</span>
+              this.commandLine,
+              &quot;No networkId specified and chainId in &quot;
+                  + &quot;genesis file is too large to be used as a networkId&quot;);
+<span class="fc" id="L2351">        }</span>
+      }
+
+<span class="fc bfc" id="L2354" title="All 2 branches covered.">      if (p2PDiscoveryOptionGroup.bootNodes == null) {</span>
+<span class="fc" id="L2355">        builder.setBootNodes(new ArrayList&lt;&gt;());</span>
+      }
+<span class="fc" id="L2357">      builder.setDnsDiscoveryUrl(null);</span>
+    }
+
+<span class="fc bfc" id="L2360" title="All 2 branches covered.">    if (p2PDiscoveryOptionGroup.discoveryDnsUrl != null) {</span>
+<span class="fc" id="L2361">      builder.setDnsDiscoveryUrl(p2PDiscoveryOptionGroup.discoveryDnsUrl);</span>
+<span class="fc bfc" id="L2362" title="All 2 branches covered.">    } else if (genesisConfigOptions != null) {</span>
+<span class="fc" id="L2363">      final Optional&lt;String&gt; discoveryDnsUrlFromGenesis =</span>
+<span class="fc" id="L2364">          genesisConfigOptions.getDiscoveryOptions().getDiscoveryDnsUrl();</span>
+<span class="fc" id="L2365">      discoveryDnsUrlFromGenesis.ifPresent(builder::setDnsDiscoveryUrl);</span>
+    }
+
+<span class="fc bfc" id="L2368" title="All 2 branches covered.">    if (networkId != null) {</span>
+<span class="fc" id="L2369">      builder.setNetworkId(networkId);</span>
+    }
+
+<span class="fc" id="L2372">    List&lt;EnodeURL&gt; listBootNodes = null;</span>
+<span class="fc bfc" id="L2373" title="All 2 branches covered.">    if (p2PDiscoveryOptionGroup.bootNodes != null) {</span>
+      try {
+<span class="fc" id="L2375">        listBootNodes = buildEnodes(p2PDiscoveryOptionGroup.bootNodes, getEnodeDnsConfiguration());</span>
+<span class="fc" id="L2376">      } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L2377">        throw new ParameterException(commandLine, e.getMessage());</span>
+<span class="fc" id="L2378">      }</span>
+<span class="fc bfc" id="L2379" title="All 2 branches covered.">    } else if (genesisConfigOptions != null) {</span>
+<span class="fc" id="L2380">      final Optional&lt;List&lt;String&gt;&gt; bootNodesFromGenesis =</span>
+<span class="fc" id="L2381">          genesisConfigOptions.getDiscoveryOptions().getBootNodes();</span>
+<span class="fc bfc" id="L2382" title="All 2 branches covered.">      if (bootNodesFromGenesis.isPresent()) {</span>
+<span class="fc" id="L2383">        listBootNodes = buildEnodes(bootNodesFromGenesis.get(), getEnodeDnsConfiguration());</span>
+      }
+    }
+<span class="fc bfc" id="L2386" title="All 2 branches covered.">    if (listBootNodes != null) {</span>
+<span class="fc bfc" id="L2387" title="All 2 branches covered.">      if (!p2PDiscoveryOptionGroup.peerDiscoveryEnabled) {</span>
+<span class="fc" id="L2388">        logger.warn(&quot;Discovery disabled: bootnodes will be ignored.&quot;);</span>
+      }
+<span class="fc" id="L2390">      DiscoveryConfiguration.assertValidBootnodes(listBootNodes);</span>
+<span class="fc" id="L2391">      builder.setBootNodes(listBootNodes);</span>
+    }
+<span class="fc" id="L2393">    return builder.build();</span>
+  }
+
+  private GenesisConfigFile getGenesisConfigFile() {
+<span class="fc" id="L2397">    return GenesisConfigFile.fromConfig(genesisConfig());</span>
+  }
+
+  private String genesisConfig() {
+    try {
+<span class="fc" id="L2402">      return Resources.toString(genesisFile.toURI().toURL(), UTF_8);</span>
+<span class="fc" id="L2403">    } catch (final IOException e) {</span>
+<span class="fc" id="L2404">      throw new ParameterException(</span>
+<span class="fc" id="L2405">          this.commandLine, String.format(&quot;Unable to load genesis URL %s.&quot;, genesisFile), e);</span>
+    }
+  }
+
+  private static String genesisConfig(final NetworkName networkName) {
+<span class="fc" id="L2410">    try (final InputStream genesisFileInputStream =</span>
+<span class="fc" id="L2411">        EthNetworkConfig.class.getResourceAsStream(networkName.getGenesisFile())) {</span>
+<span class="fc" id="L2412">      return new String(genesisFileInputStream.readAllBytes(), UTF_8);</span>
+<span class="nc" id="L2413">    } catch (final IOException | NullPointerException e) {</span>
+<span class="nc" id="L2414">      throw new IllegalStateException(e);</span>
+    }
+  }
+
+  /**
+   * Returns data directory used by Besu. Visible as it is accessed by other subcommands.
+   *
+   * @return Path representing data directory.
+   */
+  public Path dataDir() {
+<span class="fc" id="L2424">    return dataPath.toAbsolutePath();</span>
+  }
+
+  private Path pluginsDir() {
+<span class="fc" id="L2428">    final String pluginsDir = System.getProperty(&quot;besu.plugins.dir&quot;);</span>
+<span class="pc bpc" id="L2429" title="1 of 2 branches missed.">    if (pluginsDir == null) {</span>
+<span class="fc" id="L2430">      return new File(System.getProperty(&quot;besu.home&quot;, &quot;.&quot;), &quot;plugins&quot;).toPath();</span>
+    } else {
+<span class="nc" id="L2432">      return new File(pluginsDir).toPath();</span>
+    }
+  }
+
+  private SecurityModule securityModule() {
+<span class="fc" id="L2437">    return securityModuleService</span>
+<span class="fc" id="L2438">        .getByName(securityModuleName)</span>
+<span class="pc" id="L2439">        .orElseThrow(() -&gt; new RuntimeException(&quot;Security Module not found: &quot; + securityModuleName))</span>
+<span class="fc" id="L2440">        .get();</span>
+  }
+
+  private File resolveNodePrivateKeyFile(final File nodePrivateKeyFile) {
+<span class="fc" id="L2444">    return Optional.ofNullable(nodePrivateKeyFile)</span>
+<span class="fc" id="L2445">        .orElseGet(() -&gt; KeyPairUtil.getDefaultKeyFile(dataDir()));</span>
+  }
+
+  /**
+   * Metrics System used by Besu
+   *
+   * @return Instance of MetricsSystem
+   */
+  public MetricsSystem getMetricsSystem() {
+<span class="fc" id="L2454">    return metricsSystem.get();</span>
+  }
+
+  private Set&lt;EnodeURL&gt; loadStaticNodes() throws IOException {
+    final Path staticNodesPath;
+<span class="fc bfc" id="L2459" title="All 2 branches covered.">    if (staticNodesFile != null) {</span>
+<span class="fc" id="L2460">      staticNodesPath = staticNodesFile.toAbsolutePath();</span>
+<span class="fc bfc" id="L2461" title="All 2 branches covered.">      if (!staticNodesPath.toFile().exists()) {</span>
+<span class="fc" id="L2462">        throw new ParameterException(</span>
+<span class="fc" id="L2463">            commandLine, String.format(&quot;Static nodes file %s does not exist&quot;, staticNodesPath));</span>
+      }
+    } else {
+<span class="fc" id="L2466">      final String staticNodesFilename = &quot;static-nodes.json&quot;;</span>
+<span class="fc" id="L2467">      staticNodesPath = dataDir().resolve(staticNodesFilename);</span>
+    }
+<span class="fc" id="L2469">    logger.debug(&quot;Static Nodes file: {}&quot;, staticNodesPath);</span>
+<span class="fc" id="L2470">    final Set&lt;EnodeURL&gt; staticNodes =</span>
+<span class="fc" id="L2471">        StaticNodesParser.fromPath(staticNodesPath, getEnodeDnsConfiguration());</span>
+<span class="fc" id="L2472">    logger.info(&quot;Connecting to {} static nodes.&quot;, staticNodes.size());</span>
+<span class="fc" id="L2473">    logger.debug(&quot;Static Nodes = {}&quot;, staticNodes);</span>
+<span class="fc" id="L2474">    return staticNodes;</span>
+  }
+
+  private List&lt;EnodeURL&gt; buildEnodes(
+      final List&lt;String&gt; bootNodes, final EnodeDnsConfiguration enodeDnsConfiguration) {
+<span class="fc" id="L2479">    return bootNodes.stream()</span>
+<span class="fc bfc" id="L2480" title="All 2 branches covered.">        .filter(bootNode -&gt; !bootNode.isEmpty())</span>
+<span class="fc" id="L2481">        .map(bootNode -&gt; EnodeURLImpl.fromString(bootNode, enodeDnsConfiguration))</span>
+<span class="fc" id="L2482">        .collect(Collectors.toList());</span>
+  }
+
+  /**
+   * Besu CLI Parameters exception handler used by VertX. Visible for testing.
+   *
+   * @return instance of BesuParameterExceptionHandler
+   */
+  public BesuParameterExceptionHandler parameterExceptionHandler() {
+<span class="fc" id="L2491">    return new BesuParameterExceptionHandler(this::getLogLevel);</span>
+  }
+
+  /**
+   * Returns BesuExecutionExceptionHandler. Visible as it is used in testing.
+   *
+   * @return instance of BesuExecutionExceptionHandler used by Vertx.
+   */
+  public BesuExecutionExceptionHandler executionExceptionHandler() {
+<span class="fc" id="L2500">    return new BesuExecutionExceptionHandler();</span>
+  }
+
+  /**
+   * Represents Enode DNS Configuration. Visible for testing.
+   *
+   * @return instance of EnodeDnsConfiguration
+   */
+  @VisibleForTesting
+  public EnodeDnsConfiguration getEnodeDnsConfiguration() {
+<span class="fc bfc" id="L2510" title="All 2 branches covered.">    if (enodeDnsConfiguration == null) {</span>
+<span class="fc" id="L2511">      enodeDnsConfiguration = unstableDnsOptions.toDomainObject();</span>
+    }
+<span class="fc" id="L2513">    return enodeDnsConfiguration;</span>
+  }
+
+  private void checkPortClash() {
+<span class="fc" id="L2517">    getEffectivePorts().stream()</span>
+<span class="fc" id="L2518">        .filter(Objects::nonNull)</span>
+<span class="fc bfc" id="L2519" title="All 2 branches covered.">        .filter(port -&gt; port &gt; 0)</span>
+<span class="fc" id="L2520">        .forEach(</span>
+            port -&gt; {
+<span class="fc bfc" id="L2522" title="All 2 branches covered.">              if (!allocatedPorts.add(port)) {</span>
+<span class="fc" id="L2523">                throw new ParameterException(</span>
+                    commandLine,
+                    &quot;Port number '&quot;
+                        + port
+                        + &quot;' has been specified multiple times. Please review the supplied configuration.&quot;);
+              }
+<span class="fc" id="L2529">            });</span>
+<span class="fc" id="L2530">  }</span>
+
+  /**
+   * Check if required ports are available
+   *
+   * @throws InvalidConfigurationException if ports are not available.
+   */
+  protected void checkIfRequiredPortsAreAvailable() {
+<span class="fc" id="L2538">    final List&lt;Integer&gt; unavailablePorts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L2539">    getEffectivePorts().stream()</span>
+<span class="fc" id="L2540">        .filter(Objects::nonNull)</span>
+<span class="pc bpc" id="L2541" title="1 of 2 branches missed.">        .filter(port -&gt; port &gt; 0)</span>
+<span class="fc" id="L2542">        .forEach(</span>
+            port -&gt; {
+<span class="fc bfc" id="L2544" title="All 2 branches covered.">              if (port.equals(p2PDiscoveryOptionGroup.p2pPort)</span>
+<span class="pc bpc" id="L2545" title="1 of 2 branches missed.">                  &amp;&amp; (NetworkUtility.isPortUnavailableForTcp(port)</span>
+<span class="pc bpc" id="L2546" title="1 of 2 branches missed.">                      || NetworkUtility.isPortUnavailableForUdp(port))) {</span>
+<span class="nc" id="L2547">                unavailablePorts.add(port);</span>
+              }
+<span class="fc bfc" id="L2549" title="All 2 branches covered.">              if (!port.equals(p2PDiscoveryOptionGroup.p2pPort)</span>
+<span class="fc bfc" id="L2550" title="All 2 branches covered.">                  &amp;&amp; NetworkUtility.isPortUnavailableForTcp(port)) {</span>
+<span class="fc" id="L2551">                unavailablePorts.add(port);</span>
+              }
+<span class="fc" id="L2553">            });</span>
+<span class="fc bfc" id="L2554" title="All 2 branches covered.">    if (!unavailablePorts.isEmpty()) {</span>
+<span class="fc" id="L2555">      throw new InvalidConfigurationException(</span>
+          &quot;Port(s) '&quot;
+              + unavailablePorts
+              + &quot;' already in use. Check for other processes using the port(s).&quot;);
+    }
+<span class="fc" id="L2560">  }</span>
+
+  /**
+   * * Gets the list of effective ports (ports that are enabled).
+   *
+   * @return The list of effective ports
+   */
+  private List&lt;Integer&gt; getEffectivePorts() {
+<span class="fc" id="L2568">    final List&lt;Integer&gt; effectivePorts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L2569">    addPortIfEnabled(</span>
+<span class="fc" id="L2570">        effectivePorts, p2PDiscoveryOptionGroup.p2pPort, p2PDiscoveryOptionGroup.p2pEnabled);</span>
+<span class="fc" id="L2571">    addPortIfEnabled(</span>
+<span class="fc" id="L2572">        effectivePorts, graphQlOptions.getGraphQLHttpPort(), graphQlOptions.isGraphQLHttpEnabled());</span>
+<span class="fc" id="L2573">    addPortIfEnabled(</span>
+<span class="fc" id="L2574">        effectivePorts, jsonRpcHttpOptions.getRpcHttpPort(), jsonRpcHttpOptions.isRpcHttpEnabled());</span>
+<span class="fc" id="L2575">    addPortIfEnabled(</span>
+<span class="fc" id="L2576">        effectivePorts, rpcWebsocketOptions.getRpcWsPort(), rpcWebsocketOptions.isRpcWsEnabled());</span>
+<span class="fc" id="L2577">    addPortIfEnabled(effectivePorts, engineRPCOptionGroup.engineRpcPort, isEngineApiEnabled());</span>
+<span class="fc" id="L2578">    addPortIfEnabled(</span>
+<span class="fc" id="L2579">        effectivePorts, metricsOptionGroup.metricsPort, metricsOptionGroup.isMetricsEnabled);</span>
+<span class="fc" id="L2580">    addPortIfEnabled(</span>
+        effectivePorts,
+<span class="fc" id="L2582">        getMiningParameters().getStratumPort(),</span>
+<span class="fc" id="L2583">        getMiningParameters().isStratumMiningEnabled());</span>
+<span class="fc" id="L2584">    return effectivePorts;</span>
+  }
+
+  /**
+   * Adds port to the specified list only if enabled.
+   *
+   * @param ports The list of ports
+   * @param port The port value
+   * @param enabled true if enabled, false otherwise
+   */
+  private void addPortIfEnabled(
+      final List&lt;Integer&gt; ports, final Integer port, final boolean enabled) {
+<span class="fc bfc" id="L2596" title="All 2 branches covered.">    if (enabled) {</span>
+<span class="fc" id="L2597">      ports.add(port);</span>
+    }
+<span class="fc" id="L2599">  }</span>
+
+  @VisibleForTesting
+  String getLogLevel() {
+<span class="fc" id="L2603">    return loggingLevelOption.getLogLevel();</span>
+  }
+
+  /**
+   * Returns the flag indicating that version compatibility checks will be made.
+   *
+   * @return true if compatibility checks should be made, otherwise false
+   */
+  @VisibleForTesting
+  public Boolean getVersionCompatibilityProtection() {
+<span class="fc" id="L2613">    return versionCompatibilityProtection;</span>
+  }
+
+  private void instantiateSignatureAlgorithmFactory() {
+<span class="fc bfc" id="L2617" title="All 2 branches covered.">    if (SignatureAlgorithmFactory.isInstanceSet()) {</span>
+<span class="fc" id="L2618">      return;</span>
+    }
+
+<span class="fc" id="L2621">    final Optional&lt;String&gt; ecCurve = getEcCurveFromGenesisFile();</span>
+
+<span class="fc bfc" id="L2623" title="All 2 branches covered.">    if (ecCurve.isEmpty()) {</span>
+<span class="fc" id="L2624">      SignatureAlgorithmFactory.setDefaultInstance();</span>
+<span class="fc" id="L2625">      return;</span>
+    }
+
+    try {
+<span class="fc" id="L2629">      SignatureAlgorithmFactory.setInstance(SignatureAlgorithmType.create(ecCurve.get()));</span>
+<span class="fc" id="L2630">    } catch (final IllegalArgumentException e) {</span>
+<span class="fc" id="L2631">      throw new CommandLine.InitializationException(</span>
+          new StringBuilder()
+<span class="fc" id="L2633">              .append(&quot;Invalid genesis file configuration for ecCurve. &quot;)</span>
+<span class="fc" id="L2634">              .append(e.getMessage())</span>
+<span class="fc" id="L2635">              .toString());</span>
+<span class="fc" id="L2636">    }</span>
+<span class="fc" id="L2637">  }</span>
+
+  private Optional&lt;String&gt; getEcCurveFromGenesisFile() {
+<span class="fc bfc" id="L2640" title="All 2 branches covered.">    if (genesisFile == null) {</span>
+<span class="fc" id="L2641">      return Optional.empty();</span>
+    }
+<span class="fc" id="L2643">    return genesisConfigOptions.getEcCurve();</span>
+  }
+
+  /**
+   * Return the genesis config options after applying any specified config overrides
+   *
+   * @return the genesis config options after applying any specified config overrides
+   */
+  protected GenesisConfigOptions getActualGenesisConfigOptions() {
+<span class="fc" id="L2652">    return Optional.ofNullable(genesisConfigOptions)</span>
+<span class="fc" id="L2653">        .orElseGet(</span>
+            () -&gt;
+<span class="fc" id="L2655">                GenesisConfigFile.fromConfig(</span>
+<span class="fc" id="L2656">                        genesisConfig(Optional.ofNullable(network).orElse(MAINNET)))</span>
+<span class="fc" id="L2657">                    .getConfigOptions(genesisConfigOverrides));</span>
+  }
+
+  private void setMergeConfigOptions() {
+<span class="fc" id="L2661">    MergeConfigOptions.setMergeEnabled(</span>
+<span class="fc" id="L2662">        getActualGenesisConfigOptions().getTerminalTotalDifficulty().isPresent());</span>
+<span class="fc" id="L2663">  }</span>
+
+  /** Set ignorable segments in RocksDB Storage Provider plugin. */
+  public void setIgnorableStorageSegments() {
+<span class="pc bpc" id="L2667" title="1 of 2 branches missed.">    if (!unstableChainPruningOptions.getChainDataPruningEnabled()) {</span>
+<span class="fc" id="L2668">      rocksDBPlugin.addIgnorableSegmentIdentifier(KeyValueSegmentIdentifier.CHAIN_PRUNER_STATE);</span>
+    }
+<span class="fc" id="L2670">  }</span>
+
+  private void validatePostMergeCheckpointBlockRequirements() {
+<span class="fc" id="L2673">    final GenesisConfigOptions genesisOptions = getActualGenesisConfigOptions();</span>
+<span class="fc" id="L2674">    final SynchronizerConfiguration synchronizerConfiguration =</span>
+<span class="fc" id="L2675">        unstableSynchronizerOptions.toDomainObject().build();</span>
+<span class="fc" id="L2676">    final Optional&lt;UInt256&gt; terminalTotalDifficulty = genesisOptions.getTerminalTotalDifficulty();</span>
+<span class="fc" id="L2677">    final CheckpointConfigOptions checkpointConfigOptions = genesisOptions.getCheckpointOptions();</span>
+<span class="fc bfc" id="L2678" title="All 2 branches covered.">    if (synchronizerConfiguration.isCheckpointPostMergeEnabled()) {</span>
+<span class="pc bpc" id="L2679" title="1 of 2 branches missed.">      if (!checkpointConfigOptions.isValid()) {</span>
+<span class="nc" id="L2680">        throw new InvalidConfigurationException(</span>
+            &quot;PoS checkpoint sync requires a checkpoint block configured in the genesis file&quot;);
+      }
+<span class="fc" id="L2683">      terminalTotalDifficulty.ifPresentOrElse(</span>
+          ttd -&gt; {
+<span class="fc" id="L2685">            if (UInt256.fromHexString(</span>
+<span class="fc" id="L2686">                        genesisOptions.getCheckpointOptions().getTotalDifficulty().get())</span>
+<span class="fc bfc" id="L2687" title="All 2 branches covered.">                    .equals(UInt256.ZERO)</span>
+<span class="pc bpc" id="L2688" title="1 of 2 branches missed.">                &amp;&amp; ttd.equals(UInt256.ZERO)) {</span>
+<span class="fc" id="L2689">              throw new InvalidConfigurationException(</span>
+                  &quot;PoS checkpoint sync can't be used with TTD = 0 and checkpoint totalDifficulty = 0&quot;);
+            }
+<span class="fc" id="L2692">            if (UInt256.fromHexString(</span>
+<span class="fc" id="L2693">                    genesisOptions.getCheckpointOptions().getTotalDifficulty().get())</span>
+<span class="fc bfc" id="L2694" title="All 2 branches covered.">                .lessThan(ttd)) {</span>
+<span class="fc" id="L2695">              throw new InvalidConfigurationException(</span>
+                  &quot;PoS checkpoint sync requires a block with total difficulty greater or equal than the TTD&quot;);
+            }
+<span class="fc" id="L2698">          },</span>
+          () -&gt; {
+<span class="fc" id="L2700">            throw new InvalidConfigurationException(</span>
+                &quot;PoS checkpoint sync requires TTD in the genesis file&quot;);
+          });
+    }
+<span class="fc" id="L2704">  }</span>
+
+  private boolean isMergeEnabled() {
+<span class="fc" id="L2707">    return MergeConfigOptions.isMergeEnabled();</span>
+  }
+
+  private boolean isEngineApiEnabled() {
+<span class="fc bfc" id="L2711" title="All 4 branches covered.">    return engineRPCOptionGroup.overrideEngineRpcEnabled || isMergeEnabled();</span>
+  }
+
+  private SyncMode getDefaultSyncModeIfNotSet() {
+<span class="fc" id="L2715">    return Optional.ofNullable(syncMode)</span>
+<span class="fc" id="L2716">        .orElse(</span>
+            genesisFile == null
+<span class="fc bfc" id="L2718" title="All 2 branches covered.">                    &amp;&amp; !privacyOptionGroup.isPrivacyEnabled</span>
+<span class="fc bfc" id="L2719" title="All 4 branches covered.">                    &amp;&amp; Optional.ofNullable(network).map(NetworkName::canSnapSync).orElse(false)</span>
+<span class="fc" id="L2720">                ? SyncMode.SNAP</span>
+<span class="fc" id="L2721">                : SyncMode.FULL);</span>
+  }
+
+  private Boolean getDefaultVersionCompatibilityProtectionIfNotSet() {
+    // Version compatibility protection is enabled by default for non-named networks
+<span class="fc" id="L2726">    return Optional.ofNullable(versionCompatibilityProtection)</span>
+<span class="fc bfc" id="L2727" title="All 2 branches covered.">        .orElse(commandLine.getParseResult().hasMatchedOption(&quot;network&quot;) ? false : true);</span>
+  }
+
+  private String generateConfigurationOverview() {
+<span class="fc" id="L2731">    final ConfigurationOverviewBuilder builder = new ConfigurationOverviewBuilder(logger);</span>
+
+<span class="pc bpc" id="L2733" title="1 of 2 branches missed.">    if (environment != null) {</span>
+<span class="fc" id="L2734">      builder.setEnvironment(environment);</span>
+    }
+
+<span class="pc bpc" id="L2737" title="1 of 2 branches missed.">    if (network != null) {</span>
+<span class="fc" id="L2738">      builder.setNetwork(network.normalize());</span>
+    }
+
+<span class="fc bfc" id="L2741" title="All 2 branches covered.">    if (profile != null) {</span>
+<span class="fc" id="L2742">      builder.setProfile(profile.toString());</span>
+    }
+
+<span class="fc bfc" id="L2745" title="All 2 branches covered.">    builder.setHasCustomGenesis(genesisFile != null);</span>
+<span class="fc bfc" id="L2746" title="All 2 branches covered.">    if (genesisFile != null) {</span>
+<span class="fc" id="L2747">      builder.setCustomGenesis(genesisFile.getAbsolutePath());</span>
+    }
+<span class="fc" id="L2749">    builder.setNetworkId(ethNetworkConfig.getNetworkId());</span>
+
+<span class="fc" id="L2751">    builder</span>
+<span class="fc" id="L2752">        .setDataStorage(dataStorageOptions.normalizeDataStorageFormat())</span>
+<span class="fc" id="L2753">        .setSyncMode(syncMode.normalize());</span>
+
+<span class="pc bpc" id="L2755" title="1 of 4 branches missed.">    if (jsonRpcConfiguration != null &amp;&amp; jsonRpcConfiguration.isEnabled()) {</span>
+<span class="fc" id="L2756">      builder</span>
+<span class="fc" id="L2757">          .setRpcPort(jsonRpcConfiguration.getPort())</span>
+<span class="fc" id="L2758">          .setRpcHttpApis(jsonRpcConfiguration.getRpcApis());</span>
+    }
+
+<span class="pc bpc" id="L2761" title="1 of 4 branches missed.">    if (engineJsonRpcConfiguration != null &amp;&amp; engineJsonRpcConfiguration.isEnabled()) {</span>
+<span class="fc" id="L2762">      builder</span>
+<span class="fc" id="L2763">          .setEnginePort(engineJsonRpcConfiguration.getPort())</span>
+<span class="fc" id="L2764">          .setEngineApis(engineJsonRpcConfiguration.getRpcApis());</span>
+<span class="fc bfc" id="L2765" title="All 2 branches covered.">      if (engineJsonRpcConfiguration.isAuthenticationEnabled()) {</span>
+<span class="fc bfc" id="L2766" title="All 2 branches covered.">        if (engineJsonRpcConfiguration.getAuthenticationPublicKeyFile() != null) {</span>
+<span class="fc" id="L2767">          builder.setEngineJwtFile(</span>
+<span class="fc" id="L2768">              engineJsonRpcConfiguration.getAuthenticationPublicKeyFile().getAbsolutePath());</span>
+        } else {
+          // default ephemeral jwt created later
+<span class="fc" id="L2771">          builder.setEngineJwtFile(dataDir().toAbsolutePath() + &quot;/&quot; + EPHEMERAL_JWT_FILE);</span>
+        }
+      }
+    }
+
+<span class="pc bpc" id="L2776" title="1 of 2 branches missed.">    if (rocksDBPlugin.isHighSpecEnabled()) {</span>
+<span class="nc" id="L2777">      builder.setHighSpecEnabled();</span>
+    }
+
+<span class="fc bfc" id="L2780" title="All 2 branches covered.">    if (getDataStorageConfiguration().getUnstable().getBonsaiLimitTrieLogsEnabled()) {</span>
+<span class="fc" id="L2781">      builder.setLimitTrieLogsEnabled();</span>
+<span class="fc" id="L2782">      builder.setTrieLogRetentionLimit(getDataStorageConfiguration().getBonsaiMaxLayersToLoad());</span>
+<span class="fc" id="L2783">      builder.setTrieLogsPruningWindowSize(</span>
+<span class="fc" id="L2784">          getDataStorageConfiguration().getUnstable().getBonsaiTrieLogPruningWindowSize());</span>
+    }
+
+<span class="fc" id="L2787">    builder.setTxPoolImplementation(buildTransactionPoolConfiguration().getTxPoolImplementation());</span>
+<span class="fc" id="L2788">    builder.setWorldStateUpdateMode(unstableEvmOptions.toDomainObject().worldUpdaterMode());</span>
+
+<span class="fc" id="L2790">    builder.setPluginContext(besuComponent.getBesuPluginContext());</span>
+
+<span class="fc" id="L2792">    return builder.build();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

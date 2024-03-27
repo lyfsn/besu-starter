@@ -1,0 +1,396 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionLogBloomCacher.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.query.cache</a> &gt; <span class="el_source">TransactionLogBloomCacher.java</span></div><h1>TransactionLogBloomCacher.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.api.query.cache;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.RandomAccessFile;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+
+import com.fasterxml.jackson.annotation.JsonGetter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TransactionLogBloomCacher {
+
+<span class="fc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(TransactionLogBloomCacher.class);</span>
+  private static final String NO_SPACE_LEFT_ON_DEVICE = &quot;No space left on device&quot;;
+
+  public static final int BLOCKS_PER_BLOOM_CACHE = 100_000;
+  public static final int BLOOM_BITS_LENGTH = 256;
+  private static final int EXPECTED_BLOOM_FILE_SIZE = BLOCKS_PER_BLOOM_CACHE * BLOOM_BITS_LENGTH;
+  public static final String CURRENT = &quot;current&quot;;
+  private final Map&lt;Long, Boolean&gt; cachedSegments;
+
+<span class="fc" id="L60">  private final Lock submissionLock = new ReentrantLock();</span>
+
+  private final EthScheduler scheduler;
+  private final Blockchain blockchain;
+
+  private final Path cacheDir;
+
+<span class="fc" id="L67">  private final CachingStatus cachingStatus = new CachingStatus();</span>
+
+  public TransactionLogBloomCacher(
+<span class="fc" id="L70">      final Blockchain blockchain, final Path cacheDir, final EthScheduler scheduler) {</span>
+<span class="fc" id="L71">    this.blockchain = blockchain;</span>
+<span class="fc" id="L72">    this.cacheDir = cacheDir;</span>
+<span class="fc" id="L73">    this.scheduler = scheduler;</span>
+<span class="fc" id="L74">    this.cachedSegments = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L75">  }</span>
+
+  public CachingStatus getCachingStatus() {
+<span class="nc" id="L78">    return cachingStatus;</span>
+  }
+
+  void cacheAll() {
+<span class="fc" id="L82">    ensurePreviousSegmentsArePresent(blockchain.getChainHeadBlockNumber(), false);</span>
+<span class="fc" id="L83">  }</span>
+
+  private static File calculateCacheFileName(final String name, final Path cacheDir) {
+<span class="fc" id="L86">    return cacheDir.resolve(&quot;logBloom-&quot; + name + &quot;.cache&quot;).toFile();</span>
+  }
+
+  private static File calculateCacheFileName(final long blockNumber, final Path cacheDir) {
+<span class="fc" id="L90">    return calculateCacheFileName(Long.toString(blockNumber / BLOCKS_PER_BLOOM_CACHE), cacheDir);</span>
+  }
+
+  public CachingStatus generateLogBloomCache(final long start, final long stop) {
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">    checkArgument(</span>
+        start % BLOCKS_PER_BLOOM_CACHE == 0, &quot;Start block must be at the beginning of a file&quot;);
+
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">    if (!cachingStatus.isCaching()) {</span>
+      try {
+<span class="fc" id="L99">        cachingStatus.cachingCount.incrementAndGet();</span>
+<span class="fc" id="L100">        LOG.debug(</span>
+            &quot;Generating transaction log bloom cache from block {} to block {} in {}&quot;,
+<span class="fc" id="L102">            start,</span>
+<span class="fc" id="L103">            stop,</span>
+            cacheDir);
+<span class="pc bpc" id="L105" title="3 of 4 branches missed.">        if (!Files.isDirectory(cacheDir) &amp;&amp; !cacheDir.toFile().mkdirs()) {</span>
+<span class="nc" id="L106">          LOG.error(&quot;Cache directory '{}' does not exist and could not be made.&quot;, cacheDir);</span>
+<span class="nc" id="L107">          return cachingStatus;</span>
+        }
+<span class="fc bfc" id="L109" title="All 2 branches covered.">        for (long blockNum = start; blockNum &lt; stop; blockNum += BLOCKS_PER_BLOOM_CACHE) {</span>
+<span class="fc" id="L110">          LOG.trace(&quot;Caching segment at {}&quot;, blockNum);</span>
+<span class="fc" id="L111">          final File cacheFile = calculateCacheFileName(blockNum, cacheDir);</span>
+<span class="fc" id="L112">          blockchain</span>
+<span class="fc" id="L113">              .getBlockHeader(blockNum)</span>
+<span class="fc" id="L114">              .ifPresent(</span>
+                  blockHeader -&gt;
+<span class="fc" id="L116">                      cacheLogsBloomForBlockHeader(</span>
+<span class="fc" id="L117">                          blockHeader, Optional.empty(), Optional.of(cacheFile)));</span>
+<span class="fc" id="L118">          fillCacheFile(blockNum, blockNum + BLOCKS_PER_BLOOM_CACHE, cacheFile);</span>
+        }
+<span class="nc" id="L120">      } catch (final Exception e) {</span>
+<span class="nc" id="L121">        LOG.error(&quot;Unhandled caching exception&quot;, e);</span>
+      } finally {
+<span class="fc" id="L123">        cachingStatus.cachingCount.decrementAndGet();</span>
+<span class="fc" id="L124">        LOG.trace(&quot;Caching request complete&quot;);</span>
+      }
+    }
+
+<span class="fc" id="L128">    return cachingStatus;</span>
+  }
+
+  private void fillCacheFile(final long startBlock, final long stopBlock, final File currentFile)
+      throws IOException {
+<span class="fc" id="L133">    long blockNum = startBlock;</span>
+<span class="fc" id="L134">    try (final OutputStream out = new FileOutputStream(currentFile)) {</span>
+<span class="fc bfc" id="L135" title="All 2 branches covered.">      while (blockNum &lt; stopBlock) {</span>
+<span class="fc" id="L136">        final Optional&lt;BlockHeader&gt; maybeHeader = blockchain.getBlockHeader(blockNum);</span>
+<span class="pc bpc" id="L137" title="1 of 2 branches missed.">        if (maybeHeader.isEmpty()) {</span>
+<span class="nc" id="L138">          break;</span>
+        }
+<span class="fc" id="L140">        fillCacheFileWithBlock(maybeHeader.get(), out);</span>
+<span class="fc" id="L141">        cachingStatus.currentBlock = blockNum;</span>
+<span class="fc" id="L142">        blockNum++;</span>
+<span class="fc" id="L143">      }</span>
+<span class="nc" id="L144">    } catch (final IOException e) {</span>
+<span class="nc bnc" id="L145" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L146">        LOG.error(e.getMessage());</span>
+<span class="nc" id="L147">        System.exit(0);</span>
+      }
+<span class="nc" id="L149">      throw e;</span>
+<span class="fc" id="L150">    }</span>
+<span class="fc" id="L151">  }</span>
+
+  void cacheLogsBloomForBlockHeader(
+      final BlockHeader blockHeader,
+      final Optional&lt;BlockHeader&gt; commonAncestorBlockHeader,
+      final Optional&lt;File&gt; reusedCacheFile) {
+    try {
+<span class="fc bfc" id="L158" title="All 2 branches covered.">      if (cachingStatus.cachingCount.incrementAndGet() != 1) {</span>
+<span class="fc" id="L159">        return;</span>
+      }
+<span class="fc" id="L161">      final long blockNumber = blockHeader.getNumber();</span>
+<span class="fc" id="L162">      LOG.atDebug()</span>
+<span class="fc" id="L163">          .setMessage(&quot;Caching logs bloom for block {}&quot;)</span>
+<span class="pc" id="L164">          .addArgument(() -&gt; &quot;0x&quot; + Long.toHexString(blockNumber))</span>
+<span class="fc" id="L165">          .log();</span>
+<span class="fc" id="L166">      final File cacheFile = reusedCacheFile.orElse(calculateCacheFileName(blockNumber, cacheDir));</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">      if (cacheFile.exists()) {</span>
+        try {
+<span class="fc" id="L169">          final Optional&lt;Long&gt; ancestorBlockNumber =</span>
+<span class="fc" id="L170">              commonAncestorBlockHeader.map(ProcessableBlockHeader::getNumber);</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">          if (ancestorBlockNumber.isPresent()) {</span>
+            // walk through the blocks from the common ancestor to the received block in order to
+            // reload the cache in case of reorg
+<span class="fc" id="L174">            for (long number = ancestorBlockNumber.get() + 1;</span>
+<span class="fc bfc" id="L175" title="All 2 branches covered.">                number &lt; blockHeader.getNumber();</span>
+<span class="fc" id="L176">                number++) {</span>
+<span class="fc" id="L177">              final Optional&lt;BlockHeader&gt; ancestorBlockHeader = blockchain.getBlockHeader(number);</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">              if (ancestorBlockHeader.isPresent()) {</span>
+<span class="fc" id="L179">                cacheSingleBlock(ancestorBlockHeader.get(), cacheFile, true);</span>
+              }
+            }
+          }
+<span class="fc" id="L183">          cacheSingleBlock(blockHeader, cacheFile, true);</span>
+<span class="fc" id="L184">        } catch (final InvalidCacheException e) {</span>
+<span class="fc" id="L185">          populateLatestSegment(blockNumber);</span>
+<span class="fc" id="L186">        }</span>
+      } else {
+<span class="fc" id="L188">        populateLatestSegment(blockNumber);</span>
+      }
+<span class="nc" id="L190">    } catch (final IOException e) {</span>
+<span class="nc bnc" id="L191" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L192">        LOG.error(e.getMessage());</span>
+<span class="nc" id="L193">        System.exit(0);</span>
+      }
+<span class="nc" id="L195">      LOG.error(&quot;Unhandled caching exception.&quot;, e);</span>
+    } finally {
+<span class="fc" id="L197">      cachingStatus.cachingCount.decrementAndGet();</span>
+    }
+<span class="fc" id="L199">  }</span>
+
+  private void cacheSingleBlock(
+      final BlockHeader blockHeader, final File cacheFile, final boolean isCheckSizeNeeded)
+      throws IOException, InvalidCacheException {
+<span class="fc" id="L204">    try (final RandomAccessFile writer = new RandomAccessFile(cacheFile, &quot;rw&quot;)) {</span>
+
+<span class="fc" id="L206">      final long nbCachedBlocks = cacheFile.length() / BLOOM_BITS_LENGTH;</span>
+<span class="fc" id="L207">      final long blockIndex = (blockHeader.getNumber() % BLOCKS_PER_BLOOM_CACHE);</span>
+<span class="fc" id="L208">      final long offset = blockIndex * BLOOM_BITS_LENGTH;</span>
+<span class="fc bfc" id="L209" title="All 4 branches covered.">      if (isCheckSizeNeeded &amp;&amp; blockIndex &gt; nbCachedBlocks) {</span>
+<span class="fc" id="L210">        throw new InvalidCacheException();</span>
+      }
+<span class="fc" id="L212">      writer.seek(offset);</span>
+<span class="fc" id="L213">      writer.write(ensureBloomBitsAreCorrectLength(blockHeader.getLogsBloom().toArray()));</span>
+
+      // remove invalid logs when there was a reorg
+<span class="fc" id="L216">      final long validCacheSize = offset + BLOOM_BITS_LENGTH;</span>
+
+<span class="fc bfc" id="L218" title="All 2 branches covered.">      if (writer.length() &gt; validCacheSize) {</span>
+<span class="fc" id="L219">        writer.setLength(validCacheSize);</span>
+      }
+    }
+<span class="fc" id="L222">  }</span>
+
+  private boolean populateLatestSegment(final long eventBlockNumber) {
+    try {
+<span class="fc" id="L226">      final File currentFile = calculateCacheFileName(CURRENT, cacheDir);</span>
+<span class="fc" id="L227">      final long segmentNumber = eventBlockNumber / BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="fc" id="L228">      long blockNumber =</span>
+<span class="fc" id="L229">          Math.min((segmentNumber + 1) * BLOCKS_PER_BLOOM_CACHE - 1, eventBlockNumber);</span>
+<span class="fc" id="L230">      fillCacheFile(segmentNumber * BLOCKS_PER_BLOOM_CACHE, blockNumber, currentFile);</span>
+<span class="pc bpc" id="L231" title="1 of 4 branches missed.">      while (blockNumber &lt;= eventBlockNumber &amp;&amp; (blockNumber % BLOCKS_PER_BLOOM_CACHE != 0)) {</span>
+<span class="fc" id="L232">        Optional&lt;BlockHeader&gt; blockHeader = blockchain.getBlockHeader(blockNumber);</span>
+<span class="pc bpc" id="L233" title="1 of 2 branches missed.">        if (blockHeader.isPresent()) {</span>
+<span class="fc" id="L234">          cacheSingleBlock(blockHeader.get(), currentFile, false);</span>
+        }
+<span class="fc" id="L236">        blockNumber++;</span>
+<span class="fc" id="L237">      }</span>
+<span class="fc" id="L238">      Files.move(</span>
+<span class="fc" id="L239">          currentFile.toPath(),</span>
+<span class="fc" id="L240">          calculateCacheFileName(blockNumber, cacheDir).toPath(),</span>
+          StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE);
+<span class="fc" id="L243">      return true;</span>
+<span class="nc" id="L244">    } catch (final IOException | InvalidCacheException e) {</span>
+<span class="nc" id="L245">      LOG.error(&quot;Unhandled caching exception.&quot;, e);</span>
+    }
+
+<span class="nc" id="L248">    return false;</span>
+  }
+
+  public void removeSegments(final Long startBlock, final Long stopBlock) {
+<span class="nc bnc" id="L252" title="All 2 branches missed.">    if (!cachingStatus.isCaching()) {</span>
+<span class="nc" id="L253">      LOG.info(</span>
+          &quot;Deleting transaction log bloom cache from block {} to block {} in {}&quot;,
+          startBlock,
+          stopBlock,
+          cacheDir);
+
+<span class="nc bnc" id="L259" title="All 2 branches missed.">      for (long blockNum = startBlock; blockNum &lt;= stopBlock; blockNum += BLOCKS_PER_BLOOM_CACHE) {</span>
+        try {
+<span class="nc" id="L261">          final long segmentNumber = blockNum / BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="nc" id="L262">          final long fromBlock = segmentNumber * BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="nc" id="L263">          final File cacheFile = calculateCacheFileName(fromBlock, cacheDir);</span>
+<span class="nc" id="L264">          cachedSegments.remove(segmentNumber);</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">          if (Files.deleteIfExists(cacheFile.toPath())) {</span>
+<span class="nc" id="L266">            LOG.info(</span>
+<span class="nc" id="L267">                &quot;Deleted transaction log bloom cache file: {}/{}&quot;, cacheDir, cacheFile.getName());</span>
+          } else {
+<span class="nc" id="L269">            LOG.info(</span>
+                &quot;Unable to delete transaction log bloom cache file: {}/{}&quot;,
+                cacheDir,
+<span class="nc" id="L272">                cacheFile.getName());</span>
+          }
+<span class="nc" id="L274">        } catch (final IOException e) {</span>
+<span class="nc bnc" id="L275" title="All 2 branches missed.">          if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L276">            LOG.error(e.getMessage());</span>
+<span class="nc" id="L277">            System.exit(0);</span>
+          }
+<span class="nc" id="L279">          LOG.error(</span>
+<span class="nc" id="L280">              String.format(&quot;Unhandled exception removing cache for block number %d&quot;, blockNum), e);</span>
+<span class="nc" id="L281">        }</span>
+      }
+    }
+<span class="nc" id="L284">  }</span>
+
+  public void ensurePreviousSegmentsArePresent(
+      final long blockNumber, final boolean overrideCacheCheck) {
+<span class="pc bpc" id="L288" title="1 of 2 branches missed.">    if (!cachingStatus.isCaching()) {</span>
+<span class="fc" id="L289">      scheduler.scheduleFutureTask(</span>
+          () -&gt;
+<span class="fc" id="L291">              scheduler.scheduleComputationTask(</span>
+                  () -&gt; {
+<span class="fc" id="L293">                    long currentSegment = (blockNumber / BLOCKS_PER_BLOOM_CACHE) - 1;</span>
+<span class="fc bfc" id="L294" title="All 2 branches covered.">                    while (currentSegment &gt;= 0) {</span>
+                      try {
+<span class="pc bpc" id="L296" title="1 of 2 branches missed.">                        if (overrideCacheCheck</span>
+<span class="pc bpc" id="L297" title="1 of 2 branches missed.">                            || !cachedSegments.getOrDefault(currentSegment, false)) {</span>
+<span class="fc" id="L298">                          final long startBlock = currentSegment * BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="fc" id="L299">                          final File cacheFile = calculateCacheFileName(startBlock, cacheDir);</span>
+<span class="pc bpc" id="L300" title="1 of 2 branches missed.">                          if (overrideCacheCheck</span>
+<span class="fc bfc" id="L301" title="All 2 branches covered.">                              || !cacheFile.isFile()</span>
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">                              || cacheFile.length() != EXPECTED_BLOOM_FILE_SIZE) {</span>
+<span class="fc" id="L303">                            generateLogBloomCache(startBlock, startBlock + BLOCKS_PER_BLOOM_CACHE);</span>
+                          }
+<span class="fc" id="L305">                          cachedSegments.put(currentSegment, true);</span>
+                        }
+                      } finally {
+<span class="fc" id="L308">                        currentSegment--;</span>
+<span class="fc" id="L309">                      }</span>
+                    }
+<span class="fc" id="L311">                    return null;</span>
+                  }),
+<span class="fc" id="L313">          Duration.ofSeconds(1));</span>
+    }
+<span class="fc" id="L315">  }</span>
+
+  private void fillCacheFileWithBlock(final BlockHeader blockHeader, final OutputStream fos)
+      throws IOException {
+<span class="fc" id="L319">    fos.write(ensureBloomBitsAreCorrectLength(blockHeader.getLogsBloom().toArray()));</span>
+<span class="fc" id="L320">  }</span>
+
+  private byte[] ensureBloomBitsAreCorrectLength(final byte[] logs) {
+<span class="fc" id="L323">    checkNotNull(logs);</span>
+<span class="pc bpc" id="L324" title="1 of 2 branches missed.">    checkState(logs.length == BLOOM_BITS_LENGTH, &quot;BloomBits are not the correct length&quot;);</span>
+<span class="fc" id="L325">    return logs;</span>
+  }
+
+  public CachingStatus requestCaching(final long fromBlock, final long toBlock) {
+<span class="nc" id="L329">    boolean requestAccepted = false;</span>
+    try {
+<span class="nc bnc" id="L331" title="All 4 branches missed.">      if ((fromBlock &lt; toBlock) &amp;&amp; submissionLock.tryLock(100, TimeUnit.MILLISECONDS)) {</span>
+        try {
+<span class="nc bnc" id="L333" title="All 2 branches missed.">          if (!cachingStatus.isCaching()) {</span>
+<span class="nc" id="L334">            requestAccepted = true;</span>
+<span class="nc" id="L335">            cachingStatus.startBlock = fromBlock;</span>
+<span class="nc" id="L336">            cachingStatus.endBlock = toBlock;</span>
+<span class="nc" id="L337">            scheduler.scheduleComputationTask(</span>
+                () -&gt;
+<span class="nc" id="L339">                    generateLogBloomCache(</span>
+                        fromBlock - (fromBlock % BLOCKS_PER_BLOOM_CACHE), toBlock));
+          }
+        } finally {
+<span class="nc" id="L343">          submissionLock.unlock();</span>
+        }
+      }
+<span class="nc" id="L346">    } catch (final InterruptedException e) {</span>
+      // ignore
+<span class="nc" id="L348">    }</span>
+<span class="nc" id="L349">    cachingStatus.requestAccepted = requestAccepted;</span>
+<span class="nc" id="L350">    return cachingStatus;</span>
+  }
+
+  EthScheduler getScheduler() {
+<span class="fc" id="L354">    return scheduler;</span>
+  }
+
+  Path getCacheDir() {
+<span class="fc" id="L358">    return cacheDir;</span>
+  }
+
+<span class="fc" id="L361">  public static final class CachingStatus {</span>
+    long startBlock;
+    long endBlock;
+    volatile long currentBlock;
+<span class="fc" id="L365">    AtomicInteger cachingCount = new AtomicInteger(0);</span>
+    boolean requestAccepted;
+
+    @JsonGetter
+    public String getStartBlock() {
+<span class="nc" id="L370">      return &quot;0x&quot; + Long.toHexString(startBlock);</span>
+    }
+
+    @JsonGetter
+    public String getEndBlock() {
+<span class="nc bnc" id="L375" title="All 2 branches missed.">      return endBlock == Long.MAX_VALUE ? &quot;latest&quot; : &quot;0x&quot; + Long.toHexString(endBlock);</span>
+    }
+
+    @JsonGetter
+    public String getCurrentBlock() {
+<span class="nc" id="L380">      return &quot;0x&quot; + Long.toHexString(currentBlock);</span>
+    }
+
+    @JsonGetter
+    public boolean isCaching() {
+<span class="pc bpc" id="L385" title="1 of 2 branches missed.">      return cachingCount.get() &gt; 0;</span>
+    }
+
+    @JsonGetter
+    public boolean isRequestAccepted() {
+<span class="nc" id="L390">      return requestAccepted;</span>
+    }
+  }
+
+<span class="fc" id="L394">  public static class InvalidCacheException extends Exception {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

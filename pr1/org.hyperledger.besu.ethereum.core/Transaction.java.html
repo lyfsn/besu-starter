@@ -1,0 +1,1300 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Transaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.core</a> &gt; <span class="el_source">Transaction.java</span></div><h1>Transaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.core;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+import static org.hyperledger.besu.datatypes.VersionedHash.SHA256_VERSION_ID;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.AccessListEntry;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Blob;
+import org.hyperledger.besu.datatypes.BlobsWithCommitments;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.KZGCommitment;
+import org.hyperledger.besu.datatypes.KZGProof;
+import org.hyperledger.besu.datatypes.Sha256Hash;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.encoding.AccessListTransactionEncoder;
+import org.hyperledger.besu.ethereum.core.encoding.BlobTransactionEncoder;
+import org.hyperledger.besu.ethereum.core.encoding.EncodingContext;
+import org.hyperledger.besu.ethereum.core.encoding.TransactionDecoder;
+import org.hyperledger.besu.ethereum.core.encoding.TransactionEncoder;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+
+import java.math.BigInteger;
+import java.util.Collection;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.primitives.Longs;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.apache.tuweni.units.bigints.UInt256s;
+
+/** An operation submitted by an external actor to be applied to the system. */
+public class Transaction
+    implements org.hyperledger.besu.datatypes.Transaction,
+        org.hyperledger.besu.plugin.data.UnsignedPrivateMarkerTransaction {
+
+  // Used for transactions that are not tied to a specific chain
+  // (e.g. does not have a chain id associated with it).
+<span class="fc" id="L69">  public static final BigInteger REPLAY_UNPROTECTED_V_BASE = BigInteger.valueOf(27);</span>
+<span class="fc" id="L70">  public static final BigInteger REPLAY_UNPROTECTED_V_BASE_PLUS_1 = BigInteger.valueOf(28);</span>
+
+<span class="fc" id="L72">  public static final BigInteger REPLAY_PROTECTED_V_BASE = BigInteger.valueOf(35);</span>
+
+  // The v signature parameter starts at 36 because 1 is the first valid chainId so:
+  // chainId &gt; 1 implies that 2 * chainId + V_BASE &gt; 36.
+<span class="fc" id="L76">  public static final BigInteger REPLAY_PROTECTED_V_MIN = BigInteger.valueOf(36);</span>
+
+<span class="fc" id="L78">  public static final BigInteger TWO = BigInteger.valueOf(2);</span>
+
+<span class="fc" id="L80">  private static final Cache&lt;Hash, Address&gt; senderCache =</span>
+<span class="fc" id="L81">      CacheBuilder.newBuilder().recordStats().maximumSize(100_000L).build();</span>
+
+  private final long nonce;
+
+  private final Optional&lt;Wei&gt; gasPrice;
+
+  private final Optional&lt;Wei&gt; maxPriorityFeePerGas;
+
+  private final Optional&lt;Wei&gt; maxFeePerGas;
+  private final Optional&lt;Wei&gt; maxFeePerBlobGas;
+
+  private final long gasLimit;
+
+  private final Optional&lt;Address&gt; to;
+
+  private final Wei value;
+
+  private final SECPSignature signature;
+
+  private final Bytes payload;
+
+  private final Optional&lt;List&lt;AccessListEntry&gt;&gt; maybeAccessList;
+
+  private final Optional&lt;BigInteger&gt; chainId;
+
+  // Caches a &quot;hash&quot; of a portion of the transaction used for sender recovery.
+  // Note that this hash does not include the transaction signature, so it does not
+  // fully identify the transaction (use the result of the {@code hash()} for that).
+  // It is only used to compute said signature and recover the sender from it.
+  private volatile Bytes32 hashNoSignature;
+
+  // Caches the transaction sender.
+  protected volatile Address sender;
+
+  // Caches the hash used to uniquely identify the transaction.
+  protected volatile Hash hash;
+  // Caches the size in bytes of the encoded transaction.
+<span class="fc" id="L118">  protected volatile int size = -1;</span>
+  private final TransactionType transactionType;
+
+<span class="fc" id="L121">  private final SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+  private final Optional&lt;List&lt;VersionedHash&gt;&gt; versionedHashes;
+
+  private final Optional&lt;BlobsWithCommitments&gt; blobsWithCommitments;
+
+  public static Builder builder() {
+<span class="fc" id="L127">    return new Builder();</span>
+  }
+
+  public static Transaction readFrom(final Bytes rlpBytes) {
+<span class="fc" id="L131">    return readFrom(RLP.input(rlpBytes));</span>
+  }
+
+  public static Transaction readFrom(final RLPInput rlpInput) {
+<span class="fc" id="L135">    return TransactionDecoder.decodeRLP(rlpInput, EncodingContext.BLOCK_BODY);</span>
+  }
+
+  /**
+   * Instantiates a transaction instance.
+   *
+   * @param forCopy true when using to create a copy of an already validated transaction avoid to
+   *     redo the validation
+   * @param transactionType the transaction type
+   * @param nonce the nonce
+   * @param gasPrice the gas price
+   * @param maxPriorityFeePerGas the max priority fee per gas
+   * @param maxFeePerGas the max fee per gas
+   * @param maxFeePerBlobGas the max fee per blob gas
+   * @param gasLimit the gas limit
+   * @param to the transaction recipient
+   * @param value the value being transferred to the recipient
+   * @param signature the signature
+   * @param payload the payload
+   * @param maybeAccessList the optional list of addresses/storage slots this transaction intends to
+   *     preload
+   * @param sender the transaction sender
+   * @param chainId the chain id to apply the transaction to
+   *     &lt;p&gt;The {@code to} will be an {@code Optional.empty()} for a contract creation transaction;
+   *     otherwise it should contain an address.
+   *     &lt;p&gt;The {@code chainId} must be greater than 0 to be applied to a specific chain; otherwise
+   *     it will default to any chain.
+   */
+  private Transaction(
+      final boolean forCopy,
+      final TransactionType transactionType,
+      final long nonce,
+      final Optional&lt;Wei&gt; gasPrice,
+      final Optional&lt;Wei&gt; maxPriorityFeePerGas,
+      final Optional&lt;Wei&gt; maxFeePerGas,
+      final Optional&lt;Wei&gt; maxFeePerBlobGas,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final SECPSignature signature,
+      final Bytes payload,
+      final Optional&lt;List&lt;AccessListEntry&gt;&gt; maybeAccessList,
+      final Address sender,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Optional&lt;List&lt;VersionedHash&gt;&gt; versionedHashes,
+<span class="fc" id="L180">      final Optional&lt;BlobsWithCommitments&gt; blobsWithCommitments) {</span>
+
+<span class="fc bfc" id="L182" title="All 2 branches covered.">    if (!forCopy) {</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">      if (transactionType.requiresChainId()) {</span>
+<span class="fc" id="L184">        checkArgument(</span>
+<span class="fc" id="L185">            chainId.isPresent(),</span>
+            &quot;Chain id must be present for transaction type %s&quot;,
+            transactionType);
+      }
+
+<span class="fc bfc" id="L190" title="All 2 branches covered.">      if (maybeAccessList.isPresent()) {</span>
+<span class="fc" id="L191">        checkArgument(</span>
+<span class="fc" id="L192">            transactionType.supportsAccessList(),</span>
+            &quot;Must not specify access list for transaction not supporting it&quot;);
+      }
+
+<span class="fc bfc" id="L196" title="All 2 branches covered.">      if (Objects.equals(transactionType, TransactionType.ACCESS_LIST)) {</span>
+<span class="fc" id="L197">        checkArgument(</span>
+<span class="fc" id="L198">            maybeAccessList.isPresent(), &quot;Must specify access list for access list transaction&quot;);</span>
+      }
+
+<span class="pc bpc" id="L201" title="1 of 4 branches missed.">      if (versionedHashes.isPresent() || maxFeePerBlobGas.isPresent()) {</span>
+<span class="fc" id="L202">        checkArgument(</span>
+<span class="fc" id="L203">            transactionType.supportsBlob(),</span>
+            &quot;Must not specify blob versioned hashes or max fee per blob gas for transaction not supporting it&quot;);
+      }
+
+<span class="fc bfc" id="L207" title="All 2 branches covered.">      if (transactionType.supportsBlob()) {</span>
+<span class="fc" id="L208">        checkArgument(</span>
+<span class="fc" id="L209">            versionedHashes.isPresent(), &quot;Must specify blob versioned hashes for blob transaction&quot;);</span>
+<span class="fc" id="L210">        checkArgument(</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">            !versionedHashes.get().isEmpty(),</span>
+            &quot;Blob transaction must have at least one versioned hash&quot;);
+<span class="fc" id="L213">        checkArgument(</span>
+<span class="fc" id="L214">            maxFeePerBlobGas.isPresent(), &quot;Must specify max fee per blob gas for blob transaction&quot;);</span>
+      }
+    }
+
+<span class="fc" id="L218">    this.transactionType = transactionType;</span>
+<span class="fc" id="L219">    this.nonce = nonce;</span>
+<span class="fc" id="L220">    this.gasPrice = gasPrice;</span>
+<span class="fc" id="L221">    this.maxPriorityFeePerGas = maxPriorityFeePerGas;</span>
+<span class="fc" id="L222">    this.maxFeePerGas = maxFeePerGas;</span>
+<span class="fc" id="L223">    this.maxFeePerBlobGas = maxFeePerBlobGas;</span>
+<span class="fc" id="L224">    this.gasLimit = gasLimit;</span>
+<span class="fc" id="L225">    this.to = to;</span>
+<span class="fc" id="L226">    this.value = value;</span>
+<span class="fc" id="L227">    this.signature = signature;</span>
+<span class="fc" id="L228">    this.payload = payload;</span>
+<span class="fc" id="L229">    this.maybeAccessList = maybeAccessList;</span>
+<span class="fc" id="L230">    this.sender = sender;</span>
+<span class="fc" id="L231">    this.chainId = chainId;</span>
+<span class="fc" id="L232">    this.versionedHashes = versionedHashes;</span>
+<span class="fc" id="L233">    this.blobsWithCommitments = blobsWithCommitments;</span>
+<span class="fc" id="L234">  }</span>
+
+  /**
+   * Returns the transaction nonce.
+   *
+   * @return the transaction nonce
+   */
+  @Override
+  public long getNonce() {
+<span class="fc" id="L243">    return nonce;</span>
+  }
+
+  /**
+   * Return the transaction gas price.
+   *
+   * @return the transaction gas price
+   */
+  @Override
+  public Optional&lt;Wei&gt; getGasPrice() {
+<span class="fc" id="L253">    return gasPrice;</span>
+  }
+
+  /**
+   * Return the transaction max priority per gas.
+   *
+   * @return the transaction max priority per gas
+   */
+  @Override
+  public Optional&lt;Wei&gt; getMaxPriorityFeePerGas() {
+<span class="fc" id="L263">    return maxPriorityFeePerGas;</span>
+  }
+
+  /**
+   * Return the transaction max fee per gas.
+   *
+   * @return the transaction max fee per gas
+   */
+  @Override
+  public Optional&lt;Wei&gt; getMaxFeePerGas() {
+<span class="fc" id="L273">    return maxFeePerGas;</span>
+  }
+
+  /**
+   * Return the transaction max fee per blob gas.
+   *
+   * @return the transaction max fee per blob gas
+   */
+  @Override
+  public Optional&lt;Wei&gt; getMaxFeePerBlobGas() {
+<span class="fc" id="L283">    return maxFeePerBlobGas;</span>
+  }
+
+  /**
+   * Return the effective priority fee per gas for this transaction.
+   *
+   * @param maybeBaseFee base fee in case of EIP-1559 transaction
+   * @return priority fee per gas in wei
+   */
+  public Wei getEffectivePriorityFeePerGas(final Optional&lt;Wei&gt; maybeBaseFee) {
+<span class="fc" id="L293">    return maybeBaseFee</span>
+<span class="fc" id="L294">        .map(</span>
+            baseFee -&gt; {
+<span class="fc bfc" id="L296" title="All 2 branches covered.">              if (getType().supports1559FeeMarket()) {</span>
+<span class="fc bfc" id="L297" title="All 2 branches covered.">                if (baseFee.greaterOrEqualThan(getMaxFeePerGas().get())) {</span>
+<span class="fc" id="L298">                  return Wei.ZERO;</span>
+                }
+<span class="fc" id="L300">                return UInt256s.min(</span>
+<span class="fc" id="L301">                    getMaxPriorityFeePerGas().get(), getMaxFeePerGas().get().subtract(baseFee));</span>
+              } else {
+<span class="fc bfc" id="L303" title="All 2 branches covered.">                if (baseFee.greaterOrEqualThan(getGasPrice().get())) {</span>
+<span class="fc" id="L304">                  return Wei.ZERO;</span>
+                }
+<span class="fc" id="L306">                return getGasPrice().get().subtract(baseFee);</span>
+              }
+            })
+<span class="fc" id="L309">        .orElseGet(() -&gt; getGasPrice().orElse(Wei.ZERO));</span>
+  }
+
+  /**
+   * Returns the transaction gas limit.
+   *
+   * @return the transaction gas limit
+   */
+  @Override
+  public long getGasLimit() {
+<span class="fc" id="L319">    return gasLimit;</span>
+  }
+
+  /**
+   * Returns the number of blobs this transaction has, or 0 if not a blob transaction type
+   *
+   * @return return the count
+   */
+  public int getBlobCount() {
+<span class="fc" id="L328">    return versionedHashes.map(List::size).orElse(0);</span>
+  }
+
+  /**
+   * Returns the transaction recipient.
+   *
+   * &lt;p&gt;The {@code Optional&lt;Address&gt;} will be {@code Optional.empty()} if the transaction is a
+   * contract creation; otherwise it will contain the message call transaction recipient.
+   *
+   * @return the transaction recipient if a message call; otherwise {@code Optional.empty()}
+   */
+  @Override
+  public Optional&lt;Address&gt; getTo() {
+<span class="fc" id="L341">    return to;</span>
+  }
+
+  /**
+   * Returns the value transferred in the transaction.
+   *
+   * @return the value transferred in the transaction
+   */
+  @Override
+  public Wei getValue() {
+<span class="fc" id="L351">    return value;</span>
+  }
+
+  /**
+   * Returns the signature used to sign the transaction.
+   *
+   * @return the signature used to sign the transaction
+   */
+  public SECPSignature getSignature() {
+<span class="fc" id="L360">    return signature;</span>
+  }
+
+  /**
+   * Returns the transaction payload.
+   *
+   * @return the transaction payload
+   */
+  @Override
+  public Bytes getPayload() {
+<span class="fc" id="L370">    return payload;</span>
+  }
+
+  /**
+   * Returns the payload if this is a contract creation transaction.
+   *
+   * @return if present the init code
+   */
+  @Override
+  public Optional&lt;Bytes&gt; getInit() {
+<span class="fc bfc" id="L380" title="All 2 branches covered.">    return getTo().isPresent() ? Optional.empty() : Optional.of(payload);</span>
+  }
+
+  /**
+   * Returns the payload if this is a message call transaction.
+   *
+   * @return if present the init code
+   */
+  @Override
+  public Optional&lt;Bytes&gt; getData() {
+<span class="pc bpc" id="L390" title="1 of 2 branches missed.">    return getTo().isPresent() ? Optional.of(payload) : Optional.empty();</span>
+  }
+
+  @Override
+  public Optional&lt;List&lt;AccessListEntry&gt;&gt; getAccessList() {
+<span class="fc" id="L395">    return maybeAccessList;</span>
+  }
+
+  /**
+   * Return the transaction chain id (if it exists)
+   *
+   * &lt;p&gt;The {@code OptionalInt} will be {@code OptionalInt.empty()} if the transaction is not tied
+   * to a specific chain.
+   *
+   * @return the transaction chain id if it exists; otherwise {@code OptionalInt.empty()}
+   */
+  @Override
+  public Optional&lt;BigInteger&gt; getChainId() {
+<span class="fc" id="L408">    return chainId;</span>
+  }
+
+  /**
+   * Returns the transaction sender.
+   *
+   * @return the transaction sender
+   */
+  @Override
+  public Address getSender() {
+<span class="fc bfc" id="L418" title="All 2 branches covered.">    if (sender == null) {</span>
+<span class="fc" id="L419">      Optional&lt;Address&gt; cachedSender = Optional.ofNullable(senderCache.getIfPresent(getHash()));</span>
+<span class="fc" id="L420">      sender = cachedSender.orElseGet(this::computeSender);</span>
+    }
+<span class="fc" id="L422">    return sender;</span>
+  }
+
+  private Address computeSender() {
+<span class="fc" id="L426">    final SECPPublicKey publicKey =</span>
+        signatureAlgorithm
+<span class="fc" id="L428">            .recoverPublicKeyFromSignature(getOrComputeSenderRecoveryHash(), signature)</span>
+<span class="fc" id="L429">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L431">                    new IllegalStateException(</span>
+                        &quot;Cannot recover public key from signature for &quot; + this));
+<span class="fc" id="L433">    final Address calculatedSender = Address.extract(Hash.hash(publicKey.getEncodedBytes()));</span>
+<span class="fc" id="L434">    senderCache.put(this.hash, calculatedSender);</span>
+<span class="fc" id="L435">    return calculatedSender;</span>
+  }
+
+  /**
+   * Returns the public key extracted from the signature.
+   *
+   * @return the public key
+   */
+  public Optional&lt;String&gt; getPublicKey() {
+<span class="fc" id="L444">    return signatureAlgorithm</span>
+<span class="fc" id="L445">        .recoverPublicKeyFromSignature(getOrComputeSenderRecoveryHash(), signature)</span>
+<span class="fc" id="L446">        .map(SECPPublicKey::toString);</span>
+  }
+
+  private Bytes32 getOrComputeSenderRecoveryHash() {
+<span class="fc bfc" id="L450" title="All 2 branches covered.">    if (hashNoSignature == null) {</span>
+<span class="fc" id="L451">      hashNoSignature =</span>
+<span class="fc" id="L452">          computeSenderRecoveryHash(</span>
+              transactionType,
+              nonce,
+<span class="fc" id="L455">              gasPrice.orElse(null),</span>
+<span class="fc" id="L456">              maxPriorityFeePerGas.orElse(null),</span>
+<span class="fc" id="L457">              maxFeePerGas.orElse(null),</span>
+<span class="fc" id="L458">              maxFeePerBlobGas.orElse(null),</span>
+              gasLimit,
+              to,
+              value,
+              payload,
+              maybeAccessList,
+<span class="fc" id="L464">              versionedHashes.orElse(null),</span>
+              chainId);
+    }
+<span class="fc" id="L467">    return hashNoSignature;</span>
+  }
+
+  /**
+   * Writes the transaction to RLP
+   *
+   * @param out the output to write the transaction to
+   */
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L476">    TransactionEncoder.encodeRLP(this, out, EncodingContext.BLOCK_BODY);</span>
+<span class="fc" id="L477">  }</span>
+
+  @Override
+  public Bytes encoded() {
+<span class="fc" id="L481">    final BytesValueRLPOutput rplOutput = new BytesValueRLPOutput();</span>
+<span class="fc" id="L482">    writeTo(rplOutput);</span>
+<span class="fc" id="L483">    return rplOutput.encoded();</span>
+  }
+
+  @Override
+  public BigInteger getR() {
+<span class="fc" id="L488">    return signature.getR();</span>
+  }
+
+  @Override
+  public BigInteger getS() {
+<span class="fc" id="L493">    return signature.getS();</span>
+  }
+
+  @Override
+  public BigInteger getV() {
+<span class="pc bpc" id="L498" title="1 of 4 branches missed.">    if (transactionType != null &amp;&amp; transactionType != TransactionType.FRONTIER) {</span>
+      // EIP-2718 typed transaction, use yParity:
+<span class="fc" id="L500">      return null;</span>
+    } else {
+<span class="fc" id="L502">      final BigInteger recId = BigInteger.valueOf(signature.getRecId());</span>
+<span class="fc" id="L503">      return chainId</span>
+<span class="fc" id="L504">          .map(bigInteger -&gt; recId.add(REPLAY_PROTECTED_V_BASE).add(TWO.multiply(bigInteger)))</span>
+<span class="fc" id="L505">          .orElseGet(() -&gt; recId.add(REPLAY_UNPROTECTED_V_BASE));</span>
+    }
+  }
+
+  @Override
+  public BigInteger getYParity() {
+<span class="pc bpc" id="L511" title="1 of 4 branches missed.">    if (transactionType != null &amp;&amp; transactionType != TransactionType.FRONTIER) {</span>
+      // EIP-2718 typed transaction, return yParity:
+<span class="fc" id="L513">      return BigInteger.valueOf(signature.getRecId());</span>
+    } else {
+      // legacy types never return yParity
+<span class="fc" id="L516">      return null;</span>
+    }
+  }
+
+  /**
+   * Returns the transaction hash.
+   *
+   * @return the transaction hash
+   */
+  @Override
+  public Hash getHash() {
+<span class="fc bfc" id="L527" title="All 2 branches covered.">    if (hash == null) {</span>
+<span class="fc" id="L528">      memoizeHashAndSize();</span>
+    }
+<span class="fc" id="L530">    return hash;</span>
+  }
+
+  /**
+   * Returns the size in bytes of the encoded transaction.
+   *
+   * @return the size in bytes of the encoded transaction.
+   */
+  @Override
+  public int getSize() {
+<span class="fc bfc" id="L540" title="All 2 branches covered.">    if (size == -1) {</span>
+<span class="fc" id="L541">      memoizeHashAndSize();</span>
+    }
+<span class="fc" id="L543">    return size;</span>
+  }
+
+  private void memoizeHashAndSize() {
+<span class="fc" id="L547">    final Bytes bytes = TransactionEncoder.encodeOpaqueBytes(this, EncodingContext.BLOCK_BODY);</span>
+<span class="fc" id="L548">    hash = Hash.hash(bytes);</span>
+<span class="fc bfc" id="L549" title="All 4 branches covered.">    if (transactionType.supportsBlob() &amp;&amp; getBlobsWithCommitments().isPresent()) {</span>
+<span class="fc" id="L550">      final Bytes pooledBytes =</span>
+<span class="fc" id="L551">          TransactionEncoder.encodeOpaqueBytes(this, EncodingContext.POOLED_TRANSACTION);</span>
+<span class="fc" id="L552">      size = pooledBytes.size();</span>
+<span class="fc" id="L553">      return;</span>
+    }
+<span class="fc" id="L555">    size = bytes.size();</span>
+<span class="fc" id="L556">  }</span>
+
+  /**
+   * Returns whether the transaction is a contract creation
+   *
+   * @return {@code true} if this is a contract-creation transaction; otherwise {@code false}
+   */
+  public boolean isContractCreation() {
+<span class="fc" id="L564">    return getTo().isEmpty();</span>
+  }
+
+  /**
+   * Calculates the max up-front cost for the gas the transaction can use.
+   *
+   * @return the max up-front cost for the gas the transaction can use.
+   */
+  private Wei getMaxUpfrontGasCost(final long blobGasPerBlock) {
+<span class="fc" id="L573">    return getUpfrontGasCost(</span>
+<span class="fc" id="L574">        getMaxGasPrice(), getMaxFeePerBlobGas().orElse(Wei.ZERO), blobGasPerBlock);</span>
+  }
+
+  /**
+   * Calculates the up-front cost for the gas and blob gas the transaction can use.
+   *
+   * @param gasPrice the gas price to use
+   * @param blobGasPrice the blob gas price to use
+   * @return the up-front cost for the gas the transaction can use.
+   */
+  public Wei getUpfrontGasCost(
+      final Wei gasPrice, final Wei blobGasPrice, final long totalBlobGas) {
+<span class="pc bpc" id="L586" title="1 of 4 branches missed.">    if (gasPrice == null || gasPrice.isZero()) {</span>
+<span class="fc" id="L587">      return Wei.ZERO;</span>
+    }
+
+<span class="fc" id="L590">    final var cost = calculateUpfrontGasCost(gasPrice, blobGasPrice, totalBlobGas);</span>
+
+<span class="pc bpc" id="L592" title="1 of 2 branches missed.">    if (cost.bitLength() &gt; 256) {</span>
+<span class="nc" id="L593">      return Wei.MAX_WEI;</span>
+    } else {
+<span class="fc" id="L595">      return Wei.of(cost);</span>
+    }
+  }
+
+  public BigInteger calculateUpfrontGasCost(
+      final Wei gasPrice, final Wei blobGasPrice, final long totalBlobGas) {
+<span class="fc" id="L601">    var cost =</span>
+<span class="fc" id="L602">        new BigInteger(1, Longs.toByteArray(getGasLimit())).multiply(gasPrice.getAsBigInteger());</span>
+
+<span class="fc bfc" id="L604" title="All 2 branches covered.">    if (transactionType.supportsBlob()) {</span>
+<span class="fc" id="L605">      cost = cost.add(blobGasPrice.getAsBigInteger().multiply(BigInteger.valueOf(totalBlobGas)));</span>
+    }
+
+<span class="fc" id="L608">    return cost;</span>
+  }
+
+  /**
+   * Calculates the up-front cost for the transaction.
+   *
+   * &lt;p&gt;The up-front cost is paid by the sender account before the transaction is executed. The
+   * sender must have the amount in its account balance to execute and some of this amount may be
+   * refunded after the transaction has executed.
+   *
+   * @return the up-front gas cost for the transaction
+   */
+  public Wei getUpfrontCost(final long totalBlobGas) {
+<span class="fc" id="L621">    Wei maxUpfrontGasCost = getMaxUpfrontGasCost(totalBlobGas);</span>
+<span class="fc" id="L622">    Wei result = maxUpfrontGasCost.add(getValue());</span>
+<span class="pc bpc" id="L623" title="1 of 2 branches missed.">    return (maxUpfrontGasCost.compareTo(result) &gt; 0) ? Wei.MAX_WEI : result;</span>
+  }
+
+  /**
+   * Return the maximum fee per gas the sender is willing to pay for this transaction.
+   *
+   * @return max fee per gas in wei
+   */
+  public Wei getMaxGasPrice() {
+<span class="fc" id="L632">    return maxFeePerGas.orElseGet(</span>
+        () -&gt;
+<span class="fc" id="L634">            gasPrice.orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L636">                    new IllegalStateException(</span>
+                        &quot;Transaction requires either gasPrice or maxFeePerGas&quot;)));
+  }
+
+  /**
+   * Calculates the effectiveGasPrice of a transaction on the basis of an {@code Optional&lt;Long&gt;}
+   * baseFee and handles unwrapping Optional fee parameters. If baseFee is present, effective gas is
+   * calculated as:
+   *
+   * &lt;p&gt;min((baseFeePerGas + maxPriorityFeePerGas), maxFeePerGas)
+   *
+   * &lt;p&gt;Otherwise, return gasPrice for legacy transactions.
+   *
+   * @param baseFeePerGas optional baseFee from the block header, if we are post-london
+   * @return the effective gas price.
+   */
+  public final Wei getEffectiveGasPrice(final Optional&lt;Wei&gt; baseFeePerGas) {
+<span class="fc" id="L653">    return getEffectivePriorityFeePerGas(baseFeePerGas).addExact(baseFeePerGas.orElse(Wei.ZERO));</span>
+  }
+
+  @Override
+  public TransactionType getType() {
+<span class="fc" id="L658">    return this.transactionType;</span>
+  }
+
+  @Override
+  public Optional&lt;List&lt;VersionedHash&gt;&gt; getVersionedHashes() {
+<span class="fc" id="L663">    return versionedHashes;</span>
+  }
+
+  @Override
+  public Optional&lt;BlobsWithCommitments&gt; getBlobsWithCommitments() {
+<span class="fc" id="L668">    return blobsWithCommitments;</span>
+  }
+
+  /**
+   * Return the list of transaction hashes extracted from the collection of Transaction passed as
+   * argument
+   *
+   * @param transactions a collection of transactions
+   * @return the list of transaction hashes
+   */
+  public static List&lt;Hash&gt; toHashList(final Collection&lt;Transaction&gt; transactions) {
+<span class="fc" id="L679">    return transactions.stream().map(Transaction::getHash).toList();</span>
+  }
+
+  private static Bytes32 computeSenderRecoveryHash(
+      final TransactionType transactionType,
+      final long nonce,
+      final Wei gasPrice,
+      final Wei maxPriorityFeePerGas,
+      final Wei maxFeePerGas,
+      final Wei maxFeePerBlobGas,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;List&lt;AccessListEntry&gt;&gt; accessList,
+      final List&lt;VersionedHash&gt; versionedHashes,
+      final Optional&lt;BigInteger&gt; chainId) {
+<span class="fc bfc" id="L696" title="All 2 branches covered.">    if (transactionType.requiresChainId()) {</span>
+<span class="fc" id="L697">      checkArgument(chainId.isPresent(), &quot;Transaction type %s requires chainId&quot;, transactionType);</span>
+    }
+<span class="fc" id="L699">    final Bytes preimage =</span>
+<span class="pc bpc" id="L700" title="1 of 5 branches missed.">        switch (transactionType) {</span>
+<span class="fc" id="L701">          case FRONTIER -&gt; frontierPreimage(nonce, gasPrice, gasLimit, to, value, payload, chainId);</span>
+<span class="fc" id="L702">          case EIP1559 -&gt; eip1559Preimage(</span>
+              nonce,
+              maxPriorityFeePerGas,
+              maxFeePerGas,
+              gasLimit,
+              to,
+              value,
+              payload,
+              chainId,
+              accessList);
+<span class="fc" id="L712">          case BLOB -&gt; blobPreimage(</span>
+              nonce,
+              maxPriorityFeePerGas,
+              maxFeePerGas,
+              maxFeePerBlobGas,
+              gasLimit,
+              to,
+              value,
+              payload,
+              chainId,
+              accessList,
+              versionedHashes);
+<span class="fc" id="L724">          case ACCESS_LIST -&gt; accessListPreimage(</span>
+              nonce,
+              gasPrice,
+              gasLimit,
+              to,
+              value,
+              payload,
+<span class="fc" id="L731">              accessList.orElseThrow(</span>
+                  () -&gt;
+<span class="nc" id="L733">                      new IllegalStateException(</span>
+                          &quot;Developer error: the transaction should be guaranteed to have an access list here&quot;)),
+              chainId);
+        };
+<span class="fc" id="L737">    return keccak256(preimage);</span>
+  }
+
+  private static Bytes frontierPreimage(
+      final long nonce,
+      final Wei gasPrice,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;BigInteger&gt; chainId) {
+<span class="fc" id="L748">    return RLP.encode(</span>
+        rlpOutput -&gt; {
+<span class="fc" id="L750">          rlpOutput.startList();</span>
+<span class="fc" id="L751">          rlpOutput.writeLongScalar(nonce);</span>
+<span class="fc" id="L752">          rlpOutput.writeUInt256Scalar(gasPrice);</span>
+<span class="fc" id="L753">          rlpOutput.writeLongScalar(gasLimit);</span>
+<span class="fc" id="L754">          rlpOutput.writeBytes(to.map(Bytes::copy).orElse(Bytes.EMPTY));</span>
+<span class="fc" id="L755">          rlpOutput.writeUInt256Scalar(value);</span>
+<span class="fc" id="L756">          rlpOutput.writeBytes(payload);</span>
+<span class="fc bfc" id="L757" title="All 2 branches covered.">          if (chainId.isPresent()) {</span>
+<span class="fc" id="L758">            rlpOutput.writeBigIntegerScalar(chainId.get());</span>
+<span class="fc" id="L759">            rlpOutput.writeUInt256Scalar(UInt256.ZERO);</span>
+<span class="fc" id="L760">            rlpOutput.writeUInt256Scalar(UInt256.ZERO);</span>
+          }
+<span class="fc" id="L762">          rlpOutput.endList();</span>
+<span class="fc" id="L763">        });</span>
+  }
+
+  private static Bytes eip1559Preimage(
+      final long nonce,
+      final Wei maxPriorityFeePerGas,
+      final Wei maxFeePerGas,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Optional&lt;List&lt;AccessListEntry&gt;&gt; accessList) {
+<span class="fc" id="L776">    final Bytes encoded =</span>
+<span class="fc" id="L777">        RLP.encode(</span>
+            rlpOutput -&gt; {
+<span class="fc" id="L779">              rlpOutput.startList();</span>
+<span class="fc" id="L780">              eip1559PreimageFields(</span>
+                  nonce,
+                  maxPriorityFeePerGas,
+                  maxFeePerGas,
+                  gasLimit,
+                  to,
+                  value,
+                  payload,
+                  chainId,
+                  accessList,
+                  rlpOutput);
+<span class="fc" id="L791">              rlpOutput.endList();</span>
+<span class="fc" id="L792">            });</span>
+<span class="fc" id="L793">    return Bytes.concatenate(Bytes.of(TransactionType.EIP1559.getSerializedType()), encoded);</span>
+  }
+
+  private static void eip1559PreimageFields(
+      final long nonce,
+      final Wei maxPriorityFeePerGas,
+      final Wei maxFeePerGas,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Optional&lt;List&lt;AccessListEntry&gt;&gt; accessList,
+      final RLPOutput rlpOutput) {
+<span class="fc" id="L807">    rlpOutput.writeBigIntegerScalar(chainId.orElseThrow());</span>
+<span class="fc" id="L808">    rlpOutput.writeLongScalar(nonce);</span>
+<span class="fc" id="L809">    rlpOutput.writeUInt256Scalar(maxPriorityFeePerGas);</span>
+<span class="fc" id="L810">    rlpOutput.writeUInt256Scalar(maxFeePerGas);</span>
+<span class="fc" id="L811">    rlpOutput.writeLongScalar(gasLimit);</span>
+<span class="fc" id="L812">    rlpOutput.writeBytes(to.map(Bytes::copy).orElse(Bytes.EMPTY));</span>
+<span class="fc" id="L813">    rlpOutput.writeUInt256Scalar(value);</span>
+<span class="fc" id="L814">    rlpOutput.writeBytes(payload);</span>
+<span class="fc" id="L815">    AccessListTransactionEncoder.writeAccessList(rlpOutput, accessList);</span>
+<span class="fc" id="L816">  }</span>
+
+  private static Bytes blobPreimage(
+      final long nonce,
+      final Wei maxPriorityFeePerGas,
+      final Wei maxFeePerGas,
+      final Wei maxFeePerBlobGas,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Optional&lt;List&lt;AccessListEntry&gt;&gt; accessList,
+      final List&lt;VersionedHash&gt; versionedHashes) {
+
+<span class="fc" id="L831">    final Bytes encoded =</span>
+<span class="fc" id="L832">        RLP.encode(</span>
+            rlpOutput -&gt; {
+<span class="fc" id="L834">              rlpOutput.startList();</span>
+<span class="fc" id="L835">              eip1559PreimageFields(</span>
+                  nonce,
+                  maxPriorityFeePerGas,
+                  maxFeePerGas,
+                  gasLimit,
+                  to,
+                  value,
+                  payload,
+                  chainId,
+                  accessList,
+                  rlpOutput);
+<span class="fc" id="L846">              rlpOutput.writeUInt256Scalar(maxFeePerBlobGas);</span>
+<span class="fc" id="L847">              BlobTransactionEncoder.writeBlobVersionedHashes(rlpOutput, versionedHashes);</span>
+<span class="fc" id="L848">              rlpOutput.endList();</span>
+<span class="fc" id="L849">            });</span>
+<span class="fc" id="L850">    return Bytes.concatenate(Bytes.of(TransactionType.BLOB.getSerializedType()), encoded);</span>
+  }
+
+  private static Bytes accessListPreimage(
+      final long nonce,
+      final Wei gasPrice,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final Bytes payload,
+      final List&lt;AccessListEntry&gt; accessList,
+      final Optional&lt;BigInteger&gt; chainId) {
+<span class="fc" id="L862">    final Bytes encode =</span>
+<span class="fc" id="L863">        RLP.encode(</span>
+            rlpOutput -&gt; {
+<span class="fc" id="L865">              rlpOutput.startList();</span>
+<span class="fc" id="L866">              AccessListTransactionEncoder.encodeAccessListInner(</span>
+                  chainId, nonce, gasPrice, gasLimit, to, value, payload, accessList, rlpOutput);
+<span class="fc" id="L868">              rlpOutput.endList();</span>
+<span class="fc" id="L869">            });</span>
+<span class="fc" id="L870">    return Bytes.concatenate(Bytes.of(TransactionType.ACCESS_LIST.getSerializedType()), encode);</span>
+  }
+
+  @Override
+  public boolean equals(final Object other) {
+<span class="pc bpc" id="L875" title="1 of 2 branches missed.">    if (!(other instanceof Transaction that)) {</span>
+<span class="nc" id="L876">      return false;</span>
+    }
+<span class="fc bfc" id="L878" title="All 4 branches covered.">    return Objects.equals(this.chainId, that.chainId)</span>
+        &amp;&amp; this.gasLimit == that.gasLimit
+<span class="fc bfc" id="L880" title="All 2 branches covered.">        &amp;&amp; Objects.equals(this.gasPrice, that.gasPrice)</span>
+<span class="fc bfc" id="L881" title="All 2 branches covered.">        &amp;&amp; Objects.equals(this.maxPriorityFeePerGas, that.maxPriorityFeePerGas)</span>
+<span class="pc bpc" id="L882" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(this.maxFeePerGas, that.maxFeePerGas)</span>
+<span class="pc bpc" id="L883" title="1 of 4 branches missed.">        &amp;&amp; Objects.equals(this.maxFeePerBlobGas, that.maxFeePerBlobGas)</span>
+        &amp;&amp; this.nonce == that.nonce
+<span class="fc bfc" id="L885" title="All 2 branches covered.">        &amp;&amp; Objects.equals(this.payload, that.payload)</span>
+<span class="fc bfc" id="L886" title="All 2 branches covered.">        &amp;&amp; Objects.equals(this.signature, that.signature)</span>
+<span class="pc bpc" id="L887" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(this.to, that.to)</span>
+<span class="pc bpc" id="L888" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(this.value, that.value)</span>
+<span class="pc bpc" id="L889" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(this.getV(), that.getV());</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L894">    return Objects.hash(</span>
+<span class="fc" id="L895">        nonce,</span>
+        gasPrice,
+        maxPriorityFeePerGas,
+        maxFeePerGas,
+        maxFeePerBlobGas,
+<span class="fc" id="L900">        gasLimit,</span>
+        to,
+        value,
+        payload,
+        signature,
+        chainId);
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L910">    final StringBuilder sb = new StringBuilder();</span>
+<span class="fc" id="L911">    sb.append(</span>
+<span class="pc bpc" id="L912" title="1 of 2 branches missed.">            transactionType.supportsBlob()</span>
+<span class="nc" id="L913">                ? &quot;Blob&quot;</span>
+<span class="fc bfc" id="L914" title="All 2 branches covered.">                : isContractCreation() ? &quot;ContractCreation&quot; : &quot;MessageCall&quot;)</span>
+<span class="fc" id="L915">        .append(&quot;{&quot;);</span>
+<span class="fc" id="L916">    sb.append(&quot;type=&quot;).append(getType()).append(&quot;, &quot;);</span>
+<span class="fc" id="L917">    sb.append(&quot;nonce=&quot;).append(getNonce()).append(&quot;, &quot;);</span>
+<span class="fc" id="L918">    getGasPrice()</span>
+<span class="fc" id="L919">        .ifPresent(gp -&gt; sb.append(&quot;gasPrice=&quot;).append(gp.toHumanReadableString()).append(&quot;, &quot;));</span>
+<span class="pc bpc" id="L920" title="1 of 4 branches missed.">    if (getMaxPriorityFeePerGas().isPresent() &amp;&amp; getMaxFeePerGas().isPresent()) {</span>
+<span class="fc" id="L921">      sb.append(&quot;maxPriorityFeePerGas=&quot;)</span>
+<span class="fc" id="L922">          .append(getMaxPriorityFeePerGas().map(Wei::toHumanReadableString).get())</span>
+<span class="fc" id="L923">          .append(&quot;, &quot;);</span>
+<span class="fc" id="L924">      sb.append(&quot;maxFeePerGas=&quot;)</span>
+<span class="fc" id="L925">          .append(getMaxFeePerGas().map(Wei::toHumanReadableString).get())</span>
+<span class="fc" id="L926">          .append(&quot;, &quot;);</span>
+<span class="fc" id="L927">      getMaxFeePerBlobGas()</span>
+<span class="fc" id="L928">          .ifPresent(</span>
+              wei -&gt;
+<span class="nc" id="L930">                  sb.append(&quot;maxFeePerBlobGas=&quot;).append(wei.toHumanReadableString()).append(&quot;, &quot;));</span>
+    }
+<span class="fc" id="L932">    sb.append(&quot;gasLimit=&quot;).append(getGasLimit()).append(&quot;, &quot;);</span>
+<span class="fc bfc" id="L933" title="All 2 branches covered.">    if (getTo().isPresent()) sb.append(&quot;to=&quot;).append(getTo().get()).append(&quot;, &quot;);</span>
+<span class="fc" id="L934">    sb.append(&quot;value=&quot;).append(getValue()).append(&quot;, &quot;);</span>
+<span class="fc" id="L935">    sb.append(&quot;sig=&quot;).append(getSignature()).append(&quot;, &quot;);</span>
+<span class="fc bfc" id="L936" title="All 2 branches covered.">    if (chainId.isPresent()) sb.append(&quot;chainId=&quot;).append(getChainId().get()).append(&quot;, &quot;);</span>
+<span class="fc bfc" id="L937" title="All 2 branches covered.">    if (transactionType.equals(TransactionType.ACCESS_LIST)) {</span>
+<span class="fc" id="L938">      sb.append(&quot;accessList=&quot;).append(maybeAccessList).append(&quot;, &quot;);</span>
+    }
+<span class="pc bpc" id="L940" title="1 of 2 branches missed.">    if (versionedHashes.isPresent()) {</span>
+<span class="nc" id="L941">      final List&lt;VersionedHash&gt; vhs = versionedHashes.get();</span>
+<span class="nc bnc" id="L942" title="All 2 branches missed.">      if (!vhs.isEmpty()) {</span>
+<span class="nc" id="L943">        sb.append(&quot;versionedHashes=[&quot;);</span>
+<span class="nc" id="L944">        sb.append(</span>
+<span class="nc" id="L945">            vhs.get(0)</span>
+<span class="nc" id="L946">                .toString()); // can't be empty if present, as this is checked in the constructor</span>
+<span class="nc bnc" id="L947" title="All 2 branches missed.">        for (int i = 1; i &lt; vhs.size(); i++) {</span>
+<span class="nc" id="L948">          sb.append(&quot;, &quot;).append(vhs.get(i).toString());</span>
+        }
+<span class="nc" id="L950">        sb.append(&quot;], &quot;);</span>
+      }
+    }
+<span class="pc bpc" id="L953" title="3 of 4 branches missed.">    if (transactionType.supportsBlob() &amp;&amp; this.blobsWithCommitments.isPresent()) {</span>
+<span class="nc" id="L954">      sb.append(&quot;numberOfBlobs=&quot;).append(blobsWithCommitments.get().getBlobs().size()).append(&quot;, &quot;);</span>
+    }
+<span class="fc" id="L956">    sb.append(&quot;payload=&quot;).append(getPayload());</span>
+<span class="fc" id="L957">    return sb.append(&quot;}&quot;).toString();</span>
+  }
+
+  public String toTraceLog() {
+<span class="nc" id="L961">    final StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L962">    sb.append(getHash()).append(&quot;={&quot;);</span>
+<span class="nc" id="L963">    sb.append(</span>
+<span class="nc bnc" id="L964" title="All 2 branches missed.">            transactionType.supportsBlob()</span>
+<span class="nc" id="L965">                ? &quot;Blob&quot;</span>
+<span class="nc bnc" id="L966" title="All 2 branches missed.">                : isContractCreation() ? &quot;ContractCreation&quot; : &quot;MessageCall&quot;)</span>
+<span class="nc" id="L967">        .append(&quot;, &quot;);</span>
+<span class="nc" id="L968">    sb.append(getNonce()).append(&quot;, &quot;);</span>
+<span class="nc" id="L969">    sb.append(getSender()).append(&quot;, &quot;);</span>
+<span class="nc" id="L970">    sb.append(getType()).append(&quot;, &quot;);</span>
+<span class="nc" id="L971">    getGasPrice()</span>
+<span class="nc" id="L972">        .ifPresent(gp -&gt; sb.append(&quot;gp: &quot;).append(gp.toHumanReadableString()).append(&quot;, &quot;));</span>
+<span class="nc bnc" id="L973" title="All 4 branches missed.">    if (getMaxPriorityFeePerGas().isPresent() &amp;&amp; getMaxFeePerGas().isPresent()) {</span>
+<span class="nc" id="L974">      sb.append(&quot;mf: &quot;)</span>
+<span class="nc" id="L975">          .append(getMaxFeePerGas().map(Wei::toHumanReadableString).get())</span>
+<span class="nc" id="L976">          .append(&quot;, &quot;);</span>
+<span class="nc" id="L977">      sb.append(&quot;pf: &quot;)</span>
+<span class="nc" id="L978">          .append(getMaxPriorityFeePerGas().map(Wei::toHumanReadableString).get())</span>
+<span class="nc" id="L979">          .append(&quot;, &quot;);</span>
+<span class="nc" id="L980">      getMaxFeePerBlobGas()</span>
+<span class="nc" id="L981">          .ifPresent(wei -&gt; sb.append(&quot;df: &quot;).append(wei.toHumanReadableString()).append(&quot;, &quot;));</span>
+    }
+<span class="nc" id="L983">    sb.append(&quot;gl: &quot;).append(getGasLimit()).append(&quot;, &quot;);</span>
+<span class="nc" id="L984">    sb.append(&quot;v: &quot;).append(getValue().toHumanReadableString()).append(&quot;, &quot;);</span>
+<span class="nc" id="L985">    getTo().ifPresent(t -&gt; sb.append(&quot;to: &quot;).append(t));</span>
+<span class="nc" id="L986">    return sb.append(&quot;}&quot;).toString();</span>
+  }
+
+  @Override
+  public Optional&lt;Address&gt; contractAddress() {
+<span class="fc bfc" id="L991" title="All 2 branches covered.">    if (isContractCreation()) {</span>
+<span class="fc" id="L992">      return Optional.of(Address.contractAddress(getSender(), getNonce()));</span>
+    }
+<span class="fc" id="L994">    return Optional.empty();</span>
+  }
+
+  /**
+   * Creates a copy of this transaction that does not share any underlying byte array.
+   *
+   * &lt;p&gt;This is useful in case the transaction is built from a block body and fields, like to or
+   * payload, are wrapping (and so keeping references) sections of the large RPL encoded block body,
+   * and we plan to keep the transaction around for some time, like in the txpool in case of a
+   * reorg, and do not want to keep all the block body in memory for a long time, but only the
+   * actual transaction.
+   *
+   * @return a copy of the transaction
+   */
+  public Transaction detachedCopy() {
+<span class="fc" id="L1009">    final Optional&lt;Address&gt; detachedTo = to.map(address -&gt; Address.wrap(address.copy()));</span>
+<span class="fc" id="L1010">    final Optional&lt;List&lt;AccessListEntry&gt;&gt; detachedAccessList =</span>
+<span class="fc" id="L1011">        maybeAccessList.map(</span>
+            accessListEntries -&gt;
+<span class="fc" id="L1013">                accessListEntries.stream().map(this::accessListDetachedCopy).toList());</span>
+<span class="fc" id="L1014">    final Optional&lt;List&lt;VersionedHash&gt;&gt; detachedVersionedHashes =</span>
+<span class="fc" id="L1015">        versionedHashes.map(</span>
+<span class="fc" id="L1016">            hashes -&gt; hashes.stream().map(vh -&gt; new VersionedHash(vh.toBytes().copy())).toList());</span>
+<span class="fc" id="L1017">    final Optional&lt;BlobsWithCommitments&gt; detachedBlobsWithCommitments =</span>
+<span class="fc" id="L1018">        blobsWithCommitments.map(</span>
+            withCommitments -&gt;
+<span class="fc" id="L1020">                blobsWithCommitmentsDetachedCopy(withCommitments, detachedVersionedHashes.get()));</span>
+
+<span class="fc" id="L1022">    final var copiedTx =</span>
+        new Transaction(
+            true,
+            transactionType,
+            nonce,
+            gasPrice,
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            maxFeePerBlobGas,
+            gasLimit,
+            detachedTo,
+            value,
+            signature,
+<span class="fc" id="L1035">            payload.copy(),</span>
+            detachedAccessList,
+            sender,
+            chainId,
+            detachedVersionedHashes,
+            detachedBlobsWithCommitments);
+
+    // copy also the computed fields, to avoid to recompute them
+<span class="fc" id="L1043">    copiedTx.sender = this.sender;</span>
+<span class="fc" id="L1044">    copiedTx.hash = this.hash;</span>
+<span class="fc" id="L1045">    copiedTx.hashNoSignature = this.hashNoSignature;</span>
+<span class="fc" id="L1046">    copiedTx.size = this.size;</span>
+
+<span class="fc" id="L1048">    return copiedTx;</span>
+  }
+
+  private AccessListEntry accessListDetachedCopy(final AccessListEntry accessListEntry) {
+<span class="nc" id="L1052">    final Address detachedAddress = Address.wrap(accessListEntry.address().copy());</span>
+<span class="nc" id="L1053">    final var detachedStorage = accessListEntry.storageKeys().stream().map(Bytes32::copy).toList();</span>
+<span class="nc" id="L1054">    return new AccessListEntry(detachedAddress, detachedStorage);</span>
+  }
+
+  private BlobsWithCommitments blobsWithCommitmentsDetachedCopy(
+      final BlobsWithCommitments blobsWithCommitments, final List&lt;VersionedHash&gt; versionedHashes) {
+<span class="fc" id="L1059">    final var detachedCommitments =</span>
+<span class="fc" id="L1060">        blobsWithCommitments.getKzgCommitments().stream()</span>
+<span class="fc" id="L1061">            .map(kc -&gt; new KZGCommitment(kc.getData().copy()))</span>
+<span class="fc" id="L1062">            .toList();</span>
+<span class="fc" id="L1063">    final var detachedBlobs =</span>
+<span class="fc" id="L1064">        blobsWithCommitments.getBlobs().stream()</span>
+<span class="fc" id="L1065">            .map(blob -&gt; new Blob(blob.getData().copy()))</span>
+<span class="fc" id="L1066">            .toList();</span>
+<span class="fc" id="L1067">    final var detachedProofs =</span>
+<span class="fc" id="L1068">        blobsWithCommitments.getKzgProofs().stream()</span>
+<span class="fc" id="L1069">            .map(proof -&gt; new KZGProof(proof.getData().copy()))</span>
+<span class="fc" id="L1070">            .toList();</span>
+
+<span class="fc" id="L1072">    return new BlobsWithCommitments(</span>
+        detachedCommitments, detachedBlobs, detachedProofs, versionedHashes);
+  }
+
+<span class="fc" id="L1076">  public static class Builder {</span>
+<span class="fc" id="L1077">    private static final Optional&lt;List&lt;AccessListEntry&gt;&gt; EMPTY_ACCESS_LIST = Optional.of(List.of());</span>
+
+    protected TransactionType transactionType;
+
+<span class="fc" id="L1081">    protected long nonce = -1L;</span>
+
+    protected Wei gasPrice;
+
+    protected Wei maxPriorityFeePerGas;
+
+    protected Wei maxFeePerGas;
+    protected Wei maxFeePerBlobGas;
+
+<span class="fc" id="L1090">    protected long gasLimit = -1L;</span>
+
+<span class="fc" id="L1092">    protected Optional&lt;Address&gt; to = Optional.empty();</span>
+
+    protected Wei value;
+
+    protected SECPSignature signature;
+
+    protected Bytes payload;
+
+<span class="fc" id="L1100">    protected Optional&lt;List&lt;AccessListEntry&gt;&gt; accessList = Optional.empty();</span>
+
+    protected Address sender;
+
+<span class="fc" id="L1104">    protected Optional&lt;BigInteger&gt; chainId = Optional.empty();</span>
+<span class="fc" id="L1105">    protected Optional&lt;BigInteger&gt; v = Optional.empty();</span>
+<span class="fc" id="L1106">    protected List&lt;VersionedHash&gt; versionedHashes = null;</span>
+    private BlobsWithCommitments blobsWithCommitments;
+
+    public Builder copiedFrom(final Transaction toCopy) {
+<span class="fc" id="L1110">      this.transactionType = toCopy.transactionType;</span>
+<span class="fc" id="L1111">      this.nonce = toCopy.nonce;</span>
+<span class="fc" id="L1112">      this.gasPrice = toCopy.gasPrice.orElse(null);</span>
+<span class="fc" id="L1113">      this.maxPriorityFeePerGas = toCopy.maxPriorityFeePerGas.orElse(null);</span>
+<span class="fc" id="L1114">      this.maxFeePerGas = toCopy.maxFeePerGas.orElse(null);</span>
+<span class="fc" id="L1115">      this.maxFeePerBlobGas = toCopy.maxFeePerBlobGas.orElse(null);</span>
+<span class="fc" id="L1116">      this.gasLimit = toCopy.gasLimit;</span>
+<span class="fc" id="L1117">      this.to = toCopy.to;</span>
+<span class="fc" id="L1118">      this.value = toCopy.value;</span>
+<span class="fc" id="L1119">      this.signature = toCopy.signature;</span>
+<span class="fc" id="L1120">      this.payload = toCopy.payload;</span>
+<span class="fc" id="L1121">      this.accessList = toCopy.maybeAccessList;</span>
+<span class="fc" id="L1122">      this.sender = toCopy.sender;</span>
+<span class="fc" id="L1123">      this.chainId = toCopy.chainId;</span>
+<span class="fc" id="L1124">      this.versionedHashes = toCopy.versionedHashes.orElse(null);</span>
+<span class="fc" id="L1125">      this.blobsWithCommitments = toCopy.blobsWithCommitments.orElse(null);</span>
+<span class="fc" id="L1126">      return this;</span>
+    }
+
+    public Builder type(final TransactionType transactionType) {
+<span class="fc" id="L1130">      this.transactionType = transactionType;</span>
+<span class="fc" id="L1131">      return this;</span>
+    }
+
+    public Builder chainId(final BigInteger chainId) {
+<span class="fc" id="L1135">      this.chainId = Optional.of(chainId);</span>
+<span class="fc" id="L1136">      return this;</span>
+    }
+
+    public Builder v(final BigInteger v) {
+<span class="nc" id="L1140">      this.v = Optional.of(v);</span>
+<span class="nc" id="L1141">      return this;</span>
+    }
+
+    public Builder gasPrice(final Wei gasPrice) {
+<span class="fc" id="L1145">      this.gasPrice = gasPrice;</span>
+<span class="fc" id="L1146">      return this;</span>
+    }
+
+    public Builder maxPriorityFeePerGas(final Wei maxPriorityFeePerGas) {
+<span class="fc" id="L1150">      this.maxPriorityFeePerGas = maxPriorityFeePerGas;</span>
+<span class="fc" id="L1151">      return this;</span>
+    }
+
+    public Builder maxFeePerGas(final Wei maxFeePerGas) {
+<span class="fc" id="L1155">      this.maxFeePerGas = maxFeePerGas;</span>
+<span class="fc" id="L1156">      return this;</span>
+    }
+
+    public Builder maxFeePerBlobGas(final Wei maxFeePerBlobGas) {
+<span class="fc" id="L1160">      this.maxFeePerBlobGas = maxFeePerBlobGas;</span>
+<span class="fc" id="L1161">      return this;</span>
+    }
+
+    public Builder gasLimit(final long gasLimit) {
+<span class="fc" id="L1165">      this.gasLimit = gasLimit;</span>
+<span class="fc" id="L1166">      return this;</span>
+    }
+
+    public Builder nonce(final long nonce) {
+<span class="fc" id="L1170">      this.nonce = nonce;</span>
+<span class="fc" id="L1171">      return this;</span>
+    }
+
+    public Builder value(final Wei value) {
+<span class="fc" id="L1175">      this.value = value;</span>
+<span class="fc" id="L1176">      return this;</span>
+    }
+
+    public Builder to(final Address to) {
+<span class="fc" id="L1180">      this.to = Optional.ofNullable(to);</span>
+<span class="fc" id="L1181">      return this;</span>
+    }
+
+    public Builder payload(final Bytes payload) {
+<span class="fc" id="L1185">      this.payload = payload;</span>
+<span class="fc" id="L1186">      return this;</span>
+    }
+
+    public Builder accessList(final List&lt;AccessListEntry&gt; accessList) {
+<span class="fc" id="L1190">      this.accessList =</span>
+<span class="fc bfc" id="L1191" title="All 2 branches covered.">          accessList == null</span>
+<span class="fc" id="L1192">              ? Optional.empty()</span>
+<span class="fc bfc" id="L1193" title="All 2 branches covered.">              : accessList.isEmpty() ? EMPTY_ACCESS_LIST : Optional.of(accessList);</span>
+<span class="fc" id="L1194">      return this;</span>
+    }
+
+    public Builder sender(final Address sender) {
+<span class="fc" id="L1198">      this.sender = sender;</span>
+<span class="fc" id="L1199">      return this;</span>
+    }
+
+    public Builder signature(final SECPSignature signature) {
+<span class="fc" id="L1203">      this.signature = signature;</span>
+<span class="fc" id="L1204">      return this;</span>
+    }
+
+    public Builder versionedHashes(final List&lt;VersionedHash&gt; versionedHashes) {
+<span class="fc" id="L1208">      this.versionedHashes = versionedHashes;</span>
+<span class="fc" id="L1209">      return this;</span>
+    }
+
+    public Builder guessType() {
+<span class="fc bfc" id="L1213" title="All 4 branches covered.">      if (versionedHashes != null &amp;&amp; !versionedHashes.isEmpty()) {</span>
+<span class="fc" id="L1214">        transactionType = TransactionType.BLOB;</span>
+<span class="fc bfc" id="L1215" title="All 4 branches covered.">      } else if (maxPriorityFeePerGas != null || maxFeePerGas != null) {</span>
+<span class="fc" id="L1216">        transactionType = TransactionType.EIP1559;</span>
+<span class="fc bfc" id="L1217" title="All 2 branches covered.">      } else if (accessList.isPresent()) {</span>
+<span class="fc" id="L1218">        transactionType = TransactionType.ACCESS_LIST;</span>
+      } else {
+<span class="fc" id="L1220">        transactionType = TransactionType.FRONTIER;</span>
+      }
+<span class="fc" id="L1222">      return this;</span>
+    }
+
+    public TransactionType getTransactionType() {
+<span class="fc" id="L1226">      return transactionType;</span>
+    }
+
+    public Transaction build() {
+<span class="fc bfc" id="L1230" title="All 2 branches covered.">      if (transactionType == null) guessType();</span>
+<span class="fc" id="L1231">      return new Transaction(</span>
+          false,
+          transactionType,
+          nonce,
+<span class="fc" id="L1235">          Optional.ofNullable(gasPrice),</span>
+<span class="fc" id="L1236">          Optional.ofNullable(maxPriorityFeePerGas),</span>
+<span class="fc" id="L1237">          Optional.ofNullable(maxFeePerGas),</span>
+<span class="fc" id="L1238">          Optional.ofNullable(maxFeePerBlobGas),</span>
+          gasLimit,
+          to,
+          value,
+          signature,
+          payload,
+          accessList,
+          sender,
+          chainId,
+<span class="fc" id="L1247">          Optional.ofNullable(versionedHashes),</span>
+<span class="fc" id="L1248">          Optional.ofNullable(blobsWithCommitments));</span>
+    }
+
+    public Transaction signAndBuild(final KeyPair keys) {
+<span class="pc bpc" id="L1252" title="1 of 2 branches missed.">      checkState(</span>
+          signature == null, &quot;The transaction signature has already been provided to this builder&quot;);
+<span class="fc" id="L1254">      signature(computeSignature(keys));</span>
+<span class="fc" id="L1255">      sender(Address.extract(Hash.hash(keys.getPublicKey().getEncodedBytes())));</span>
+<span class="fc" id="L1256">      return build();</span>
+    }
+
+    SECPSignature computeSignature(final KeyPair keys) {
+<span class="fc" id="L1260">      return SignatureAlgorithmFactory.getInstance()</span>
+<span class="fc" id="L1261">          .sign(</span>
+<span class="fc" id="L1262">              computeSenderRecoveryHash(</span>
+                  transactionType,
+                  nonce,
+                  gasPrice,
+                  maxPriorityFeePerGas,
+                  maxFeePerGas,
+                  maxFeePerBlobGas,
+                  gasLimit,
+                  to,
+                  value,
+                  payload,
+                  accessList,
+                  versionedHashes,
+                  chainId),
+              keys);
+    }
+
+    public Builder kzgBlobs(
+        final List&lt;KZGCommitment&gt; kzgCommitments,
+        final List&lt;Blob&gt; blobs,
+        final List&lt;KZGProof&gt; kzgProofs) {
+<span class="pc bpc" id="L1283" title="1 of 4 branches missed.">      if (this.versionedHashes == null || this.versionedHashes.isEmpty()) {</span>
+<span class="fc" id="L1284">        this.versionedHashes =</span>
+<span class="fc" id="L1285">            kzgCommitments.stream()</span>
+<span class="fc" id="L1286">                .map(c -&gt; new VersionedHash(SHA256_VERSION_ID, Sha256Hash.sha256(c.getData())))</span>
+<span class="fc" id="L1287">                .toList();</span>
+      }
+<span class="fc" id="L1289">      this.blobsWithCommitments =</span>
+          new BlobsWithCommitments(kzgCommitments, blobs, kzgProofs, versionedHashes);
+<span class="fc" id="L1291">      return this;</span>
+    }
+
+    public Builder blobsWithCommitments(final BlobsWithCommitments blobsWithCommitments) {
+<span class="fc" id="L1295">      this.blobsWithCommitments = blobsWithCommitments;</span>
+<span class="fc" id="L1296">      return this;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

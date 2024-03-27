@@ -1,0 +1,464 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BesuController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">BesuController.java</span></div><h1>BesuController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import static org.hyperledger.besu.ethereum.eth.sync.SyncMode.isCheckpointSync;
+
+import org.hyperledger.besu.cli.config.EthNetworkConfig;
+import org.hyperledger.besu.config.GenesisConfigFile;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.config.PowAlgorithm;
+import org.hyperledger.besu.config.QbftConfigOptions;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.methods.JsonRpcMethods;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.sync.SyncMode;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.p2p.config.SubProtocolConfiguration;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Besu controller. */
+public class BesuController implements java.io.Closeable {
+<span class="fc" id="L56">  private static final Logger LOG = LoggerFactory.getLogger(BesuController.class);</span>
+
+  /** The constant DATABASE_PATH. */
+  public static final String DATABASE_PATH = &quot;database&quot;;
+  /** The constant CACHE_PATH. */
+  public static final String CACHE_PATH = &quot;caches&quot;;
+
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthProtocolManager ethProtocolManager;
+  private final GenesisConfigOptions genesisConfigOptions;
+  private final SubProtocolConfiguration subProtocolConfiguration;
+  private final NodeKey nodeKey;
+  private final Synchronizer synchronizer;
+  private final JsonRpcMethods additionalJsonRpcMethodsFactory;
+
+  private final TransactionPool transactionPool;
+  private final MiningCoordinator miningCoordinator;
+  private final PrivacyParameters privacyParameters;
+  private final List&lt;Closeable&gt; closeables;
+  private final MiningParameters miningParameters;
+  private final PluginServiceFactory additionalPluginServices;
+  private final SyncState syncState;
+  private final EthPeers ethPeers;
+  private final StorageProvider storageProvider;
+  private final DataStorageConfiguration dataStorageConfiguration;
+
+  /**
+   * Instantiates a new Besu controller.
+   *
+   * @param protocolSchedule the protocol schedule
+   * @param protocolContext the protocol context
+   * @param ethProtocolManager the eth protocol manager
+   * @param genesisConfigOptions the genesis config options
+   * @param subProtocolConfiguration the sub protocol configuration
+   * @param synchronizer the synchronizer
+   * @param syncState the sync state
+   * @param transactionPool the transaction pool
+   * @param miningCoordinator the mining coordinator
+   * @param privacyParameters the privacy parameters
+   * @param miningParameters the mining parameters
+   * @param additionalJsonRpcMethodsFactory the additional json rpc methods factory
+   * @param nodeKey the node key
+   * @param closeables the closeables
+   * @param additionalPluginServices the additional plugin services
+   * @param ethPeers the eth peers
+   * @param storageProvider the storage provider
+   * @param dataStorageConfiguration the data storage configuration
+   */
+  BesuController(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthProtocolManager ethProtocolManager,
+      final GenesisConfigOptions genesisConfigOptions,
+      final SubProtocolConfiguration subProtocolConfiguration,
+      final Synchronizer synchronizer,
+      final SyncState syncState,
+      final TransactionPool transactionPool,
+      final MiningCoordinator miningCoordinator,
+      final PrivacyParameters privacyParameters,
+      final MiningParameters miningParameters,
+      final JsonRpcMethods additionalJsonRpcMethodsFactory,
+      final NodeKey nodeKey,
+      final List&lt;Closeable&gt; closeables,
+      final PluginServiceFactory additionalPluginServices,
+      final EthPeers ethPeers,
+      final StorageProvider storageProvider,
+<span class="fc" id="L123">      final DataStorageConfiguration dataStorageConfiguration) {</span>
+<span class="fc" id="L124">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L125">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L126">    this.ethProtocolManager = ethProtocolManager;</span>
+<span class="fc" id="L127">    this.genesisConfigOptions = genesisConfigOptions;</span>
+<span class="fc" id="L128">    this.subProtocolConfiguration = subProtocolConfiguration;</span>
+<span class="fc" id="L129">    this.synchronizer = synchronizer;</span>
+<span class="fc" id="L130">    this.syncState = syncState;</span>
+<span class="fc" id="L131">    this.additionalJsonRpcMethodsFactory = additionalJsonRpcMethodsFactory;</span>
+<span class="fc" id="L132">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L133">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L134">    this.miningCoordinator = miningCoordinator;</span>
+<span class="fc" id="L135">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L136">    this.closeables = closeables;</span>
+<span class="fc" id="L137">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L138">    this.additionalPluginServices = additionalPluginServices;</span>
+<span class="fc" id="L139">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L140">    this.storageProvider = storageProvider;</span>
+<span class="fc" id="L141">    this.dataStorageConfiguration = dataStorageConfiguration;</span>
+<span class="fc" id="L142">  }</span>
+
+  /**
+   * Gets protocol context.
+   *
+   * @return the protocol context
+   */
+  public ProtocolContext getProtocolContext() {
+<span class="fc" id="L150">    return protocolContext;</span>
+  }
+
+  /**
+   * Gets protocol schedule.
+   *
+   * @return the protocol schedule
+   */
+  public ProtocolSchedule getProtocolSchedule() {
+<span class="fc" id="L159">    return protocolSchedule;</span>
+  }
+
+  /**
+   * Gets protocol manager.
+   *
+   * @return the protocol manager
+   */
+  public EthProtocolManager getProtocolManager() {
+<span class="fc" id="L168">    return ethProtocolManager;</span>
+  }
+
+  /**
+   * Gets genesis config options.
+   *
+   * @return the genesis config options
+   */
+  public GenesisConfigOptions getGenesisConfigOptions() {
+<span class="fc" id="L177">    return genesisConfigOptions;</span>
+  }
+
+  /**
+   * Gets synchronizer.
+   *
+   * @return the synchronizer
+   */
+  public Synchronizer getSynchronizer() {
+<span class="fc" id="L186">    return synchronizer;</span>
+  }
+
+  /**
+   * Gets sub protocol configuration.
+   *
+   * @return the sub protocol configuration
+   */
+  public SubProtocolConfiguration getSubProtocolConfiguration() {
+<span class="fc" id="L195">    return subProtocolConfiguration;</span>
+  }
+
+  /**
+   * Gets node key.
+   *
+   * @return the node key
+   */
+  public NodeKey getNodeKey() {
+<span class="fc" id="L204">    return nodeKey;</span>
+  }
+
+  /**
+   * Gets transaction pool.
+   *
+   * @return the transaction pool
+   */
+  public TransactionPool getTransactionPool() {
+<span class="fc" id="L213">    return transactionPool;</span>
+  }
+
+  /**
+   * Gets mining coordinator.
+   *
+   * @return the mining coordinator
+   */
+  public MiningCoordinator getMiningCoordinator() {
+<span class="fc" id="L222">    return miningCoordinator;</span>
+  }
+
+  /**
+   * get the collection of eth peers
+   *
+   * @return the EthPeers collection
+   */
+  public EthPeers getEthPeers() {
+<span class="fc" id="L231">    return ethPeers;</span>
+  }
+
+  /**
+   * Get the storage provider
+   *
+   * @return the storage provider
+   */
+  public StorageProvider getStorageProvider() {
+<span class="nc" id="L240">    return storageProvider;</span>
+  }
+
+  @Override
+  public void close() {
+<span class="fc" id="L245">    closeables.forEach(this::tryClose);</span>
+<span class="fc" id="L246">  }</span>
+
+  private void tryClose(final Closeable closeable) {
+    try {
+<span class="fc" id="L250">      closeable.close();</span>
+<span class="nc" id="L251">    } catch (final IOException e) {</span>
+<span class="nc" id="L252">      LOG.error(&quot;Unable to close resource.&quot;, e);</span>
+<span class="fc" id="L253">    }</span>
+<span class="fc" id="L254">  }</span>
+
+  /**
+   * Gets privacy parameters.
+   *
+   * @return the privacy parameters
+   */
+  public PrivacyParameters getPrivacyParameters() {
+<span class="fc" id="L262">    return privacyParameters;</span>
+  }
+
+  /**
+   * Gets mining parameters.
+   *
+   * @return the mining parameters
+   */
+  public MiningParameters getMiningParameters() {
+<span class="fc" id="L271">    return miningParameters;</span>
+  }
+
+  /**
+   * Gets additional json rpc methods.
+   *
+   * @param enabledRpcApis the enabled rpc apis
+   * @return the additional json rpc methods
+   */
+  public Map&lt;String, JsonRpcMethod&gt; getAdditionalJsonRpcMethods(
+      final Collection&lt;String&gt; enabledRpcApis) {
+<span class="fc" id="L282">    return additionalJsonRpcMethodsFactory.create(enabledRpcApis);</span>
+  }
+
+  /**
+   * Gets sync state.
+   *
+   * @return the sync state
+   */
+  public SyncState getSyncState() {
+<span class="fc" id="L291">    return syncState;</span>
+  }
+
+  /**
+   * Gets additional plugin services.
+   *
+   * @return the additional plugin services
+   */
+  public PluginServiceFactory getAdditionalPluginServices() {
+<span class="nc" id="L300">    return additionalPluginServices;</span>
+  }
+
+  /**
+   * Gets data storage configuration.
+   *
+   * @return the data storage configuration
+   */
+  public DataStorageConfiguration getDataStorageConfiguration() {
+<span class="nc" id="L309">    return dataStorageConfiguration;</span>
+  }
+
+  /** The type Builder. */
+<span class="fc" id="L313">  public static class Builder {</span>
+
+    /**
+     * From eth network config besu controller builder.
+     *
+     * @param ethNetworkConfig the eth network config
+     * @param genesisConfigOverrides the genesis config overrides
+     * @param syncMode The sync mode
+     * @return the besu controller builder
+     */
+    public BesuControllerBuilder fromEthNetworkConfig(
+        final EthNetworkConfig ethNetworkConfig,
+        final Map&lt;String, String&gt; genesisConfigOverrides,
+        final SyncMode syncMode) {
+<span class="fc" id="L327">      return fromGenesisConfig(</span>
+<span class="fc" id="L328">              GenesisConfigFile.fromConfig(ethNetworkConfig.getGenesisConfig()),</span>
+              genesisConfigOverrides,
+              syncMode)
+<span class="fc" id="L331">          .networkId(ethNetworkConfig.getNetworkId());</span>
+    }
+
+    /**
+     * From eth network config without alloc besu controller builder.
+     *
+     * @param ethNetworkConfig the eth network config
+     * @param genesisConfigOverrides the genesis config overrides
+     * @param syncMode The sync mode
+     * @return the besu controller builder
+     */
+    public BesuControllerBuilder fromEthNetworkConfigWithoutAccounts(
+        final EthNetworkConfig ethNetworkConfig,
+        final Map&lt;String, String&gt; genesisConfigOverrides,
+        final SyncMode syncMode) {
+<span class="nc" id="L346">      return fromGenesisConfig(</span>
+<span class="nc" id="L347">              GenesisConfigFile.fromConfigWithoutAccounts(ethNetworkConfig.getGenesisConfig()),</span>
+              genesisConfigOverrides,
+              syncMode)
+<span class="nc" id="L350">          .networkId(ethNetworkConfig.getNetworkId());</span>
+    }
+
+    /**
+     * From genesis config besu controller builder.
+     *
+     * @param genesisConfig the genesis config
+     * @param syncMode The Sync Mode
+     * @return the besu controller builder
+     */
+    public BesuControllerBuilder fromGenesisConfig(
+        final GenesisConfigFile genesisConfig, final SyncMode syncMode) {
+<span class="fc" id="L362">      return fromGenesisConfig(genesisConfig, Collections.emptyMap(), syncMode);</span>
+    }
+
+    /**
+     * From genesis config besu controller builder.
+     *
+     * @param genesisConfig the genesis config
+     * @param genesisConfigOverrides the genesis config overrides
+     * @return the besu controller builder
+     */
+    BesuControllerBuilder fromGenesisConfig(
+        final GenesisConfigFile genesisConfig,
+        final Map&lt;String, String&gt; genesisConfigOverrides,
+        final SyncMode syncMode) {
+<span class="fc" id="L376">      final GenesisConfigOptions configOptions =</span>
+<span class="fc" id="L377">          genesisConfig.getConfigOptions(genesisConfigOverrides);</span>
+      final BesuControllerBuilder builder;
+
+<span class="fc bfc" id="L380" title="All 2 branches covered.">      if (configOptions.isConsensusMigration()) {</span>
+<span class="fc" id="L381">        return createConsensusScheduleBesuControllerBuilder(genesisConfig, configOptions);</span>
+      }
+
+<span class="fc bfc" id="L384" title="All 2 branches covered.">      if (configOptions.getPowAlgorithm() != PowAlgorithm.UNSUPPORTED) {</span>
+<span class="fc" id="L385">        builder = new MainnetBesuControllerBuilder();</span>
+<span class="fc bfc" id="L386" title="All 2 branches covered.">      } else if (configOptions.isIbft2()) {</span>
+<span class="fc" id="L387">        builder = new IbftBesuControllerBuilder();</span>
+<span class="pc bpc" id="L388" title="1 of 2 branches missed.">      } else if (configOptions.isIbftLegacy()) {</span>
+<span class="nc" id="L389">        throw new IllegalStateException(</span>
+            &quot;IBFT1 (legacy) is no longer supported. Consider using IBFT2 or QBFT.&quot;);
+<span class="pc bpc" id="L391" title="1 of 2 branches missed.">      } else if (configOptions.isQbft()) {</span>
+<span class="nc" id="L392">        builder = new QbftBesuControllerBuilder();</span>
+<span class="pc bpc" id="L393" title="1 of 2 branches missed.">      } else if (configOptions.isClique()) {</span>
+<span class="fc" id="L394">        builder = new CliqueBesuControllerBuilder();</span>
+      } else {
+<span class="nc" id="L396">        throw new IllegalArgumentException(&quot;Unknown consensus mechanism defined&quot;);</span>
+      }
+
+      // wrap with TransitionBesuControllerBuilder if we have a terminal total difficulty:
+<span class="fc bfc" id="L400" title="All 2 branches covered.">      if (configOptions.getTerminalTotalDifficulty().isPresent()) {</span>
+        // Enable start with vanilla MergeBesuControllerBuilder for PoS checkpoint block
+<span class="fc bfc" id="L402" title="All 4 branches covered.">        if (isCheckpointSync(syncMode) &amp;&amp; isCheckpointPoSBlock(configOptions)) {</span>
+<span class="fc" id="L403">          return new MergeBesuControllerBuilder().genesisConfigFile(genesisConfig);</span>
+        } else {
+          // TODO this should be changed to vanilla MergeBesuControllerBuilder and the Transition*
+          // series of classes removed after we successfully transition to PoS
+          // https://github.com/hyperledger/besu/issues/2897
+<span class="fc" id="L408">          return new TransitionBesuControllerBuilder(builder, new MergeBesuControllerBuilder())</span>
+<span class="fc" id="L409">              .genesisConfigFile(genesisConfig);</span>
+        }
+      } else {
+<span class="fc" id="L412">        return builder.genesisConfigFile(genesisConfig);</span>
+      }
+    }
+
+    private BesuControllerBuilder createConsensusScheduleBesuControllerBuilder(
+        final GenesisConfigFile genesisConfig, final GenesisConfigOptions configOptions) {
+<span class="fc" id="L418">      final Map&lt;Long, BesuControllerBuilder&gt; besuControllerBuilderSchedule = new HashMap&lt;&gt;();</span>
+
+      final BesuControllerBuilder originalControllerBuilder;
+<span class="fc bfc" id="L421" title="All 2 branches covered.">      if (configOptions.isIbft2()) {</span>
+<span class="fc" id="L422">        originalControllerBuilder = new IbftBesuControllerBuilder();</span>
+<span class="pc bpc" id="L423" title="1 of 2 branches missed.">      } else if (configOptions.isIbftLegacy()) {</span>
+<span class="nc" id="L424">        throw new IllegalStateException(</span>
+            &quot;IBFT1 (legacy) is no longer supported. Consider using IBFT2 or QBFT.&quot;);
+      } else {
+<span class="fc" id="L427">        throw new IllegalStateException(</span>
+            &quot;Invalid genesis migration config. Migration is supported from IBFT (legacy) or IBFT2 to QBFT)&quot;);
+      }
+<span class="fc" id="L430">      besuControllerBuilderSchedule.put(0L, originalControllerBuilder);</span>
+
+<span class="fc" id="L432">      final QbftConfigOptions qbftConfigOptions = configOptions.getQbftConfigOptions();</span>
+<span class="fc" id="L433">      final Long qbftBlock = readQbftStartBlockConfig(qbftConfigOptions);</span>
+<span class="fc" id="L434">      besuControllerBuilderSchedule.put(qbftBlock, new QbftBesuControllerBuilder());</span>
+
+<span class="fc" id="L436">      return new ConsensusScheduleBesuControllerBuilder(besuControllerBuilderSchedule)</span>
+<span class="fc" id="L437">          .genesisConfigFile(genesisConfig);</span>
+    }
+
+    private Long readQbftStartBlockConfig(final QbftConfigOptions qbftConfigOptions) {
+<span class="fc" id="L441">      final long startBlock =</span>
+          qbftConfigOptions
+<span class="fc" id="L443">              .getStartBlock()</span>
+<span class="fc" id="L444">              .orElseThrow(</span>
+                  () -&gt;
+<span class="fc" id="L446">                      new IllegalStateException(&quot;Missing QBFT startBlock config in genesis file&quot;));</span>
+
+<span class="fc bfc" id="L448" title="All 2 branches covered.">      if (startBlock &lt;= 0) {</span>
+<span class="fc" id="L449">        throw new IllegalStateException(&quot;Invalid QBFT startBlock config in genesis file&quot;);</span>
+      }
+
+<span class="fc" id="L452">      return startBlock;</span>
+    }
+
+    private boolean isCheckpointPoSBlock(final GenesisConfigOptions configOptions) {
+<span class="fc" id="L456">      final UInt256 terminalTotalDifficulty = configOptions.getTerminalTotalDifficulty().get();</span>
+
+<span class="pc bpc" id="L458" title="1 of 2 branches missed.">      return configOptions.getCheckpointOptions().isValid()</span>
+<span class="fc" id="L459">          &amp;&amp; (UInt256.fromHexString(configOptions.getCheckpointOptions().getTotalDifficulty().get())</span>
+<span class="fc bfc" id="L460" title="All 2 branches covered.">              .greaterThan(terminalTotalDifficulty));</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IbftBlockHeightManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.ibft.statemachine</a> &gt; <span class="el_source">IbftBlockHeightManager.java</span></div><h1>IbftBlockHeightManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.ibft.statemachine;
+
+import static org.hyperledger.besu.consensus.ibft.statemachine.IbftBlockHeightManager.MessageAge.CURRENT_ROUND;
+import static org.hyperledger.besu.consensus.ibft.statemachine.IbftBlockHeightManager.MessageAge.FUTURE_ROUND;
+import static org.hyperledger.besu.consensus.ibft.statemachine.IbftBlockHeightManager.MessageAge.PRIOR_ROUND;
+
+import org.hyperledger.besu.consensus.common.bft.BlockTimer;
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.events.RoundExpiry;
+import org.hyperledger.besu.consensus.common.bft.messagewrappers.BftMessage;
+import org.hyperledger.besu.consensus.common.bft.payload.Payload;
+import org.hyperledger.besu.consensus.common.bft.statemachine.BftFinalState;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Commit;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Prepare;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Proposal;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.RoundChange;
+import org.hyperledger.besu.consensus.ibft.network.IbftMessageTransmitter;
+import org.hyperledger.besu.consensus.ibft.payload.MessageFactory;
+import org.hyperledger.besu.consensus.ibft.validation.FutureRoundProposalMessageValidator;
+import org.hyperledger.besu.consensus.ibft.validation.MessageValidatorFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModuleException;
+
+import java.time.Clock;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+import com.google.common.collect.Maps;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Responsible for starting/clearing Consensus rounds at a given block height. One of these is
+ * created when a new block is imported to the chain. It immediately then creates a Round-0 object,
+ * and sends a Proposal message. If the round times out prior to importing a block, this class is
+ * responsible for creating a RoundChange message and transmitting it.
+ */
+public class IbftBlockHeightManager implements BaseIbftBlockHeightManager {
+
+<span class="fc" id="L60">  private static final Logger LOG = LoggerFactory.getLogger(IbftBlockHeightManager.class);</span>
+
+  private final IbftRoundFactory roundFactory;
+  private final RoundChangeManager roundChangeManager;
+  private final BlockHeader parentHeader;
+  private final BlockTimer blockTimer;
+  private final IbftMessageTransmitter transmitter;
+  private final MessageFactory messageFactory;
+<span class="fc" id="L68">  private final Map&lt;Integer, RoundState&gt; futureRoundStateBuffer = Maps.newHashMap();</span>
+  private final FutureRoundProposalMessageValidator futureRoundProposalMessageValidator;
+  private final Clock clock;
+  private final Function&lt;ConsensusRoundIdentifier, RoundState&gt; roundStateCreator;
+  private final BftFinalState finalState;
+
+<span class="fc" id="L74">  private Optional&lt;PreparedRoundArtifacts&gt; latestPreparedRoundArtifacts = Optional.empty();</span>
+
+  private IbftRound currentRound;
+
+  /**
+   * Instantiates a new Ibft block height manager.
+   *
+   * @param parentHeader the parent header
+   * @param finalState the final state
+   * @param roundChangeManager the round change manager
+   * @param ibftRoundFactory the ibft round factory
+   * @param clock the clock
+   * @param messageValidatorFactory the message validator factory
+   * @param messageFactory the message factory
+   */
+  public IbftBlockHeightManager(
+      final BlockHeader parentHeader,
+      final BftFinalState finalState,
+      final RoundChangeManager roundChangeManager,
+      final IbftRoundFactory ibftRoundFactory,
+      final Clock clock,
+      final MessageValidatorFactory messageValidatorFactory,
+<span class="fc" id="L96">      final MessageFactory messageFactory) {</span>
+<span class="fc" id="L97">    this.parentHeader = parentHeader;</span>
+<span class="fc" id="L98">    this.roundFactory = ibftRoundFactory;</span>
+<span class="fc" id="L99">    this.blockTimer = finalState.getBlockTimer();</span>
+<span class="fc" id="L100">    this.transmitter =</span>
+<span class="fc" id="L101">        new IbftMessageTransmitter(messageFactory, finalState.getValidatorMulticaster());</span>
+<span class="fc" id="L102">    this.messageFactory = messageFactory;</span>
+<span class="fc" id="L103">    this.clock = clock;</span>
+<span class="fc" id="L104">    this.roundChangeManager = roundChangeManager;</span>
+<span class="fc" id="L105">    this.finalState = finalState;</span>
+
+<span class="fc" id="L107">    futureRoundProposalMessageValidator =</span>
+<span class="fc" id="L108">        messageValidatorFactory.createFutureRoundProposalMessageValidator(</span>
+<span class="fc" id="L109">            getChainHeight(), parentHeader);</span>
+
+<span class="fc" id="L111">    roundStateCreator =</span>
+        (roundIdentifier) -&gt;
+<span class="fc" id="L113">            new RoundState(</span>
+                roundIdentifier,
+<span class="fc" id="L115">                finalState.getQuorum(),</span>
+<span class="fc" id="L116">                messageValidatorFactory.createMessageValidator(roundIdentifier, parentHeader));</span>
+
+<span class="fc" id="L118">    currentRound = roundFactory.createNewRound(parentHeader, 0);</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    if (finalState.isLocalNodeProposerForRound(currentRound.getRoundIdentifier())) {</span>
+<span class="fc" id="L120">      blockTimer.startTimer(currentRound.getRoundIdentifier(), parentHeader);</span>
+    }
+<span class="fc" id="L122">  }</span>
+
+  @Override
+  public void handleBlockTimerExpiry(final ConsensusRoundIdentifier roundIdentifier) {
+
+<span class="fc" id="L127">    logValidatorChanges(currentRound);</span>
+
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">    if (roundIdentifier.equals(currentRound.getRoundIdentifier())) {</span>
+<span class="fc" id="L130">      final long headerTimeStampSeconds = Math.round(clock.millis() / 1000D);</span>
+<span class="fc" id="L131">      currentRound.createAndSendProposalMessage(headerTimeStampSeconds);</span>
+<span class="fc" id="L132">    } else {</span>
+<span class="nc" id="L133">      LOG.trace(</span>
+          &quot;Block timer expired for a round ({}) other than current ({})&quot;,
+          roundIdentifier,
+<span class="nc" id="L136">          currentRound.getRoundIdentifier());</span>
+    }
+<span class="fc" id="L138">  }</span>
+
+  /**
+   * If the list of validators for the next block to be proposed/imported has changed from the
+   * previous block, log the change. Only log for round 0 (i.e. once per block).
+   *
+   * @param ibftRound The current round
+   */
+  private void logValidatorChanges(final IbftRound ibftRound) {
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">    if (ibftRound.getRoundIdentifier().getRoundNumber() == 0) {</span>
+<span class="fc" id="L148">      final Collection&lt;Address&gt; previousValidators =</span>
+<span class="fc" id="L149">          MessageValidatorFactory.getValidatorsForBlock(ibftRound.protocolContext, parentHeader);</span>
+<span class="fc" id="L150">      final Collection&lt;Address&gt; validatorsForHeight =</span>
+<span class="fc" id="L151">          MessageValidatorFactory.getValidatorsAfterBlock(ibftRound.protocolContext, parentHeader);</span>
+<span class="pc bpc" id="L152" title="1 of 2 branches missed.">      if (!(validatorsForHeight.containsAll(previousValidators))</span>
+<span class="pc bpc" id="L153" title="1 of 2 branches missed.">          || !(previousValidators.containsAll(validatorsForHeight))) {</span>
+<span class="fc" id="L154">        LOG.info(</span>
+            &quot;Validator list change. Previous chain height {}: {}. Current chain height {}: {}.&quot;,
+<span class="fc" id="L156">            parentHeader.getNumber(),</span>
+            previousValidators,
+<span class="fc" id="L158">            parentHeader.getNumber() + 1,</span>
+            validatorsForHeight);
+      }
+    }
+<span class="fc" id="L162">  }</span>
+
+  @Override
+  public void roundExpired(final RoundExpiry expire) {
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    if (!expire.getView().equals(currentRound.getRoundIdentifier())) {</span>
+<span class="nc" id="L167">      LOG.trace(</span>
+          &quot;Ignoring Round timer expired which does not match current round. round={}, timerRound={}&quot;,
+<span class="nc" id="L169">          currentRound.getRoundIdentifier(),</span>
+<span class="nc" id="L170">          expire.getView());</span>
+<span class="nc" id="L171">      return;</span>
+    }
+
+<span class="fc" id="L174">    LOG.debug(</span>
+        &quot;Round has expired, creating PreparedCertificate and notifying peers. round={}&quot;,
+<span class="fc" id="L176">        currentRound.getRoundIdentifier());</span>
+<span class="fc" id="L177">    final Optional&lt;PreparedRoundArtifacts&gt; preparedRoundArtifacts =</span>
+<span class="fc" id="L178">        currentRound.constructPreparedRoundArtifacts();</span>
+
+<span class="fc bfc" id="L180" title="All 2 branches covered.">    if (preparedRoundArtifacts.isPresent()) {</span>
+<span class="fc" id="L181">      latestPreparedRoundArtifacts = preparedRoundArtifacts;</span>
+    }
+
+<span class="fc" id="L184">    startNewRound(currentRound.getRoundIdentifier().getRoundNumber() + 1);</span>
+
+    try {
+<span class="fc" id="L187">      final RoundChange localRoundChange =</span>
+<span class="fc" id="L188">          messageFactory.createRoundChange(</span>
+<span class="fc" id="L189">              currentRound.getRoundIdentifier(), latestPreparedRoundArtifacts);</span>
+
+      // Its possible the locally created RoundChange triggers the transmission of a NewRound
+      // message - so it must be handled accordingly.
+<span class="fc" id="L193">      handleRoundChangePayload(localRoundChange);</span>
+<span class="nc" id="L194">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L195">      LOG.warn(&quot;Failed to create signed RoundChange message.&quot;, e);</span>
+<span class="fc" id="L196">    }</span>
+
+<span class="fc" id="L198">    transmitter.multicastRoundChange(</span>
+<span class="fc" id="L199">        currentRound.getRoundIdentifier(), latestPreparedRoundArtifacts);</span>
+<span class="fc" id="L200">  }</span>
+
+  @Override
+  public void handleProposalPayload(final Proposal proposal) {
+<span class="fc" id="L204">    LOG.trace(&quot;Received a Proposal Payload.&quot;);</span>
+<span class="fc" id="L205">    final MessageAge messageAge =</span>
+<span class="fc" id="L206">        determineAgeOfPayload(proposal.getRoundIdentifier().getRoundNumber());</span>
+
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">    if (messageAge == PRIOR_ROUND) {</span>
+<span class="nc" id="L209">      LOG.trace(&quot;Received Proposal Payload for a prior round={}&quot;, proposal.getRoundIdentifier());</span>
+    } else {
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">      if (messageAge == FUTURE_ROUND) {</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">        if (!futureRoundProposalMessageValidator.validateProposalMessage(proposal)) {</span>
+<span class="fc" id="L213">          LOG.info(&quot;Received future Proposal which is illegal, no round change triggered.&quot;);</span>
+<span class="fc" id="L214">          return;</span>
+        }
+<span class="fc" id="L216">        startNewRound(proposal.getRoundIdentifier().getRoundNumber());</span>
+      }
+<span class="fc" id="L218">      currentRound.handleProposalMessage(proposal);</span>
+    }
+<span class="fc" id="L220">  }</span>
+
+  @Override
+  public void handlePreparePayload(final Prepare prepare) {
+<span class="fc" id="L224">    LOG.trace(&quot;Received a Prepare Payload.&quot;);</span>
+<span class="fc" id="L225">    actionOrBufferMessage(</span>
+<span class="fc" id="L226">        prepare, currentRound::handlePrepareMessage, RoundState::addPrepareMessage);</span>
+<span class="fc" id="L227">  }</span>
+
+  @Override
+  public void handleCommitPayload(final Commit commit) {
+<span class="fc" id="L231">    LOG.trace(&quot;Received a Commit Payload.&quot;);</span>
+<span class="fc" id="L232">    actionOrBufferMessage(commit, currentRound::handleCommitMessage, RoundState::addCommitMessage);</span>
+<span class="fc" id="L233">  }</span>
+
+  private &lt;P extends Payload, M extends BftMessage&lt;P&gt;&gt; void actionOrBufferMessage(
+      final M ibftMessage,
+      final Consumer&lt;M&gt; inRoundHandler,
+      final BiConsumer&lt;RoundState, M&gt; buffer) {
+<span class="fc" id="L239">    final MessageAge messageAge =</span>
+<span class="fc" id="L240">        determineAgeOfPayload(ibftMessage.getRoundIdentifier().getRoundNumber());</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">    if (messageAge == CURRENT_ROUND) {</span>
+<span class="fc" id="L242">      inRoundHandler.accept(ibftMessage);</span>
+<span class="pc bpc" id="L243" title="1 of 2 branches missed.">    } else if (messageAge == FUTURE_ROUND) {</span>
+<span class="fc" id="L244">      final ConsensusRoundIdentifier msgRoundId = ibftMessage.getRoundIdentifier();</span>
+<span class="fc" id="L245">      final RoundState roundstate =</span>
+<span class="fc" id="L246">          futureRoundStateBuffer.computeIfAbsent(</span>
+<span class="fc" id="L247">              msgRoundId.getRoundNumber(), k -&gt; roundStateCreator.apply(msgRoundId));</span>
+<span class="fc" id="L248">      buffer.accept(roundstate, ibftMessage);</span>
+    }
+<span class="fc" id="L250">  }</span>
+
+  @Override
+  public void handleRoundChangePayload(final RoundChange message) {
+<span class="fc" id="L254">    final ConsensusRoundIdentifier targetRound = message.getRoundIdentifier();</span>
+<span class="fc" id="L255">    LOG.trace(&quot;Received a RoundChange Payload for {}&quot;, targetRound);</span>
+
+<span class="fc" id="L257">    final MessageAge messageAge =</span>
+<span class="fc" id="L258">        determineAgeOfPayload(message.getRoundIdentifier().getRoundNumber());</span>
+<span class="pc bpc" id="L259" title="1 of 2 branches missed.">    if (messageAge == PRIOR_ROUND) {</span>
+<span class="nc" id="L260">      LOG.trace(&quot;Received RoundChange Payload for a prior round. targetRound={}&quot;, targetRound);</span>
+<span class="nc" id="L261">      return;</span>
+    }
+
+<span class="fc" id="L264">    final Optional&lt;Collection&lt;RoundChange&gt;&gt; result =</span>
+<span class="fc" id="L265">        roundChangeManager.appendRoundChangeMessage(message);</span>
+<span class="fc bfc" id="L266" title="All 2 branches covered.">    if (result.isPresent()) {</span>
+<span class="fc" id="L267">      LOG.debug(</span>
+          &quot;Received sufficient RoundChange messages to change round to targetRound={}&quot;,
+          targetRound);
+<span class="pc bpc" id="L270" title="1 of 2 branches missed.">      if (messageAge == FUTURE_ROUND) {</span>
+<span class="fc" id="L271">        startNewRound(targetRound.getRoundNumber());</span>
+      }
+
+<span class="fc" id="L274">      final RoundChangeArtifacts roundChangeArtifacts = RoundChangeArtifacts.create(result.get());</span>
+
+<span class="fc bfc" id="L276" title="All 2 branches covered.">      if (finalState.isLocalNodeProposerForRound(targetRound)) {</span>
+<span class="fc" id="L277">        currentRound.startRoundWith(</span>
+<span class="fc" id="L278">            roundChangeArtifacts, TimeUnit.MILLISECONDS.toSeconds(clock.millis()));</span>
+      }
+    }
+<span class="fc" id="L281">  }</span>
+
+  private void startNewRound(final int roundNumber) {
+<span class="fc" id="L284">    LOG.debug(&quot;Starting new round {}&quot;, roundNumber);</span>
+<span class="fc bfc" id="L285" title="All 2 branches covered.">    if (futureRoundStateBuffer.containsKey(roundNumber)) {</span>
+<span class="fc" id="L286">      currentRound =</span>
+<span class="fc" id="L287">          roundFactory.createNewRoundWithState(</span>
+<span class="fc" id="L288">              parentHeader, futureRoundStateBuffer.get(roundNumber));</span>
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">      futureRoundStateBuffer.keySet().removeIf(k -&gt; k &lt;= roundNumber);</span>
+    } else {
+<span class="fc" id="L291">      currentRound = roundFactory.createNewRound(parentHeader, roundNumber);</span>
+    }
+    // discard roundChange messages from the current and previous rounds
+<span class="fc" id="L294">    roundChangeManager.discardRoundsPriorTo(currentRound.getRoundIdentifier());</span>
+<span class="fc" id="L295">  }</span>
+
+  @Override
+  public long getChainHeight() {
+<span class="fc" id="L299">    return parentHeader.getNumber() + 1;</span>
+  }
+
+  @Override
+  public BlockHeader getParentBlockHeader() {
+<span class="nc" id="L304">    return parentHeader;</span>
+  }
+
+  private MessageAge determineAgeOfPayload(final int messageRoundNumber) {
+<span class="fc" id="L308">    final int currentRoundNumber = currentRound.getRoundIdentifier().getRoundNumber();</span>
+<span class="fc bfc" id="L309" title="All 2 branches covered.">    if (messageRoundNumber &gt; currentRoundNumber) {</span>
+<span class="fc" id="L310">      return FUTURE_ROUND;</span>
+<span class="pc bpc" id="L311" title="1 of 2 branches missed.">    } else if (messageRoundNumber == currentRoundNumber) {</span>
+<span class="fc" id="L312">      return CURRENT_ROUND;</span>
+    }
+<span class="nc" id="L314">    return PRIOR_ROUND;</span>
+  }
+
+  /** The enum Message age. */
+<span class="fc" id="L318">  public enum MessageAge {</span>
+    /** Prior round message age. */
+<span class="fc" id="L320">    PRIOR_ROUND,</span>
+    /** Current round message age. */
+<span class="fc" id="L322">    CURRENT_ROUND,</span>
+    /** Future round message age. */
+<span class="fc" id="L324">    FUTURE_ROUND</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

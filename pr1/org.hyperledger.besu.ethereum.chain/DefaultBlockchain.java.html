@@ -1,0 +1,890 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DefaultBlockchain.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.chain</a> &gt; <span class="el_source">DefaultBlockchain.java</span></div><h1>DefaultBlockchain.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.chain;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Collections.emptyList;
+import static java.util.stream.Collectors.joining;
+import static java.util.stream.Collectors.toList;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.BlockchainStorage.Updater;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockWithReceipts;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.prometheus.PrometheusMetricsSystem;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.InvalidConfigurationException;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Streams;
+import io.prometheus.client.guava.cache.CacheMetricsCollector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class DefaultBlockchain implements MutableBlockchain {
+<span class="fc" id="L62">  private static final Logger LOG = LoggerFactory.getLogger(DefaultBlockchain.class);</span>
+
+<span class="fc" id="L64">  private final Comparator&lt;BlockHeader&gt; heaviestChainBlockChoiceRule =</span>
+<span class="fc" id="L65">      Comparator.comparing(this::calculateTotalDifficulty);</span>
+
+  protected final BlockchainStorage blockchainStorage;
+
+<span class="fc" id="L69">  private final Subscribers&lt;BlockAddedObserver&gt; blockAddedObservers = Subscribers.create();</span>
+<span class="fc" id="L70">  private final Subscribers&lt;ChainReorgObserver&gt; blockReorgObservers = Subscribers.create();</span>
+  private final long reorgLoggingThreshold;
+
+  private volatile BlockHeader chainHeader;
+  private volatile Difficulty totalDifficulty;
+  private volatile int chainHeadTransactionCount;
+  private volatile int chainHeadOmmerCount;
+
+  private Comparator&lt;BlockHeader&gt; blockChoiceRule;
+
+  private final int numberOfBlocksToCache;
+  private final Optional&lt;Cache&lt;Hash, BlockHeader&gt;&gt; blockHeadersCache;
+  private final Optional&lt;Cache&lt;Hash, BlockBody&gt;&gt; blockBodiesCache;
+  private final Optional&lt;Cache&lt;Hash, List&lt;TransactionReceipt&gt;&gt;&gt; transactionReceiptsCache;
+  private final Optional&lt;Cache&lt;Hash, Difficulty&gt;&gt; totalDifficultyCache;
+
+  private DefaultBlockchain(
+      final Optional&lt;Block&gt; genesisBlock,
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold) {
+<span class="fc" id="L91">    this(genesisBlock, blockchainStorage, metricsSystem, reorgLoggingThreshold, null, 0);</span>
+<span class="fc" id="L92">  }</span>
+
+  private DefaultBlockchain(
+      final Optional&lt;Block&gt; genesisBlock,
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold,
+      final String dataDirectory,
+<span class="fc" id="L100">      final int numberOfBlocksToCache) {</span>
+<span class="fc" id="L101">    checkNotNull(genesisBlock);</span>
+<span class="fc" id="L102">    checkNotNull(blockchainStorage);</span>
+<span class="fc" id="L103">    checkNotNull(metricsSystem);</span>
+
+<span class="fc" id="L105">    this.blockchainStorage = blockchainStorage;</span>
+<span class="fc" id="L106">    genesisBlock.ifPresent(block -&gt; this.setGenesis(block, dataDirectory));</span>
+
+<span class="fc" id="L108">    final Hash chainHead = blockchainStorage.getChainHead().get();</span>
+<span class="fc" id="L109">    chainHeader = blockchainStorage.getBlockHeader(chainHead).get();</span>
+<span class="fc" id="L110">    totalDifficulty = blockchainStorage.getTotalDifficulty(chainHead).get();</span>
+<span class="fc" id="L111">    final BlockBody chainHeadBody = blockchainStorage.getBlockBody(chainHead).get();</span>
+<span class="fc" id="L112">    chainHeadTransactionCount = chainHeadBody.getTransactions().size();</span>
+<span class="fc" id="L113">    chainHeadOmmerCount = chainHeadBody.getOmmers().size();</span>
+
+<span class="fc" id="L115">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.ETHEREUM,
+        &quot;blockchain_height&quot;,
+        &quot;The current height of the canonical chain&quot;,
+        this::getChainHeadBlockNumber);
+<span class="fc" id="L120">    metricsSystem.createGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;difficulty_total&quot;,
+        &quot;Total difficulty of the chainhead&quot;,
+<span class="fc" id="L124">        () -&gt; this.getChainHead().getTotalDifficulty().toBigInteger().doubleValue());</span>
+
+<span class="fc" id="L126">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;chain_head_timestamp&quot;,
+        &quot;Timestamp from the current chain head&quot;,
+<span class="fc" id="L130">        () -&gt; getChainHeadHeader().getTimestamp());</span>
+
+<span class="fc" id="L132">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;chain_head_gas_used&quot;,
+        &quot;Gas used by the current chain head block&quot;,
+<span class="fc" id="L136">        () -&gt; getChainHeadHeader().getGasUsed());</span>
+
+<span class="fc" id="L138">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;chain_head_gas_limit&quot;,
+        &quot;Block gas limit of the current chain head block&quot;,
+<span class="fc" id="L142">        () -&gt; getChainHeadHeader().getGasLimit());</span>
+
+<span class="fc" id="L144">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;chain_head_transaction_count&quot;,
+        &quot;Number of transactions in the current chain head block&quot;,
+<span class="fc" id="L148">        () -&gt; chainHeadTransactionCount);</span>
+
+<span class="fc" id="L150">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.BLOCKCHAIN,
+        &quot;chain_head_ommer_count&quot;,
+        &quot;Number of ommers in the current chain head block&quot;,
+<span class="fc" id="L154">        () -&gt; chainHeadOmmerCount);</span>
+
+<span class="fc" id="L156">    this.reorgLoggingThreshold = reorgLoggingThreshold;</span>
+<span class="fc" id="L157">    this.blockChoiceRule = heaviestChainBlockChoiceRule;</span>
+<span class="fc" id="L158">    this.numberOfBlocksToCache = numberOfBlocksToCache;</span>
+
+<span class="fc bfc" id="L160" title="All 2 branches covered.">    if (numberOfBlocksToCache != 0) {</span>
+<span class="fc" id="L161">      blockHeadersCache =</span>
+<span class="fc" id="L162">          Optional.of(</span>
+<span class="fc" id="L163">              CacheBuilder.newBuilder().recordStats().maximumSize(numberOfBlocksToCache).build());</span>
+<span class="fc" id="L164">      blockBodiesCache =</span>
+<span class="fc" id="L165">          Optional.of(</span>
+<span class="fc" id="L166">              CacheBuilder.newBuilder().recordStats().maximumSize(numberOfBlocksToCache).build());</span>
+<span class="fc" id="L167">      transactionReceiptsCache =</span>
+<span class="fc" id="L168">          Optional.of(</span>
+<span class="fc" id="L169">              CacheBuilder.newBuilder().recordStats().maximumSize(numberOfBlocksToCache).build());</span>
+<span class="fc" id="L170">      totalDifficultyCache =</span>
+<span class="fc" id="L171">          Optional.of(</span>
+<span class="fc" id="L172">              CacheBuilder.newBuilder().recordStats().maximumSize(numberOfBlocksToCache).build());</span>
+<span class="fc" id="L173">      CacheMetricsCollector cacheMetrics = new CacheMetricsCollector();</span>
+<span class="fc" id="L174">      cacheMetrics.addCache(&quot;blockHeaders&quot;, blockHeadersCache.get());</span>
+<span class="fc" id="L175">      cacheMetrics.addCache(&quot;blockBodies&quot;, blockBodiesCache.get());</span>
+<span class="fc" id="L176">      cacheMetrics.addCache(&quot;transactionReceipts&quot;, transactionReceiptsCache.get());</span>
+<span class="fc" id="L177">      cacheMetrics.addCache(&quot;totalDifficulty&quot;, totalDifficultyCache.get());</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">      if (metricsSystem instanceof PrometheusMetricsSystem prometheusMetricsSystem)</span>
+<span class="nc" id="L179">        prometheusMetricsSystem.addCollector(BesuMetricCategory.BLOCKCHAIN, () -&gt; cacheMetrics);</span>
+<span class="fc" id="L180">    } else {</span>
+<span class="fc" id="L181">      blockHeadersCache = Optional.empty();</span>
+<span class="fc" id="L182">      blockBodiesCache = Optional.empty();</span>
+<span class="fc" id="L183">      transactionReceiptsCache = Optional.empty();</span>
+<span class="fc" id="L184">      totalDifficultyCache = Optional.empty();</span>
+    }
+<span class="fc" id="L186">  }</span>
+
+  public static MutableBlockchain createMutable(
+      final Block genesisBlock,
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold) {
+<span class="fc" id="L193">    checkNotNull(genesisBlock);</span>
+<span class="fc" id="L194">    return new DefaultBlockchain(</span>
+<span class="fc" id="L195">        Optional.of(genesisBlock),</span>
+        blockchainStorage,
+        metricsSystem,
+        reorgLoggingThreshold,
+        null,
+        0);
+  }
+
+  public static MutableBlockchain createMutable(
+      final Block genesisBlock,
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold,
+      final String dataDirectory) {
+<span class="fc" id="L209">    checkNotNull(genesisBlock);</span>
+<span class="pc" id="L210">    return new DefaultBlockchain(</span>
+<span class="nc" id="L211">        Optional.of(genesisBlock),</span>
+        blockchainStorage,
+        metricsSystem,
+        reorgLoggingThreshold,
+        dataDirectory,
+        0);
+  }
+
+  public static MutableBlockchain createMutable(
+      final Block genesisBlock,
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold,
+      final String dataDirectory,
+      final int numberOfBlocksToCache) {
+<span class="fc" id="L226">    checkNotNull(genesisBlock);</span>
+<span class="fc" id="L227">    return new DefaultBlockchain(</span>
+<span class="fc" id="L228">        Optional.of(genesisBlock),</span>
+        blockchainStorage,
+        metricsSystem,
+        reorgLoggingThreshold,
+        dataDirectory,
+        numberOfBlocksToCache);
+  }
+
+  public static Blockchain create(
+      final BlockchainStorage blockchainStorage,
+      final MetricsSystem metricsSystem,
+      final long reorgLoggingThreshold) {
+<span class="fc" id="L240">    checkArgument(</span>
+<span class="fc" id="L241">        validateStorageNonEmpty(blockchainStorage), &quot;Cannot create Blockchain from empty storage&quot;);</span>
+<span class="fc" id="L242">    return new DefaultBlockchain(</span>
+<span class="fc" id="L243">        Optional.empty(), blockchainStorage, metricsSystem, reorgLoggingThreshold);</span>
+  }
+
+  private static boolean validateStorageNonEmpty(final BlockchainStorage blockchainStorage) {
+    // Run a few basic checks to make sure data looks available and consistent
+<span class="fc" id="L248">    return blockchainStorage</span>
+<span class="fc" id="L249">            .getChainHead()</span>
+<span class="fc" id="L250">            .flatMap(blockchainStorage::getTotalDifficulty)</span>
+<span class="fc bfc" id="L251" title="All 2 branches covered.">            .isPresent()</span>
+<span class="pc bpc" id="L252" title="1 of 2 branches missed.">        &amp;&amp; blockchainStorage.getBlockHash(BlockHeader.GENESIS_BLOCK_NUMBER).isPresent();</span>
+  }
+
+  @Override
+  public ChainHead getChainHead() {
+<span class="fc" id="L257">    return new ChainHead(chainHeader, totalDifficulty, chainHeader.getNumber());</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getFinalized() {
+<span class="fc" id="L262">    return blockchainStorage.getFinalized();</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getSafeBlock() {
+<span class="fc" id="L267">    return blockchainStorage.getSafeBlock();</span>
+  }
+
+  @Override
+  public Hash getChainHeadHash() {
+<span class="fc" id="L272">    return chainHeader.getHash();</span>
+  }
+
+  @Override
+  public long getChainHeadBlockNumber() {
+<span class="fc" id="L277">    return chainHeader.getNumber();</span>
+  }
+
+  @Override
+  public BlockHeader getChainHeadHeader() {
+<span class="fc" id="L282">    return chainHeader;</span>
+  }
+
+  @Override
+  public Block getChainHeadBlock() {
+<span class="fc" id="L287">    return new Block(chainHeader, blockchainStorage.getBlockBody(chainHeader.getHash()).get());</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getBlockHeader(final long blockNumber) {
+<span class="fc" id="L292">    return blockchainStorage.getBlockHash(blockNumber).flatMap(this::getBlockHeader);</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getBlockHeader(final Hash blockHeaderHash) {
+<span class="fc" id="L297">    return blockHeadersCache</span>
+<span class="fc" id="L298">        .map(</span>
+            cache -&gt;
+<span class="nc" id="L300">                Optional.ofNullable(cache.getIfPresent(blockHeaderHash))</span>
+<span class="nc" id="L301">                    .or(() -&gt; blockchainStorage.getBlockHeader(blockHeaderHash)))</span>
+<span class="fc" id="L302">        .orElseGet(() -&gt; blockchainStorage.getBlockHeader(blockHeaderHash));</span>
+  }
+
+  @Override
+  public synchronized Optional&lt;BlockHeader&gt; getBlockHeaderSafe(final Hash blockHeaderHash) {
+<span class="nc" id="L307">    return blockHeadersCache</span>
+<span class="nc" id="L308">        .map(</span>
+            cache -&gt;
+<span class="nc" id="L310">                Optional.ofNullable(cache.getIfPresent(blockHeaderHash))</span>
+<span class="nc" id="L311">                    .or(() -&gt; blockchainStorage.getBlockHeader(blockHeaderHash)))</span>
+<span class="nc" id="L312">        .orElseGet(() -&gt; blockchainStorage.getBlockHeader(blockHeaderHash));</span>
+  }
+
+  @Override
+  public Optional&lt;BlockBody&gt; getBlockBody(final Hash blockHeaderHash) {
+<span class="fc" id="L317">    return blockBodiesCache</span>
+<span class="fc" id="L318">        .map(</span>
+            cache -&gt;
+<span class="nc" id="L320">                Optional.ofNullable(cache.getIfPresent(blockHeaderHash))</span>
+<span class="nc" id="L321">                    .or(() -&gt; blockchainStorage.getBlockBody(blockHeaderHash)))</span>
+<span class="fc" id="L322">        .orElseGet(() -&gt; blockchainStorage.getBlockBody(blockHeaderHash));</span>
+  }
+
+  @Override
+  public Optional&lt;List&lt;TransactionReceipt&gt;&gt; getTxReceipts(final Hash blockHeaderHash) {
+<span class="fc" id="L327">    return transactionReceiptsCache</span>
+<span class="fc" id="L328">        .map(</span>
+            cache -&gt;
+<span class="nc" id="L330">                Optional.ofNullable(cache.getIfPresent(blockHeaderHash))</span>
+<span class="nc" id="L331">                    .or(() -&gt; blockchainStorage.getTransactionReceipts(blockHeaderHash)))</span>
+<span class="fc" id="L332">        .orElseGet(() -&gt; blockchainStorage.getTransactionReceipts(blockHeaderHash));</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getBlockHashByNumber(final long number) {
+<span class="fc" id="L337">    return blockchainStorage.getBlockHash(number);</span>
+  }
+
+  @Override
+  public Optional&lt;Difficulty&gt; getTotalDifficultyByHash(final Hash blockHeaderHash) {
+<span class="fc" id="L342">    return totalDifficultyCache</span>
+<span class="fc" id="L343">        .map(</span>
+            cache -&gt;
+<span class="nc" id="L345">                Optional.ofNullable(cache.getIfPresent(blockHeaderHash))</span>
+<span class="nc" id="L346">                    .or(() -&gt; blockchainStorage.getTotalDifficulty(blockHeaderHash)))</span>
+<span class="fc" id="L347">        .orElseGet(() -&gt; blockchainStorage.getTotalDifficulty(blockHeaderHash));</span>
+  }
+
+  @Override
+  public Optional&lt;Transaction&gt; getTransactionByHash(final Hash transactionHash) {
+<span class="fc" id="L352">    return blockchainStorage</span>
+<span class="fc" id="L353">        .getTransactionLocation(transactionHash)</span>
+<span class="fc" id="L354">        .flatMap(</span>
+            l -&gt;
+<span class="fc" id="L356">                blockchainStorage</span>
+<span class="fc" id="L357">                    .getBlockBody(l.getBlockHash())</span>
+<span class="fc" id="L358">                    .map(b -&gt; b.getTransactions().get(l.getTransactionIndex())));</span>
+  }
+
+  @Override
+  public Optional&lt;TransactionLocation&gt; getTransactionLocation(final Hash transactionHash) {
+<span class="fc" id="L363">    return blockchainStorage.getTransactionLocation(transactionHash);</span>
+  }
+
+  @Override
+  public Comparator&lt;BlockHeader&gt; getBlockChoiceRule() {
+<span class="fc" id="L368">    return blockChoiceRule;</span>
+  }
+
+  @Override
+  public void setBlockChoiceRule(final Comparator&lt;BlockHeader&gt; blockChoiceRule) {
+<span class="fc" id="L373">    this.blockChoiceRule = blockChoiceRule;</span>
+<span class="fc" id="L374">  }</span>
+
+  @Override
+  public synchronized void appendBlock(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc bfc" id="L378" title="All 2 branches covered.">    if (numberOfBlocksToCache != 0) cacheBlockData(block, receipts);</span>
+<span class="fc" id="L379">    appendBlockHelper(new BlockWithReceipts(block, receipts), false);</span>
+<span class="fc" id="L380">  }</span>
+
+  @Override
+  public synchronized void storeBlock(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="pc bpc" id="L384" title="1 of 2 branches missed.">    if (numberOfBlocksToCache != 0) cacheBlockData(block, receipts);</span>
+<span class="fc" id="L385">    appendBlockHelper(new BlockWithReceipts(block, receipts), true);</span>
+<span class="fc" id="L386">  }</span>
+
+  private void cacheBlockData(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc" id="L389">    blockHeadersCache.ifPresent(cache -&gt; cache.put(block.getHash(), block.getHeader()));</span>
+<span class="fc" id="L390">    blockBodiesCache.ifPresent(cache -&gt; cache.put(block.getHash(), block.getBody()));</span>
+<span class="fc" id="L391">    transactionReceiptsCache.ifPresent(cache -&gt; cache.put(block.getHash(), receipts));</span>
+<span class="fc" id="L392">    totalDifficultyCache.ifPresent(</span>
+<span class="fc" id="L393">        cache -&gt; cache.put(block.getHash(), block.getHeader().getDifficulty()));</span>
+<span class="fc" id="L394">  }</span>
+
+  private boolean blockShouldBeProcessed(
+      final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc" id="L398">    checkArgument(</span>
+<span class="fc bfc" id="L399" title="All 2 branches covered.">        block.getBody().getTransactions().size() == receipts.size(),</span>
+        &quot;Supplied receipts do not match block transactions.&quot;);
+<span class="pc bpc" id="L401" title="1 of 2 branches missed.">    if (blockIsAlreadyTracked(block)) {</span>
+<span class="nc" id="L402">      return false;</span>
+    }
+<span class="fc" id="L404">    checkArgument(blockIsConnected(block), &quot;Attempt to append non-connected block.&quot;);</span>
+<span class="fc" id="L405">    return true;</span>
+  }
+
+  private void appendBlockHelper(
+      final BlockWithReceipts blockWithReceipts, final boolean storeOnly) {
+
+<span class="pc bpc" id="L411" title="1 of 2 branches missed.">    if (!blockShouldBeProcessed(blockWithReceipts.getBlock(), blockWithReceipts.getReceipts())) {</span>
+<span class="nc" id="L412">      return;</span>
+    }
+
+<span class="fc" id="L415">    final Block block = blockWithReceipts.getBlock();</span>
+<span class="fc" id="L416">    final List&lt;TransactionReceipt&gt; receipts = blockWithReceipts.getReceipts();</span>
+<span class="fc" id="L417">    final Hash hash = block.getHash();</span>
+<span class="fc" id="L418">    final Difficulty td = calculateTotalDifficulty(block.getHeader());</span>
+
+<span class="fc" id="L420">    final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+
+<span class="fc" id="L422">    updater.putBlockHeader(hash, block.getHeader());</span>
+<span class="fc" id="L423">    updater.putBlockBody(hash, block.getBody());</span>
+<span class="fc" id="L424">    updater.putTransactionReceipts(hash, receipts);</span>
+<span class="fc" id="L425">    updater.putTotalDifficulty(hash, td);</span>
+
+    final BlockAddedEvent blockAddedEvent;
+<span class="fc bfc" id="L428" title="All 2 branches covered.">    if (storeOnly) {</span>
+<span class="fc" id="L429">      blockAddedEvent = handleStoreOnly(blockWithReceipts);</span>
+    } else {
+<span class="fc" id="L431">      blockAddedEvent = updateCanonicalChainData(updater, blockWithReceipts);</span>
+<span class="fc bfc" id="L432" title="All 2 branches covered.">      if (blockAddedEvent.isNewCanonicalHead()) {</span>
+<span class="fc" id="L433">        updateCacheForNewCanonicalHead(block, td);</span>
+      }
+    }
+
+<span class="fc" id="L437">    updater.commit();</span>
+<span class="fc" id="L438">    blockAddedObservers.forEach(observer -&gt; observer.onBlockAdded(blockAddedEvent));</span>
+<span class="fc" id="L439">  }</span>
+
+  @Override
+  public synchronized void unsafeImportBlock(
+      final Block block,
+      final List&lt;TransactionReceipt&gt; transactionReceipts,
+      final Optional&lt;Difficulty&gt; maybeTotalDifficulty) {
+<span class="fc" id="L446">    final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+<span class="fc" id="L447">    final Hash hash = block.getHash();</span>
+<span class="fc" id="L448">    updater.putBlockHeader(hash, block.getHeader());</span>
+<span class="fc" id="L449">    updater.putBlockHash(block.getHeader().getNumber(), hash);</span>
+<span class="fc" id="L450">    updater.putBlockBody(hash, block.getBody());</span>
+<span class="fc" id="L451">    final int nbTrx = block.getBody().getTransactions().size();</span>
+<span class="fc bfc" id="L452" title="All 2 branches covered.">    for (int i = 0; i &lt; nbTrx; i++) {</span>
+<span class="fc" id="L453">      final Hash transactionHash = block.getBody().getTransactions().get(i).getHash();</span>
+<span class="fc" id="L454">      updater.putTransactionLocation(transactionHash, new TransactionLocation(transactionHash, i));</span>
+    }
+<span class="fc" id="L456">    updater.putTransactionReceipts(hash, transactionReceipts);</span>
+<span class="fc" id="L457">    maybeTotalDifficulty.ifPresent(</span>
+<span class="fc" id="L458">        totalDifficulty -&gt; updater.putTotalDifficulty(hash, totalDifficulty));</span>
+<span class="fc" id="L459">    updater.commit();</span>
+<span class="fc" id="L460">  }</span>
+
+  @Override
+  public synchronized void unsafeSetChainHead(
+      final BlockHeader blockHeader, final Difficulty totalDifficulty) {
+<span class="fc" id="L465">    final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+<span class="fc" id="L466">    this.chainHeader = blockHeader;</span>
+<span class="fc" id="L467">    this.totalDifficulty = totalDifficulty;</span>
+<span class="fc" id="L468">    updater.setChainHead(blockHeader.getBlockHash());</span>
+<span class="fc" id="L469">    updater.commit();</span>
+<span class="fc" id="L470">  }</span>
+
+  private Difficulty calculateTotalDifficulty(final BlockHeader blockHeader) {
+<span class="fc bfc" id="L473" title="All 2 branches covered.">    if (blockHeader.getNumber() == BlockHeader.GENESIS_BLOCK_NUMBER) {</span>
+<span class="fc" id="L474">      return blockHeader.getDifficulty();</span>
+    }
+
+<span class="fc" id="L477">    final Difficulty parentTotalDifficulty =</span>
+        blockchainStorage
+<span class="fc" id="L479">            .getTotalDifficulty(blockHeader.getParentHash())</span>
+<span class="fc" id="L480">            .orElseThrow(</span>
+<span class="nc" id="L481">                () -&gt; new IllegalStateException(&quot;Blockchain is missing total difficulty data.&quot;));</span>
+<span class="fc" id="L482">    return blockHeader.getDifficulty().add(parentTotalDifficulty);</span>
+  }
+
+  private BlockAddedEvent updateCanonicalChainData(
+      final BlockchainStorage.Updater updater, final BlockWithReceipts blockWithReceipts) {
+
+<span class="fc" id="L488">    final Block newBlock = blockWithReceipts.getBlock();</span>
+<span class="fc" id="L489">    final Hash chainHead = blockchainStorage.getChainHead().orElse(null);</span>
+
+<span class="pc bpc" id="L491" title="1 of 4 branches missed.">    if (newBlock.getHeader().getNumber() != BlockHeader.GENESIS_BLOCK_NUMBER &amp;&amp; chainHead == null) {</span>
+<span class="nc" id="L492">      throw new IllegalStateException(&quot;Blockchain is missing chain head.&quot;);</span>
+    }
+
+    try {
+<span class="pc bpc" id="L496" title="1 of 4 branches missed.">      if (newBlock.getHeader().getParentHash().equals(chainHead) || chainHead == null) {</span>
+<span class="fc" id="L497">        return handleNewHead(updater, blockWithReceipts);</span>
+<span class="fc bfc" id="L498" title="All 2 branches covered.">      } else if (blockChoiceRule.compare(newBlock.getHeader(), chainHeader) &gt; 0) {</span>
+        // New block represents a chain reorganization
+<span class="fc" id="L500">        return handleChainReorg(updater, blockWithReceipts);</span>
+      } else {
+        // New block represents a fork
+<span class="fc" id="L503">        return handleFork(updater, newBlock);</span>
+      }
+<span class="nc" id="L505">    } catch (final NoSuchElementException e) {</span>
+      // Any Optional.get() calls in this block should be present, missing data means data
+      // corruption or a bug.
+<span class="nc" id="L508">      updater.rollback();</span>
+<span class="nc" id="L509">      throw new IllegalStateException(&quot;Blockchain is missing data that should be present.&quot;, e);</span>
+    }
+  }
+
+  private BlockAddedEvent handleStoreOnly(final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L514">    return BlockAddedEvent.createForStoredOnly(blockWithReceipts.getBlock());</span>
+  }
+
+  private BlockAddedEvent handleNewHead(
+      final Updater updater, final BlockWithReceipts blockWithReceipts) {
+    // This block advances the chain, update the chain head
+<span class="fc" id="L520">    final Hash newBlockHash = blockWithReceipts.getHash();</span>
+
+<span class="fc" id="L522">    updater.putBlockHash(blockWithReceipts.getNumber(), newBlockHash);</span>
+<span class="fc" id="L523">    updater.setChainHead(newBlockHash);</span>
+<span class="fc" id="L524">    indexTransactionForBlock(</span>
+<span class="fc" id="L525">        updater, newBlockHash, blockWithReceipts.getBlock().getBody().getTransactions());</span>
+<span class="fc" id="L526">    return BlockAddedEvent.createForHeadAdvancement(</span>
+<span class="fc" id="L527">        blockWithReceipts.getBlock(),</span>
+<span class="fc" id="L528">        LogWithMetadata.generate(</span>
+<span class="fc" id="L529">            blockWithReceipts.getBlock(), blockWithReceipts.getReceipts(), false),</span>
+<span class="fc" id="L530">        blockWithReceipts.getReceipts());</span>
+  }
+
+  private BlockAddedEvent handleFork(final BlockchainStorage.Updater updater, final Block fork) {
+<span class="fc" id="L534">    final Collection&lt;Hash&gt; forkHeads = blockchainStorage.getForkHeads();</span>
+
+    // Check to see if this block advances any existing fork.
+    // This block will replace its parent
+<span class="fc" id="L538">    forkHeads.stream()</span>
+<span class="fc" id="L539">        .filter(head -&gt; head.equals(fork.getHeader().getParentHash()))</span>
+<span class="fc" id="L540">        .findAny()</span>
+<span class="fc" id="L541">        .ifPresent(forkHeads::remove);</span>
+
+<span class="fc" id="L543">    forkHeads.add(fork.getHash());</span>
+
+<span class="fc" id="L545">    updater.setForkHeads(forkHeads);</span>
+<span class="fc" id="L546">    return BlockAddedEvent.createForFork(fork);</span>
+  }
+
+  private BlockAddedEvent handleChainReorg(
+      final BlockchainStorage.Updater updater, final BlockWithReceipts newChainHeadWithReceipts) {
+<span class="fc" id="L551">    final BlockWithReceipts oldChainWithReceipts = getBlockWithReceipts(chainHeader).get();</span>
+<span class="fc" id="L552">    BlockWithReceipts currentOldChainWithReceipts = oldChainWithReceipts;</span>
+<span class="fc" id="L553">    BlockWithReceipts currentNewChainWithReceipts = newChainHeadWithReceipts;</span>
+
+    // Update chain head
+<span class="fc" id="L556">    updater.setChainHead(currentNewChainWithReceipts.getHeader().getHash());</span>
+
+    // Track transactions and logs to be added and removed
+<span class="fc" id="L559">    final Map&lt;Hash, List&lt;Transaction&gt;&gt; newTransactions = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L560">    final List&lt;Transaction&gt; removedTransactions = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L561">    final List&lt;LogWithMetadata&gt; addedLogsWithMetadata = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L562">    final List&lt;LogWithMetadata&gt; removedLogsWithMetadata = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L564" title="All 2 branches covered.">    while (currentNewChainWithReceipts.getNumber() &gt; currentOldChainWithReceipts.getNumber()) {</span>
+      // If new chain is longer than old chain, walk back until we meet the old chain by number
+      // adding indexing for new chain along the way.
+<span class="fc" id="L567">      final Hash blockHash = currentNewChainWithReceipts.getHash();</span>
+<span class="fc" id="L568">      updater.putBlockHash(currentNewChainWithReceipts.getNumber(), blockHash);</span>
+
+<span class="fc" id="L570">      newTransactions.put(</span>
+<span class="fc" id="L571">          blockHash, currentNewChainWithReceipts.getBlock().getBody().getTransactions());</span>
+<span class="fc" id="L572">      addAddedLogsWithMetadata(addedLogsWithMetadata, currentNewChainWithReceipts);</span>
+<span class="fc" id="L573">      notifyChainReorgBlockAdded(currentNewChainWithReceipts);</span>
+<span class="fc" id="L574">      currentNewChainWithReceipts = getParentBlockWithReceipts(currentNewChainWithReceipts);</span>
+<span class="fc" id="L575">    }</span>
+
+<span class="fc bfc" id="L577" title="All 2 branches covered.">    while (currentOldChainWithReceipts.getNumber() &gt; currentNewChainWithReceipts.getNumber()) {</span>
+      // If oldChain is longer than new chain, walk back until we meet the new chain by number,
+      // updating as we go.
+<span class="fc" id="L580">      updater.removeBlockHash(currentOldChainWithReceipts.getNumber());</span>
+
+<span class="fc" id="L582">      removedTransactions.addAll(</span>
+<span class="fc" id="L583">          currentOldChainWithReceipts.getBlock().getBody().getTransactions());</span>
+<span class="fc" id="L584">      addRemovedLogsWithMetadata(removedLogsWithMetadata, currentOldChainWithReceipts);</span>
+
+<span class="fc" id="L586">      currentOldChainWithReceipts = getParentBlockWithReceipts(currentOldChainWithReceipts);</span>
+    }
+
+<span class="fc bfc" id="L589" title="All 2 branches covered.">    while (!currentOldChainWithReceipts.getHash().equals(currentNewChainWithReceipts.getHash())) {</span>
+      // Walk back until we meet the common ancestor between the two chains, updating as we go.
+<span class="fc" id="L591">      final Hash newBlockHash = currentNewChainWithReceipts.getHash();</span>
+<span class="fc" id="L592">      updater.putBlockHash(currentNewChainWithReceipts.getNumber(), newBlockHash);</span>
+
+<span class="fc" id="L594">      newTransactions.put(</span>
+<span class="fc" id="L595">          newBlockHash, currentNewChainWithReceipts.getBlock().getBody().getTransactions());</span>
+<span class="fc" id="L596">      removedTransactions.addAll(</span>
+<span class="fc" id="L597">          currentOldChainWithReceipts.getBlock().getBody().getTransactions());</span>
+<span class="fc" id="L598">      addAddedLogsWithMetadata(addedLogsWithMetadata, currentNewChainWithReceipts);</span>
+<span class="fc" id="L599">      addRemovedLogsWithMetadata(removedLogsWithMetadata, currentOldChainWithReceipts);</span>
+
+<span class="fc" id="L601">      currentNewChainWithReceipts = getParentBlockWithReceipts(currentNewChainWithReceipts);</span>
+<span class="fc" id="L602">      currentOldChainWithReceipts = getParentBlockWithReceipts(currentOldChainWithReceipts);</span>
+<span class="fc" id="L603">    }</span>
+<span class="fc" id="L604">    final BlockWithReceipts commonAncestorWithReceipts = currentNewChainWithReceipts;</span>
+
+    // Update indexed transactions
+<span class="fc" id="L607">    newTransactions.forEach(</span>
+        (blockHash, transactionsInBlock) -&gt; {
+<span class="fc" id="L609">          indexTransactionForBlock(updater, blockHash, transactionsInBlock);</span>
+          // Don't remove transactions that are being re-indexed.
+<span class="fc" id="L611">          removedTransactions.removeAll(transactionsInBlock);</span>
+<span class="fc" id="L612">        });</span>
+<span class="fc" id="L613">    clearIndexedTransactionsForBlock(updater, removedTransactions);</span>
+
+    // Update tracked forks
+<span class="fc" id="L616">    final Collection&lt;Hash&gt; forks = blockchainStorage.getForkHeads();</span>
+    // Old head is now a fork
+<span class="fc" id="L618">    forks.add(oldChainWithReceipts.getHash());</span>
+    // Remove new chain head's parent if it was tracked as a fork
+<span class="fc" id="L620">    final Optional&lt;Hash&gt; parentFork =</span>
+<span class="fc" id="L621">        forks.stream()</span>
+<span class="fc" id="L622">            .filter(f -&gt; f.equals(newChainHeadWithReceipts.getHeader().getParentHash()))</span>
+<span class="fc" id="L623">            .findAny();</span>
+<span class="fc" id="L624">    parentFork.ifPresent(forks::remove);</span>
+<span class="fc" id="L625">    updater.setForkHeads(forks);</span>
+
+<span class="fc" id="L627">    maybeLogReorg(newChainHeadWithReceipts, oldChainWithReceipts, commonAncestorWithReceipts);</span>
+
+<span class="fc" id="L629">    return BlockAddedEvent.createForChainReorg(</span>
+<span class="fc" id="L630">        newChainHeadWithReceipts.getBlock(),</span>
+<span class="fc" id="L631">        newTransactions.values().stream().flatMap(Collection::stream).collect(toList()),</span>
+        removedTransactions,
+<span class="fc" id="L633">        newChainHeadWithReceipts.getReceipts(),</span>
+<span class="fc" id="L634">        Stream.concat(removedLogsWithMetadata.stream(), addedLogsWithMetadata.stream())</span>
+<span class="fc" id="L635">            .collect(Collectors.toUnmodifiableList()),</span>
+<span class="fc" id="L636">        currentNewChainWithReceipts.getBlock().getHash());</span>
+  }
+
+  private void maybeLogReorg(
+      final BlockWithReceipts newChainHeadWithReceipts,
+      final BlockWithReceipts oldChainWithReceipts,
+      final BlockWithReceipts commonAncestorWithReceipts) {
+<span class="fc bfc" id="L643" title="All 2 branches covered.">    if ((newChainHeadWithReceipts.getNumber() - commonAncestorWithReceipts.getNumber()</span>
+                &gt; reorgLoggingThreshold
+<span class="fc bfc" id="L645" title="All 2 branches covered.">            || oldChainWithReceipts.getNumber() - commonAncestorWithReceipts.getNumber()</span>
+                &gt; reorgLoggingThreshold)
+<span class="pc bpc" id="L647" title="1 of 2 branches missed.">        &amp;&amp; LOG.isWarnEnabled()) {</span>
+<span class="fc" id="L648">      LOG.warn(</span>
+          &quot;Chain Reorganization +{} new / -{} old\n{}&quot;,
+<span class="fc" id="L650">          newChainHeadWithReceipts.getNumber() - commonAncestorWithReceipts.getNumber(),</span>
+<span class="fc" id="L651">          oldChainWithReceipts.getNumber() - commonAncestorWithReceipts.getNumber(),</span>
+<span class="fc" id="L652">          Streams.zip(</span>
+<span class="fc" id="L653">                  Stream.of(&quot;Old&quot;, &quot;New&quot;, &quot;Ancestor&quot;),</span>
+<span class="fc" id="L654">                  Stream.of(</span>
+                          oldChainWithReceipts,
+                          newChainHeadWithReceipts,
+                          commonAncestorWithReceipts)
+<span class="fc" id="L658">                      .map(</span>
+                          blockWithReceipts -&gt;
+<span class="fc" id="L660">                              String.format(</span>
+                                  &quot;hash: %s, height: %s&quot;,
+<span class="fc" id="L662">                                  blockWithReceipts.getHash(), blockWithReceipts.getNumber())),</span>
+<span class="fc" id="L663">                  (label, values) -&gt; String.format(&quot;%10s - %s&quot;, label, values))</span>
+<span class="fc" id="L664">              .collect(joining(&quot;\n&quot;)));</span>
+    }
+<span class="fc" id="L666">  }</span>
+
+  @Override
+  public boolean rewindToBlock(final long blockNumber) {
+<span class="fc" id="L670">    return blockchainStorage.getBlockHash(blockNumber).map(this::rewindToBlock).orElse(false);</span>
+  }
+
+  @Override
+  public boolean rewindToBlock(final Hash blockHash) {
+<span class="fc" id="L675">    final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+    try {
+<span class="fc" id="L677">      final BlockHeader oldBlockHeader = blockchainStorage.getBlockHeader(blockHash).get();</span>
+<span class="fc" id="L678">      final BlockWithReceipts blockWithReceipts = getBlockWithReceipts(oldBlockHeader).get();</span>
+<span class="fc" id="L679">      final Block block = blockWithReceipts.getBlock();</span>
+
+<span class="fc" id="L681">      var reorgEvent = handleChainReorg(updater, blockWithReceipts);</span>
+<span class="fc" id="L682">      updater.commit();</span>
+<span class="fc" id="L683">      blockAddedObservers.forEach(o -&gt; o.onBlockAdded(reorgEvent));</span>
+
+<span class="fc" id="L685">      updateCacheForNewCanonicalHead(block, calculateTotalDifficulty(block.getHeader()));</span>
+<span class="fc" id="L686">      return true;</span>
+<span class="nc" id="L687">    } catch (final NoSuchElementException e) {</span>
+      // Any Optional.get() calls in this block should be present, missing data means data
+      // corruption or a bug.
+<span class="nc" id="L690">      updater.rollback();</span>
+<span class="nc" id="L691">      throw new IllegalStateException(&quot;Blockchain is missing data that should be present.&quot;, e);</span>
+    }
+  }
+
+  @Override
+  public boolean forwardToBlock(final BlockHeader blockHeader) {
+<span class="fc" id="L697">    checkArgument(</span>
+<span class="fc" id="L698">        chainHeader.getHash().equals(blockHeader.getParentHash()),</span>
+        &quot;Supplied block header is not a child of the current chain head.&quot;);
+
+<span class="fc" id="L701">    final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+
+    try {
+<span class="fc" id="L704">      final BlockWithReceipts blockWithReceipts = getBlockWithReceipts(blockHeader).get();</span>
+
+<span class="fc" id="L706">      BlockAddedEvent newHeadEvent = handleNewHead(updater, blockWithReceipts);</span>
+<span class="fc" id="L707">      updateCacheForNewCanonicalHead(</span>
+<span class="fc" id="L708">          blockWithReceipts.getBlock(), calculateTotalDifficulty(blockHeader));</span>
+<span class="fc" id="L709">      updater.commit();</span>
+<span class="pc" id="L710">      blockAddedObservers.forEach(observer -&gt; observer.onBlockAdded(newHeadEvent));</span>
+<span class="fc" id="L711">      return true;</span>
+<span class="nc" id="L712">    } catch (final NoSuchElementException e) {</span>
+      // Any Optional.get() calls in this block should be present, missing data means data
+      // corruption or a bug.
+<span class="nc" id="L715">      updater.rollback();</span>
+<span class="nc" id="L716">      throw new IllegalStateException(&quot;Blockchain is missing data that should be present.&quot;, e);</span>
+    }
+  }
+
+  @Override
+  public void setFinalized(final Hash blockHash) {
+<span class="fc" id="L722">    final var updater = blockchainStorage.updater();</span>
+<span class="fc" id="L723">    updater.setFinalized(blockHash);</span>
+<span class="fc" id="L724">    updater.commit();</span>
+<span class="fc" id="L725">  }</span>
+
+  @Override
+  public void setSafeBlock(final Hash blockHash) {
+<span class="fc" id="L729">    final var updater = blockchainStorage.updater();</span>
+<span class="fc" id="L730">    updater.setSafeBlock(blockHash);</span>
+<span class="fc" id="L731">    updater.commit();</span>
+<span class="fc" id="L732">  }</span>
+
+  private void updateCacheForNewCanonicalHead(final Block block, final Difficulty uInt256) {
+<span class="fc" id="L735">    chainHeader = block.getHeader();</span>
+<span class="fc" id="L736">    totalDifficulty = uInt256;</span>
+<span class="fc" id="L737">    chainHeadTransactionCount = block.getBody().getTransactions().size();</span>
+<span class="fc" id="L738">    chainHeadOmmerCount = block.getBody().getOmmers().size();</span>
+<span class="fc" id="L739">  }</span>
+
+  private static void indexTransactionForBlock(
+      final BlockchainStorage.Updater updater, final Hash hash, final List&lt;Transaction&gt; txs) {
+<span class="fc bfc" id="L743" title="All 2 branches covered.">    for (int i = 0; i &lt; txs.size(); i++) {</span>
+<span class="fc" id="L744">      final Hash txHash = txs.get(i).getHash();</span>
+<span class="fc" id="L745">      final TransactionLocation loc = new TransactionLocation(hash, i);</span>
+<span class="fc" id="L746">      updater.putTransactionLocation(txHash, loc);</span>
+    }
+<span class="fc" id="L748">  }</span>
+
+  private static void clearIndexedTransactionsForBlock(
+      final BlockchainStorage.Updater updater, final List&lt;Transaction&gt; txs) {
+<span class="fc bfc" id="L752" title="All 2 branches covered.">    for (final Transaction tx : txs) {</span>
+<span class="fc" id="L753">      updater.removeTransactionLocation(tx.getHash());</span>
+<span class="fc" id="L754">    }</span>
+<span class="fc" id="L755">  }</span>
+
+  @VisibleForTesting
+  Set&lt;Hash&gt; getForks() {
+<span class="fc" id="L759">    return new HashSet&lt;&gt;(blockchainStorage.getForkHeads());</span>
+  }
+
+  private void setGenesis(final Block genesisBlock, final String dataDirectory) {
+<span class="fc" id="L763">    checkArgument(</span>
+<span class="pc bpc" id="L764" title="1 of 2 branches missed.">        genesisBlock.getHeader().getNumber() == BlockHeader.GENESIS_BLOCK_NUMBER,</span>
+        &quot;Invalid genesis block.&quot;);
+<span class="fc" id="L766">    final Optional&lt;Hash&gt; maybeHead = blockchainStorage.getChainHead();</span>
+<span class="fc bfc" id="L767" title="All 2 branches covered.">    if (maybeHead.isEmpty()) {</span>
+      // Initialize blockchain store with genesis block.
+<span class="fc" id="L769">      final BlockchainStorage.Updater updater = blockchainStorage.updater();</span>
+<span class="fc" id="L770">      final Hash hash = genesisBlock.getHash();</span>
+<span class="fc" id="L771">      updater.putBlockHeader(hash, genesisBlock.getHeader());</span>
+<span class="fc" id="L772">      updater.putBlockBody(hash, genesisBlock.getBody());</span>
+<span class="fc" id="L773">      updater.putTransactionReceipts(hash, emptyList());</span>
+<span class="fc" id="L774">      updater.putTotalDifficulty(hash, calculateTotalDifficulty(genesisBlock.getHeader()));</span>
+<span class="fc" id="L775">      updater.putBlockHash(genesisBlock.getHeader().getNumber(), hash);</span>
+<span class="fc" id="L776">      updater.setChainHead(hash);</span>
+<span class="fc" id="L777">      updater.commit();</span>
+<span class="fc" id="L778">    } else {</span>
+      // Verify genesis block is consistent with stored blockchain.
+<span class="fc" id="L780">      final Optional&lt;Hash&gt; genesisHash = getBlockHashByNumber(BlockHeader.GENESIS_BLOCK_NUMBER);</span>
+<span class="pc bpc" id="L781" title="1 of 2 branches missed.">      if (genesisHash.isEmpty()) {</span>
+<span class="nc" id="L782">        throw new IllegalStateException(&quot;Blockchain is missing genesis block data.&quot;);</span>
+      }
+<span class="fc bfc" id="L784" title="All 2 branches covered.">      if (!genesisHash.get().equals(genesisBlock.getHash())) {</span>
+<span class="fc" id="L785">        throw new InvalidConfigurationException(</span>
+            &quot;Supplied genesis block does not match chain data stored in &quot;
+                + dataDirectory
+                + &quot;.\n&quot;
+                + &quot;Please specify a different data directory with --data-path, specify the original genesis file with &quot;
+                + &quot;--genesis-file or supply a testnet/mainnet option with --network.&quot;);
+      }
+    }
+<span class="fc" id="L793">  }</span>
+
+  private boolean blockIsAlreadyTracked(final Block block) {
+<span class="fc bfc" id="L796" title="All 2 branches covered.">    if (block.getHeader().getParentHash().equals(chainHeader.getHash())) {</span>
+      // If this block builds on our chain head it would have a higher TD and be the chain head
+      // but since it isn't we mustn't have imported it yet.
+      // Saves a db read for the most common case
+<span class="fc" id="L800">      return false;</span>
+    }
+<span class="fc" id="L802">    return blockchainStorage.getBlockHeader(block.getHash()).isPresent();</span>
+  }
+
+  private boolean blockIsConnected(final Block block) {
+<span class="fc" id="L806">    return blockchainStorage.getBlockHeader(block.getHeader().getParentHash()).isPresent();</span>
+  }
+
+  private void addAddedLogsWithMetadata(
+      final List&lt;LogWithMetadata&gt; logsWithMetadata, final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L811">    logsWithMetadata.addAll(</span>
+        0,
+<span class="fc" id="L813">        LogWithMetadata.generate(</span>
+<span class="fc" id="L814">            blockWithReceipts.getBlock(), blockWithReceipts.getReceipts(), false));</span>
+<span class="fc" id="L815">  }</span>
+
+  private void addRemovedLogsWithMetadata(
+      final List&lt;LogWithMetadata&gt; logsWithMetadata, final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L819">    logsWithMetadata.addAll(</span>
+<span class="fc" id="L820">        Lists.reverse(</span>
+<span class="fc" id="L821">            LogWithMetadata.generate(</span>
+<span class="fc" id="L822">                blockWithReceipts.getBlock(), blockWithReceipts.getReceipts(), true)));</span>
+<span class="fc" id="L823">  }</span>
+
+  private Optional&lt;BlockWithReceipts&gt; getBlockWithReceipts(final BlockHeader blockHeader) {
+<span class="fc" id="L826">    return blockchainStorage</span>
+<span class="fc" id="L827">        .getBlockBody(blockHeader.getHash())</span>
+<span class="fc" id="L828">        .map(body -&gt; new Block(blockHeader, body))</span>
+<span class="fc" id="L829">        .flatMap(</span>
+            block -&gt;
+<span class="fc" id="L831">                blockchainStorage</span>
+<span class="fc" id="L832">                    .getTransactionReceipts(blockHeader.getHash())</span>
+<span class="fc" id="L833">                    .map(receipts -&gt; new BlockWithReceipts(block, receipts)));</span>
+  }
+
+  private BlockWithReceipts getParentBlockWithReceipts(final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L837">    return blockchainStorage</span>
+<span class="fc" id="L838">        .getBlockHeader(blockWithReceipts.getHeader().getParentHash())</span>
+<span class="fc" id="L839">        .flatMap(this::getBlockWithReceipts)</span>
+<span class="fc" id="L840">        .get();</span>
+  }
+
+  @Override
+  public long observeBlockAdded(final BlockAddedObserver observer) {
+<span class="fc" id="L845">    checkNotNull(observer);</span>
+<span class="fc" id="L846">    return blockAddedObservers.subscribe(observer);</span>
+  }
+
+  @Override
+  public boolean removeObserver(final long observerId) {
+<span class="fc" id="L851">    return blockAddedObservers.unsubscribe(observerId);</span>
+  }
+
+  @Override
+  public long observeChainReorg(final ChainReorgObserver observer) {
+<span class="fc" id="L856">    checkNotNull(observer);</span>
+<span class="fc" id="L857">    return blockReorgObservers.subscribe(observer);</span>
+  }
+
+  @Override
+  public boolean removeChainReorgObserver(final long observerId) {
+<span class="nc" id="L862">    return blockReorgObservers.unsubscribe(observerId);</span>
+  }
+
+  @VisibleForTesting
+  int observerCount() {
+<span class="fc" id="L867">    return blockAddedObservers.getSubscriberCount();</span>
+  }
+
+  private void notifyChainReorgBlockAdded(final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L871">    blockReorgObservers.forEach(observer -&gt; observer.onBlockAdded(blockWithReceipts, this));</span>
+<span class="fc" id="L872">  }</span>
+
+  public Optional&lt;Cache&lt;Hash, BlockHeader&gt;&gt; getBlockHeadersCache() {
+<span class="fc" id="L875">    return blockHeadersCache;</span>
+  }
+
+  public Optional&lt;Cache&lt;Hash, BlockBody&gt;&gt; getBlockBodiesCache() {
+<span class="fc" id="L879">    return blockBodiesCache;</span>
+  }
+
+  public Optional&lt;Cache&lt;Hash, List&lt;TransactionReceipt&gt;&gt;&gt; getTransactionReceiptsCache() {
+<span class="fc" id="L883">    return transactionReceiptsCache;</span>
+  }
+
+  public Optional&lt;Cache&lt;Hash, Difficulty&gt;&gt; getTotalDifficultyCache() {
+<span class="fc" id="L887">    return totalDifficultyCache;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

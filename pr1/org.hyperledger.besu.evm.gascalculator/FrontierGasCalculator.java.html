@@ -1,0 +1,524 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FrontierGasCalculator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.gascalculator</a> &gt; <span class="el_source">FrontierGasCalculator.java</span></div><h1>FrontierGasCalculator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.gascalculator;
+
+import static org.hyperledger.besu.evm.internal.Words.clampedAdd;
+import static org.hyperledger.besu.evm.internal.Words.clampedMultiply;
+import static org.hyperledger.besu.evm.internal.Words.clampedToLong;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.internal.Words;
+import org.hyperledger.besu.evm.operation.ExpOperation;
+
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/** The Frontier gas calculator. */
+<span class="fc" id="L34">public class FrontierGasCalculator implements GasCalculator {</span>
+
+  private static final long TX_DATA_ZERO_COST = 4L;
+
+  private static final long TX_DATA_NON_ZERO_COST = 68L;
+
+  private static final long TX_BASE_COST = 21_000L;
+
+  private static final long TX_CREATE_EXTRA_COST = 0L;
+
+  private static final long CODE_DEPOSIT_BYTE_COST = 200L;
+
+  private static final long ID_PRECOMPILED_BASE_GAS_COST = 15L;
+
+  private static final long ID_PRECOMPILED_WORD_GAS_COST = 3L;
+
+  private static final long ECREC_PRECOMPILED_GAS_COST = 3_000L;
+
+  private static final long SHA256_PRECOMPILED_BASE_GAS_COST = 60L;
+
+  private static final long SHA256_PRECOMPILED_WORD_GAS_COST = 12L;
+
+  private static final long RIPEMD160_PRECOMPILED_WORD_GAS_COST = 120L;
+
+  private static final long RIPEMD160_PRECOMPILED_BASE_GAS_COST = 600L;
+
+  private static final long VERY_LOW_TIER_GAS_COST = 3L;
+
+  private static final long LOW_TIER_GAS_COST = 5L;
+
+  private static final long BASE_TIER_GAS_COST = 2L;
+
+  private static final long MID_TIER_GAS_COST = 8L;
+
+  private static final long HIGH_TIER_GAS_COST = 10L;
+
+  private static final long CALL_OPERATION_BASE_GAS_COST = 40L;
+
+  private static final long CALL_VALUE_TRANSFER_GAS_COST = 9_000L;
+
+  private static final long ADDITIONAL_CALL_STIPEND = 2_300L;
+
+  private static final long NEW_ACCOUNT_GAS_COST = 25_000L;
+
+  private static final long CREATE_OPERATION_GAS_COST = 32_000L;
+
+  private static final long COPY_WORD_GAS_COST = 3L;
+
+  private static final long MEMORY_WORD_GAS_COST = 3L;
+
+  private static final long BALANCE_OPERATION_GAS_COST = 20L;
+
+  private static final long BLOCKHASH_OPERATION_GAS_COST = 20L;
+
+  private static final long EXP_OPERATION_BASE_GAS_COST = 10L;
+
+  private static final long EXP_OPERATION_BYTE_GAS_COST = 10L;
+
+  private static final long EXT_CODE_BASE_GAS_COST = 20L;
+
+  private static final long JUMPDEST_OPERATION_GAS_COST = 1L;
+
+  private static final long LOG_OPERATION_BASE_GAS_COST = 375L;
+
+  private static final long LOG_OPERATION_DATA_BYTE_GAS_COST = 8L;
+
+  private static final long LOG_OPERATION_TOPIC_GAS_COST = 375L;
+
+  private static final long SELFDESTRUCT_OPERATION_GAS_COST = 0L;
+
+  private static final long KECCAK256_OPERATION_BASE_GAS_COST = 30L;
+
+  /** The constant KECCAK256_OPERATION_WORD_GAS_COST. */
+  static final long KECCAK256_OPERATION_WORD_GAS_COST = 6L;
+
+  private static final long SLOAD_OPERATION_GAS_COST = 50L;
+
+  /** The constant STORAGE_SET_GAS_COST. */
+  public static final long STORAGE_SET_GAS_COST = 20_000L;
+
+  /** The constant STORAGE_RESET_GAS_COST. */
+  public static final long STORAGE_RESET_GAS_COST = 5_000L;
+
+  /** The constant STORAGE_RESET_REFUND_AMOUNT. */
+  public static final long STORAGE_RESET_REFUND_AMOUNT = 15_000L;
+
+  private static final long SELF_DESTRUCT_REFUND_AMOUNT = 24_000L;
+
+  @Override
+  public long transactionIntrinsicGasCost(final Bytes payload, final boolean isContractCreate) {
+<span class="fc" id="L124">    int zeros = 0;</span>
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    for (int i = 0; i &lt; payload.size(); i++) {</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">      if (payload.get(i) == 0) {</span>
+<span class="fc" id="L127">        ++zeros;</span>
+      }
+    }
+<span class="fc" id="L130">    final int nonZeros = payload.size() - zeros;</span>
+
+<span class="fc" id="L132">    final long cost = TX_BASE_COST + TX_DATA_ZERO_COST * zeros + TX_DATA_NON_ZERO_COST * nonZeros;</span>
+
+<span class="fc bfc" id="L134" title="All 2 branches covered.">    return isContractCreate ? (cost + txCreateExtraGasCost()) : cost;</span>
+  }
+
+  /**
+   * Returns the additional gas cost for contract creation transactions
+   *
+   * @return the additional gas cost for contract creation transactions
+   */
+  protected long txCreateExtraGasCost() {
+<span class="fc" id="L143">    return TX_CREATE_EXTRA_COST;</span>
+  }
+
+  @Override
+  public long codeDepositGasCost(final int codeSize) {
+<span class="fc" id="L148">    return CODE_DEPOSIT_BYTE_COST * codeSize;</span>
+  }
+
+  @Override
+  public long idPrecompiledContractGasCost(final Bytes input) {
+<span class="fc" id="L153">    return ID_PRECOMPILED_WORD_GAS_COST * Words.numWords(input) + ID_PRECOMPILED_BASE_GAS_COST;</span>
+  }
+
+  @Override
+  public long getEcrecPrecompiledContractGasCost() {
+<span class="fc" id="L158">    return ECREC_PRECOMPILED_GAS_COST;</span>
+  }
+
+  @Override
+  public long sha256PrecompiledContractGasCost(final Bytes input) {
+<span class="fc" id="L163">    return SHA256_PRECOMPILED_WORD_GAS_COST * Words.numWords(input)</span>
+        + SHA256_PRECOMPILED_BASE_GAS_COST;
+  }
+
+  @Override
+  public long ripemd160PrecompiledContractGasCost(final Bytes input) {
+<span class="fc" id="L169">    return RIPEMD160_PRECOMPILED_WORD_GAS_COST * Words.numWords(input)</span>
+        + RIPEMD160_PRECOMPILED_BASE_GAS_COST;
+  }
+
+  @Override
+  public long getZeroTierGasCost() {
+<span class="fc" id="L175">    return 0L;</span>
+  }
+
+  @Override
+  public long getVeryLowTierGasCost() {
+<span class="fc" id="L180">    return VERY_LOW_TIER_GAS_COST;</span>
+  }
+
+  @Override
+  public long getLowTierGasCost() {
+<span class="fc" id="L185">    return LOW_TIER_GAS_COST;</span>
+  }
+
+  @Override
+  public long getBaseTierGasCost() {
+<span class="fc" id="L190">    return BASE_TIER_GAS_COST;</span>
+  }
+
+  @Override
+  public long getMidTierGasCost() {
+<span class="fc" id="L195">    return MID_TIER_GAS_COST;</span>
+  }
+
+  @Override
+  public long getHighTierGasCost() {
+<span class="fc" id="L200">    return HIGH_TIER_GAS_COST;</span>
+  }
+
+  /**
+   * Returns the base gas cost to execute a call operation.
+   *
+   * @return the base gas cost to execute a call operation
+   */
+  @Override
+  public long callOperationBaseGasCost() {
+<span class="fc" id="L210">    return CALL_OPERATION_BASE_GAS_COST;</span>
+  }
+
+  /**
+   * Returns the gas cost to transfer funds in a call operation.
+   *
+   * @return the gas cost to transfer funds in a call operation
+   */
+  long callValueTransferGasCost() {
+<span class="fc" id="L219">    return CALL_VALUE_TRANSFER_GAS_COST;</span>
+  }
+
+  /**
+   * Returns the gas cost to create a new account.
+   *
+   * @return the gas cost to create a new account
+   */
+  long newAccountGasCost() {
+<span class="fc" id="L228">    return NEW_ACCOUNT_GAS_COST;</span>
+  }
+
+  @SuppressWarnings(&quot;removal&quot;)
+  @Override
+  public long callOperationGasCost(
+      final MessageFrame frame,
+      final long stipend,
+      final long inputDataOffset,
+      final long inputDataLength,
+      final long outputDataOffset,
+      final long outputDataLength,
+      final Wei transferValue,
+      final Account recipient,
+      final Address to) {
+<span class="nc" id="L243">    return callOperationGasCost(</span>
+        frame,
+        stipend,
+        inputDataOffset,
+        inputDataLength,
+        outputDataOffset,
+        outputDataLength,
+        transferValue,
+        recipient,
+        to,
+        true);
+  }
+
+  @Override
+  public long callOperationGasCost(
+      final MessageFrame frame,
+      final long stipend,
+      final long inputDataOffset,
+      final long inputDataLength,
+      final long outputDataOffset,
+      final long outputDataLength,
+      final Wei transferValue,
+      final Account recipient,
+      final Address to,
+      final boolean accountIsWarm) {
+<span class="fc" id="L268">    final long inputDataMemoryExpansionCost =</span>
+<span class="fc" id="L269">        memoryExpansionGasCost(frame, inputDataOffset, inputDataLength);</span>
+<span class="fc" id="L270">    final long outputDataMemoryExpansionCost =</span>
+<span class="fc" id="L271">        memoryExpansionGasCost(frame, outputDataOffset, outputDataLength);</span>
+<span class="fc" id="L272">    final long memoryExpansionCost =</span>
+<span class="fc" id="L273">        Math.max(inputDataMemoryExpansionCost, outputDataMemoryExpansionCost);</span>
+
+<span class="fc" id="L275">    long cost = clampedAdd(clampedAdd(callOperationBaseGasCost(), stipend), memoryExpansionCost);</span>
+
+<span class="fc bfc" id="L277" title="All 2 branches covered.">    if (!transferValue.isZero()) {</span>
+<span class="fc" id="L278">      cost = clampedAdd(cost, callValueTransferGasCost());</span>
+    }
+
+<span class="fc bfc" id="L281" title="All 2 branches covered.">    if (recipient == null) {</span>
+<span class="fc" id="L282">      cost = clampedAdd(cost, newAccountGasCost());</span>
+    }
+
+<span class="fc" id="L285">    return cost;</span>
+  }
+
+  /**
+   * Returns the additional call stipend for calls with value transfers.
+   *
+   * @return the additional call stipend for calls with value transfers
+   */
+  @Override
+  public long getAdditionalCallStipend() {
+<span class="fc" id="L295">    return ADDITIONAL_CALL_STIPEND;</span>
+  }
+
+  @Override
+  public long gasAvailableForChildCall(
+      final MessageFrame frame, final long stipend, final boolean transfersValue) {
+<span class="fc bfc" id="L301" title="All 2 branches covered.">    if (transfersValue) {</span>
+<span class="fc" id="L302">      return stipend + getAdditionalCallStipend();</span>
+    } else {
+<span class="fc" id="L304">      return stipend;</span>
+    }
+  }
+
+  @Override
+  public long createOperationGasCost(final MessageFrame frame) {
+<span class="fc" id="L310">    final long initCodeOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L311">    final long initCodeLength = clampedToLong(frame.getStackItem(2));</span>
+
+<span class="fc" id="L313">    final long memoryGasCost = memoryExpansionGasCost(frame, initCodeOffset, initCodeLength);</span>
+<span class="fc" id="L314">    return clampedAdd(CREATE_OPERATION_GAS_COST, memoryGasCost);</span>
+  }
+
+  @Override
+  public long gasAvailableForChildCreate(final long stipend) {
+<span class="fc" id="L319">    return stipend;</span>
+  }
+
+  @Override
+  public long dataCopyOperationGasCost(
+      final MessageFrame frame, final long offset, final long length) {
+<span class="fc" id="L325">    return copyWordsToMemoryGasCost(</span>
+        frame, VERY_LOW_TIER_GAS_COST, COPY_WORD_GAS_COST, offset, length);
+  }
+
+  @Override
+  public long memoryExpansionGasCost(
+      final MessageFrame frame, final long offset, final long length) {
+
+<span class="fc" id="L333">    final long pre = memoryCost(frame.memoryWordSize());</span>
+<span class="fc" id="L334">    final long post = memoryCost(frame.calculateMemoryExpansion(offset, length));</span>
+<span class="fc bfc" id="L335" title="All 2 branches covered.">    if (post == Long.MAX_VALUE) {</span>
+<span class="fc" id="L336">      return Long.MAX_VALUE;</span>
+    }
+<span class="fc" id="L338">    return post - pre;</span>
+  }
+
+  @Override
+  public long getBalanceOperationGasCost() {
+<span class="fc" id="L343">    return BALANCE_OPERATION_GAS_COST;</span>
+  }
+
+  @Override
+  public long getBlockHashOperationGasCost() {
+<span class="fc" id="L348">    return BLOCKHASH_OPERATION_GAS_COST;</span>
+  }
+
+  /**
+   * Returns the gas cost for a byte in the {@link ExpOperation}.
+   *
+   * @return the gas cost for a byte in the exponent operation
+   */
+  protected long expOperationByteGasCost() {
+<span class="fc" id="L357">    return EXP_OPERATION_BYTE_GAS_COST;</span>
+  }
+
+  @Override
+  public long expOperationGasCost(final int numBytes) {
+<span class="fc" id="L362">    return expOperationByteGasCost() * numBytes + EXP_OPERATION_BASE_GAS_COST;</span>
+  }
+
+  /**
+   * Returns the base gas cost for external code accesses.
+   *
+   * @return the base gas cost for external code accesses
+   */
+  protected long extCodeBaseGasCost() {
+<span class="fc" id="L371">    return EXT_CODE_BASE_GAS_COST;</span>
+  }
+
+  @Override
+  public long extCodeCopyOperationGasCost(
+      final MessageFrame frame, final long offset, final long length) {
+<span class="fc" id="L377">    return copyWordsToMemoryGasCost(</span>
+<span class="fc" id="L378">        frame, extCodeBaseGasCost(), COPY_WORD_GAS_COST, offset, length);</span>
+  }
+
+  @Override
+  public long extCodeHashOperationGasCost() {
+<span class="nc" id="L383">    throw new UnsupportedOperationException(</span>
+<span class="nc" id="L384">        &quot;EXTCODEHASH not supported by &quot; + getClass().getSimpleName());</span>
+  }
+
+  @Override
+  public long getExtCodeSizeOperationGasCost() {
+<span class="fc" id="L389">    return extCodeBaseGasCost();</span>
+  }
+
+  @Override
+  public long getJumpDestOperationGasCost() {
+<span class="fc" id="L394">    return JUMPDEST_OPERATION_GAS_COST;</span>
+  }
+
+  @Override
+  public long logOperationGasCost(
+      final MessageFrame frame, final long dataOffset, final long dataLength, final int numTopics) {
+<span class="fc" id="L400">    return clampedAdd(</span>
+        LOG_OPERATION_BASE_GAS_COST,
+<span class="fc" id="L402">        clampedAdd(</span>
+<span class="fc" id="L403">            clampedMultiply(LOG_OPERATION_DATA_BYTE_GAS_COST, dataLength),</span>
+<span class="fc" id="L404">            clampedAdd(</span>
+<span class="fc" id="L405">                clampedMultiply(LOG_OPERATION_TOPIC_GAS_COST, numTopics),</span>
+<span class="fc" id="L406">                memoryExpansionGasCost(frame, dataOffset, dataLength))));</span>
+  }
+
+  @Override
+  public long mLoadOperationGasCost(final MessageFrame frame, final long offset) {
+<span class="fc" id="L411">    return clampedAdd(VERY_LOW_TIER_GAS_COST, memoryExpansionGasCost(frame, offset, 32));</span>
+  }
+
+  @Override
+  public long mStoreOperationGasCost(final MessageFrame frame, final long offset) {
+<span class="fc" id="L416">    return clampedAdd(VERY_LOW_TIER_GAS_COST, memoryExpansionGasCost(frame, offset, 32));</span>
+  }
+
+  @Override
+  public long mStore8OperationGasCost(final MessageFrame frame, final long offset) {
+<span class="fc" id="L421">    return clampedAdd(VERY_LOW_TIER_GAS_COST, memoryExpansionGasCost(frame, offset, 1));</span>
+  }
+
+  @Override
+  public long selfDestructOperationGasCost(final Account recipient, final Wei inheritance) {
+<span class="fc" id="L426">    return SELFDESTRUCT_OPERATION_GAS_COST;</span>
+  }
+
+  @Override
+  public long keccak256OperationGasCost(
+      final MessageFrame frame, final long offset, final long length) {
+<span class="fc" id="L432">    return copyWordsToMemoryGasCost(</span>
+        frame,
+        KECCAK256_OPERATION_BASE_GAS_COST,
+        KECCAK256_OPERATION_WORD_GAS_COST,
+        offset,
+        length);
+  }
+
+  @Override
+  public long create2OperationGasCost(final MessageFrame frame) {
+<span class="nc" id="L442">    throw new UnsupportedOperationException(</span>
+<span class="nc" id="L443">        &quot;CREATE2 operation not supported by &quot; + getClass().getSimpleName());</span>
+  }
+
+  @Override
+  public long getSloadOperationGasCost() {
+<span class="fc" id="L448">    return SLOAD_OPERATION_GAS_COST;</span>
+  }
+
+  @Override
+  public long calculateStorageCost(
+      final UInt256 newValue,
+      final Supplier&lt;UInt256&gt; currentValue,
+      final Supplier&lt;UInt256&gt; originalValue) {
+<span class="fc bfc" id="L456" title="All 4 branches covered.">    return !newValue.isZero() &amp;&amp; currentValue.get().isZero()</span>
+<span class="fc" id="L457">        ? STORAGE_SET_GAS_COST</span>
+<span class="fc" id="L458">        : STORAGE_RESET_GAS_COST;</span>
+  }
+
+  @Override
+  public long calculateStorageRefundAmount(
+      final UInt256 newValue,
+      final Supplier&lt;UInt256&gt; currentValue,
+      final Supplier&lt;UInt256&gt; originalValue) {
+<span class="fc bfc" id="L466" title="All 4 branches covered.">    return newValue.isZero() &amp;&amp; !currentValue.get().isZero() ? STORAGE_RESET_REFUND_AMOUNT : 0L;</span>
+  }
+
+  @Override
+  public long getSelfDestructRefundAmount() {
+<span class="fc" id="L471">    return SELF_DESTRUCT_REFUND_AMOUNT;</span>
+  }
+
+  /**
+   * Copy words to memory gas cost.
+   *
+   * @param frame the frame
+   * @param baseGasCost the base gas cost
+   * @param wordGasCost the word gas cost
+   * @param offset the offset
+   * @param length the length
+   * @return the cost
+   */
+  protected long copyWordsToMemoryGasCost(
+      final MessageFrame frame,
+      final long baseGasCost,
+      final long wordGasCost,
+      final long offset,
+      final long length) {
+<span class="fc bfc" id="L490" title="All 2 branches covered.">    final long numWords = length / 32 + (length % 32 == 0 ? 0 : 1);</span>
+
+<span class="fc" id="L492">    final long copyCost = clampedAdd(clampedMultiply(wordGasCost, numWords), baseGasCost);</span>
+<span class="fc" id="L493">    final long memoryCost = memoryExpansionGasCost(frame, offset, length);</span>
+
+<span class="fc" id="L495">    return clampedAdd(copyCost, memoryCost);</span>
+  }
+
+  /**
+   * Memory cost.
+   *
+   * @param length the length
+   * @return the cost
+   */
+  static long memoryCost(final long length) {
+<span class="fc" id="L505">    final long lengthSquare = clampedMultiply(length, length);</span>
+    final long base =
+<span class="fc bfc" id="L507" title="All 2 branches covered.">        (lengthSquare == Long.MAX_VALUE)</span>
+<span class="fc" id="L508">            ? clampedMultiply(length / 512, length)</span>
+<span class="fc" id="L509">            : lengthSquare / 512;</span>
+
+<span class="fc" id="L511">    return clampedAdd(clampedMultiply(MEMORY_WORD_GAS_COST, length), base);</span>
+  }
+
+  @Override
+  public long getMaximumTransactionCost(final int size) {
+<span class="nc" id="L516">    return TX_BASE_COST + TX_DATA_NON_ZERO_COST * size;</span>
+  }
+
+  @Override
+  public long getMinimumTransactionCost() {
+<span class="fc" id="L521">    return TX_BASE_COST;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthCall.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">EthCall.java</span></div><h1>EthCall.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.BLOCK_NOT_FOUND;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.INTERNAL_ERROR;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcErrorConverter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameterOrBlockHash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.JsonCallParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcError;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulatorResult;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+
+public class EthCall extends AbstractBlockParameterOrBlockHashMethod {
+  private final TransactionSimulator transactionSimulator;
+
+  public EthCall(
+      final BlockchainQueries blockchainQueries, final TransactionSimulator transactionSimulator) {
+<span class="fc" id="L48">    super(blockchainQueries);</span>
+<span class="fc" id="L49">    this.transactionSimulator = transactionSimulator;</span>
+<span class="fc" id="L50">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L54">    return RpcMethod.ETH_CALL.getMethodName();</span>
+  }
+
+  @Override
+  protected BlockParameterOrBlockHash blockParameterOrBlockHash(
+      final JsonRpcRequestContext request) {
+<span class="fc" id="L60">    return request.getRequiredParameter(1, BlockParameterOrBlockHash.class);</span>
+  }
+
+  @Override
+  protected Object resultByBlockHash(final JsonRpcRequestContext request, final Hash blockHash) {
+<span class="fc" id="L65">    final BlockHeader header = blockchainQueries.get().getBlockHeaderByHash(blockHash).orElse(null);</span>
+
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">    if (header == null) {</span>
+<span class="nc" id="L68">      return errorResponse(request, BLOCK_NOT_FOUND);</span>
+    }
+<span class="fc" id="L70">    return resultByBlockHeader(request, header);</span>
+  }
+
+  @Override
+  protected Object resultByBlockHeader(
+      final JsonRpcRequestContext request, final BlockHeader header) {
+<span class="fc" id="L76">    JsonCallParameter callParams = JsonCallParameterUtil.validateAndGetCallParams(request);</span>
+
+<span class="fc" id="L78">    return transactionSimulator</span>
+<span class="fc" id="L79">        .process(</span>
+            callParams,
+<span class="fc" id="L81">            buildTransactionValidationParams(header, callParams),</span>
+            OperationTracer.NO_TRACING,
+            (mutableWorldState, transactionSimulatorResult) -&gt;
+<span class="fc" id="L84">                transactionSimulatorResult.map(</span>
+                    result -&gt;
+                        result
+<span class="fc" id="L87">                            .getValidationResult()</span>
+<span class="fc" id="L88">                            .either(</span>
+                                (() -&gt;
+<span class="fc bfc" id="L90" title="All 2 branches covered.">                                    result.isSuccessful()</span>
+<span class="fc" id="L91">                                        ? new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L92">                                            request.getRequest().getId(),</span>
+<span class="fc" id="L93">                                            result.getOutput().toString())</span>
+<span class="fc" id="L94">                                        : errorResponse(request, result)),</span>
+                                reason -&gt;
+<span class="fc" id="L96">                                    errorResponse(</span>
+                                        request,
+<span class="fc" id="L98">                                        JsonRpcErrorConverter.convertTransactionInvalidReason(</span>
+                                            reason)))),
+            header)
+<span class="fc" id="L101">        .orElse(errorResponse(request, INTERNAL_ERROR));</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L106">    return (JsonRpcResponse) handleParamTypes(requestContext);</span>
+  }
+
+  private JsonRpcErrorResponse errorResponse(
+      final JsonRpcRequestContext request, final TransactionSimulatorResult result) {
+
+<span class="fc" id="L112">    final ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+<span class="fc" id="L113">        result.getValidationResult();</span>
+<span class="pc bpc" id="L114" title="2 of 4 branches missed.">    if (validationResult != null &amp;&amp; !validationResult.isValid()) {</span>
+<span class="nc" id="L115">      return errorResponse(</span>
+          request,
+<span class="nc" id="L117">          JsonRpcErrorConverter.convertTransactionInvalidReason(</span>
+<span class="nc" id="L118">              validationResult.getInvalidReason()));</span>
+    } else {
+<span class="fc" id="L120">      final TransactionProcessingResult resultTrx = result.result();</span>
+<span class="pc bpc" id="L121" title="2 of 4 branches missed.">      if (resultTrx != null &amp;&amp; resultTrx.getRevertReason().isPresent()) {</span>
+<span class="fc" id="L122">        return errorResponse(</span>
+            request,
+            new JsonRpcError(
+<span class="fc" id="L125">                RpcErrorType.REVERT_ERROR, resultTrx.getRevertReason().get().toHexString()));</span>
+      }
+<span class="nc" id="L127">      return errorResponse(request, RpcErrorType.INTERNAL_ERROR);</span>
+    }
+  }
+
+  private JsonRpcErrorResponse errorResponse(
+      final JsonRpcRequestContext request, final JsonRpcError jsonRpcError) {
+<span class="fc" id="L133">    return new JsonRpcErrorResponse(request.getRequest().getId(), jsonRpcError);</span>
+  }
+
+  private JsonRpcErrorResponse errorResponse(
+      final JsonRpcRequestContext request, final RpcErrorType rpcErrorType) {
+<span class="fc" id="L138">    return errorResponse(request, new JsonRpcError(rpcErrorType));</span>
+  }
+
+  private TransactionValidationParams buildTransactionValidationParams(
+      final BlockHeader header, final JsonCallParameter callParams) {
+
+    ImmutableTransactionValidationParams.Builder transactionValidationParams =
+<span class="fc" id="L145">        ImmutableTransactionValidationParams.builder()</span>
+<span class="fc" id="L146">            .from(TransactionValidationParams.transactionSimulator());</span>
+
+    // if it is not set explicitly whether we want a strict check of the balance or not. this will
+    // be decided according to the provided parameters
+<span class="fc bfc" id="L150" title="All 2 branches covered.">    if (callParams.isMaybeStrict().isEmpty()) {</span>
+<span class="fc" id="L151">      transactionValidationParams.isAllowExceedingBalance(</span>
+<span class="fc" id="L152">          isAllowExceedingBalanceAutoSelection(header, callParams));</span>
+    } else {
+<span class="fc" id="L154">      transactionValidationParams.isAllowExceedingBalance(</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">          !callParams.isMaybeStrict().orElse(Boolean.FALSE));</span>
+    }
+<span class="fc" id="L157">    return transactionValidationParams.build();</span>
+  }
+
+  private boolean isAllowExceedingBalanceAutoSelection(
+      final BlockHeader header, final JsonCallParameter callParams) {
+
+<span class="fc" id="L163">    boolean isZeroGasPrice =</span>
+<span class="fc bfc" id="L164" title="All 4 branches covered.">        callParams.getGasPrice() == null || Wei.ZERO.equals(callParams.getGasPrice());</span>
+
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    if (header.getBaseFee().isPresent()) {</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">      if (callParams.getBlobVersionedHashes().isPresent()</span>
+<span class="fc bfc" id="L168" title="All 2 branches covered.">          &amp;&amp; (callParams.getMaxFeePerBlobGas().isEmpty()</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">              || callParams.getMaxFeePerBlobGas().get().equals(Wei.ZERO))) {</span>
+<span class="fc" id="L170">        return true;</span>
+      }
+<span class="fc" id="L172">      boolean isZeroMaxFeePerGas = callParams.getMaxFeePerGas().orElse(Wei.ZERO).equals(Wei.ZERO);</span>
+<span class="fc" id="L173">      boolean isZeroMaxPriorityFeePerGas =</span>
+<span class="fc" id="L174">          callParams.getMaxPriorityFeePerGas().orElse(Wei.ZERO).equals(Wei.ZERO);</span>
+<span class="pc bpc" id="L175" title="1 of 6 branches missed.">      if (isZeroGasPrice &amp;&amp; isZeroMaxFeePerGas &amp;&amp; isZeroMaxPriorityFeePerGas) {</span>
+        // After 1559, when gas pricing is not provided, 0 is used and the balance is not
+        // checked
+<span class="fc" id="L178">        return true;</span>
+      } else {
+        // After 1559, when gas price is provided, it is interpreted as both the max and
+        // priority fee and the balance is checked
+<span class="fc" id="L182">        return false;</span>
+      }
+    }
+    // Prior 1559, when gas price == 0 or is not provided the balance is not checked
+<span class="fc" id="L186">    return isZeroGasPrice;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

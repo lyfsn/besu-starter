@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KeyPairUtil.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.crypto</a> &gt; <span class="el_source">KeyPairUtil.java</span></div><h1>KeyPairUtil.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.crypto;
+
+import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.io.Resources;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Key pair util. */
+<span class="nc" id="L36">public class KeyPairUtil {</span>
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(KeyPairUtil.class);</span>
+<span class="fc" id="L38">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L39">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  /**
+   * Load resource file string.
+   *
+   * @param resourcePath the resource path
+   * @return the string
+   */
+  public static String loadResourceFile(final String resourcePath) {
+    try {
+<span class="nc" id="L49">      URL path = KeyPairUtil.class.getClassLoader().getResource(resourcePath);</span>
+<span class="nc" id="L50">      return Resources.toString(path, StandardCharsets.UTF_8).trim();</span>
+<span class="nc" id="L51">    } catch (Exception e) {</span>
+<span class="nc" id="L52">      throw new RuntimeException(&quot;Unable to load resource: &quot; + resourcePath, e);</span>
+    }
+  }
+
+  /**
+   * Load key pair from resource.
+   *
+   * @param resourcePath the resource path
+   * @return the key pair
+   */
+  public static KeyPair loadKeyPairFromResource(final String resourcePath) {
+    final KeyPair keyPair;
+<span class="nc" id="L64">    String keyData = loadResourceFile(resourcePath);</span>
+<span class="nc bnc" id="L65" title="All 4 branches missed.">    if (keyData == null || keyData.isEmpty()) {</span>
+<span class="nc" id="L66">      throw new IllegalArgumentException(&quot;Unable to load resource: &quot; + resourcePath);</span>
+    }
+<span class="nc" id="L68">    SECPPrivateKey privateKey =</span>
+<span class="nc" id="L69">        SIGNATURE_ALGORITHM.get().createPrivateKey(Bytes32.fromHexString((keyData)));</span>
+<span class="nc" id="L70">    keyPair = SIGNATURE_ALGORITHM.get().createKeyPair(privateKey);</span>
+
+<span class="nc" id="L72">    LOG.info(&quot;Loaded keyPair {} from {}&quot;, keyPair.getPublicKey().toString(), resourcePath);</span>
+<span class="nc" id="L73">    return keyPair;</span>
+  }
+
+  /**
+   * Load key pair.
+   *
+   * @param keyFile the key file
+   * @return the key pair
+   */
+  public static KeyPair loadKeyPair(final File keyFile) {
+
+    final KeyPair key;
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (keyFile.exists()) {</span>
+
+<span class="fc" id="L87">      LOG.info(&quot;Attempting to load public key from {}&quot;, keyFile.getAbsolutePath());</span>
+<span class="fc" id="L88">      key = load(keyFile);</span>
+<span class="fc" id="L89">      LOG.info(</span>
+<span class="fc" id="L90">          &quot;Loaded public key {} from {}&quot;, key.getPublicKey().toString(), keyFile.getAbsolutePath());</span>
+    } else {
+<span class="fc" id="L92">      final SignatureAlgorithm signatureAlgorithm = SIGNATURE_ALGORITHM.get();</span>
+<span class="fc" id="L93">      key = signatureAlgorithm.generateKeyPair();</span>
+<span class="fc" id="L94">      storeKeyFile(key, keyFile.getParentFile().toPath());</span>
+
+<span class="fc" id="L96">      LOG.info(</span>
+          &quot;Generated new {} public key {} and stored it to {}&quot;,
+<span class="fc" id="L98">          signatureAlgorithm.getCurveName(),</span>
+<span class="fc" id="L99">          key.getPublicKey().toString(),</span>
+<span class="fc" id="L100">          keyFile.getAbsolutePath());</span>
+    }
+<span class="fc" id="L102">    return key;</span>
+  }
+
+  /**
+   * Load key pair.
+   *
+   * @param directory the directory
+   * @return the key pair
+   */
+  public static KeyPair loadKeyPair(final Path directory) {
+<span class="fc" id="L112">    return loadKeyPair(getDefaultKeyFile(directory));</span>
+  }
+
+  /**
+   * Store key file.
+   *
+   * @param keyPair the key pair
+   * @param homeDirectory the home directory
+   */
+  public static void storeKeyFile(final KeyPair keyPair, final Path homeDirectory) {
+    try {
+<span class="fc" id="L123">      storeKeyPair(keyPair, getDefaultKeyFile(homeDirectory));</span>
+<span class="nc" id="L124">    } catch (IOException e) {</span>
+<span class="nc" id="L125">      throw new IllegalArgumentException(&quot;Cannot store generated private key.&quot;);</span>
+<span class="fc" id="L126">    }</span>
+<span class="fc" id="L127">  }</span>
+
+  /**
+   * Gets default key file.
+   *
+   * @param directory the directory
+   * @return the default key file
+   */
+  public static File getDefaultKeyFile(final Path directory) {
+<span class="fc" id="L136">    return directory.resolve(&quot;key&quot;).toFile();</span>
+  }
+
+  /**
+   * Load key pair.
+   *
+   * @param file the file
+   * @return the key pair
+   */
+  public static KeyPair load(final File file) {
+<span class="fc" id="L146">    return SIGNATURE_ALGORITHM.get().createKeyPair(loadPrivateKey(file));</span>
+  }
+
+  /**
+   * Load secp private key.
+   *
+   * @param file the file
+   * @return the secp private key
+   */
+  static SECPPrivateKey loadPrivateKey(final File file) {
+    try {
+<span class="fc" id="L157">      final List&lt;String&gt; info = Files.readAllLines(file.toPath());</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">      if (info.size() != 1) {</span>
+<span class="fc" id="L159">        throw new IllegalArgumentException(&quot;Supplied file does not contain valid keyPair pair.&quot;);</span>
+      }
+<span class="fc" id="L161">      return SIGNATURE_ALGORITHM.get().createPrivateKey(Bytes32.fromHexString((info.get(0))));</span>
+<span class="nc" id="L162">    } catch (IOException ex) {</span>
+<span class="nc" id="L163">      throw new IllegalArgumentException(&quot;Supplied file does not contain valid keyPair pair.&quot;);</span>
+    }
+  }
+
+  /**
+   * Store key pair.
+   *
+   * @param keyPair the key pair
+   * @param file the file
+   * @throws IOException the io exception
+   */
+  static void storeKeyPair(final KeyPair keyPair, final File file) throws IOException {
+<span class="fc" id="L175">    final File privateKeyDir = file.getParentFile();</span>
+<span class="fc" id="L176">    privateKeyDir.mkdirs();</span>
+<span class="fc" id="L177">    final Path tempPath = Files.createTempFile(privateKeyDir.toPath(), &quot;.tmp&quot;, &quot;&quot;);</span>
+<span class="fc" id="L178">    Files.write(</span>
+        tempPath,
+<span class="fc" id="L180">        keyPair.getPrivateKey().getEncodedBytes().toString().getBytes(StandardCharsets.UTF_8));</span>
+<span class="fc" id="L181">    Files.move(tempPath, file.toPath(), REPLACE_EXISTING, ATOMIC_MOVE);</span>
+<span class="fc" id="L182">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

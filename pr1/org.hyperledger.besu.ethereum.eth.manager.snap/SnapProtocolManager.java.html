@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapProtocolManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.snap</a> &gt; <span class="el_source">SnapProtocolManager.java</span></div><h1>SnapProtocolManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.snap;
+
+import org.hyperledger.besu.ethereum.eth.SnapProtocol;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessage;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.p2p.network.ProtocolManager;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.AbstractSnapMessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.math.BigInteger;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import com.google.common.collect.ImmutableList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class SnapProtocolManager implements ProtocolManager {
+<span class="fc" id="L45">  private static final Logger LOG = LoggerFactory.getLogger(SnapProtocolManager.class);</span>
+
+  private final List&lt;Capability&gt; supportedCapabilities;
+  private final EthPeers ethPeers;
+  private final EthMessages snapMessages;
+
+  public SnapProtocolManager(
+      final List&lt;PeerValidator&gt; peerValidators,
+      final EthPeers ethPeers,
+      final EthMessages snapMessages,
+<span class="fc" id="L55">      final WorldStateArchive worldStateArchive) {</span>
+<span class="fc" id="L56">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L57">    this.snapMessages = snapMessages;</span>
+<span class="fc" id="L58">    this.supportedCapabilities = calculateCapabilities();</span>
+<span class="fc" id="L59">    new SnapServer(snapMessages, worldStateArchive);</span>
+<span class="fc" id="L60">  }</span>
+
+  private List&lt;Capability&gt; calculateCapabilities() {
+<span class="fc" id="L63">    final ImmutableList.Builder&lt;Capability&gt; capabilities = ImmutableList.builder();</span>
+<span class="fc" id="L64">    capabilities.add(SnapProtocol.SNAP1);</span>
+
+<span class="fc" id="L66">    return capabilities.build();</span>
+  }
+
+  @Override
+  public String getSupportedProtocol() {
+<span class="nc" id="L71">    return SnapProtocol.NAME;</span>
+  }
+
+  @Override
+  public List&lt;Capability&gt; getSupportedCapabilities() {
+<span class="fc" id="L76">    return supportedCapabilities;</span>
+  }
+
+  @Override
+<span class="fc" id="L80">  public void stop() {}</span>
+
+  @Override
+<span class="fc" id="L83">  public void awaitStop() throws InterruptedException {}</span>
+
+  /**
+   * This function is called by the P2P framework when an &quot;SNAP message has been received.
+   *
+   * @param cap The capability under which the message was transmitted.
+   * @param message The message to be decoded.
+   */
+  @Override
+  public void processMessage(final Capability cap, final Message message) {
+<span class="nc" id="L93">    final MessageData messageData = AbstractSnapMessageData.create(message);</span>
+<span class="nc" id="L94">    final int code = messageData.getCode();</span>
+<span class="nc" id="L95">    LOG.trace(&quot;Process snap message {}, {}&quot;, cap, code);</span>
+<span class="nc" id="L96">    final EthPeer ethPeer = ethPeers.peer(message.getConnection());</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">    if (ethPeer == null) {</span>
+<span class="nc" id="L98">      LOG.debug(</span>
+<span class="nc" id="L99">          &quot;Ignoring message received from unknown peer connection: &quot; + message.getConnection());</span>
+<span class="nc" id="L100">      return;</span>
+    }
+<span class="nc" id="L102">    final EthMessage ethMessage = new EthMessage(ethPeer, messageData);</span>
+<span class="nc bnc" id="L103" title="All 2 branches missed.">    if (!ethPeer.validateReceivedMessage(ethMessage, getSupportedProtocol())) {</span>
+<span class="nc" id="L104">      LOG.debug(&quot;Unsolicited message received from, disconnecting: {}&quot;, ethPeer);</span>
+<span class="nc" id="L105">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="nc" id="L106">      return;</span>
+    }
+
+    // This will handle responses
+<span class="nc" id="L110">    ethPeers.dispatchMessage(ethPeer, ethMessage, getSupportedProtocol());</span>
+
+    // This will handle requests
+<span class="nc" id="L113">    Optional&lt;MessageData&gt; maybeResponseData = Optional.empty();</span>
+    try {
+<span class="nc" id="L115">      final Map.Entry&lt;BigInteger, MessageData&gt; requestIdAndEthMessage =</span>
+<span class="nc" id="L116">          ethMessage.getData().unwrapMessageData();</span>
+<span class="nc" id="L117">      maybeResponseData =</span>
+          snapMessages
+<span class="nc" id="L119">              .dispatch(new EthMessage(ethPeer, requestIdAndEthMessage.getValue()))</span>
+<span class="nc" id="L120">              .map(responseData -&gt; responseData.wrapMessageData(requestIdAndEthMessage.getKey()));</span>
+<span class="nc" id="L121">    } catch (final RLPException e) {</span>
+<span class="nc" id="L122">      LOG.debug(</span>
+<span class="nc" id="L123">          &quot;Received malformed message {} , disconnecting: {}&quot;, messageData.getData(), ethPeer, e);</span>
+<span class="nc" id="L124">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="nc" id="L125">    }</span>
+<span class="nc" id="L126">    maybeResponseData.ifPresent(</span>
+        responseData -&gt; {
+          try {
+<span class="nc" id="L129">            ethPeer.send(responseData, getSupportedProtocol());</span>
+<span class="nc" id="L130">          } catch (final PeerConnection.PeerNotConnected error) {</span>
+            // Peer disconnected before we could respond - nothing to do
+<span class="nc" id="L132">            LOG.trace(</span>
+<span class="nc" id="L133">                &quot;Peer disconnected before we could respond - nothing to do &quot; + error.getMessage());</span>
+<span class="nc" id="L134">          }</span>
+<span class="nc" id="L135">        });</span>
+<span class="nc" id="L136">  }</span>
+
+  @Override
+<span class="fc" id="L139">  public void handleNewConnection(final PeerConnection connection) {}</span>
+
+  @Override
+  public boolean shouldConnect(final Peer peer, final boolean incoming) {
+<span class="fc" id="L143">    return false; // EthManager is taking care of this for now</span>
+  }
+
+  @Override
+  public void handleDisconnect(
+      final PeerConnection connection,
+      final DisconnectReason reason,
+<span class="fc" id="L150">      final boolean initiatedByPeer) {}</span>
+
+  @Override
+  public int getHighestProtocolVersion() {
+<span class="nc" id="L154">    return getSupportedCapabilities().stream()</span>
+<span class="nc" id="L155">        .max(Comparator.comparing(Capability::getVersion))</span>
+<span class="nc" id="L156">        .map(Capability::getVersion)</span>
+<span class="nc" id="L157">        .orElse(0);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

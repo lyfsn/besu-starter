@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DetermineCommonAncestorTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.tasks</a> &gt; <span class="el_source">DetermineCommonAncestorTask.java</span></div><h1>DetermineCommonAncestorTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.tasks;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractEthTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.GetHeadersFromPeerByNumberTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.util.BlockchainUtil;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.OptionalInt;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Finds the common ancestor with the given peer. It is assumed that the peer will at least share
+ * the same genesis block with this node. Running this task against a peer with a non-matching
+ * genesis block will result in undefined behavior: the task may complete exceptionally or in some
+ * cases this node's genesis block will be returned.
+ */
+public class DetermineCommonAncestorTask extends AbstractEthTask&lt;BlockHeader&gt; {
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(DetermineCommonAncestorTask.class);</span>
+  private final EthContext ethContext;
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthPeer peer;
+  private final int headerRequestSize;
+  private final MetricsSystem metricsSystem;
+
+  private long maximumPossibleCommonAncestorNumber;
+  private long minimumPossibleCommonAncestorNumber;
+  private BlockHeader commonAncestorCandidate;
+<span class="fc" id="L54">  private boolean initialQuery = true;</span>
+
+  private DetermineCommonAncestorTask(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final EthPeer peer,
+      final int headerRequestSize,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L63">    super(metricsSystem);</span>
+<span class="fc" id="L64">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L65">    this.ethContext = ethContext;</span>
+<span class="fc" id="L66">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L67">    this.peer = peer;</span>
+<span class="fc" id="L68">    this.headerRequestSize = headerRequestSize;</span>
+<span class="fc" id="L69">    this.metricsSystem = metricsSystem;</span>
+
+<span class="fc" id="L71">    maximumPossibleCommonAncestorNumber =</span>
+<span class="fc" id="L72">        Math.min(</span>
+<span class="fc" id="L73">            protocolContext.getBlockchain().getChainHeadBlockNumber(),</span>
+<span class="fc" id="L74">            peer.chainState().getEstimatedHeight());</span>
+<span class="fc" id="L75">    minimumPossibleCommonAncestorNumber = BlockHeader.GENESIS_BLOCK_NUMBER;</span>
+<span class="fc" id="L76">    commonAncestorCandidate =</span>
+<span class="fc" id="L77">        protocolContext.getBlockchain().getBlockHeader(BlockHeader.GENESIS_BLOCK_NUMBER).get();</span>
+<span class="fc" id="L78">  }</span>
+
+  public static DetermineCommonAncestorTask create(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final EthPeer peer,
+      final int headerRequestSize,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L87">    return new DetermineCommonAncestorTask(</span>
+        protocolSchedule, protocolContext, ethContext, peer, headerRequestSize, metricsSystem);
+  }
+
+  @Override
+  protected void executeTask() {
+<span class="fc bfc" id="L93" title="All 2 branches covered.">    if (maximumPossibleCommonAncestorNumber == minimumPossibleCommonAncestorNumber) {</span>
+      // Bingo, we found our common ancestor.
+<span class="fc" id="L95">      result.complete(commonAncestorCandidate);</span>
+<span class="fc" id="L96">      return;</span>
+    }
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">    if (maximumPossibleCommonAncestorNumber &lt; BlockHeader.GENESIS_BLOCK_NUMBER</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">        &amp;&amp; !result.isDone()) {</span>
+<span class="nc" id="L100">      result.completeExceptionally(new IllegalStateException(&quot;No common ancestor.&quot;));</span>
+<span class="nc" id="L101">      return;</span>
+    }
+<span class="fc" id="L103">    requestHeaders()</span>
+<span class="fc" id="L104">        .thenCompose(this::processHeaders)</span>
+<span class="fc" id="L105">        .whenComplete(</span>
+            (peerResult, error) -&gt; {
+<span class="fc bfc" id="L107" title="All 2 branches covered.">              if (error != null) {</span>
+<span class="fc" id="L108">                result.completeExceptionally(error);</span>
+<span class="pc bpc" id="L109" title="1 of 2 branches missed.">              } else if (!result.isDone()) {</span>
+<span class="fc" id="L110">                executeTaskTimed();</span>
+              }
+<span class="fc" id="L112">            });</span>
+<span class="fc" id="L113">  }</span>
+
+  @VisibleForTesting
+  CompletableFuture&lt;AbstractPeerTask.PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt;&gt; requestHeaders() {
+<span class="fc" id="L117">    final long range = maximumPossibleCommonAncestorNumber - minimumPossibleCommonAncestorNumber;</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">    final int skipInterval = initialQuery ? 0 : calculateSkipInterval(range, headerRequestSize);</span>
+    final int count =
+<span class="fc bfc" id="L120" title="All 2 branches covered.">        initialQuery ? headerRequestSize : calculateCount((double) range, skipInterval);</span>
+<span class="fc" id="L121">    LOG.debug(</span>
+        &quot;Searching for common ancestor with {} between {} and {}&quot;,
+        peer,
+<span class="fc" id="L124">        minimumPossibleCommonAncestorNumber,</span>
+<span class="fc" id="L125">        maximumPossibleCommonAncestorNumber);</span>
+<span class="fc" id="L126">    return executeSubTask(</span>
+        () -&gt;
+<span class="fc" id="L128">            GetHeadersFromPeerByNumberTask.endingAtNumber(</span>
+                    protocolSchedule,
+                    ethContext,
+                    maximumPossibleCommonAncestorNumber,
+                    count,
+                    skipInterval,
+                    metricsSystem)
+<span class="fc" id="L135">                .assignPeer(peer)</span>
+<span class="fc" id="L136">                .run());</span>
+  }
+
+  /**
+   * In the case where the remote chain contains 100 blocks, the initial count work out to 11, and
+   * the skip interval would be 9. This would yield the headers (0, 10, 20, 30, 40, 50, 60, 70, 80,
+   * 90, 100).
+   */
+  @VisibleForTesting
+  static int calculateSkipInterval(final long range, final int headerRequestSize) {
+<span class="fc" id="L146">    return Math.max(0, Math.toIntExact(range / (headerRequestSize - 1) - 1) - 1);</span>
+  }
+
+  @VisibleForTesting
+  static int calculateCount(final double range, final int skipInterval) {
+<span class="fc" id="L151">    return Math.toIntExact((long) Math.ceil(range / (skipInterval + 1)) + 1);</span>
+  }
+
+  private CompletableFuture&lt;Void&gt; processHeaders(
+      final AbstractPeerTask.PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt; headersResult) {
+<span class="fc" id="L156">    initialQuery = false;</span>
+<span class="fc" id="L157">    final List&lt;BlockHeader&gt; headers = headersResult.getResult();</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">    if (headers.isEmpty()) {</span>
+      // Nothing to do
+<span class="fc" id="L160">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L163">    final OptionalInt maybeAncestorNumber =</span>
+<span class="fc" id="L164">        BlockchainUtil.findHighestKnownBlockIndex(protocolContext.getBlockchain(), headers, false);</span>
+
+    // Means the insertion point is in the next header request.
+<span class="fc bfc" id="L167" title="All 2 branches covered.">    if (!maybeAncestorNumber.isPresent()) {</span>
+<span class="fc" id="L168">      maximumPossibleCommonAncestorNumber = headers.get(headers.size() - 1).getNumber() - 1L;</span>
+<span class="fc" id="L169">      return CompletableFuture.completedFuture(null);</span>
+    }
+<span class="fc" id="L171">    final int ancestorNumber = maybeAncestorNumber.getAsInt();</span>
+<span class="fc" id="L172">    commonAncestorCandidate = headers.get(ancestorNumber);</span>
+
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    if (ancestorNumber - 1 &gt;= 0) {</span>
+<span class="fc" id="L175">      maximumPossibleCommonAncestorNumber = headers.get(ancestorNumber - 1).getNumber() - 1L;</span>
+    }
+<span class="fc" id="L177">    minimumPossibleCommonAncestorNumber = headers.get(ancestorNumber).getNumber();</span>
+
+<span class="fc" id="L179">    return CompletableFuture.completedFuture(null);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

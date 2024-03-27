@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EncryptedMessage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies</a> &gt; <span class="el_source">EncryptedMessage.java</span></div><h1>EncryptedMessage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SecureRandomProvider;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+
+import java.nio.ByteBuffer;
+import java.security.SecureRandom;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.MutableBytes;
+import org.bouncycastle.crypto.InvalidCipherTextException;
+
+final class EncryptedMessage {
+
+  private static final int IV_SIZE = 16;
+
+<span class="fc" id="L36">  private static final SecureRandom RANDOM = SecureRandomProvider.createSecureRandom();</span>
+<span class="fc" id="L37">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L38">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  private EncryptedMessage() {
+    // Utility Class
+  }
+
+  /**
+   * Decrypts the ciphertext using our private key.
+   *
+   * @param msgBytes The ciphertext.
+   * @param nodeKey Abstraction of this nodes private key &amp; associated cryptographic operations
+   * @return The plaintext.
+   * @throws InvalidCipherTextException Thrown if decryption failed.
+   */
+  public static Bytes decryptMsg(final Bytes msgBytes, final NodeKey nodeKey)
+      throws InvalidCipherTextException {
+
+    // Extract the ephemeral public key, stripping off the first byte (0x04), which designates it's
+    // an uncompressed key.
+<span class="fc" id="L57">    final SECPPublicKey ephPubKey =</span>
+<span class="fc" id="L58">        SIGNATURE_ALGORITHM.get().createPublicKey(msgBytes.slice(1, 64));</span>
+
+    // Strip off the IV to use.
+<span class="fc" id="L61">    final Bytes iv = msgBytes.slice(65, IV_SIZE);</span>
+
+    // Extract the encrypted payload.
+<span class="fc" id="L64">    final Bytes encrypted = msgBytes.slice(65 + IV_SIZE);</span>
+
+    // Perform the decryption.
+<span class="fc" id="L67">    final ECIESEncryptionEngine decryptor =</span>
+<span class="fc" id="L68">        ECIESEncryptionEngine.forDecryption(nodeKey, ephPubKey, iv);</span>
+<span class="fc" id="L69">    return decryptor.decrypt(encrypted);</span>
+  }
+
+  /**
+   * Decrypts the ciphertext using our private key.
+   *
+   * @param msgBytes The ciphertext.
+   * @param nodeKey Abstraction of this nodes private key &amp; associated cryptographic operations
+   * @return The plaintext.
+   * @throws InvalidCipherTextException Thrown if decryption failed.
+   */
+  public static Bytes decryptMsgEIP8(final Bytes msgBytes, final NodeKey nodeKey)
+      throws InvalidCipherTextException {
+<span class="fc" id="L82">    final SECPPublicKey ephPubKey =</span>
+<span class="fc" id="L83">        SIGNATURE_ALGORITHM.get().createPublicKey(msgBytes.slice(3, 64));</span>
+
+    // Strip off the IV to use.
+<span class="fc" id="L86">    final Bytes iv = msgBytes.slice(3 + 64, IV_SIZE);</span>
+
+    // Extract the encrypted payload.
+<span class="fc" id="L89">    final Bytes encrypted = msgBytes.slice(3 + 64 + IV_SIZE);</span>
+
+    // Perform the decryption.
+<span class="fc" id="L92">    final ECIESEncryptionEngine decryptor =</span>
+<span class="fc" id="L93">        ECIESEncryptionEngine.forDecryption(nodeKey, ephPubKey, iv);</span>
+<span class="fc" id="L94">    return decryptor.decrypt(encrypted, msgBytes.slice(0, 2).toArray());</span>
+  }
+
+  /**
+   * Encrypts a message for the specified peer using ECIES.
+   *
+   * @param bytes The plaintext.
+   * @param remoteKey The peer's remote key.
+   * @return The ciphertext.
+   * @throws InvalidCipherTextException Thrown if encryption failed.
+   */
+  public static Bytes encryptMsg(final Bytes bytes, final SECPPublicKey remoteKey)
+      throws InvalidCipherTextException {
+    // TODO: check size.
+<span class="fc" id="L108">    final ECIESEncryptionEngine engine = ECIESEncryptionEngine.forEncryption(remoteKey);</span>
+
+    // Do the encryption.
+<span class="fc" id="L111">    final Bytes encrypted = engine.encrypt(bytes);</span>
+<span class="fc" id="L112">    final Bytes iv = engine.getIv();</span>
+<span class="fc" id="L113">    final SECPPublicKey ephPubKey = engine.getEphPubKey();</span>
+
+    // Create the output message by concatenating the ephemeral public key (prefixed with
+    // 0x04 to designate uncompressed), IV, and encrypted bytes.
+<span class="fc" id="L117">    final MutableBytes answer =</span>
+<span class="fc" id="L118">        MutableBytes.create(1 + ECIESHandshaker.PUBKEY_LENGTH + IV_SIZE + encrypted.size());</span>
+
+<span class="fc" id="L120">    int offset = 0;</span>
+    // Set the first byte as 0x04 to specify it's an uncompressed key.
+<span class="fc" id="L122">    answer.set(offset, (byte) 0x04);</span>
+<span class="fc" id="L123">    ephPubKey.getEncodedBytes().copyTo(answer, offset += 1);</span>
+<span class="fc" id="L124">    iv.copyTo(answer, offset += ECIESHandshaker.PUBKEY_LENGTH);</span>
+<span class="fc" id="L125">    encrypted.copyTo(answer, offset + iv.size());</span>
+<span class="fc" id="L126">    return answer;</span>
+  }
+
+  /**
+   * Encrypts a message for the specified peer using ECIES.
+   *
+   * @param message The plaintext.
+   * @param remoteKey The peer's remote key.
+   * @return The ciphertext.
+   * @throws InvalidCipherTextException Thrown if encryption failed.
+   */
+  public static Bytes encryptMsgEip8(final Bytes message, final SECPPublicKey remoteKey)
+      throws InvalidCipherTextException {
+<span class="fc" id="L139">    final ECIESEncryptionEngine engine = ECIESEncryptionEngine.forEncryption(remoteKey);</span>
+
+    // Do the encryption.
+<span class="fc" id="L142">    final Bytes bytes = addPadding(message);</span>
+<span class="fc" id="L143">    final int size = bytes.size() + ECIESEncryptionEngine.ENCRYPTION_OVERHEAD;</span>
+<span class="fc" id="L144">    final byte[] sizePrefix = {(byte) (size &gt;&gt;&gt; 8), (byte) size};</span>
+<span class="fc" id="L145">    final Bytes encrypted = engine.encrypt(bytes, sizePrefix);</span>
+<span class="fc" id="L146">    final Bytes iv = engine.getIv();</span>
+<span class="fc" id="L147">    final SECPPublicKey ephPubKey = engine.getEphPubKey();</span>
+
+    // Create the output message by concatenating the ephemeral public key (prefixed with
+    // 0x04 to designate uncompressed), IV, and encrypted bytes.
+<span class="fc" id="L151">    final MutableBytes answer =</span>
+<span class="fc" id="L152">        MutableBytes.create(3 + ECIESHandshaker.PUBKEY_LENGTH + IV_SIZE + encrypted.size());</span>
+
+<span class="fc" id="L154">    answer.set(0, sizePrefix[0]);</span>
+<span class="fc" id="L155">    answer.set(1, sizePrefix[1]);</span>
+    // Set the first byte as 0x04 to specify it's an uncompressed key.
+<span class="fc" id="L157">    answer.set(2, (byte) 0x04);</span>
+<span class="fc" id="L158">    int offset = 0;</span>
+<span class="fc" id="L159">    ephPubKey.getEncodedBytes().copyTo(answer, offset += 3);</span>
+<span class="fc" id="L160">    iv.copyTo(answer, offset += ECIESHandshaker.PUBKEY_LENGTH);</span>
+<span class="fc" id="L161">    encrypted.copyTo(answer, offset + IV_SIZE);</span>
+<span class="fc" id="L162">    return answer;</span>
+  }
+
+  private static Bytes addPadding(final Bytes message) {
+<span class="fc" id="L166">    final byte[] raw = message.toArray();</span>
+<span class="fc" id="L167">    final int padding = 100 + RANDOM.nextInt(200);</span>
+<span class="fc" id="L168">    final byte[] paddingBytes = new byte[padding];</span>
+<span class="fc" id="L169">    RANDOM.nextBytes(paddingBytes);</span>
+<span class="fc" id="L170">    return Bytes.wrap(ByteBuffer.allocate(raw.length + padding).put(raw).put(paddingBytes).array());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

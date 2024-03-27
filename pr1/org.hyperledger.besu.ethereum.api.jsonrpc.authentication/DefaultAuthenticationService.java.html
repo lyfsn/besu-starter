@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DefaultAuthenticationService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.authentication</a> &gt; <span class="el_source">DefaultAuthenticationService.java</span></div><h1>DefaultAuthenticationService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.authentication;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.WebSocketConfiguration;
+
+import java.io.File;
+import java.util.Collection;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.annotation.Nullable;
+
+import com.google.common.annotations.VisibleForTesting;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.auth.JWTOptions;
+import io.vertx.ext.auth.User;
+import io.vertx.ext.auth.authentication.AuthenticationProvider;
+import io.vertx.ext.auth.authentication.Credentials;
+import io.vertx.ext.auth.authentication.TokenCredentials;
+import io.vertx.ext.auth.authentication.UsernamePasswordCredentials;
+import io.vertx.ext.auth.jwt.JWTAuth;
+import io.vertx.ext.auth.jwt.JWTAuthOptions;
+import io.vertx.ext.web.RoutingContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Provides authentication handlers for use in the http and websocket services */
+public class DefaultAuthenticationService implements AuthenticationService {
+
+  public static final String USERNAME = &quot;username&quot;;
+  public static final String PASSWORD = &quot;password&quot;;
+  private final JWTAuth jwtAuthProvider;
+  @VisibleForTesting public final JWTAuthOptions jwtAuthOptions;
+  private final Optional&lt;AuthenticationProvider&gt; credentialAuthProvider;
+<span class="fc" id="L53">  private static final JWTAuthOptionsFactory jwtAuthOptionsFactory = new JWTAuthOptionsFactory();</span>
+<span class="fc" id="L54">  private static final Logger LOG = LoggerFactory.getLogger(DefaultAuthenticationService.class);</span>
+
+  public DefaultAuthenticationService(
+      final JWTAuth jwtAuthProvider,
+      final JWTAuthOptions jwtAuthOptions,
+<span class="fc" id="L59">      final Optional&lt;AuthenticationProvider&gt; credentialAuthProvider) {</span>
+<span class="fc" id="L60">    this.jwtAuthProvider = jwtAuthProvider;</span>
+<span class="fc" id="L61">    this.jwtAuthOptions = jwtAuthOptions;</span>
+<span class="fc" id="L62">    this.credentialAuthProvider = credentialAuthProvider;</span>
+<span class="fc" id="L63">  }</span>
+
+  /**
+   * Creates a ready for use set of authentication providers if authentication is enabled
+   *
+   * @param vertx The vertx instance that will be providing requests that this set of authentication
+   *     providers will be handling
+   * @param config The {{@link JsonRpcConfiguration}} that describes this rpc setup
+   * @return Optionally an authentication service. If empty then authentication isn't to be enabled
+   *     on this service
+   */
+  public static Optional&lt;AuthenticationService&gt; create(
+      final Vertx vertx, final JsonRpcConfiguration config) {
+<span class="fc" id="L76">    return create(</span>
+        vertx,
+<span class="fc" id="L78">        config.isAuthenticationEnabled(),</span>
+<span class="fc" id="L79">        config.getAuthenticationCredentialsFile(),</span>
+<span class="fc" id="L80">        config.getAuthenticationPublicKeyFile(),</span>
+<span class="fc" id="L81">        config.getAuthenticationAlgorithm());</span>
+  }
+
+  /**
+   * Creates a ready for use set of authentication providers if authentication is enabled
+   *
+   * @param vertx The vertx instance that will be providing requests that this set of authentication
+   *     providers will be handling
+   * @param config The {{@link WebSocketConfiguration}} that describes this rpc setup
+   * @return Optionally an authentication service. If empty then authentication isn't to be enabled
+   *     on this service
+   */
+  public static Optional&lt;AuthenticationService&gt; create(
+      final Vertx vertx, final WebSocketConfiguration config) {
+<span class="fc" id="L95">    return create(</span>
+        vertx,
+<span class="fc" id="L97">        config.isAuthenticationEnabled(),</span>
+<span class="fc" id="L98">        config.getAuthenticationCredentialsFile(),</span>
+<span class="fc" id="L99">        config.getAuthenticationPublicKeyFile(),</span>
+<span class="fc" id="L100">        config.getAuthenticationAlgorithm());</span>
+  }
+
+  private static Optional&lt;AuthenticationService&gt; create(
+      final Vertx vertx,
+      final boolean authenticationEnabled,
+      final String authenticationCredentialsFile,
+      final File authenticationPublicKeyFile,
+      final JwtAlgorithm authenticationAlgorithm) {
+<span class="fc bfc" id="L109" title="All 2 branches covered.">    if (!authenticationEnabled) {</span>
+<span class="fc" id="L110">      return Optional.empty();</span>
+    }
+
+    final JWTAuthOptions jwtAuthOptions;
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">    if (authenticationPublicKeyFile == null) {</span>
+<span class="fc" id="L115">      jwtAuthOptions = jwtAuthOptionsFactory.createWithGeneratedKeyPair();</span>
+    } else {
+      jwtAuthOptions =
+<span class="nc bnc" id="L118" title="All 2 branches missed.">          authenticationAlgorithm == null</span>
+<span class="nc" id="L119">              ? jwtAuthOptionsFactory.createForExternalPublicKey(authenticationPublicKeyFile)</span>
+<span class="nc" id="L120">              : jwtAuthOptionsFactory.createForExternalPublicKeyWithAlgorithm(</span>
+                  authenticationPublicKeyFile, authenticationAlgorithm);
+    }
+<span class="fc" id="L123">    final Optional&lt;AuthenticationProvider&gt; credentialAuthProvider =</span>
+<span class="fc" id="L124">        makeCredentialAuthProvider(vertx, authenticationEnabled, authenticationCredentialsFile);</span>
+
+<span class="fc" id="L126">    return Optional.of(</span>
+        new DefaultAuthenticationService(
+<span class="fc" id="L128">            JWTAuth.create(vertx, jwtAuthOptions), jwtAuthOptions, credentialAuthProvider));</span>
+  }
+
+  private static Optional&lt;AuthenticationProvider&gt; makeCredentialAuthProvider(
+      final Vertx vertx,
+      final boolean authenticationEnabled,
+      @Nullable final String authenticationCredentialsFile) {
+<span class="pc bpc" id="L135" title="1 of 4 branches missed.">    if (authenticationEnabled &amp;&amp; authenticationCredentialsFile != null) {</span>
+<span class="fc" id="L136">      return Optional.of(</span>
+<span class="fc" id="L137">          new TomlAuthOptions().setTomlPath(authenticationCredentialsFile).createProvider(vertx));</span>
+    } else {
+<span class="fc" id="L139">      return Optional.empty();</span>
+    }
+  }
+
+  /**
+   * Static route for terminating login requests when Authentication is disabled
+   *
+   * @param routingContext The vertx routing context for this request
+   */
+  public static void handleDisabledLogin(final RoutingContext routingContext) {
+<span class="fc" id="L149">    routingContext</span>
+<span class="fc" id="L150">        .response()</span>
+<span class="fc" id="L151">        .setStatusCode(HttpResponseStatus.BAD_REQUEST.code())</span>
+<span class="fc" id="L152">        .setStatusMessage(&quot;Authentication not enabled&quot;)</span>
+<span class="fc" id="L153">        .end();</span>
+<span class="fc" id="L154">  }</span>
+
+  /**
+   * Handles a login request and checks the provided credentials against our credential auth
+   * provider
+   *
+   * @param routingContext Routing context associated with this request
+   */
+  @Override
+  public void handleLogin(final RoutingContext routingContext) {
+<span class="pc bpc" id="L164" title="1 of 2 branches missed.">    if (credentialAuthProvider.isPresent()) {</span>
+<span class="fc" id="L165">      login(routingContext, credentialAuthProvider.get());</span>
+    } else {
+<span class="nc" id="L167">      handleDisabledLogin(routingContext);</span>
+    }
+<span class="fc" id="L169">  }</span>
+
+  private void login(
+      final RoutingContext routingContext, final AuthenticationProvider credentialAuthProvider) {
+<span class="fc" id="L173">    final JsonObject requestBody = routingContext.body().asJsonObject();</span>
+
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">    if (requestBody == null</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">        || requestBody.getValue(USERNAME) == null</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">        || requestBody.getValue(PASSWORD) == null) {</span>
+<span class="fc" id="L178">      routingContext</span>
+<span class="fc" id="L179">          .response()</span>
+<span class="fc" id="L180">          .setStatusCode(HttpResponseStatus.BAD_REQUEST.code())</span>
+<span class="fc" id="L181">          .setStatusMessage(HttpResponseStatus.BAD_REQUEST.reasonPhrase())</span>
+<span class="fc" id="L182">          .end(&quot;Authentication failed: username and password are required.&quot;);</span>
+<span class="fc" id="L183">      return;</span>
+    }
+
+    // Check user
+<span class="fc" id="L187">    final JsonObject authParams = new JsonObject();</span>
+<span class="fc" id="L188">    authParams.put(USERNAME, requestBody.getValue(USERNAME));</span>
+<span class="fc" id="L189">    authParams.put(PASSWORD, requestBody.getValue(PASSWORD));</span>
+<span class="fc" id="L190">    final Credentials credentials = new UsernamePasswordCredentials(authParams);</span>
+
+<span class="fc" id="L192">    credentialAuthProvider.authenticate(</span>
+        credentials,
+        r -&gt; {
+<span class="fc bfc" id="L195" title="All 2 branches covered.">          if (r.failed()) {</span>
+<span class="fc" id="L196">            routingContext</span>
+<span class="fc" id="L197">                .response()</span>
+<span class="fc" id="L198">                .setStatusCode(HttpResponseStatus.UNAUTHORIZED.code())</span>
+<span class="fc" id="L199">                .setStatusMessage(HttpResponseStatus.UNAUTHORIZED.reasonPhrase())</span>
+<span class="fc" id="L200">                .end(&quot;Authentication failed: the username or password is incorrect.&quot;);</span>
+          } else {
+<span class="fc" id="L202">            final User user = r.result();</span>
+
+<span class="fc" id="L204">            final JWTOptions options =</span>
+<span class="fc" id="L205">                new JWTOptions().setExpiresInMinutes(5).setAlgorithm(&quot;RS256&quot;);</span>
+<span class="fc" id="L206">            final JsonObject jwtContents =</span>
+                new JsonObject()
+<span class="fc" id="L208">                    .put(&quot;permissions&quot;, user.principal().getValue(&quot;permissions&quot;))</span>
+<span class="fc" id="L209">                    .put(USERNAME, user.principal().getValue(USERNAME));</span>
+<span class="fc" id="L210">            final String privacyPublicKey = user.principal().getString(&quot;privacyPublicKey&quot;);</span>
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">            if (privacyPublicKey != null) {</span>
+<span class="fc" id="L212">              jwtContents.put(&quot;privacyPublicKey&quot;, privacyPublicKey);</span>
+            }
+
+<span class="fc" id="L215">            final String token = jwtAuthProvider.generateToken(jwtContents, options);</span>
+
+<span class="fc" id="L217">            final JsonObject responseBody = new JsonObject().put(&quot;token&quot;, token);</span>
+<span class="fc" id="L218">            final HttpServerResponse response = routingContext.response();</span>
+<span class="pc bpc" id="L219" title="1 of 2 branches missed.">            if (!response.closed()) {</span>
+<span class="fc" id="L220">              response.setStatusCode(200);</span>
+<span class="fc" id="L221">              response.putHeader(&quot;Content-Type&quot;, &quot;application/json&quot;);</span>
+<span class="fc" id="L222">              response.end(responseBody.encode());</span>
+            }
+          }
+<span class="fc" id="L225">        });</span>
+<span class="fc" id="L226">  }</span>
+
+  @Override
+  public JWTAuth getJwtAuthProvider() {
+<span class="fc" id="L230">    return jwtAuthProvider;</span>
+  }
+
+  @Override
+  public void authenticate(final String token, final Handler&lt;Optional&lt;User&gt;&gt; handler) {
+    try {
+<span class="fc" id="L236">      getJwtAuthProvider()</span>
+<span class="fc" id="L237">          .authenticate(</span>
+<span class="fc" id="L238">              new TokenCredentials(new JsonObject().put(&quot;token&quot;, token)),</span>
+              r -&gt; {
+<span class="fc bfc" id="L240" title="All 2 branches covered.">                if (r.succeeded()) {</span>
+<span class="fc" id="L241">                  final Optional&lt;User&gt; user = Optional.ofNullable(r.result());</span>
+<span class="fc" id="L242">                  validateExpiryExists(user);</span>
+<span class="fc" id="L243">                  handler.handle(user);</span>
+<span class="fc" id="L244">                } else {</span>
+<span class="fc" id="L245">                  LOG.debug(&quot;Invalid JWT token {}&quot;, r.cause().toString());</span>
+<span class="fc" id="L246">                  handler.handle(Optional.empty());</span>
+                }
+<span class="fc" id="L248">              });</span>
+
+<span class="nc" id="L250">    } catch (Exception e) {</span>
+<span class="nc" id="L251">      LOG.debug(&quot;exception validating JWT &quot;, e);</span>
+<span class="nc" id="L252">      handler.handle(Optional.empty());</span>
+<span class="fc" id="L253">    }</span>
+<span class="fc" id="L254">  }</span>
+
+  @Override
+  public boolean isPermitted(
+      final Optional&lt;User&gt; optionalUser,
+      final JsonRpcMethod jsonRpcMethod,
+      final Collection&lt;String&gt; noAuthMethods) {
+<span class="fc" id="L261">    AtomicBoolean foundMatchingPermission = new AtomicBoolean();</span>
+    // if the method is configured as a no auth method we skip permission check
+<span class="fc bfc" id="L263" title="All 2 branches covered.">    if (noAuthMethods.stream().anyMatch(m -&gt; m.equals(jsonRpcMethod.getName()))) {</span>
+<span class="fc" id="L264">      return true;</span>
+    }
+
+<span class="fc bfc" id="L267" title="All 2 branches covered.">    if (optionalUser.isPresent()) {</span>
+<span class="fc" id="L268">      User user = optionalUser.get();</span>
+<span class="fc bfc" id="L269" title="All 2 branches covered.">      for (String perm : jsonRpcMethod.getPermissions()) {</span>
+<span class="fc" id="L270">        user.isAuthorized(</span>
+            perm,
+            (authed) -&gt; {
+<span class="fc bfc" id="L273" title="All 2 branches covered.">              if (authed.result()) {</span>
+<span class="fc" id="L274">                LOG.trace(</span>
+                    &quot;user {} authorized : {} via permission {}&quot;,
+                    user,
+<span class="fc" id="L277">                    jsonRpcMethod.getName(),</span>
+                    perm);
+<span class="fc" id="L279">                foundMatchingPermission.set(true);</span>
+              }
+<span class="fc" id="L281">            });</span>
+        // exit if a matching permission was found, no need to keep checking
+<span class="fc bfc" id="L283" title="All 2 branches covered.">        if (foundMatchingPermission.get()) {</span>
+<span class="fc" id="L284">          return foundMatchingPermission.get();</span>
+        }
+<span class="fc" id="L286">      }</span>
+    }
+
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">    if (!foundMatchingPermission.get()) {</span>
+<span class="fc" id="L290">      LOG.trace(&quot;user NOT authorized : {}&quot;, jsonRpcMethod.getName());</span>
+    }
+<span class="fc" id="L292">    return foundMatchingPermission.get();</span>
+  }
+
+  private void validateExpiryExists(final Optional&lt;User&gt; user) {
+<span class="pc bpc" id="L296" title="1 of 2 branches missed.">    if (!user.map(User::attributes).map(a -&gt; a.containsKey(&quot;exp&quot;)).orElse(false)) {</span>
+<span class="nc" id="L297">      throw new IllegalStateException(&quot;Invalid JWT doesn't have expiry&quot;);</span>
+    }
+<span class="fc" id="L299">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractRetryingPeerTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">AbstractRetryingPeerTask.java</span></div><h1>AbstractRetryingPeerTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.MaxRetriesReachedException;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.NoAvailablePeersException;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.PeerBreachedProtocolException;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.PeerDisconnectedException;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * A task that will retry a fixed number of times before completing the associated CompletableFuture
+ * exceptionally with a new {@link MaxRetriesReachedException}. If the future returned from {@link
+ * #executePeerTask(Optional)} is complete with a non-empty list the retry counter is reset.
+ *
+ * @param &lt;T&gt; The type as a typed list that the peer task can get partial or full results in.
+ */
+public abstract class AbstractRetryingPeerTask&lt;T&gt; extends AbstractEthTask&lt;T&gt; {
+
+<span class="fc" id="L44">  private static final Logger LOG = LoggerFactory.getLogger(AbstractRetryingPeerTask.class);</span>
+  private final EthContext ethContext;
+  private final int maxRetries;
+  private final Predicate&lt;T&gt; isEmptyResponse;
+  private final MetricsSystem metricsSystem;
+<span class="fc" id="L49">  private int retryCount = 0;</span>
+<span class="fc" id="L50">  private Optional&lt;EthPeer&gt; assignedPeer = Optional.empty();</span>
+
+  /**
+   * @param ethContext The context of the current Eth network we are attached to.
+   * @param maxRetries Maximum number of retries to accept before completing exceptionally.
+   * @param isEmptyResponse Test if the response received was empty.
+   * @param metricsSystem The metrics system used to measure task.
+   */
+  protected AbstractRetryingPeerTask(
+      final EthContext ethContext,
+      final int maxRetries,
+      final Predicate&lt;T&gt; isEmptyResponse,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L63">    super(metricsSystem);</span>
+<span class="fc" id="L64">    this.ethContext = ethContext;</span>
+<span class="fc" id="L65">    this.maxRetries = maxRetries;</span>
+<span class="fc" id="L66">    this.isEmptyResponse = isEmptyResponse;</span>
+<span class="fc" id="L67">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L68">  }</span>
+
+  public void assignPeer(final EthPeer peer) {
+<span class="fc" id="L71">    assignedPeer = Optional.of(peer);</span>
+<span class="fc" id="L72">  }</span>
+
+  public Optional&lt;EthPeer&gt; getAssignedPeer() {
+<span class="fc" id="L75">    return assignedPeer;</span>
+  }
+
+  @Override
+  protected void executeTask() {
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (result.isDone()) {</span>
+      // Return if task is done
+<span class="fc" id="L82">      return;</span>
+    }
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    if (retryCount &gt;= maxRetries) {</span>
+<span class="fc" id="L85">      result.completeExceptionally(new MaxRetriesReachedException());</span>
+<span class="fc" id="L86">      return;</span>
+    }
+
+<span class="fc" id="L89">    retryCount += 1;</span>
+<span class="fc" id="L90">    executePeerTask(assignedPeer)</span>
+<span class="fc" id="L91">        .whenComplete(</span>
+            (peerResult, error) -&gt; {
+<span class="fc bfc" id="L93" title="All 2 branches covered.">              if (error != null) {</span>
+<span class="fc" id="L94">                handleTaskError(error);</span>
+              } else {
+                // If we get a partial success, reset the retry counter.
+<span class="fc bfc" id="L97" title="All 2 branches covered.">                if (!isEmptyResponse.test(peerResult)) {</span>
+<span class="fc" id="L98">                  retryCount = 0;</span>
+                }
+<span class="fc" id="L100">                executeTaskTimed();</span>
+              }
+<span class="fc" id="L102">            });</span>
+<span class="fc" id="L103">  }</span>
+
+  protected abstract CompletableFuture&lt;T&gt; executePeerTask(Optional&lt;EthPeer&gt; assignedPeer);
+
+  protected void handleTaskError(final Throwable error) {
+<span class="fc" id="L108">    final Throwable cause = ExceptionUtils.rootCause(error);</span>
+<span class="fc bfc" id="L109" title="All 2 branches covered.">    if (!isRetryableError(cause)) {</span>
+      // Complete exceptionally
+<span class="fc" id="L111">      result.completeExceptionally(cause);</span>
+<span class="fc" id="L112">      return;</span>
+    }
+
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    if (cause instanceof NoAvailablePeersException) {</span>
+<span class="fc" id="L116">      LOG.debug(</span>
+          &quot;No useful peer found, wait max 5 seconds for new peer to connect: current peers {}&quot;,
+<span class="fc" id="L118">          ethContext.getEthPeers().peerCount());</span>
+
+<span class="fc" id="L120">      final WaitForPeerTask waitTask = WaitForPeerTask.create(ethContext, metricsSystem);</span>
+<span class="fc" id="L121">      executeSubTask(</span>
+          () -&gt;
+<span class="fc" id="L123">              ethContext</span>
+<span class="fc" id="L124">                  .getScheduler()</span>
+<span class="fc" id="L125">                  .timeout(waitTask, Duration.ofSeconds(5))</span>
+<span class="fc" id="L126">                  .whenComplete((r, t) -&gt; executeTaskTimed()));</span>
+<span class="fc" id="L127">      return;</span>
+    }
+
+<span class="fc" id="L130">    LOG.debug(</span>
+        &quot;Retrying after recoverable failure from peer task {}: {}&quot;,
+<span class="fc" id="L132">        this.getClass().getSimpleName(),</span>
+<span class="fc" id="L133">        cause.getMessage());</span>
+    // Wait before retrying on failure
+<span class="fc" id="L135">    executeSubTask(</span>
+        () -&gt;
+<span class="fc" id="L137">            ethContext</span>
+<span class="fc" id="L138">                .getScheduler()</span>
+<span class="fc" id="L139">                .scheduleFutureTask(this::executeTaskTimed, Duration.ofSeconds(1)));</span>
+<span class="fc" id="L140">  }</span>
+
+  protected boolean isRetryableError(final Throwable error) {
+<span class="pc bpc" id="L143" title="1 of 6 branches missed.">    return error instanceof TimeoutException || (!assignedPeer.isPresent() &amp;&amp; isPeerFailure(error));</span>
+  }
+
+  protected boolean isPeerFailure(final Throwable error) {
+<span class="pc bpc" id="L147" title="2 of 6 branches missed.">    return error instanceof PeerBreachedProtocolException</span>
+        || error instanceof PeerDisconnectedException
+        || error instanceof NoAvailablePeersException;
+  }
+
+  protected EthContext getEthContext() {
+<span class="fc" id="L153">    return ethContext;</span>
+  }
+
+  protected MetricsSystem getMetricsSystem() {
+<span class="fc" id="L157">    return metricsSystem;</span>
+  }
+
+  public int getRetryCount() {
+<span class="fc" id="L161">    return retryCount;</span>
+  }
+
+  public int getMaxRetries() {
+<span class="fc" id="L165">    return maxRetries;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

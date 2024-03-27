@@ -1,0 +1,809 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CodeV1Validation.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.code</a> &gt; <span class="el_source">CodeV1Validation.java</span></div><h1>CodeV1Validation.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evm.code;
+
+import static org.hyperledger.besu.evm.internal.Words.readBigEndianI16;
+import static org.hyperledger.besu.evm.internal.Words.readBigEndianU16;
+
+import org.hyperledger.besu.evm.operation.CallFOperation;
+import org.hyperledger.besu.evm.operation.PushOperation;
+import org.hyperledger.besu.evm.operation.RelativeJumpIfOperation;
+import org.hyperledger.besu.evm.operation.RelativeJumpOperation;
+import org.hyperledger.besu.evm.operation.RelativeJumpVectorOperation;
+import org.hyperledger.besu.evm.operation.RetFOperation;
+
+import java.util.Arrays;
+import java.util.BitSet;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/** Code V1 Validation */
+public final class CodeV1Validation {
+
+  private CodeV1Validation() {
+    // to prevent instantiation
+  }
+
+  static final byte INVALID = 0x01;
+  static final byte VALID = 0x02;
+  static final byte TERMINAL = 0x04;
+  static final byte VALID_AND_TERMINAL = VALID | TERMINAL;
+<span class="fc" id="L45">  static final byte[] OPCODE_ATTRIBUTES = {</span>
+    VALID_AND_TERMINAL, // 0x00	STOP
+    VALID, // 0x01 - ADD
+    VALID, // 0x02 - MUL
+    VALID, // 0x03 - SUB
+    VALID, // 0x04 - DIV
+    VALID, // 0x05 - SDIV
+    VALID, // 0x06 - MOD
+    VALID, // 0x07 - SMOD
+    VALID, // 0x08 - ADDMOD
+    VALID, // 0x09 - MULMOD
+    VALID, // 0x0a - EXP
+    VALID, // 0x0b - SIGNEXTEND
+    INVALID, // 0x0c
+    INVALID, // 0x0d
+    INVALID, // 0x0e
+    INVALID, // 0x0f
+    VALID, // 0x10 - LT
+    VALID, // 0x11 - GT
+    VALID, // 0x12 - SLT
+    VALID, // 0x13 - SGT
+    VALID, // 0x14 - EQ
+    VALID, // 0x15 - ISZERO
+    VALID, // 0x16 - AND
+    VALID, // 0x17 - OR
+    VALID, // 0x18 - XOR
+    VALID, // 0x19 - NOT
+    VALID, // 0x1a - BYTE
+    VALID, // 0x1b - SHL
+    VALID, // 0x1c - SHR
+    VALID, // 0x1d - SAR
+    INVALID, // 0x1e
+    INVALID, // 0x1f
+    VALID, // 0x20 - SHA3
+    INVALID, // 0x21
+    INVALID, // 0x22
+    INVALID, // 0x23
+    INVALID, // 0x24
+    INVALID, // 0x25
+    INVALID, // 0x26
+    INVALID, // 0x27
+    INVALID, // 0x28
+    INVALID, // 0x29
+    INVALID, // 0x2a
+    INVALID, // 0x2b
+    INVALID, // 0x2c
+    INVALID, // 0x2d
+    INVALID, // 0x2e
+    INVALID, // 0x2f
+    VALID, // 0x30 - ADDRESS
+    VALID, // 0x31 - BALANCE
+    VALID, // 0x32 - ORIGIN
+    VALID, // 0x33 - CALLER
+    VALID, // 0x34 - CALLVALUE
+    VALID, // 0x35 - CALLDATALOAD
+    VALID, // 0x36 - CALLDATASIZE
+    VALID, // 0x37 - CALLDATACOPY
+    VALID, // 0x38 - CODESIZE
+    VALID, // 0x39 - CODECOPY
+    VALID, // 0x3a - GASPRICE
+    VALID, // 0x3b - EXTCODESIZE
+    VALID, // 0x3c - EXTCODECOPY
+    VALID, // 0x3d - RETURNDATASIZE
+    VALID, // 0x3e - RETURNDATACOPY
+    VALID, // 0x3f - EXTCODEHASH
+    VALID, // 0x40 - BLOCKHASH
+    VALID, // 0x41 - COINBASE
+    VALID, // 0x42 - TIMESTAMP
+    VALID, // 0x43 - NUMBER
+    VALID, // 0x44 - PREVRANDAO (née DIFFICULTY)
+    VALID, // 0x45 - GASLIMIT
+    VALID, // 0x46 - CHAINID
+    VALID, // 0x47 - SELFBALANCE
+    VALID, // 0x48 - BASEFEE
+    INVALID, // 0x49
+    INVALID, // 0x4a
+    INVALID, // 0x4b
+    INVALID, // 0x4c
+    INVALID, // 0x4d
+    INVALID, // 0x4e
+    INVALID, // 0x4f
+    VALID, // 0x50 - POP
+    VALID, // 0x51 - MLOAD
+    VALID, // 0x52 - MSTORE
+    VALID, // 0x53 - MSTORE8
+    VALID, // 0x54 - SLOAD
+    VALID, // 0x55 - SSTORE
+    INVALID, // 0x56 - JUMP
+    INVALID, // 0x57 - JUMPI
+    INVALID, // 0x58 - PC
+    VALID, // 0x59 - MSIZE
+    VALID, // 0x5a - GAS
+    VALID, // 0x5b - NOOOP (née JUMPDEST)
+    VALID, // 0X5c - TLOAD
+    VALID, // 0X5d - TSTORE
+    VALID, // 0X5e - MCOPY
+    VALID, // 0X5f - PUSH0
+    VALID, // 0x60 - PUSH1
+    VALID, // 0x61 - PUSH2
+    VALID, // 0x62 - PUSH3
+    VALID, // 0x63 - PUSH4
+    VALID, // 0x64 - PUSH5
+    VALID, // 0x65 - PUSH6
+    VALID, // 0x66 - PUSH7
+    VALID, // 0x67 - PUSH8
+    VALID, // 0x68 - PUSH9
+    VALID, // 0x69 - PUSH10
+    VALID, // 0x6a - PUSH11
+    VALID, // 0x6b - PUSH12
+    VALID, // 0x6c - PUSH13
+    VALID, // 0x6d - PUSH14
+    VALID, // 0x6e - PUSH15
+    VALID, // 0x6f - PUSH16
+    VALID, // 0x70 - PUSH17
+    VALID, // 0x71 - PUSH18
+    VALID, // 0x72 - PUSH19
+    VALID, // 0x73 - PUSH20
+    VALID, // 0x74 - PUSH21
+    VALID, // 0x75 - PUSH22
+    VALID, // 0x76 - PUSH23
+    VALID, // 0x77 - PUSH24
+    VALID, // 0x78 - PUSH25
+    VALID, // 0x79 - PUSH26
+    VALID, // 0x7a - PUSH27
+    VALID, // 0x7b - PUSH28
+    VALID, // 0x7c - PUSH29
+    VALID, // 0x7d - PUSH30
+    VALID, // 0x7e - PUSH31
+    VALID, // 0x7f - PUSH32
+    VALID, // 0x80 - DUP1
+    VALID, // 0x81 - DUP2
+    VALID, // 0x82 - DUP3
+    VALID, // 0x83 - DUP4
+    VALID, // 0x84 - DUP5
+    VALID, // 0x85 - DUP6
+    VALID, // 0x86 - DUP7
+    VALID, // 0x87 - DUP8
+    VALID, // 0x88 - DUP9
+    VALID, // 0x89 - DUP10
+    VALID, // 0x8a - DUP11
+    VALID, // 0x8b - DUP12
+    VALID, // 0x8c - DUP13
+    VALID, // 0x8d - DUP14
+    VALID, // 0x8e - DUP15
+    VALID, // 0x8f - DUP16
+    VALID, // 0x90 - SWAP1
+    VALID, // 0x91 - SWAP2
+    VALID, // 0x92 - SWAP3
+    VALID, // 0x93 - SWAP4
+    VALID, // 0x94 - SWAP5
+    VALID, // 0x95 - SWAP6
+    VALID, // 0x96 - SWAP7
+    VALID, // 0x97 - SWAP8
+    VALID, // 0x98 - SWAP9
+    VALID, // 0x99 - SWAP10
+    VALID, // 0x9a - SWAP11
+    VALID, // 0x9b - SWAP12
+    VALID, // 0x9c - SWAP13
+    VALID, // 0x9d - SWAP14
+    VALID, // 0x9e - SWAP15
+    VALID, // 0x9f - SWAP16
+    VALID, // 0xa0 - LOG0
+    VALID, // 0xa1 - LOG1
+    VALID, // 0xa2 - LOG2
+    VALID, // 0xa3 - LOG3
+    VALID, // 0xa4 - LOG4
+    INVALID, // 0xa5
+    INVALID, // 0xa6
+    INVALID, // 0xa7
+    INVALID, // 0xa8
+    INVALID, // 0xa9
+    INVALID, // 0xaa
+    INVALID, // 0xab
+    INVALID, // 0xac
+    INVALID, // 0xad
+    INVALID, // 0xae
+    INVALID, // 0xaf
+    INVALID, // 0xb0
+    INVALID, // 0xb1
+    INVALID, // 0xb2
+    INVALID, // 0xb3
+    INVALID, // 0xb4
+    INVALID, // 0xb5
+    INVALID, // 0xb6
+    INVALID, // 0xb7
+    INVALID, // 0xb8
+    INVALID, // 0xb9
+    INVALID, // 0xba
+    INVALID, // 0xbb
+    INVALID, // 0xbc
+    INVALID, // 0xbd
+    INVALID, // 0xbe
+    INVALID, // 0xbf
+    INVALID, // 0xc0
+    INVALID, // 0xc1
+    INVALID, // 0xc2
+    INVALID, // 0xc3
+    INVALID, // 0xc4
+    INVALID, // 0xc5
+    INVALID, // 0xc6
+    INVALID, // 0xc7
+    INVALID, // 0xc8
+    INVALID, // 0xc9
+    INVALID, // 0xca
+    INVALID, // 0xcb
+    INVALID, // 0xcc
+    INVALID, // 0xcd
+    INVALID, // 0xce
+    INVALID, // 0xcf
+    INVALID, // 0xd0
+    INVALID, // 0xd1
+    INVALID, // 0xd2
+    INVALID, // 0xd3
+    INVALID, // 0xd4
+    INVALID, // 0xd5
+    INVALID, // 0xd6
+    INVALID, // 0xd7
+    INVALID, // 0xd8
+    INVALID, // 0xd9
+    INVALID, // 0xda
+    INVALID, // 0xdb
+    INVALID, // 0xdc
+    INVALID, // 0xdd
+    INVALID, // 0xde
+    INVALID, // 0xef
+    VALID_AND_TERMINAL, // 0xe0 - RJUMP
+    VALID, // 0xe1 - RJUMPI
+    VALID, // 0xe2 - RJUMPV
+    VALID, // 0xe3 - CALLF
+    VALID_AND_TERMINAL, // 0xe4 - RETF
+    INVALID, // 0xe5
+    INVALID, // 0xe6
+    INVALID, // 0xe7
+    INVALID, // 0xe8
+    INVALID, // 0xe9
+    INVALID, // 0xea
+    INVALID, // 0xeb
+    INVALID, // 0xec
+    INVALID, // 0xed
+    INVALID, // 0xee
+    INVALID, // 0xef
+    VALID, // 0xf0 - CREATE
+    VALID, // 0xf1 - CALL
+    INVALID, // 0xf2 - CALLCODE
+    VALID_AND_TERMINAL, // 0xf3 - RETURN
+    VALID, // 0xf4 - DELEGATECALL
+    VALID, // 0xf5 - CREATE2
+    INVALID, // 0xf6
+    INVALID, // 0xf7
+    INVALID, // 0xf8
+    INVALID, // 0xf9
+    VALID, // 0xfa - STATICCALL
+    INVALID, // 0xfb
+    INVALID, // 0xfc
+    VALID_AND_TERMINAL, // 0xfd - REVERT
+    VALID_AND_TERMINAL, // 0xfe - INVALID
+    INVALID, // 0xff - SELFDESTRUCT
+  };
+  static final int MAX_STACK_HEIGHT = 1024;
+  // java17 move to record
+  // [0] - stack input consumed
+  // [1] - stack outputs added
+  // [2] - PC advance
+<span class="fc" id="L308">  static final byte[][] OPCODE_STACK_VALIDATION = {</span>
+    {0, 0, -1}, // 0x00 - STOP
+    {2, 1, 1}, // 0x01 - ADD
+    {2, 1, 1}, // 0x02 - MUL
+    {2, 1, 1}, // 0x03 - SUB
+    {2, 1, 1}, // 0x04 - DIV
+    {2, 1, 1}, // 0x05 - SDIV
+    {2, 1, 1}, // 0x06 - MOD
+    {2, 1, 1}, // 0x07 - SMOD
+    {3, 1, 1}, // 0x08 - ADDMOD
+    {3, 1, 1}, // 0x09 - MULMOD
+    {2, 1, 1}, // 0x0a - EXP
+    {2, 1, 1}, // 0x0b - SIGNEXTEND
+    {0, 0, 0}, // 0x0c
+    {0, 0, 0}, // 0x0d
+    {0, 0, 0}, // 0x0e
+    {0, 0, 0}, // 0x0f
+    {2, 1, 1}, // 0x10 - LT
+    {2, 1, 1}, // 0x11 - GT
+    {2, 1, 1}, // 0x12 - SLT
+    {2, 1, 1}, // 0x13 - SGT
+    {2, 1, 1}, // 0x14 - EQ
+    {1, 1, 1}, // 0x15 - ISZERO
+    {2, 1, 1}, // 0x16 - AND
+    {2, 1, 1}, // 0x17 - OR
+    {2, 1, 1}, // 0x18 - XOR
+    {1, 1, 1}, // 0x19 - NOT
+    {2, 1, 1}, // 0x1a - BYTE
+    {2, 1, 1}, // 0x1b - SHL
+    {2, 1, 1}, // 0x1c - SHR
+    {2, 1, 1}, // 0x1d - SAR
+    {0, 0, 0}, // 0x1e
+    {0, 0, 0}, // 0x1f
+    {2, 1, 1}, // 0x20 - SHA3
+    {0, 0, 0}, // 0x21
+    {0, 0, 0}, // 0x22
+    {0, 0, 0}, // 0x23
+    {0, 0, 0}, // 0x24
+    {0, 0, 0}, // 0x25
+    {0, 0, 0}, // 0x26
+    {0, 0, 0}, // 0x27
+    {0, 0, 0}, // 0x28
+    {0, 0, 0}, // 0x29
+    {0, 0, 0}, // 0x2a
+    {0, 0, 0}, // 0x2b
+    {0, 0, 0}, // 0x2c
+    {0, 0, 0}, // 0x2d
+    {0, 0, 0}, // 0x2e
+    {0, 0, 0}, // 0x2f
+    {0, 1, 1}, // 0x30 - ADDRESS
+    {1, 1, 1}, // 0x31 - BALANCE
+    {0, 1, 1}, // 0x32 - ORIGIN
+    {0, 1, 1}, // 0x33 - CALLER
+    {0, 1, 1}, // 0x34 - CALLVALUE
+    {1, 1, 1}, // 0x35 - CALLDATALOAD
+    {0, 1, 1}, // 0x36 - CALLDATASIZE
+    {3, 0, 1}, // 0x37 - CALLDATACOPY
+    {0, 1, 1}, // 0x38 - CODESIZE
+    {3, 0, 1}, // 0x39 - CODECOPY
+    {0, 1, 1}, // 0x3a - GASPRICE
+    {1, 1, 1}, // 0x3b - EXTCODESIZE
+    {4, 0, 1}, // 0x3c - EXTCODECOPY
+    {0, 1, 1}, // 0x3d - RETURNDATASIZE
+    {3, 0, 1}, // 0x3e - RETURNDATACOPY
+    {1, 1, 1}, // 0x3f - EXTCODEHASH
+    {1, 1, 1}, // 0x40 - BLOCKHASH
+    {0, 1, 1}, // 0x41 - COINBASE
+    {0, 1, 1}, // 0x42 - TIMESTAMP
+    {0, 1, 1}, // 0x43 - NUMBER
+    {0, 1, 1}, // 0x44 - PREVRANDAO (née DIFFICULTY)
+    {0, 1, 1}, // 0x45 - GASLIMIT
+    {0, 1, 1}, // 0x46 - CHAINID
+    {0, 1, 1}, // 0x47 - SELFBALANCE
+    {0, 1, 1}, // 0x48 - BASEFEE
+    {0, 0, 0}, // 0x49
+    {0, 0, 0}, // 0x4a
+    {0, 0, 0}, // 0x4b
+    {0, 0, 0}, // 0x4c
+    {0, 0, 0}, // 0x4d
+    {0, 0, 0}, // 0x4e
+    {0, 0, 0}, // 0x4f
+    {1, 0, 1}, // 0x50 - POP
+    {1, 1, 1}, // 0x51 - MLOAD
+    {2, 0, 1}, // 0x52 - MSTORE
+    {2, 0, 1}, // 0x53 - MSTORE8
+    {1, 1, 1}, // 0x54 - SLOAD
+    {2, 0, 1}, // 0x55 - SSTORE
+    {0, 0, 0}, // 0x56 - JUMP
+    {0, 0, 0}, // 0x57 - JUMPI
+    {0, 0, 0}, // 0x58 - PC
+    {0, 1, 1}, // 0x59 - MSIZE
+    {0, 1, 1}, // 0x5a - GAS
+    {0, 0, 1}, // 0x5b - NOOP (née JUMPDEST)
+    {1, 1, 1}, // 0x5c - TLOAD
+    {2, 0, 1}, // 0x5d - TSTORE
+    {4, 0, 1}, // 0x5e - MCOPY
+    {0, 1, 1}, // 0x5f - PUSH0
+    {0, 1, 2}, // 0x60 - PUSH1
+    {0, 1, 3}, // 0x61 - PUSH2
+    {0, 1, 4}, // 0x62 - PUSH3
+    {0, 1, 5}, // 0x63 - PUSH4
+    {0, 1, 6}, // 0x64 - PUSH5
+    {0, 1, 7}, // 0x65 - PUSH6
+    {0, 1, 8}, // 0x66 - PUSH7
+    {0, 1, 9}, // 0x67 - PUSH8
+    {0, 1, 10}, // 0x68 - PUSH9
+    {0, 1, 11}, // 0x69 - PUSH10
+    {0, 1, 12}, // 0x6a - PUSH11
+    {0, 1, 13}, // 0x6b - PUSH12
+    {0, 1, 14}, // 0x6c - PUSH13
+    {0, 1, 15}, // 0x6d - PUSH14
+    {0, 1, 16}, // 0x6e - PUSH15
+    {0, 1, 17}, // 0x6f - PUSH16
+    {0, 1, 18}, // 0x70 - PUSH17
+    {0, 1, 19}, // 0x71 - PUSH18
+    {0, 1, 20}, // 0x72 - PUSH19
+    {0, 1, 21}, // 0x73 - PUSH20
+    {0, 1, 22}, // 0x74 - PUSH21
+    {0, 1, 23}, // 0x75 - PUSH22
+    {0, 1, 24}, // 0x76 - PUSH23
+    {0, 1, 25}, // 0x77 - PUSH24
+    {0, 1, 26}, // 0x78 - PUSH25
+    {0, 1, 27}, // 0x79 - PUSH26
+    {0, 1, 28}, // 0x7a - PUSH27
+    {0, 1, 29}, // 0x7b - PUSH28
+    {0, 1, 30}, // 0x7c - PUSH29
+    {0, 1, 31}, // 0x7d - PUSH30
+    {0, 1, 32}, // 0x7e - PUSH31
+    {0, 1, 33}, // 0x7f - PUSH32
+    {1, 2, 1}, // 0x80 - DUP1
+    {2, 3, 1}, // 0x81 - DUP2
+    {3, 4, 1}, // 0x82 - DUP3
+    {4, 5, 1}, // 0x83 - DUP4
+    {5, 6, 1}, // 0x84 - DUP5
+    {6, 7, 1}, // 0x85 - DUP6
+    {7, 8, 1}, // 0x86 - DUP7
+    {8, 9, 1}, // 0x87 - DUP8
+    {9, 10, 1}, // 0x88 - DUP9
+    {10, 11, 1}, // 0x89 - DUP10
+    {11, 12, 1}, // 0x8a - DUP11
+    {12, 13, 1}, // 0x8b - DUP12
+    {13, 14, 1}, // 0x8c - DUP13
+    {14, 15, 1}, // 0x8d - DUP14
+    {15, 16, 1}, // 0x8e - DUP15
+    {16, 17, 1}, // 0x8f - DUP16
+    {2, 2, 1}, // 0x90 - SWAP1
+    {3, 3, 1}, // 0x91 - SWAP2
+    {4, 4, 1}, // 0x92 - SWAP3
+    {5, 5, 1}, // 0x93 - SWAP4
+    {6, 6, 1}, // 0x94 - SWAP5
+    {7, 7, 1}, // 0x95 - SWAP6
+    {8, 8, 1}, // 0x96 - SWAP7
+    {9, 9, 1}, // 0x97 - SWAP8
+    {10, 10, 1}, // 0x98 - SWAP9
+    {11, 11, 1}, // 0x99 - SWAP10
+    {12, 12, 1}, // 0x9a - SWAP11
+    {13, 13, 1}, // 0x9b - SWAP12
+    {14, 14, 1}, // 0x9c - SWAP13
+    {15, 15, 1}, // 0x9d - SWAP14
+    {16, 16, 1}, // 0x9e - SWAP15
+    {17, 17, 1}, // 0x9f - SWAP16
+    {2, 0, 1}, // 0xa0 - LOG0
+    {3, 0, 1}, // 0xa1 - LOG1
+    {4, 0, 1}, // 0xa2 - LOG2
+    {5, 0, 1}, // 0xa3 - LOG3
+    {6, 0, 1}, // 0xa4 - LOG4
+    {0, 0, 0}, // 0xa5
+    {0, 0, 0}, // 0xa6
+    {0, 0, 0}, // 0xa7
+    {0, 0, 0}, // 0xa8
+    {0, 0, 0}, // 0xa9
+    {0, 0, 0}, // 0xaa
+    {0, 0, 0}, // 0xab
+    {0, 0, 0}, // 0xac
+    {0, 0, 0}, // 0xad
+    {0, 0, 0}, // 0xae
+    {0, 0, 0}, // 0xaf
+    {0, 0, 0}, // 0xb0
+    {0, 0, 0}, // 0xb1
+    {0, 0, 0}, // 0xb2
+    {0, 0, 0}, // 0xb3
+    {0, 0, 0}, // 0xb4
+    {0, 0, 0}, // 0xb5
+    {0, 0, 0}, // 0xb6
+    {0, 0, 0}, // 0xb7
+    {0, 0, 0}, // 0xb8
+    {0, 0, 0}, // 0xb9
+    {0, 0, 0}, // 0xba
+    {0, 0, 0}, // 0xbb
+    {0, 0, 0}, // 0xbc
+    {0, 0, 0}, // 0xbd
+    {0, 0, 0}, // 0xbe
+    {0, 0, 0}, // 0xbf
+    {0, 0, 0}, // 0xc0
+    {0, 0, 0}, // 0xc1
+    {0, 0, 0}, // 0xc2
+    {0, 0, 0}, // 0xc3
+    {0, 0, 0}, // 0xc4
+    {0, 0, 0}, // 0xc5
+    {0, 0, 0}, // 0xc6
+    {0, 0, 0}, // 0xc7
+    {0, 0, 0}, // 0xc8
+    {0, 0, 0}, // 0xc9
+    {0, 0, 0}, // 0xca
+    {0, 0, 0}, // 0xcb
+    {0, 0, 0}, // 0xcc
+    {0, 0, 0}, // 0xcd
+    {0, 0, 0}, // 0xce
+    {0, 0, 0}, // 0xcf
+    {0, 0, 0}, // 0xd0
+    {0, 0, 0}, // 0xd1
+    {0, 0, 0}, // 0xd2
+    {0, 0, 0}, // 0xd3
+    {0, 0, 0}, // 0xd4
+    {0, 0, 0}, // 0xd5
+    {0, 0, 0}, // 0xd6
+    {0, 0, 0}, // 0xd7
+    {0, 0, 0}, // 0xd8
+    {0, 0, 0}, // 0xd9
+    {0, 0, 0}, // 0xda
+    {0, 0, 0}, // 0xdb
+    {0, 0, 0}, // 0xdc
+    {0, 0, 0}, // 0xdd
+    {0, 0, 0}, // 0xde
+    {0, 0, 0}, // 0xef
+    {0, 0, -3}, // 0xe0 - RJUMP
+    {1, 0, 3}, // 0xe1 - RJUMPI
+    {1, 0, 2}, // 0xe2 - RJUMPV
+    {0, 0, 3}, // 0xe3 - CALLF
+    {0, 0, -1}, // 0xe4 - RETF
+    {0, 0, 0}, // 0xe5 - JUMPF
+    {0, 0, 0}, // 0xe6
+    {0, 0, 0}, // 0xe7
+    {0, 0, 0}, // 0xe8
+    {0, 0, 0}, // 0xe9
+    {0, 0, 0}, // 0xea
+    {0, 0, 0}, // 0xeb
+    {0, 0, 0}, // 0xec
+    {0, 0, 0}, // 0xed
+    {0, 0, 0}, // 0xee
+    {0, 0, 0}, // 0xef
+    {3, 1, 1}, // 0xf0 - CREATE
+    {7, 1, 1}, // 0xf1 - CALL
+    {0, 0, 0}, // 0xf2 - CALLCODE
+    {2, 0, -1}, // 0xf3 - RETURN
+    {6, 1, 1}, // 0xf4 - DELEGATECALL
+    {4, 1, 1}, // 0xf5 - CREATE2
+    {0, 0, 0}, // 0xf6
+    {0, 0, 0}, // 0xf7
+    {0, 0, 0}, // 0xf8
+    {0, 0, 0}, // 0xf9
+    {6, 1, 1}, // 0xfa - STATICCALL
+    {0, 0, 0}, // 0xfb
+    {0, 0, 0}, // 0xfc
+    {2, 0, -1}, // 0xfd - REVERT
+    {0, 0, -1}, // 0xfe - INVALID
+    {0, 0, 0}, // 0xff - SELFDESTRUCT
+  };
+
+  /**
+   * Validate Code
+   *
+   * @param eofLayout The EOF Layout
+   * @return validation code, null otherwise.
+   */
+  public static String validateCode(final EOFLayout eofLayout) {
+<span class="fc" id="L574">    int sectionCount = eofLayout.getCodeSectionCount();</span>
+<span class="fc bfc" id="L575" title="All 2 branches covered.">    for (int i = 0; i &lt; sectionCount; i++) {</span>
+<span class="fc" id="L576">      CodeSection cs = eofLayout.getCodeSection(i);</span>
+<span class="fc" id="L577">      var validation =</span>
+<span class="fc" id="L578">          CodeV1Validation.validateCode(</span>
+<span class="fc" id="L579">              eofLayout.getContainer().slice(cs.getEntryPoint(), cs.getLength()), sectionCount);</span>
+<span class="fc bfc" id="L580" title="All 2 branches covered.">      if (validation != null) {</span>
+<span class="fc" id="L581">        return validation;</span>
+      }
+    }
+<span class="fc" id="L584">    return null;</span>
+  }
+
+  /**
+   * validates the code section
+   *
+   * @param code the code section code
+   * @return null if valid, otherwise a string containing an error reason.
+   */
+  static String validateCode(final Bytes code, final int sectionCount) {
+<span class="fc" id="L594">    final int size = code.size();</span>
+<span class="fc" id="L595">    final BitSet rjumpdests = new BitSet(size);</span>
+<span class="fc" id="L596">    final BitSet immediates = new BitSet(size);</span>
+<span class="fc" id="L597">    final byte[] rawCode = code.toArrayUnsafe();</span>
+<span class="fc" id="L598">    int attribute = INVALID;</span>
+<span class="fc" id="L599">    int pos = 0;</span>
+<span class="fc bfc" id="L600" title="All 2 branches covered.">    while (pos &lt; size) {</span>
+<span class="fc" id="L601">      final int operationNum = rawCode[pos] &amp; 0xff;</span>
+<span class="fc" id="L602">      attribute = OPCODE_ATTRIBUTES[operationNum];</span>
+<span class="fc bfc" id="L603" title="All 2 branches covered.">      if ((attribute &amp; INVALID) == INVALID) {</span>
+        // undefined instruction
+<span class="fc" id="L605">        return String.format(&quot;Invalid Instruction 0x%02x&quot;, operationNum);</span>
+      }
+<span class="fc" id="L607">      pos += 1;</span>
+<span class="fc" id="L608">      int pcPostInstruction = pos;</span>
+<span class="fc bfc" id="L609" title="All 4 branches covered.">      if (operationNum &gt; PushOperation.PUSH_BASE &amp;&amp; operationNum &lt;= PushOperation.PUSH_MAX) {</span>
+<span class="fc" id="L610">        final int multiByteDataLen = operationNum - PushOperation.PUSH_BASE;</span>
+<span class="fc" id="L611">        pcPostInstruction += multiByteDataLen;</span>
+<span class="fc bfc" id="L612" title="All 4 branches covered.">      } else if (operationNum == RelativeJumpOperation.OPCODE</span>
+          || operationNum == RelativeJumpIfOperation.OPCODE) {
+<span class="fc bfc" id="L614" title="All 2 branches covered.">        if (pos + 2 &gt; size) {</span>
+<span class="fc" id="L615">          return &quot;Truncated relative jump offset&quot;;</span>
+        }
+<span class="fc" id="L617">        pcPostInstruction += 2;</span>
+<span class="fc" id="L618">        final int offset = readBigEndianI16(pos, rawCode);</span>
+<span class="fc" id="L619">        final int rjumpdest = pcPostInstruction + offset;</span>
+<span class="fc bfc" id="L620" title="All 4 branches covered.">        if (rjumpdest &lt; 0 || rjumpdest &gt;= size) {</span>
+<span class="fc" id="L621">          return &quot;Relative jump destination out of bounds&quot;;</span>
+        }
+<span class="fc" id="L623">        rjumpdests.set(rjumpdest);</span>
+<span class="fc bfc" id="L624" title="All 2 branches covered.">      } else if (operationNum == RelativeJumpVectorOperation.OPCODE) {</span>
+<span class="fc bfc" id="L625" title="All 2 branches covered.">        if (pos + 1 &gt; size) {</span>
+<span class="fc" id="L626">          return &quot;Truncated jump table&quot;;</span>
+        }
+<span class="fc" id="L628">        final int jumpTableSize = RelativeJumpVectorOperation.getVectorSize(code, pos);</span>
+<span class="fc bfc" id="L629" title="All 2 branches covered.">        if (jumpTableSize == 0) {</span>
+<span class="fc" id="L630">          return &quot;Empty jump table&quot;;</span>
+        }
+<span class="fc" id="L632">        pcPostInstruction += 1 + 2 * jumpTableSize;</span>
+<span class="fc bfc" id="L633" title="All 2 branches covered.">        if (pcPostInstruction &gt; size) {</span>
+<span class="fc" id="L634">          return &quot;Truncated jump table&quot;;</span>
+        }
+<span class="fc bfc" id="L636" title="All 2 branches covered.">        for (int offsetPos = pos + 1; offsetPos &lt; pcPostInstruction; offsetPos += 2) {</span>
+<span class="fc" id="L637">          final int offset = readBigEndianI16(offsetPos, rawCode);</span>
+<span class="fc" id="L638">          final int rjumpdest = pcPostInstruction + offset;</span>
+<span class="fc bfc" id="L639" title="All 4 branches covered.">          if (rjumpdest &lt; 0 || rjumpdest &gt;= size) {</span>
+<span class="fc" id="L640">            return &quot;Relative jump destination out of bounds&quot;;</span>
+          }
+<span class="fc" id="L642">          rjumpdests.set(rjumpdest);</span>
+        }
+<span class="fc bfc" id="L644" title="All 2 branches covered.">      } else if (operationNum == CallFOperation.OPCODE) {</span>
+<span class="fc bfc" id="L645" title="All 2 branches covered.">        if (pos + 2 &gt; size) {</span>
+<span class="fc" id="L646">          return &quot;Truncated CALLF&quot;;</span>
+        }
+<span class="fc" id="L648">        int section = readBigEndianU16(pos, rawCode);</span>
+<span class="fc bfc" id="L649" title="All 2 branches covered.">        if (section &gt;= sectionCount) {</span>
+<span class="fc" id="L650">          return &quot;CALLF to non-existent section - &quot; + Integer.toHexString(section);</span>
+        }
+<span class="fc" id="L652">        pcPostInstruction += 2;</span>
+      }
+<span class="fc" id="L654">      immediates.set(pos, pcPostInstruction);</span>
+<span class="fc" id="L655">      pos = pcPostInstruction;</span>
+<span class="fc" id="L656">    }</span>
+<span class="fc bfc" id="L657" title="All 2 branches covered.">    if ((attribute &amp; TERMINAL) != TERMINAL) {</span>
+<span class="fc" id="L658">      return &quot;No terminating instruction&quot;;</span>
+    }
+<span class="fc bfc" id="L660" title="All 2 branches covered.">    if (rjumpdests.intersects(immediates)) {</span>
+<span class="fc" id="L661">      return &quot;Relative jump destinations targets invalid immediate data&quot;;</span>
+    }
+<span class="fc" id="L663">    return null;</span>
+  }
+
+  static String validateStack(final EOFLayout eofLayout) {
+<span class="fc bfc" id="L667" title="All 2 branches covered.">    for (int i = 0; i &lt; eofLayout.getCodeSectionCount(); i++) {</span>
+<span class="fc" id="L668">      var validation = CodeV1Validation.validateStack(i, eofLayout);</span>
+<span class="pc bpc" id="L669" title="1 of 2 branches missed.">      if (validation != null) {</span>
+<span class="nc" id="L670">        return validation;</span>
+      }
+    }
+<span class="fc" id="L673">    return null;</span>
+  }
+
+  /**
+   * Validates the stack heights per &lt;a href=&quot;https://eips.ethereum.org/EIPS/eip-5450&quot;&gt;EIP-5450&lt;/a&gt;.
+   *
+   * &lt;p&gt;This presumes code validation has already been performed, so there are no RJUMPS into
+   * immediates as well as no immediates falling off of the end of code sections.
+   *
+   * @param codeSectionToValidate The index of code to validate in the code sections
+   * @param eofLayout The EOF container to validate
+   * @return null if valid, otherwise an error string providing the validation error.
+   */
+  public static String validateStack(final int codeSectionToValidate, final EOFLayout eofLayout) {
+    try {
+<span class="fc" id="L688">      CodeSection toValidate = eofLayout.getCodeSection(codeSectionToValidate);</span>
+<span class="fc" id="L689">      byte[] code =</span>
+<span class="fc" id="L690">          eofLayout.getContainer().slice(toValidate.entryPoint, toValidate.length).toArrayUnsafe();</span>
+<span class="fc" id="L691">      int codeLength = code.length;</span>
+<span class="fc" id="L692">      int[] stackHeights = new int[codeLength];</span>
+<span class="fc" id="L693">      Arrays.fill(stackHeights, -1);</span>
+
+<span class="fc" id="L695">      int thisWork = 0;</span>
+<span class="fc" id="L696">      int maxWork = 1;</span>
+<span class="fc" id="L697">      int[][] workList = new int[codeLength][2];</span>
+
+<span class="fc" id="L699">      int initialStackHeight = toValidate.getInputs();</span>
+<span class="fc" id="L700">      int maxStackHeight = initialStackHeight;</span>
+<span class="fc" id="L701">      stackHeights[0] = initialStackHeight;</span>
+<span class="fc" id="L702">      workList[0][1] = initialStackHeight;</span>
+<span class="fc" id="L703">      int unusedBytes = codeLength;</span>
+
+<span class="fc bfc" id="L705" title="All 2 branches covered.">      while (thisWork &lt; maxWork) {</span>
+<span class="fc" id="L706">        int currentPC = workList[thisWork][0];</span>
+<span class="fc" id="L707">        int currentStackHeight = workList[thisWork][1];</span>
+<span class="fc bfc" id="L708" title="All 4 branches covered.">        if (thisWork &gt; 0 &amp;&amp; stackHeights[currentPC] &gt;= 0) {</span>
+          // we've been here, validate the jump is what is expected
+<span class="fc bfc" id="L710" title="All 2 branches covered.">          if (stackHeights[currentPC] != currentStackHeight) {</span>
+<span class="fc" id="L711">            return String.format(</span>
+                &quot;Jump into code stack height (%d) does not match previous value (%d)&quot;,
+<span class="fc" id="L713">                stackHeights[currentPC], currentStackHeight);</span>
+          } else {
+<span class="fc" id="L715">            thisWork++;</span>
+<span class="fc" id="L716">            continue;</span>
+          }
+        } else {
+<span class="fc" id="L719">          stackHeights[currentPC] = currentStackHeight;</span>
+        }
+
+<span class="pc bpc" id="L722" title="1 of 2 branches missed.">        while (currentPC &lt; codeLength) {</span>
+<span class="fc" id="L723">          int thisOp = code[currentPC] &amp; 0xff;</span>
+
+<span class="fc" id="L725">          byte[] stackInfo = OPCODE_STACK_VALIDATION[thisOp];</span>
+          int stackInputs;
+          int stackOutputs;
+<span class="fc" id="L728">          int pcAdvance = stackInfo[2];</span>
+<span class="fc bfc" id="L729" title="All 2 branches covered.">          if (thisOp == CallFOperation.OPCODE) {</span>
+<span class="fc" id="L730">            int section = readBigEndianU16(currentPC + 1, code);</span>
+<span class="fc" id="L731">            stackInputs = eofLayout.getCodeSection(section).getInputs();</span>
+<span class="fc" id="L732">            stackOutputs = eofLayout.getCodeSection(section).getOutputs();</span>
+<span class="fc" id="L733">          } else {</span>
+<span class="fc" id="L734">            stackInputs = stackInfo[0];</span>
+<span class="fc" id="L735">            stackOutputs = stackInfo[1];</span>
+          }
+
+<span class="fc bfc" id="L738" title="All 2 branches covered.">          if (stackInputs &gt; currentStackHeight) {</span>
+<span class="fc" id="L739">            return String.format(</span>
+                &quot;Operation 0x%02X requires stack of %d but only has %d items&quot;,
+<span class="fc" id="L741">                thisOp, stackInputs, currentStackHeight);</span>
+          }
+
+<span class="fc" id="L744">          currentStackHeight = currentStackHeight - stackInputs + stackOutputs;</span>
+<span class="pc bpc" id="L745" title="1 of 2 branches missed.">          if (currentStackHeight &gt; MAX_STACK_HEIGHT) {</span>
+<span class="nc" id="L746">            return &quot;Stack height exceeds 1024&quot;;</span>
+          }
+
+<span class="fc" id="L749">          maxStackHeight = Math.max(maxStackHeight, currentStackHeight);</span>
+
+<span class="fc bfc" id="L751" title="All 4 branches covered.">          if (thisOp == RelativeJumpOperation.OPCODE || thisOp == RelativeJumpIfOperation.OPCODE) {</span>
+            // no `&amp; 0xff` on high byte because this is one case we want sign extension
+<span class="fc" id="L753">            int rvalue = readBigEndianI16(currentPC + 1, code);</span>
+<span class="fc" id="L754">            workList[maxWork] = new int[] {currentPC + rvalue + 3, currentStackHeight};</span>
+<span class="fc" id="L755">            maxWork++;</span>
+<span class="pc bpc" id="L756" title="1 of 2 branches missed.">          } else if (thisOp == RelativeJumpVectorOperation.OPCODE) {</span>
+<span class="nc" id="L757">            int immediateDataSize = (code[currentPC + 1] &amp; 0xff) * 2;</span>
+<span class="nc" id="L758">            unusedBytes -= immediateDataSize;</span>
+<span class="nc" id="L759">            int tableEnd = immediateDataSize + currentPC + 2;</span>
+<span class="nc bnc" id="L760" title="All 2 branches missed.">            for (int i = currentPC + 2; i &lt; tableEnd; i += 2) {</span>
+<span class="nc" id="L761">              int rvalue = readBigEndianI16(i, code);</span>
+<span class="nc" id="L762">              workList[maxWork] = new int[] {tableEnd + rvalue, currentStackHeight};</span>
+<span class="nc" id="L763">              maxWork++;</span>
+            }
+<span class="nc" id="L765">            currentPC = tableEnd - 2;</span>
+<span class="pc bfc" id="L766" title="All 2 branches covered.">          } else if (thisOp == RetFOperation.OPCODE) {</span>
+<span class="fc" id="L767">            int returnStackItems = toValidate.getOutputs();</span>
+<span class="fc bfc" id="L768" title="All 2 branches covered.">            if (currentStackHeight != returnStackItems) {</span>
+<span class="fc" id="L769">              return String.format(</span>
+                  &quot;Section return (RETF) calculated height 0x%x does not match configured height 0x%x&quot;,
+<span class="fc" id="L771">                  currentStackHeight, returnStackItems);</span>
+            }
+          }
+<span class="fc bfc" id="L774" title="All 2 branches covered.">          if (pcAdvance &lt; 0) {</span>
+<span class="fc" id="L775">            unusedBytes += pcAdvance;</span>
+<span class="fc" id="L776">            break;</span>
+<span class="fc bfc" id="L777" title="All 2 branches covered.">          } else if (pcAdvance == 0) {</span>
+<span class="fc" id="L778">            return String.format(&quot;Invalid Instruction 0x%02x&quot;, thisOp);</span>
+          }
+
+<span class="fc" id="L781">          currentPC += pcAdvance;</span>
+<span class="pc bpc" id="L782" title="1 of 2 branches missed.">          if (currentPC &gt;= stackHeights.length) {</span>
+<span class="nc" id="L783">            return String.format(</span>
+                &quot;Dangling immediate argument for opcode 0x%x at PC %d in code section %d.&quot;,
+<span class="nc" id="L785">                currentStackHeight, codeLength - pcAdvance, codeSectionToValidate);</span>
+          }
+<span class="fc" id="L787">          stackHeights[currentPC] = currentStackHeight;</span>
+<span class="fc" id="L788">          unusedBytes -= pcAdvance;</span>
+<span class="fc" id="L789">        }</span>
+
+<span class="fc" id="L791">        thisWork++;</span>
+<span class="fc" id="L792">      }</span>
+<span class="pc bpc" id="L793" title="1 of 2 branches missed.">      if (maxStackHeight != toValidate.maxStackHeight) {</span>
+<span class="nc" id="L794">        return String.format(</span>
+            &quot;Calculated max stack height (%d) does not match reported stack height (%d)&quot;,
+<span class="nc" id="L796">            maxStackHeight, toValidate.maxStackHeight);</span>
+      }
+<span class="fc bfc" id="L798" title="All 2 branches covered.">      if (unusedBytes != 0) {</span>
+<span class="fc" id="L799">        return String.format(&quot;Dead code detected in section %d&quot;, codeSectionToValidate);</span>
+      }
+
+<span class="fc" id="L802">      return null;</span>
+<span class="nc" id="L803">    } catch (RuntimeException re) {</span>
+<span class="nc" id="L804">      re.printStackTrace();</span>
+<span class="nc" id="L805">      return &quot;Internal Exception &quot; + re.getMessage();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

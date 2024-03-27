@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FullSyncTargetManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fullsync</a> &gt; <span class="el_source">FullSyncTargetManager.java</span></div><h1>FullSyncTargetManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fullsync;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.sync.AbstractSyncTargetManager;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncTarget;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+class FullSyncTargetManager extends AbstractSyncTargetManager {
+
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(FullSyncTargetManager.class);</span>
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final SyncTerminationCondition terminationCondition;
+
+  FullSyncTargetManager(
+      final SynchronizerConfiguration config,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final SyncTerminationCondition terminationCondition) {
+<span class="fc" id="L51">    super(config, protocolSchedule, protocolContext, ethContext, metricsSystem);</span>
+<span class="fc" id="L52">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L53">    this.ethContext = ethContext;</span>
+<span class="fc" id="L54">    this.terminationCondition = terminationCondition;</span>
+<span class="fc" id="L55">  }</span>
+
+  @Override
+  protected Optional&lt;SyncTarget&gt; finalizeSelectedSyncTarget(final SyncTarget syncTarget) {
+<span class="fc" id="L59">    final BlockHeader commonAncestor = syncTarget.commonAncestor();</span>
+<span class="fc" id="L60">    if (protocolContext</span>
+<span class="fc" id="L61">        .getWorldStateArchive()</span>
+<span class="fc bfc" id="L62" title="All 2 branches covered.">        .isWorldStateAvailable(commonAncestor.getStateRoot(), commonAncestor.getHash())) {</span>
+<span class="fc" id="L63">      return Optional.of(syncTarget);</span>
+    } else {
+<span class="fc" id="L65">      LOG.warn(</span>
+          &quot;Disconnecting {} because world state is not available at common ancestor at block {} ({})&quot;,
+<span class="fc" id="L67">          syncTarget.peer(),</span>
+<span class="fc" id="L68">          commonAncestor.getNumber(),</span>
+<span class="fc" id="L69">          commonAncestor.getHash());</span>
+<span class="fc" id="L70">      syncTarget.peer().disconnect(DisconnectReason.USELESS_PEER);</span>
+<span class="fc" id="L71">      return Optional.empty();</span>
+    }
+  }
+
+  @Override
+  protected CompletableFuture&lt;Optional&lt;EthPeer&gt;&gt; selectBestAvailableSyncTarget() {
+<span class="fc" id="L77">    final Optional&lt;EthPeer&gt; maybeBestPeer = ethContext.getEthPeers().bestPeerWithHeightEstimate();</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    if (!maybeBestPeer.isPresent()) {</span>
+<span class="fc" id="L79">      LOG.info(</span>
+          &quot;Unable to find sync target. Currently checking {} peers for usefulness&quot;,
+<span class="fc" id="L81">          ethContext.getEthPeers().peerCount());</span>
+<span class="fc" id="L82">      return completedFuture(Optional.empty());</span>
+    } else {
+<span class="fc" id="L84">      final EthPeer bestPeer = maybeBestPeer.get();</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">      if (isSyncTargetReached(bestPeer)) {</span>
+        // We're caught up to our best peer, try again when a new peer connects
+<span class="fc" id="L87">        LOG.debug(</span>
+            &quot;Caught up to best peer: {}, chain state: {}. Current peers: {}&quot;,
+            bestPeer,
+<span class="fc" id="L90">            bestPeer.chainState(),</span>
+<span class="fc" id="L91">            ethContext.getEthPeers().peerCount());</span>
+<span class="fc" id="L92">        return completedFuture(Optional.empty());</span>
+      }
+<span class="fc" id="L94">      LOG.debug(</span>
+          &quot;Best peer: {}, chain state: {}. Current peers: {}&quot;,
+          bestPeer,
+<span class="fc" id="L97">          bestPeer.chainState(),</span>
+<span class="fc" id="L98">          ethContext.getEthPeers().peerCount());</span>
+<span class="fc" id="L99">      return completedFuture(maybeBestPeer);</span>
+    }
+  }
+
+  private boolean isSyncTargetReached(final EthPeer peer) {
+<span class="fc" id="L104">    final MutableBlockchain blockchain = protocolContext.getBlockchain();</span>
+    // We're in sync if the peer's chain is no better than our chain
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    return !peer.chainState().chainIsBetterThan(blockchain.getChainHead());</span>
+  }
+
+  @Override
+  public boolean shouldContinueDownloading() {
+<span class="fc" id="L111">    return terminationCondition.shouldContinueDownload();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

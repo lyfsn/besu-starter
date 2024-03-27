@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GasLimitRangeAndDeltaValidationRule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet.headervalidationrules</a> &gt; <span class="el_source">GasLimitRangeAndDeltaValidationRule.java</span></div><h1>GasLimitRangeAndDeltaValidationRule.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet.headervalidationrules;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.AbstractGasLimitSpecification;
+import org.hyperledger.besu.ethereum.mainnet.DetachedBlockHeaderValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.BaseFeeMarket;
+
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Responsible for ensuring the gasLimit specified in the supplied block header is within bounds as
+ * specified at construction. And that the gasLimit for this block is within certain bounds of its
+ * parent block.
+ */
+public class GasLimitRangeAndDeltaValidationRule extends AbstractGasLimitSpecification
+    implements DetachedBlockHeaderValidationRule {
+
+<span class="fc" id="L35">  private static final Logger LOG =</span>
+<span class="fc" id="L36">      LoggerFactory.getLogger(GasLimitRangeAndDeltaValidationRule.class);</span>
+
+  private final Optional&lt;BaseFeeMarket&gt; baseFeeMarket;
+
+  public GasLimitRangeAndDeltaValidationRule(
+      final long minGasLimit, final long maxGasLimit, final Optional&lt;BaseFeeMarket&gt; baseFeeMarket) {
+<span class="fc" id="L42">    super(minGasLimit, maxGasLimit);</span>
+<span class="fc" id="L43">    this.baseFeeMarket = baseFeeMarket;</span>
+<span class="fc" id="L44">  }</span>
+
+  public GasLimitRangeAndDeltaValidationRule(final long minGasLimit, final long maxGasLimit) {
+<span class="fc" id="L47">    this(minGasLimit, maxGasLimit, Optional.empty());</span>
+<span class="fc" id="L48">  }</span>
+
+  @Override
+  public boolean validate(final BlockHeader header, final BlockHeader parent) {
+<span class="fc" id="L52">    final long gasLimit = header.getGasLimit();</span>
+
+<span class="fc bfc" id="L54" title="All 4 branches covered.">    if ((gasLimit &lt; minGasLimit) || (gasLimit &gt; maxGasLimit)) {</span>
+<span class="fc" id="L55">      LOG.info(</span>
+          &quot;Invalid block header: gasLimit = {} is outside range {} --&gt; {}&quot;,
+<span class="fc" id="L57">          gasLimit,</span>
+<span class="fc" id="L58">          minGasLimit,</span>
+<span class="fc" id="L59">          maxGasLimit);</span>
+<span class="fc" id="L60">      return false;</span>
+    }
+
+<span class="fc bfc" id="L63" title="All 4 branches covered.">    if (baseFeeMarket.isEmpty() &amp;&amp; header.getBaseFee().isPresent()) {</span>
+<span class="fc" id="L64">      LOG.info(</span>
+          &quot;Invalid block header: basefee should not be present in a block without a base fee market&quot;);
+<span class="fc" id="L66">      return false;</span>
+    }
+
+<span class="fc" id="L69">    long parentGasLimit =</span>
+        baseFeeMarket
+<span class="fc" id="L71">            .filter(</span>
+                baseFeeMarket -&gt;
+<span class="fc" id="L73">                    BaseFeeMarket.ValidationMode.INITIAL.equals(</span>
+<span class="fc" id="L74">                        baseFeeMarket.gasLimitValidationMode(header.getNumber())))</span>
+<span class="fc" id="L75">            .map(baseFeeMarket -&gt; parent.getGasLimit() * baseFeeMarket.getSlackCoefficient())</span>
+<span class="fc" id="L76">            .orElse(parent.getGasLimit());</span>
+
+<span class="fc" id="L78">    final long difference = Math.abs(parentGasLimit - gasLimit);</span>
+<span class="fc" id="L79">    final long bounds = deltaBound(parentGasLimit);</span>
+    // this is an exclusive bound, so the difference should be strictly less:
+<span class="fc bfc" id="L81" title="All 2 branches covered.">    if (Long.compareUnsigned(difference, bounds) &gt;= 0) {</span>
+<span class="fc" id="L82">      LOG.info(</span>
+<span class="fc" id="L83">          &quot;Invalid block header: gas limit delta {} is out of bounds of {}&quot;, difference, bounds);</span>
+<span class="fc" id="L84">      return false;</span>
+    }
+
+<span class="fc" id="L87">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

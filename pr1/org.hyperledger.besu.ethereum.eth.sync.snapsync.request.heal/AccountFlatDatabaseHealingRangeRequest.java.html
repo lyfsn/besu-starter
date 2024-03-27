@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AccountFlatDatabaseHealingRangeRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal</a> &gt; <span class="el_source">AccountFlatDatabaseHealingRangeRequest.java</span></div><h1>AccountFlatDatabaseHealingRangeRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal;
+
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MAX_RANGE;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MIN_RANGE;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncMetricsManager.Step.HEAL_FLAT;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.RequestType;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncProcessState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapWorldDownloadState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.RangeStorageEntriesCollector;
+import org.hyperledger.besu.ethereum.trie.TrieIterator;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.TreeMap;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+import kotlin.collections.ArrayDeque;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/**
+ * The AccountFlatDatabaseHealingRangeRequest class represents a request to heal a range of account
+ * in the flat databases. It encapsulates the necessary information to identify the range and
+ * initiate the healing process.
+ */
+public class AccountFlatDatabaseHealingRangeRequest extends SnapDataRequest {
+
+  private final Bytes32 startKeyHash;
+  private final Bytes32 endKeyHash;
+  private TreeMap&lt;Bytes32, Bytes&gt; existingAccounts;
+
+  private TreeMap&lt;Bytes32, Bytes&gt; flatDbAccounts;
+  private boolean isProofValid;
+
+  public AccountFlatDatabaseHealingRangeRequest(
+      final Hash originalRootHash, final Bytes32 startKeyHash, final Bytes32 endKeyHash) {
+<span class="fc" id="L68">    super(RequestType.ACCOUNT_RANGE, originalRootHash);</span>
+<span class="fc" id="L69">    this.startKeyHash = startKeyHash;</span>
+<span class="fc" id="L70">    this.endKeyHash = endKeyHash;</span>
+<span class="fc" id="L71">    this.existingAccounts = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L72">    this.flatDbAccounts = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L73">    this.isProofValid = false;</span>
+<span class="fc" id="L74">  }</span>
+
+  @Override
+  public Stream&lt;SnapDataRequest&gt; getChildRequests(
+      final SnapWorldDownloadState downloadState,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapSyncProcessState snapSyncState) {
+<span class="fc" id="L81">    final List&lt;SnapDataRequest&gt; childRequests = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (!existingAccounts.isEmpty()) {</span>
+      // new request is added if the response does not match all the requested range
+<span class="fc" id="L84">      RangeManager.generateRanges(</span>
+<span class="fc" id="L85">              existingAccounts.lastKey().toUnsignedBigInteger().add(BigInteger.ONE),</span>
+<span class="fc" id="L86">              endKeyHash.toUnsignedBigInteger(),</span>
+              1)
+<span class="fc" id="L88">          .forEach(</span>
+              (key, value) -&gt; {
+<span class="fc" id="L90">                downloadState.getMetricsManager().notifyRangeProgress(HEAL_FLAT, key, endKeyHash);</span>
+<span class="fc" id="L91">                final AccountFlatDatabaseHealingRangeRequest storageRangeDataRequest =</span>
+<span class="fc" id="L92">                    createAccountFlatHealingRangeRequest(getRootHash(), key, value);</span>
+<span class="fc" id="L93">                childRequests.add(storageRangeDataRequest);</span>
+<span class="fc" id="L94">              });</span>
+    } else {
+<span class="fc" id="L96">      downloadState.getMetricsManager().notifyRangeProgress(HEAL_FLAT, endKeyHash, endKeyHash);</span>
+    }
+
+<span class="fc" id="L99">    Stream.of(existingAccounts.entrySet(), flatDbAccounts.entrySet())</span>
+<span class="fc" id="L100">        .flatMap(Collection::stream)</span>
+<span class="fc" id="L101">        .forEach(</span>
+            account -&gt; {
+<span class="fc" id="L103">              if (downloadState</span>
+<span class="fc" id="L104">                  .getAccountsHealingList()</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">                  .contains(CompactEncoding.bytesToPath(account.getKey()))) {</span>
+<span class="fc" id="L106">                final StateTrieAccountValue accountValue =</span>
+<span class="fc" id="L107">                    StateTrieAccountValue.readFrom(RLP.input(account.getValue()));</span>
+<span class="fc" id="L108">                childRequests.add(</span>
+<span class="fc" id="L109">                    createStorageFlatHealingRangeRequest(</span>
+<span class="fc" id="L110">                        getRootHash(),</span>
+<span class="fc" id="L111">                        account.getKey(),</span>
+<span class="fc" id="L112">                        accountValue.getStorageRoot(),</span>
+                        MIN_RANGE,
+                        MAX_RANGE));
+              }
+<span class="fc" id="L116">            });</span>
+<span class="fc" id="L117">    return childRequests.stream();</span>
+  }
+
+  public Bytes32 getStartKeyHash() {
+<span class="fc" id="L121">    return startKeyHash;</span>
+  }
+
+  public Bytes32 getEndKeyHash() {
+<span class="nc" id="L125">    return endKeyHash;</span>
+  }
+
+  @Override
+  public boolean isResponseReceived() {
+<span class="nc" id="L130">    return true;</span>
+  }
+
+  public void addLocalData(
+      final WorldStateProofProvider worldStateProofProvider,
+      final TreeMap&lt;Bytes32, Bytes&gt; accounts,
+      final ArrayDeque&lt;Bytes&gt; proofs) {
+<span class="pc bpc" id="L137" title="1 of 4 branches missed.">    if (!accounts.isEmpty() &amp;&amp; !proofs.isEmpty()) {</span>
+      // very proof in order to check if the local flat database is valid or not
+<span class="fc" id="L139">      isProofValid =</span>
+<span class="fc" id="L140">          worldStateProofProvider.isValidRangeProof(</span>
+<span class="fc" id="L141">              startKeyHash, endKeyHash, getRootHash(), proofs, accounts);</span>
+<span class="fc" id="L142">      this.existingAccounts = accounts;</span>
+    }
+<span class="fc" id="L144">  }</span>
+
+  @Override
+  protected int doPersist(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration syncConfig) {
+
+<span class="fc bfc" id="L154" title="All 2 branches covered.">    if (!isProofValid) { // if proof is not valid we need to fix the flat database</span>
+
+<span class="fc" id="L156">      final BonsaiWorldStateKeyValueStorage.Updater bonsaiUpdater =</span>
+          (BonsaiWorldStateKeyValueStorage.Updater) updater;
+
+<span class="fc" id="L159">      final MerkleTrie&lt;Bytes, Bytes&gt; accountTrie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="fc" id="L161">              worldStateStorageCoordinator::getAccountStateTrieNode,</span>
+<span class="fc" id="L162">              getRootHash(),</span>
+<span class="fc" id="L163">              Function.identity(),</span>
+<span class="fc" id="L164">              Function.identity());</span>
+
+      // retrieve the data from the trie in order to know what to fix in the flat database
+<span class="fc" id="L167">      final RangeStorageEntriesCollector collector =</span>
+<span class="fc" id="L168">          RangeStorageEntriesCollector.createCollector(</span>
+              startKeyHash,
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">              existingAccounts.isEmpty() ? endKeyHash : existingAccounts.lastKey(),</span>
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">              existingAccounts.isEmpty()</span>
+<span class="nc" id="L172">                  ? syncConfig.getLocalFlatAccountCountToHealPerRequest()</span>
+<span class="fc" id="L173">                  : Integer.MAX_VALUE,</span>
+              Integer.MAX_VALUE);
+
+      // put all flat accounts in the list, and gradually keep only those that are not in the trie
+      // to remove and heal them.
+<span class="fc" id="L178">      flatDbAccounts = new TreeMap&lt;&gt;(existingAccounts);</span>
+
+<span class="fc" id="L180">      final TrieIterator&lt;Bytes&gt; visitor = RangeStorageEntriesCollector.createVisitor(collector);</span>
+<span class="fc" id="L181">      existingAccounts =</span>
+          (TreeMap&lt;Bytes32, Bytes&gt;)
+<span class="fc" id="L183">              accountTrie.entriesFrom(</span>
+                  root -&gt;
+<span class="fc" id="L185">                      RangeStorageEntriesCollector.collectEntries(</span>
+                          collector, visitor, root, startKeyHash));
+
+      // Process each existing account
+<span class="fc" id="L189">      existingAccounts.forEach(</span>
+          (key, value) -&gt; {
+            // Remove the key from the flat db list and get its associated value
+<span class="fc" id="L192">            Bytes flatDbEntry = flatDbAccounts.remove(key);</span>
+            // If the key was in flat db and its associated value is different from the
+            // current value
+<span class="fc bfc" id="L195" title="All 2 branches covered.">            if (!value.equals(flatDbEntry)) {</span>
+<span class="fc" id="L196">              Hash accountHash = Hash.wrap(key);</span>
+              // Add the account to the list of accounts to be repaired
+<span class="fc" id="L198">              downloadState.addAccountToHealingList(CompactEncoding.bytesToPath(accountHash));</span>
+              // Update the account info state
+<span class="fc" id="L200">              bonsaiUpdater.putAccountInfoState(accountHash, value);</span>
+            }
+<span class="fc" id="L202">          });</span>
+
+      // For each remaining account in flat db list, remove the account info state and add it to
+      // the list of accounts to be repaired
+<span class="fc" id="L206">      flatDbAccounts</span>
+<span class="fc" id="L207">          .keySet()</span>
+<span class="fc" id="L208">          .forEach(</span>
+              key -&gt; {
+<span class="nc" id="L210">                Hash accountHash = Hash.wrap(key);</span>
+<span class="nc" id="L211">                downloadState.addAccountToHealingList(CompactEncoding.bytesToPath(accountHash));</span>
+<span class="nc" id="L212">                bonsaiUpdater.removeAccountInfoState(accountHash);</span>
+<span class="nc" id="L213">              });</span>
+    }
+<span class="fc" id="L215">    return existingAccounts.size() + flatDbAccounts.size();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

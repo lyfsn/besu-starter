@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>OpenTelemetrySystem.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.metrics.opentelemetry</a> &gt; <span class="el_source">OpenTelemetrySystem.java</span></div><h1>OpenTelemetrySystem.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.metrics.opentelemetry;
+
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.metrics.Observation;
+import org.hyperledger.besu.metrics.StandardMetricCategory;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledGauge;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.plugin.services.metrics.MetricCategory;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryUsage;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.DoubleSupplier;
+import java.util.stream.Stream;
+
+import com.google.common.collect.ImmutableSet;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.LongCounter;
+import io.opentelemetry.api.metrics.Meter;
+import io.opentelemetry.api.trace.TracerProvider;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk;
+import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdkBuilder;
+import io.opentelemetry.sdk.common.CompletableResultCode;
+import io.opentelemetry.sdk.metrics.SdkMeterProvider;
+import io.opentelemetry.sdk.metrics.data.DoublePointData;
+import io.opentelemetry.sdk.metrics.data.HistogramPointData;
+import io.opentelemetry.sdk.metrics.data.LongPointData;
+import io.opentelemetry.sdk.metrics.data.MetricData;
+import io.opentelemetry.sdk.metrics.data.MetricDataType;
+import io.opentelemetry.sdk.metrics.data.PointData;
+import io.opentelemetry.sdk.metrics.data.SummaryPointData;
+import io.opentelemetry.sdk.resources.Resource;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.semconv.ResourceAttributes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Metrics system relying on the native OpenTelemetry format. */
+public class OpenTelemetrySystem implements ObservableMetricsSystem {
+
+<span class="fc" id="L72">  private static final Logger LOG = LoggerFactory.getLogger(OpenTelemetrySystem.class);</span>
+
+  private static final String TYPE_LABEL_KEY = &quot;type&quot;;
+  private static final String AREA_LABEL_KEY = &quot;area&quot;;
+  private static final String POOL_LABEL_KEY = &quot;pool&quot;;
+  private static final String USED = &quot;used&quot;;
+  private static final String COMMITTED = &quot;committed&quot;;
+  private static final String MAX = &quot;max&quot;;
+  private static final String HEAP = &quot;heap&quot;;
+  private static final String NON_HEAP = &quot;non_heap&quot;;
+
+  private final Set&lt;MetricCategory&gt; enabledCategories;
+  private final boolean timersEnabled;
+<span class="fc" id="L85">  private final Map&lt;String, LabelledMetric&lt;Counter&gt;&gt; cachedCounters = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L86">  private final Map&lt;String, LabelledMetric&lt;OperationTimer&gt;&gt; cachedTimers =</span>
+      new ConcurrentHashMap&lt;&gt;();
+  private final SdkMeterProvider sdkMeterProvider;
+  private final DebugMetricReader debugMetricReader;
+  private final SdkTracerProvider sdkTracerProvider;
+
+  /**
+   * Instantiates a new Open telemetry system.
+   *
+   * @param enabledCategories the enabled categories
+   * @param timersEnabled the timers enabled
+   * @param jobName the job name
+   * @param setAsGlobal the set as global
+   */
+  public OpenTelemetrySystem(
+      final Set&lt;MetricCategory&gt; enabledCategories,
+      final boolean timersEnabled,
+      final String jobName,
+<span class="fc" id="L104">      final boolean setAsGlobal) {</span>
+<span class="fc" id="L105">    LOG.info(&quot;Starting OpenTelemetry metrics system&quot;);</span>
+<span class="fc" id="L106">    this.enabledCategories = ImmutableSet.copyOf(enabledCategories);</span>
+<span class="fc" id="L107">    this.timersEnabled = timersEnabled;</span>
+<span class="fc" id="L108">    this.debugMetricReader = new DebugMetricReader();</span>
+    Resource resource =
+<span class="fc" id="L110">        Resource.getDefault()</span>
+<span class="fc" id="L111">            .merge(</span>
+<span class="fc" id="L112">                Resource.create(</span>
+<span class="fc" id="L113">                    Attributes.builder().put(ResourceAttributes.SERVICE_NAME, jobName).build()));</span>
+    AutoConfiguredOpenTelemetrySdkBuilder autoSdkBuilder =
+<span class="fc" id="L115">        AutoConfiguredOpenTelemetrySdk.builder()</span>
+<span class="fc" id="L116">            .addMeterProviderCustomizer(</span>
+                (provider, config) -&gt;
+<span class="fc" id="L118">                    provider.setResource(resource).registerMetricReader(debugMetricReader))</span>
+<span class="fc" id="L119">            .addTracerProviderCustomizer((provider, config) -&gt; provider.setResource(resource));</span>
+
+<span class="fc bfc" id="L121" title="All 2 branches covered.">    if (setAsGlobal) {</span>
+<span class="fc" id="L122">      autoSdkBuilder.setResultAsGlobal();</span>
+    }
+
+<span class="fc" id="L125">    OpenTelemetrySdk sdk = autoSdkBuilder.build().getOpenTelemetrySdk();</span>
+<span class="fc" id="L126">    this.sdkMeterProvider = sdk.getSdkMeterProvider();</span>
+<span class="fc" id="L127">    this.sdkTracerProvider = sdk.getSdkTracerProvider();</span>
+<span class="fc" id="L128">  }</span>
+
+  @Override
+  public Stream&lt;Observation&gt; streamObservations(final MetricCategory category) {
+<span class="nc" id="L132">    return streamObservations().filter(metricData -&gt; metricData.getCategory().equals(category));</span>
+  }
+
+  @Override
+  public Stream&lt;Observation&gt; streamObservations() {
+<span class="fc" id="L137">    Collection&lt;MetricData&gt; metricsList = this.debugMetricReader.getAllMetrics();</span>
+<span class="fc" id="L138">    return metricsList.stream().flatMap(this::convertToObservations);</span>
+  }
+
+  private Stream&lt;Observation&gt; convertToObservations(final MetricData metricData) {
+<span class="fc" id="L142">    List&lt;Observation&gt; observations = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L143">    MetricCategory category =</span>
+<span class="fc" id="L144">        categoryNameToMetricCategory(metricData.getInstrumentationScopeInfo().getName());</span>
+<span class="fc bfc" id="L145" title="All 2 branches covered.">    if (category == null) {</span>
+<span class="fc" id="L146">      return Stream.empty();</span>
+    }
+    Collection&lt;?&gt; points;
+<span class="pc bpc" id="L149" title="5 of 7 branches missed.">    switch (metricData.getType()) {</span>
+      case DOUBLE_GAUGE:
+<span class="fc" id="L151">        points = metricData.getDoubleGaugeData().getPoints();</span>
+<span class="fc" id="L152">        break;</span>
+      case DOUBLE_SUM:
+<span class="nc" id="L154">        points = metricData.getDoubleSumData().getPoints();</span>
+<span class="nc" id="L155">        break;</span>
+      case SUMMARY:
+<span class="nc" id="L157">        points = metricData.getData().getPoints();</span>
+<span class="nc" id="L158">        break;</span>
+      case LONG_SUM:
+<span class="fc" id="L160">        points = metricData.getLongSumData().getPoints();</span>
+<span class="fc" id="L161">        break;</span>
+      case HISTOGRAM:
+<span class="nc" id="L163">        points = metricData.getData().getPoints();</span>
+<span class="nc" id="L164">        break;</span>
+      case LONG_GAUGE:
+<span class="nc" id="L166">        points = metricData.getLongGaugeData().getPoints();</span>
+<span class="nc" id="L167">        break;</span>
+      default:
+<span class="nc" id="L169">        throw new UnsupportedOperationException(&quot;Unsupported type &quot; + metricData.getType().name());</span>
+    }
+
+<span class="fc bfc" id="L172" title="All 2 branches covered.">    for (Object ptObj : points) {</span>
+<span class="fc" id="L173">      PointData point = (PointData) ptObj;</span>
+<span class="fc" id="L174">      List&lt;String&gt; labels = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L175">      point.getAttributes().forEach((k, v) -&gt; labels.add(v.toString()));</span>
+<span class="fc" id="L176">      observations.add(</span>
+          new Observation(
+<span class="fc" id="L178">              category, metricData.getName(), extractValue(metricData.getType(), point), labels));</span>
+<span class="fc" id="L179">    }</span>
+<span class="fc" id="L180">    return observations.stream();</span>
+  }
+
+  private MetricCategory categoryNameToMetricCategory(final String name) {
+    Set&lt;MetricCategory&gt; categories =
+<span class="fc" id="L185">        ImmutableSet.&lt;MetricCategory&gt;builder()</span>
+<span class="fc" id="L186">            .addAll(EnumSet.allOf(BesuMetricCategory.class))</span>
+<span class="fc" id="L187">            .addAll(EnumSet.allOf(StandardMetricCategory.class))</span>
+<span class="fc" id="L188">            .build();</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">    for (MetricCategory category : categories) {</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">      if (category.getName().equals(name)) {</span>
+<span class="fc" id="L191">        return category;</span>
+      }
+<span class="fc" id="L193">    }</span>
+<span class="fc" id="L194">    return null;</span>
+  }
+
+  private Object extractValue(final MetricDataType type, final PointData point) {
+<span class="pc bpc" id="L198" title="3 of 5 branches missed.">    switch (type) {</span>
+      case LONG_GAUGE:
+      case LONG_SUM:
+<span class="fc" id="L201">        return ((LongPointData) point).getValue();</span>
+      case DOUBLE_GAUGE:
+<span class="fc" id="L203">        return ((DoublePointData) point).getValue();</span>
+      case SUMMARY:
+<span class="nc" id="L205">        return ((SummaryPointData) point).getValues();</span>
+      case HISTOGRAM:
+<span class="nc" id="L207">        return ((HistogramPointData) point).getCounts();</span>
+      default:
+<span class="nc" id="L209">        throw new UnsupportedOperationException(&quot;Unsupported type &quot; + type);</span>
+    }
+  }
+
+  @Override
+  public LabelledMetric&lt;Counter&gt; createLabelledCounter(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L219">    LOG.trace(&quot;Creating a counter {}&quot;, name);</span>
+<span class="fc" id="L220">    return cachedCounters.computeIfAbsent(</span>
+        name,
+        (k) -&gt; {
+<span class="fc bfc" id="L223" title="All 2 branches covered.">          if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L224">            final Meter meter = sdkMeterProvider.get(category.getName());</span>
+
+<span class="fc" id="L226">            final LongCounter counter = meter.counterBuilder(name).setDescription(help).build();</span>
+<span class="fc" id="L227">            return new OpenTelemetryCounter(counter, labelNames);</span>
+          } else {
+<span class="fc" id="L229">            return NoOpMetricsSystem.getCounterLabelledMetric(labelNames.length);</span>
+          }
+        });
+  }
+
+  @Override
+  public LabelledMetric&lt;OperationTimer&gt; createLabelledTimer(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L240">    LOG.trace(&quot;Creating a timer {}&quot;, name);</span>
+<span class="fc" id="L241">    return cachedTimers.computeIfAbsent(</span>
+        name,
+        (k) -&gt; {
+<span class="pc bpc" id="L244" title="1 of 4 branches missed.">          if (timersEnabled &amp;&amp; isCategoryEnabled(category)) {</span>
+<span class="fc" id="L245">            final Meter meter = sdkMeterProvider.get(category.getName());</span>
+<span class="fc" id="L246">            return new OpenTelemetryTimer(name, help, meter, labelNames);</span>
+          } else {
+<span class="fc" id="L248">            return NoOpMetricsSystem.getOperationTimerLabelledMetric(labelNames.length);</span>
+          }
+        });
+  }
+
+  @Override
+  public void createGauge(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final DoubleSupplier valueSupplier) {
+<span class="fc" id="L259">    LOG.trace(&quot;Creating a gauge {}&quot;, name);</span>
+<span class="pc bpc" id="L260" title="1 of 2 branches missed.">    if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L261">      final Meter meter = sdkMeterProvider.get(category.getName());</span>
+<span class="fc" id="L262">      meter</span>
+<span class="fc" id="L263">          .gaugeBuilder(name)</span>
+<span class="fc" id="L264">          .setDescription(help)</span>
+<span class="fc" id="L265">          .buildWithCallback(res -&gt; res.record(valueSupplier.getAsDouble(), Attributes.empty()));</span>
+    }
+<span class="fc" id="L267">  }</span>
+
+  @Override
+  public LabelledGauge createLabelledGauge(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L275">    LOG.trace(&quot;Creating a labelled gauge {}&quot;, name);</span>
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">    if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L277">      return new OpenTelemetryGauge(</span>
+<span class="fc" id="L278">          name, help, sdkMeterProvider.get(category.getName()), List.of(labelNames));</span>
+    }
+<span class="nc" id="L280">    return NoOpMetricsSystem.getLabelledGauge(labelNames.length);</span>
+  }
+
+  @Override
+  public Set&lt;MetricCategory&gt; getEnabledCategories() {
+<span class="fc" id="L285">    return enabledCategories;</span>
+  }
+
+  /** Init defaults. */
+  public void initDefaults() {
+<span class="fc bfc" id="L290" title="All 2 branches covered.">    if (isCategoryEnabled(StandardMetricCategory.JVM)) {</span>
+<span class="fc" id="L291">      collectGC();</span>
+    }
+<span class="fc" id="L293">  }</span>
+
+  private void collectGC() {
+    final List&lt;GarbageCollectorMXBean&gt; garbageCollectors =
+<span class="fc" id="L297">        ManagementFactory.getGarbageCollectorMXBeans();</span>
+<span class="fc" id="L298">    final MemoryMXBean memoryBean = ManagementFactory.getMemoryMXBean();</span>
+<span class="fc" id="L299">    final List&lt;MemoryPoolMXBean&gt; poolBeans = ManagementFactory.getMemoryPoolMXBeans();</span>
+<span class="fc" id="L300">    final Meter meter = sdkMeterProvider.get(StandardMetricCategory.JVM.getName());</span>
+<span class="fc" id="L301">    final List&lt;Attributes&gt; labelSets = new ArrayList&lt;&gt;(garbageCollectors.size());</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">    for (final GarbageCollectorMXBean gc : garbageCollectors) {</span>
+<span class="fc" id="L303">      labelSets.add(Attributes.of(AttributeKey.stringKey(&quot;gc&quot;), gc.getName()));</span>
+<span class="fc" id="L304">    }</span>
+<span class="fc" id="L305">    meter</span>
+<span class="fc" id="L306">        .gaugeBuilder(&quot;jvm.gc.collection&quot;)</span>
+<span class="fc" id="L307">        .setDescription(&quot;Time spent in a given JVM garbage collector in milliseconds.&quot;)</span>
+<span class="fc" id="L308">        .setUnit(&quot;ms&quot;)</span>
+<span class="fc" id="L309">        .buildWithCallback(</span>
+            resultLongObserver -&gt; {
+<span class="fc bfc" id="L311" title="All 2 branches covered.">              for (int i = 0; i &lt; garbageCollectors.size(); i++) {</span>
+<span class="fc" id="L312">                resultLongObserver.record(</span>
+<span class="fc" id="L313">                    (double) garbageCollectors.get(i).getCollectionTime(), labelSets.get(i));</span>
+              }
+<span class="fc" id="L315">            });</span>
+<span class="fc" id="L316">    final AttributeKey&lt;String&gt; typeKey = AttributeKey.stringKey(TYPE_LABEL_KEY);</span>
+<span class="fc" id="L317">    final AttributeKey&lt;String&gt; areaKey = AttributeKey.stringKey(AREA_LABEL_KEY);</span>
+<span class="fc" id="L318">    final Attributes usedHeap = Attributes.of(typeKey, USED, areaKey, HEAP);</span>
+<span class="fc" id="L319">    final Attributes usedNonHeap = Attributes.of(typeKey, USED, areaKey, NON_HEAP);</span>
+<span class="fc" id="L320">    final Attributes committedHeap = Attributes.of(typeKey, COMMITTED, areaKey, HEAP);</span>
+<span class="fc" id="L321">    final Attributes committedNonHeap = Attributes.of(typeKey, COMMITTED, areaKey, NON_HEAP);</span>
+    // TODO: Decide if max is needed or not. May be derived with some approximation from max(used).
+<span class="fc" id="L323">    final Attributes maxHeap = Attributes.of(typeKey, MAX, areaKey, HEAP);</span>
+<span class="fc" id="L324">    final Attributes maxNonHeap = Attributes.of(typeKey, MAX, areaKey, NON_HEAP);</span>
+<span class="fc" id="L325">    meter</span>
+<span class="fc" id="L326">        .upDownCounterBuilder(&quot;jvm.memory.area&quot;)</span>
+<span class="fc" id="L327">        .setDescription(&quot;Bytes of a given JVM memory area.&quot;)</span>
+<span class="fc" id="L328">        .setUnit(&quot;By&quot;)</span>
+<span class="fc" id="L329">        .buildWithCallback(</span>
+            resultLongObserver -&gt; {
+<span class="fc" id="L331">              MemoryUsage heapUsage = memoryBean.getHeapMemoryUsage();</span>
+<span class="fc" id="L332">              MemoryUsage nonHeapUsage = memoryBean.getNonHeapMemoryUsage();</span>
+<span class="fc" id="L333">              resultLongObserver.record(heapUsage.getUsed(), usedHeap);</span>
+<span class="fc" id="L334">              resultLongObserver.record(nonHeapUsage.getUsed(), usedNonHeap);</span>
+<span class="fc" id="L335">              resultLongObserver.record(heapUsage.getUsed(), committedHeap);</span>
+<span class="fc" id="L336">              resultLongObserver.record(nonHeapUsage.getUsed(), committedNonHeap);</span>
+<span class="fc" id="L337">              resultLongObserver.record(heapUsage.getUsed(), maxHeap);</span>
+<span class="fc" id="L338">              resultLongObserver.record(nonHeapUsage.getUsed(), maxNonHeap);</span>
+<span class="fc" id="L339">            });</span>
+<span class="fc" id="L340">    final List&lt;Attributes&gt; usedLabelSets = new ArrayList&lt;&gt;(poolBeans.size());</span>
+<span class="fc" id="L341">    final List&lt;Attributes&gt; committedLabelSets = new ArrayList&lt;&gt;(poolBeans.size());</span>
+<span class="fc" id="L342">    final List&lt;Attributes&gt; maxLabelSets = new ArrayList&lt;&gt;(poolBeans.size());</span>
+<span class="fc" id="L343">    final AttributeKey&lt;String&gt; poolKey = AttributeKey.stringKey(POOL_LABEL_KEY);</span>
+<span class="fc bfc" id="L344" title="All 2 branches covered.">    for (final MemoryPoolMXBean pool : poolBeans) {</span>
+<span class="fc" id="L345">      usedLabelSets.add(Attributes.of(typeKey, USED, poolKey, pool.getName()));</span>
+<span class="fc" id="L346">      committedLabelSets.add(Attributes.of(typeKey, COMMITTED, poolKey, pool.getName()));</span>
+<span class="fc" id="L347">      maxLabelSets.add(Attributes.of(typeKey, MAX, poolKey, pool.getName()));</span>
+<span class="fc" id="L348">    }</span>
+
+<span class="fc" id="L350">    meter</span>
+<span class="fc" id="L351">        .upDownCounterBuilder(&quot;jvm.memory.pool&quot;)</span>
+<span class="fc" id="L352">        .setDescription(&quot;Bytes of a given JVM memory pool.&quot;)</span>
+<span class="fc" id="L353">        .setUnit(&quot;By&quot;)</span>
+<span class="fc" id="L354">        .buildWithCallback(</span>
+            resultLongObserver -&gt; {
+<span class="fc bfc" id="L356" title="All 2 branches covered.">              for (int i = 0; i &lt; poolBeans.size(); i++) {</span>
+<span class="fc" id="L357">                MemoryUsage poolUsage = poolBeans.get(i).getUsage();</span>
+<span class="fc" id="L358">                resultLongObserver.record(poolUsage.getUsed(), usedLabelSets.get(i));</span>
+<span class="fc" id="L359">                resultLongObserver.record(poolUsage.getCommitted(), committedLabelSets.get(i));</span>
+                // TODO: Decide if max is needed or not. May be derived with some approximation from
+                //  max(used).
+<span class="fc" id="L362">                resultLongObserver.record(poolUsage.getMax(), maxLabelSets.get(i));</span>
+              }
+<span class="fc" id="L364">            });</span>
+<span class="fc" id="L365">  }</span>
+
+  /** Shuts down the OpenTelemetry exporters, blocking until they have completed orderly. */
+  public void shutdown() {
+<span class="fc" id="L369">    final CompletableResultCode result =</span>
+<span class="fc" id="L370">        CompletableResultCode.ofAll(</span>
+<span class="fc" id="L371">            Arrays.asList(this.sdkMeterProvider.shutdown(), this.sdkTracerProvider.shutdown()));</span>
+<span class="fc" id="L372">    result.join(5000, TimeUnit.SECONDS);</span>
+<span class="fc" id="L373">  }</span>
+
+  /**
+   * Gets tracer provider.
+   *
+   * @return the tracer provider
+   */
+  public TracerProvider getTracerProvider() {
+<span class="nc" id="L381">    return sdkTracerProvider;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

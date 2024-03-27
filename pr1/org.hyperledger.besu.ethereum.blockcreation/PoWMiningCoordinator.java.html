@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PoWMiningCoordinator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation</a> &gt; <span class="el_source">PoWMiningCoordinator.java</span></div><h1>PoWMiningCoordinator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.chain.BlockAddedObserver;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.mainnet.EpochCalculator;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolution;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolverInputs;
+
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Responsible for determining when a block mining operation should be started/stopped, then
+ * creating an appropriate miner and starting it running in a thread.
+ */
+public class PoWMiningCoordinator extends AbstractMiningCoordinator&lt;PoWBlockMiner&gt;
+    implements BlockAddedObserver {
+
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(PoWMiningCoordinator.class);</span>
+
+  private final PoWMinerExecutor executor;
+
+  private final Cache&lt;String, Long&gt; sealerHashRate;
+
+<span class="fc" id="L47">  private volatile Optional&lt;Long&gt; cachedHashesPerSecond = Optional.empty();</span>
+
+  public PoWMiningCoordinator(
+      final Blockchain blockchain,
+      final PoWMinerExecutor executor,
+      final SyncState syncState,
+      final int remoteSealersLimit,
+      final long remoteSealersTimeToLive) {
+<span class="fc" id="L55">    super(blockchain, executor, syncState);</span>
+<span class="fc" id="L56">    this.executor = executor;</span>
+<span class="fc" id="L57">    this.sealerHashRate =</span>
+<span class="fc" id="L58">        CacheBuilder.newBuilder()</span>
+<span class="fc" id="L59">            .maximumSize(remoteSealersLimit)</span>
+<span class="fc" id="L60">            .expireAfterWrite(remoteSealersTimeToLive, TimeUnit.MINUTES)</span>
+<span class="fc" id="L61">            .build();</span>
+<span class="fc" id="L62">  }</span>
+
+  @Override
+  public void setCoinbase(final Address coinbase) {
+<span class="fc" id="L66">    executor.setCoinbase(coinbase);</span>
+<span class="fc" id="L67">  }</span>
+
+  public void setStratumMiningEnabled(final boolean stratumMiningEnabled) {
+<span class="fc" id="L70">    executor.setStratumMiningEnabled(stratumMiningEnabled);</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public void onResumeMining() {
+<span class="nc" id="L75">    LOG.info(&quot;Resuming mining operations&quot;);</span>
+<span class="nc" id="L76">  }</span>
+
+  @Override
+  public void onPauseMining() {
+<span class="nc" id="L80">    LOG.info(&quot;Pausing mining while behind chain head&quot;);</span>
+<span class="nc" id="L81">  }</span>
+
+  @Override
+  public Optional&lt;Long&gt; hashesPerSecond() {
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (sealerHashRate.size() &lt;= 0) {</span>
+<span class="fc" id="L86">      return localHashesPerSecond();</span>
+    } else {
+<span class="fc" id="L88">      return remoteHashesPerSecond();</span>
+    }
+  }
+
+  private Optional&lt;Long&gt; remoteHashesPerSecond() {
+<span class="fc" id="L93">    return Optional.of(sealerHashRate.asMap().values().stream().mapToLong(Long::longValue).sum());</span>
+  }
+
+  private Optional&lt;Long&gt; localHashesPerSecond() {
+<span class="fc" id="L97">    final Optional&lt;Long&gt; currentHashesPerSecond =</span>
+<span class="fc" id="L98">        currentRunningMiner.flatMap(PoWBlockMiner::getHashesPerSecond);</span>
+
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    if (currentHashesPerSecond.isPresent()) {</span>
+<span class="fc" id="L101">      cachedHashesPerSecond = currentHashesPerSecond;</span>
+<span class="fc" id="L102">      return currentHashesPerSecond;</span>
+    } else {
+<span class="fc" id="L104">      return cachedHashesPerSecond;</span>
+    }
+  }
+
+  @Override
+  public boolean submitHashRate(final String id, final Long hashrate) {
+<span class="fc bfc" id="L110" title="All 2 branches covered.">    if (hashrate == 0) {</span>
+<span class="fc" id="L111">      return false;</span>
+    }
+<span class="fc" id="L113">    LOG.info(&quot;Hashrate submitted id {} hashrate {}&quot;, id, hashrate);</span>
+<span class="fc" id="L114">    sealerHashRate.put(id, hashrate);</span>
+<span class="fc" id="L115">    return true;</span>
+  }
+
+  @Override
+  public void changeTargetGasLimit(final Long targetGasLimit) {
+<span class="nc" id="L120">    executor.changeTargetGasLimit(targetGasLimit);</span>
+<span class="nc" id="L121">  }</span>
+
+  @Override
+  public Optional&lt;PoWSolverInputs&gt; getWorkDefinition() {
+<span class="fc" id="L125">    return currentRunningMiner.flatMap(PoWBlockMiner::getWorkDefinition);</span>
+  }
+
+  @Override
+  public boolean submitWork(final PoWSolution solution) {
+<span class="fc" id="L130">    synchronized (this) {</span>
+<span class="pc" id="L131">      return currentRunningMiner.map(miner -&gt; miner.submitWork(solution)).orElse(false);</span>
+    }
+  }
+
+  @Override
+  protected void haltMiner(final PoWBlockMiner miner) {
+<span class="nc" id="L137">    miner.cancel();</span>
+<span class="nc" id="L138">    miner.getHashesPerSecond().ifPresent(val -&gt; cachedHashesPerSecond = Optional.of(val));</span>
+<span class="nc" id="L139">  }</span>
+
+  @Override
+  protected boolean newChainHeadInvalidatesMiningOperation(final BlockHeader newChainHeadHeader) {
+<span class="fc" id="L143">    return true;</span>
+  }
+
+  public EpochCalculator getEpochCalculator() {
+<span class="fc" id="L147">    return executor.epochCalculator;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

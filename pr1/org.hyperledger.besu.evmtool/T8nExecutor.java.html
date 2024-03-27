@@ -1,0 +1,472 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>T8nExecutor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evmtool</a> &gt; <span class="el_source">T8nExecutor.java</span></div><h1>T8nExecutor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.evmtool;
+
+import static org.hyperledger.besu.ethereum.core.Transaction.REPLAY_PROTECTED_V_BASE;
+import static org.hyperledger.besu.ethereum.core.Transaction.REPLAY_PROTECTED_V_MIN;
+import static org.hyperledger.besu.ethereum.core.Transaction.REPLAY_UNPROTECTED_V_BASE;
+import static org.hyperledger.besu.ethereum.referencetests.ReferenceTestProtocolSchedules.shouldClearEmptyAccounts;
+
+import org.hyperledger.besu.config.StubGenesisConfigOptions;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.AccessListEntry;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderBuilder;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.mainnet.BodyValidation;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.referencetests.BonsaiReferenceTestWorldState;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestBlockchain;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestEnv;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestProtocolSchedules;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestWorldState;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.evm.log.Log;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.evmtool.exception.UnsupportedForkException;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NavigableMap;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.StreamSupport;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
+import com.google.common.base.Stopwatch;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+<span class="nc" id="L82">public class T8nExecutor {</span>
+
+<span class="fc" id="L84">  public record RejectedTransaction(int index, String error) {}</span>
+
+  protected static List&lt;Transaction&gt; extractTransactions(
+      final PrintWriter out,
+      final Iterator&lt;JsonNode&gt; it,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;RejectedTransaction&gt; rejections) {
+<span class="fc" id="L91">    int i = 0;</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">    while (it.hasNext()) {</span>
+      try {
+<span class="fc" id="L94">        JsonNode txNode = it.next();</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">        if (txNode.isTextual()) {</span>
+<span class="fc" id="L96">          BytesValueRLPInput rlpInput =</span>
+<span class="fc" id="L97">              new BytesValueRLPInput(Bytes.fromHexString(txNode.asText()), false);</span>
+<span class="fc" id="L98">          rlpInput.enterList();</span>
+<span class="fc bfc" id="L99" title="All 2 branches covered.">          while (!rlpInput.isEndOfCurrentList()) {</span>
+<span class="fc" id="L100">            Transaction tx = Transaction.readFrom(rlpInput);</span>
+<span class="fc" id="L101">            transactions.add(tx);</span>
+<span class="fc" id="L102">          }</span>
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">        } else if (txNode.isObject()) {</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">          if (txNode.has(&quot;txBytes&quot;)) {</span>
+<span class="nc" id="L105">            Transaction tx =</span>
+<span class="nc" id="L106">                Transaction.readFrom(Bytes.fromHexString(txNode.get(&quot;txbytes&quot;).asText()));</span>
+<span class="nc" id="L107">            transactions.add(tx);</span>
+<span class="nc" id="L108">          } else {</span>
+<span class="fc" id="L109">            Transaction.Builder builder = Transaction.builder();</span>
+<span class="fc" id="L110">            int type = Bytes.fromHexStringLenient(txNode.get(&quot;type&quot;).textValue()).toInt();</span>
+<span class="fc" id="L111">            BigInteger chainId =</span>
+<span class="fc" id="L112">                Bytes.fromHexStringLenient(txNode.get(&quot;chainId&quot;).textValue())</span>
+<span class="fc" id="L113">                    .toUnsignedBigInteger();</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">            TransactionType transactionType = TransactionType.of(type == 0 ? 0xf8 : type);</span>
+<span class="fc" id="L115">            builder.type(transactionType);</span>
+<span class="fc" id="L116">            builder.nonce(Bytes.fromHexStringLenient(txNode.get(&quot;nonce&quot;).textValue()).toLong());</span>
+<span class="fc" id="L117">            builder.gasLimit(Bytes.fromHexStringLenient(txNode.get(&quot;gas&quot;).textValue()).toLong());</span>
+<span class="fc" id="L118">            builder.value(Wei.fromHexString(txNode.get(&quot;value&quot;).textValue()));</span>
+<span class="fc" id="L119">            builder.payload(Bytes.fromHexString(txNode.get(&quot;input&quot;).textValue()));</span>
+
+<span class="fc bfc" id="L121" title="All 2 branches covered.">            if (txNode.has(&quot;gasPrice&quot;)) {</span>
+<span class="fc" id="L122">              builder.gasPrice(Wei.fromHexString(txNode.get(&quot;gasPrice&quot;).textValue()));</span>
+            }
+<span class="fc bfc" id="L124" title="All 2 branches covered.">            if (txNode.has(&quot;maxPriorityFeePerGas&quot;)) {</span>
+<span class="fc" id="L125">              builder.maxPriorityFeePerGas(</span>
+<span class="fc" id="L126">                  Wei.fromHexString(txNode.get(&quot;maxPriorityFeePerGas&quot;).textValue()));</span>
+            }
+<span class="fc bfc" id="L128" title="All 2 branches covered.">            if (txNode.has(&quot;maxFeePerGas&quot;)) {</span>
+<span class="fc" id="L129">              builder.maxFeePerGas(Wei.fromHexString(txNode.get(&quot;maxFeePerGas&quot;).textValue()));</span>
+            }
+<span class="fc bfc" id="L131" title="All 2 branches covered.">            if (txNode.has(&quot;maxFeePerBlobGas&quot;)) {</span>
+<span class="fc" id="L132">              builder.maxFeePerBlobGas(</span>
+<span class="fc" id="L133">                  Wei.fromHexString(txNode.get(&quot;maxFeePerBlobGas&quot;).textValue()));</span>
+            }
+
+<span class="fc bfc" id="L136" title="All 2 branches covered.">            if (txNode.has(&quot;to&quot;)) {</span>
+<span class="fc" id="L137">              builder.to(Address.fromHexString(txNode.get(&quot;to&quot;).textValue()));</span>
+            }
+<span class="fc" id="L139">            BigInteger v =</span>
+<span class="fc" id="L140">                Bytes.fromHexStringLenient(txNode.get(&quot;v&quot;).textValue()).toUnsignedBigInteger();</span>
+<span class="fc bfc" id="L141" title="All 4 branches covered.">            if (transactionType.requiresChainId() || (v.compareTo(REPLAY_PROTECTED_V_MIN) &gt; 0)) {</span>
+              // chainid if protected
+<span class="fc" id="L143">              builder.chainId(chainId);</span>
+            }
+
+<span class="fc bfc" id="L146" title="All 2 branches covered.">            if (txNode.has(&quot;accessList&quot;)) {</span>
+<span class="fc" id="L147">              JsonNode accessList = txNode.get(&quot;accessList&quot;);</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">              if (!accessList.isArray()) {</span>
+<span class="nc" id="L149">                out.printf(</span>
+                    &quot;TX json node unparseable: expected accessList to be an array - %s%n&quot;, txNode);
+<span class="nc" id="L151">                continue;</span>
+              }
+<span class="fc" id="L153">              List&lt;AccessListEntry&gt; entries = new ArrayList&lt;&gt;(accessList.size());</span>
+<span class="pc bpc" id="L154" title="1 of 2 branches missed.">              for (JsonNode entryAsJson : accessList) {</span>
+<span class="nc" id="L155">                Address address = Address.fromHexString(entryAsJson.get(&quot;address&quot;).textValue());</span>
+<span class="nc" id="L156">                List&lt;String&gt; storageKeys =</span>
+<span class="nc" id="L157">                    StreamSupport.stream(</span>
+<span class="nc" id="L158">                            Spliterators.spliteratorUnknownSize(</span>
+<span class="nc" id="L159">                                entryAsJson.get(&quot;storageKeys&quot;).elements(), Spliterator.ORDERED),</span>
+                            false)
+<span class="nc" id="L161">                        .map(JsonNode::textValue)</span>
+<span class="nc" id="L162">                        .toList();</span>
+<span class="nc" id="L163">                var accessListEntry = AccessListEntry.createAccessListEntry(address, storageKeys);</span>
+<span class="nc" id="L164">                entries.add(accessListEntry);</span>
+<span class="nc" id="L165">              }</span>
+<span class="fc" id="L166">              builder.accessList(entries);</span>
+            }
+
+<span class="fc bfc" id="L169" title="All 2 branches covered.">            if (txNode.has(&quot;blobVersionedHashes&quot;)) {</span>
+<span class="fc" id="L170">              JsonNode blobVersionedHashes = txNode.get(&quot;blobVersionedHashes&quot;);</span>
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">              if (!blobVersionedHashes.isArray()) {</span>
+<span class="nc" id="L172">                out.printf(</span>
+                    &quot;TX json node unparseable: expected blobVersionedHashes to be an array - %s%n&quot;,
+                    txNode);
+<span class="nc" id="L175">                continue;</span>
+              }
+
+<span class="fc" id="L178">              List&lt;VersionedHash&gt; entries = new ArrayList&lt;&gt;(blobVersionedHashes.size());</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">              for (JsonNode versionedHashNode : blobVersionedHashes) {</span>
+<span class="fc" id="L180">                entries.add(</span>
+<span class="fc" id="L181">                    new VersionedHash(Bytes32.fromHexString(versionedHashNode.textValue())));</span>
+<span class="fc" id="L182">              }</span>
+<span class="fc" id="L183">              builder.versionedHashes(entries);</span>
+            }
+
+<span class="fc bfc" id="L186" title="All 2 branches covered.">            if (txNode.has(&quot;secretKey&quot;)) {</span>
+<span class="fc" id="L187">              SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+<span class="fc" id="L188">              KeyPair keys =</span>
+<span class="fc" id="L189">                  signatureAlgorithm.createKeyPair(</span>
+<span class="fc" id="L190">                      signatureAlgorithm.createPrivateKey(</span>
+<span class="fc" id="L191">                          Bytes32.fromHexString(txNode.get(&quot;secretKey&quot;).textValue())));</span>
+
+<span class="fc" id="L193">              transactions.add(builder.signAndBuild(keys));</span>
+<span class="fc" id="L194">            } else {</span>
+<span class="fc bfc" id="L195" title="All 2 branches covered.">              if (transactionType == TransactionType.FRONTIER) {</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">                if (v.compareTo(REPLAY_PROTECTED_V_MIN) &gt; 0) {</span>
+<span class="fc" id="L197">                  v =</span>
+<span class="fc" id="L198">                      v.subtract(REPLAY_PROTECTED_V_BASE)</span>
+<span class="fc" id="L199">                          .subtract(chainId.multiply(BigInteger.TWO));</span>
+                } else {
+<span class="fc" id="L201">                  v = v.subtract(REPLAY_UNPROTECTED_V_BASE);</span>
+                }
+              }
+<span class="fc" id="L204">              builder.signature(</span>
+<span class="fc" id="L205">                  SignatureAlgorithmFactory.getInstance()</span>
+<span class="fc" id="L206">                      .createSignature(</span>
+<span class="fc" id="L207">                          Bytes.fromHexStringLenient(txNode.get(&quot;r&quot;).textValue())</span>
+<span class="fc" id="L208">                              .toUnsignedBigInteger(),</span>
+<span class="fc" id="L209">                          Bytes.fromHexStringLenient(txNode.get(&quot;s&quot;).textValue())</span>
+<span class="fc" id="L210">                              .toUnsignedBigInteger(),</span>
+<span class="fc" id="L211">                          v.byteValueExact()));</span>
+<span class="fc" id="L212">              transactions.add(builder.build());</span>
+            }
+<span class="fc" id="L214">          }</span>
+        } else {
+<span class="nc" id="L216">          out.printf(&quot;TX json node unparseable: %s%n&quot;, txNode);</span>
+        }
+<span class="nc" id="L218">      } catch (IllegalArgumentException iae) {</span>
+<span class="nc" id="L219">        rejections.add(new RejectedTransaction(i, iae.getMessage()));</span>
+<span class="fc" id="L220">      }</span>
+<span class="fc" id="L221">      i++;</span>
+    }
+<span class="fc" id="L223">    return transactions;</span>
+  }
+
+  static T8nResult runTest(
+      final Long chainId,
+      final String fork,
+      final String rewardString,
+      final ObjectMapper objectMapper,
+      final ReferenceTestEnv referenceTestEnv,
+      final ReferenceTestWorldState initialWorldState,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;RejectedTransaction&gt; rejections,
+      final TracerManager tracerManager) {
+
+<span class="fc" id="L237">    final ReferenceTestProtocolSchedules referenceTestProtocolSchedules =</span>
+<span class="fc" id="L238">        ReferenceTestProtocolSchedules.create(</span>
+<span class="fc" id="L239">            new StubGenesisConfigOptions().chainId(BigInteger.valueOf(chainId)));</span>
+
+<span class="fc" id="L241">    final BonsaiReferenceTestWorldState worldState =</span>
+<span class="fc" id="L242">        (BonsaiReferenceTestWorldState) initialWorldState.copy();</span>
+
+<span class="fc" id="L244">    final ProtocolSchedule protocolSchedule = referenceTestProtocolSchedules.getByName(fork);</span>
+<span class="pc bpc" id="L245" title="1 of 2 branches missed.">    if (protocolSchedule == null) {</span>
+<span class="nc" id="L246">      throw new UnsupportedForkException(fork);</span>
+    }
+
+<span class="fc" id="L249">    ProtocolSpec protocolSpec =</span>
+<span class="fc" id="L250">        protocolSchedule.getByBlockHeader(BlockHeaderBuilder.createDefault().buildBlockHeader());</span>
+<span class="fc" id="L251">    final BlockHeader blockHeader = referenceTestEnv.updateFromParentValues(protocolSpec);</span>
+<span class="fc" id="L252">    final MainnetTransactionProcessor processor = protocolSpec.getTransactionProcessor();</span>
+<span class="fc" id="L253">    final WorldUpdater worldStateUpdater = worldState.updater();</span>
+<span class="fc" id="L254">    final ReferenceTestBlockchain blockchain = new ReferenceTestBlockchain(blockHeader.getNumber());</span>
+<span class="fc" id="L255">    final Wei blobGasPrice =</span>
+        protocolSpec
+<span class="fc" id="L257">            .getFeeMarket()</span>
+<span class="fc" id="L258">            .blobGasPricePerGas(blockHeader.getExcessBlobGas().orElse(BlobGas.ZERO));</span>
+
+<span class="fc" id="L260">    List&lt;TransactionReceipt&gt; receipts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L261">    List&lt;RejectedTransaction&gt; invalidTransactions = new ArrayList&lt;&gt;(rejections);</span>
+<span class="fc" id="L262">    List&lt;Transaction&gt; validTransactions = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L263">    ArrayNode receiptsArray = objectMapper.createArrayNode();</span>
+<span class="fc" id="L264">    long gasUsed = 0;</span>
+<span class="fc bfc" id="L265" title="All 2 branches covered.">    for (int i = 0; i &lt; transactions.size(); i++) {</span>
+<span class="fc" id="L266">      Transaction transaction = transactions.get(i);</span>
+
+<span class="fc" id="L268">      final Stopwatch timer = Stopwatch.createStarted();</span>
+      final OperationTracer tracer; // You should have picked Mercy.
+
+      final TransactionProcessingResult result;
+      try {
+<span class="fc" id="L273">        tracer = tracerManager.getManagedTracer(i, transaction.getHash());</span>
+<span class="fc" id="L274">        tracer.tracePrepareTransaction(worldStateUpdater, transaction);</span>
+<span class="fc" id="L275">        tracer.traceStartTransaction(worldStateUpdater, transaction);</span>
+<span class="fc" id="L276">        result =</span>
+<span class="fc" id="L277">            processor.processTransaction(</span>
+                blockchain,
+                worldStateUpdater,
+                blockHeader,
+                transaction,
+<span class="fc" id="L282">                blockHeader.getCoinbase(),</span>
+<span class="fc" id="L283">                blockNumber -&gt; referenceTestEnv.getBlockhashByNumber(blockNumber).orElse(Hash.ZERO),</span>
+<span class="fc" id="L284">                false,</span>
+<span class="fc" id="L285">                TransactionValidationParams.processingBlock(),</span>
+                tracer,
+                blobGasPrice);
+<span class="fc" id="L288">        tracerManager.disposeTracer(tracer);</span>
+<span class="nc" id="L289">      } catch (Exception e) {</span>
+<span class="nc" id="L290">        throw new RuntimeException(e);</span>
+<span class="fc" id="L291">      }</span>
+<span class="fc" id="L292">      timer.stop();</span>
+
+<span class="pc bpc" id="L294" title="1 of 2 branches missed.">      if (shouldClearEmptyAccounts(fork)) {</span>
+<span class="fc" id="L295">        final Account coinbase = worldStateUpdater.getOrCreate(blockHeader.getCoinbase());</span>
+<span class="pc bpc" id="L296" title="1 of 4 branches missed.">        if (coinbase != null &amp;&amp; coinbase.isEmpty()) {</span>
+<span class="fc" id="L297">          worldStateUpdater.deleteAccount(coinbase.getAddress());</span>
+        }
+<span class="fc" id="L299">        final Account txSender = worldStateUpdater.getAccount(transaction.getSender());</span>
+<span class="pc bpc" id="L300" title="1 of 4 branches missed.">        if (txSender != null &amp;&amp; txSender.isEmpty()) {</span>
+<span class="fc" id="L301">          worldStateUpdater.deleteAccount(txSender.getAddress());</span>
+        }
+      }
+<span class="fc bfc" id="L304" title="All 2 branches covered.">      if (result.isInvalid()) {</span>
+<span class="fc" id="L305">        invalidTransactions.add(</span>
+<span class="fc" id="L306">            new RejectedTransaction(i, result.getValidationResult().getErrorMessage()));</span>
+      } else {
+<span class="fc" id="L308">        validTransactions.add(transaction);</span>
+
+<span class="fc" id="L310">        long transactionGasUsed = transaction.getGasLimit() - result.getGasRemaining();</span>
+
+<span class="fc" id="L312">        gasUsed += transactionGasUsed;</span>
+<span class="fc" id="L313">        long intrinsicGas =</span>
+            protocolSpec
+<span class="fc" id="L315">                .getGasCalculator()</span>
+<span class="fc" id="L316">                .transactionIntrinsicGasCost(</span>
+<span class="fc" id="L317">                    transaction.getPayload(), transaction.getTo().isEmpty());</span>
+<span class="fc" id="L318">        TransactionReceipt receipt =</span>
+            protocolSpec
+<span class="fc" id="L320">                .getTransactionReceiptFactory()</span>
+<span class="fc" id="L321">                .create(transaction.getType(), result, worldState, gasUsed);</span>
+<span class="fc" id="L322">        tracer.traceEndTransaction(</span>
+            worldStateUpdater,
+            transaction,
+<span class="fc" id="L325">            result.isSuccessful(),</span>
+<span class="fc" id="L326">            result.getOutput(),</span>
+<span class="fc" id="L327">            result.getLogs(),</span>
+            gasUsed - intrinsicGas,
+<span class="fc" id="L329">            timer.elapsed(TimeUnit.NANOSECONDS));</span>
+<span class="fc" id="L330">        Bytes gasUsedInTransaction = Bytes.ofUnsignedLong(transactionGasUsed);</span>
+<span class="fc" id="L331">        receipts.add(receipt);</span>
+<span class="fc" id="L332">        ObjectNode receiptObject = receiptsArray.addObject();</span>
+<span class="fc" id="L333">        receiptObject.put(</span>
+<span class="pc bpc" id="L334" title="1 of 2 branches missed.">            &quot;root&quot;, receipt.getStateRoot() == null ? &quot;0x&quot; : receipt.getStateRoot().toHexString());</span>
+<span class="fc" id="L335">        receiptObject.put(&quot;status&quot;, &quot;0x&quot; + receipt.getStatus());</span>
+<span class="fc" id="L336">        receiptObject.put(&quot;cumulativeGasUsed&quot;, Bytes.ofUnsignedLong(gasUsed).toQuantityHexString());</span>
+<span class="fc" id="L337">        receiptObject.put(&quot;logsBloom&quot;, receipt.getBloomFilter().toHexString());</span>
+<span class="pc bpc" id="L338" title="1 of 2 branches missed.">        if (result.getLogs().isEmpty()) {</span>
+<span class="fc" id="L339">          receiptObject.putNull(&quot;logs&quot;);</span>
+        } else {
+<span class="nc" id="L341">          ArrayNode logsArray = receiptObject.putArray(&quot;logs&quot;);</span>
+<span class="nc bnc" id="L342" title="All 2 branches missed.">          for (Log log : result.getLogs()) {</span>
+<span class="nc" id="L343">            logsArray.addPOJO(log);</span>
+<span class="nc" id="L344">          }</span>
+        }
+<span class="fc" id="L346">        receiptObject.put(&quot;transactionHash&quot;, transaction.getHash().toHexString());</span>
+<span class="fc" id="L347">        receiptObject.put(</span>
+<span class="fc" id="L348">            &quot;contractAddress&quot;, transaction.contractAddress().orElse(Address.ZERO).toHexString());</span>
+<span class="fc" id="L349">        receiptObject.put(&quot;gasUsed&quot;, gasUsedInTransaction.toQuantityHexString());</span>
+<span class="fc" id="L350">        receiptObject.put(&quot;blockHash&quot;, Hash.ZERO.toHexString());</span>
+<span class="fc" id="L351">        receiptObject.put(&quot;transactionIndex&quot;, Bytes.ofUnsignedLong(i).toQuantityHexString());</span>
+      }
+    }
+
+<span class="fc" id="L355">    final ObjectNode resultObject = objectMapper.createObjectNode();</span>
+
+    // block reward
+    // The max production reward was 5 Eth, longs can hold over 18 Eth.
+<span class="fc bfc" id="L359" title="All 6 branches covered.">    if (!validTransactions.isEmpty() &amp;&amp; (rewardString == null || Long.decode(rewardString) &gt; 0)) {</span>
+      Wei reward =
+<span class="fc bfc" id="L361" title="All 2 branches covered.">          (rewardString == null)</span>
+<span class="fc" id="L362">              ? protocolSpec.getBlockReward()</span>
+<span class="fc" id="L363">              : Wei.of(Long.decode(rewardString));</span>
+<span class="fc" id="L364">      worldStateUpdater</span>
+<span class="fc" id="L365">          .getOrCreateSenderAccount(blockHeader.getCoinbase())</span>
+<span class="fc" id="L366">          .incrementBalance(reward);</span>
+    }
+
+    // Invoke the withdrawal processor to handle CL withdrawals.
+<span class="fc bfc" id="L370" title="All 2 branches covered.">    if (!referenceTestEnv.getWithdrawals().isEmpty()) {</span>
+      try {
+<span class="fc" id="L372">        protocolSpec</span>
+<span class="fc" id="L373">            .getWithdrawalsProcessor()</span>
+<span class="fc" id="L374">            .ifPresent(</span>
+<span class="fc" id="L375">                p -&gt; p.processWithdrawals(referenceTestEnv.getWithdrawals(), worldStateUpdater));</span>
+<span class="fc" id="L376">      } catch (RuntimeException re) {</span>
+<span class="fc" id="L377">        resultObject.put(&quot;exception&quot;, re.getMessage());</span>
+<span class="fc" id="L378">      }</span>
+    }
+
+<span class="fc" id="L381">    worldStateUpdater.commit();</span>
+<span class="fc" id="L382">    worldState.persist(blockHeader);</span>
+
+<span class="fc" id="L384">    resultObject.put(&quot;stateRoot&quot;, worldState.rootHash().toHexString());</span>
+<span class="fc" id="L385">    resultObject.put(&quot;txRoot&quot;, BodyValidation.transactionsRoot(validTransactions).toHexString());</span>
+<span class="fc" id="L386">    resultObject.put(&quot;receiptsRoot&quot;, BodyValidation.receiptsRoot(receipts).toHexString());</span>
+<span class="fc" id="L387">    resultObject.put(</span>
+        &quot;logsHash&quot;,
+<span class="fc" id="L389">        Hash.hash(</span>
+<span class="fc" id="L390">                RLP.encode(</span>
+                    out -&gt;
+<span class="fc" id="L392">                        out.writeList(</span>
+<span class="fc" id="L393">                            receipts.stream().flatMap(r -&gt; r.getLogsList().stream()).toList(),</span>
+                            Log::writeTo)))
+<span class="fc" id="L395">            .toHexString());</span>
+<span class="fc" id="L396">    resultObject.put(&quot;logsBloom&quot;, BodyValidation.logsBloom(receipts).toHexString());</span>
+<span class="fc" id="L397">    resultObject.set(&quot;receipts&quot;, receiptsArray);</span>
+<span class="fc bfc" id="L398" title="All 2 branches covered.">    if (!invalidTransactions.isEmpty()) {</span>
+<span class="fc" id="L399">      resultObject.putPOJO(&quot;rejected&quot;, invalidTransactions);</span>
+    }
+
+<span class="fc" id="L402">    resultObject.put(</span>
+        &quot;currentDifficulty&quot;,
+<span class="fc bfc" id="L404" title="All 2 branches covered.">        !blockHeader.getDifficultyBytes().trimLeadingZeros().isEmpty()</span>
+<span class="fc" id="L405">            ? blockHeader.getDifficultyBytes().toShortHexString()</span>
+<span class="fc" id="L406">            : null);</span>
+<span class="fc" id="L407">    resultObject.put(&quot;gasUsed&quot;, Bytes.ofUnsignedLong(gasUsed).toQuantityHexString());</span>
+<span class="fc" id="L408">    blockHeader</span>
+<span class="fc" id="L409">        .getBaseFee()</span>
+<span class="fc" id="L410">        .ifPresent(bf -&gt; resultObject.put(&quot;currentBaseFee&quot;, bf.toQuantityHexString()));</span>
+<span class="fc" id="L411">    blockHeader</span>
+<span class="fc" id="L412">        .getWithdrawalsRoot()</span>
+<span class="fc" id="L413">        .ifPresent(wr -&gt; resultObject.put(&quot;withdrawalsRoot&quot;, wr.toHexString()));</span>
+<span class="fc" id="L414">    blockHeader</span>
+<span class="fc" id="L415">        .getBlobGasUsed()</span>
+<span class="fc" id="L416">        .ifPresentOrElse(</span>
+<span class="fc" id="L417">            bgu -&gt; resultObject.put(&quot;blobGasUsed&quot;, Bytes.ofUnsignedLong(bgu).toQuantityHexString()),</span>
+            () -&gt;
+<span class="fc" id="L419">                blockHeader</span>
+<span class="fc" id="L420">                    .getExcessBlobGas()</span>
+<span class="fc" id="L421">                    .ifPresent(ebg -&gt; resultObject.put(&quot;blobGasUsed&quot;, &quot;0x0&quot;)));</span>
+<span class="fc" id="L422">    blockHeader</span>
+<span class="fc" id="L423">        .getExcessBlobGas()</span>
+<span class="fc" id="L424">        .ifPresent(ebg -&gt; resultObject.put(&quot;currentExcessBlobGas&quot;, ebg.toShortHexString()));</span>
+
+<span class="fc" id="L426">    ObjectNode allocObject = objectMapper.createObjectNode();</span>
+<span class="fc" id="L427">    worldState</span>
+<span class="fc" id="L428">        .streamAccounts(Bytes32.ZERO, Integer.MAX_VALUE)</span>
+<span class="fc" id="L429">        .sorted(Comparator.comparing(o -&gt; o.getAddress().get().toHexString()))</span>
+<span class="fc" id="L430">        .forEach(</span>
+            account -&gt; {
+<span class="fc" id="L432">              ObjectNode accountObject =</span>
+<span class="fc" id="L433">                  allocObject.putObject(</span>
+<span class="fc" id="L434">                      account.getAddress().map(Address::toHexString).orElse(&quot;0x&quot;));</span>
+<span class="pc bpc" id="L435" title="1 of 4 branches missed.">              if (account.getCode() != null &amp;&amp; !account.getCode().isEmpty()) {</span>
+<span class="fc" id="L436">                accountObject.put(&quot;code&quot;, account.getCode().toHexString());</span>
+              }
+<span class="fc" id="L438">              NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntries =</span>
+<span class="fc" id="L439">                  account.storageEntriesFrom(Bytes32.ZERO, Integer.MAX_VALUE);</span>
+<span class="fc bfc" id="L440" title="All 2 branches covered.">              if (!storageEntries.isEmpty()) {</span>
+<span class="fc" id="L441">                ObjectNode storageObject = accountObject.putObject(&quot;storage&quot;);</span>
+<span class="fc" id="L442">                storageEntries.values().stream()</span>
+<span class="fc" id="L443">                    .sorted(Comparator.comparing(a -&gt; a.getKey().get()))</span>
+<span class="fc" id="L444">                    .forEach(</span>
+                        accountStorageEntry -&gt;
+<span class="fc" id="L446">                            storageObject.put(</span>
+<span class="fc" id="L447">                                accountStorageEntry.getKey().map(UInt256::toHexString).orElse(&quot;0x&quot;),</span>
+<span class="fc" id="L448">                                accountStorageEntry.getValue().toHexString()));</span>
+              }
+<span class="fc" id="L450">              accountObject.put(&quot;balance&quot;, account.getBalance().toShortHexString());</span>
+<span class="fc bfc" id="L451" title="All 2 branches covered.">              if (account.getNonce() &gt; 0) {</span>
+<span class="fc" id="L452">                accountObject.put(</span>
+<span class="fc" id="L453">                    &quot;nonce&quot;, Bytes.ofUnsignedLong(account.getNonce()).toShortHexString());</span>
+              }
+<span class="fc" id="L455">            });</span>
+
+<span class="fc" id="L457">    BytesValueRLPOutput rlpOut = new BytesValueRLPOutput();</span>
+<span class="fc" id="L458">    rlpOut.writeList(transactions, Transaction::writeTo);</span>
+<span class="fc" id="L459">    TextNode bodyBytes = TextNode.valueOf(rlpOut.encoded().toHexString());</span>
+<span class="fc" id="L460">    return new T8nResult(allocObject, bodyBytes, resultObject);</span>
+  }
+
+  interface TracerManager {
+    OperationTracer getManagedTracer(int txIndex, Hash txHash) throws Exception;
+
+    void disposeTracer(OperationTracer tracer) throws IOException;
+  }
+
+<span class="fc" id="L469">  @SuppressWarnings(&quot;unused&quot;)</span>
+<span class="fc" id="L470">  record T8nResult(ObjectNode allocObject, TextNode bodyBytes, ObjectNode resultObject) {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

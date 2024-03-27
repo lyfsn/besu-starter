@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IbftExtraDataCodec.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.ibft</a> &gt; <span class="el_source">IbftExtraDataCodec.java</span></div><h1>IbftExtraDataCodec.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.ibft;
+
+import static org.hyperledger.besu.consensus.common.bft.Vote.ADD_BYTE_VALUE;
+import static org.hyperledger.besu.consensus.common.bft.Vote.DROP_BYTE_VALUE;
+
+import org.hyperledger.besu.consensus.common.bft.BftExtraData;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.common.bft.Vote;
+import org.hyperledger.besu.consensus.common.validator.VoteType;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.collect.ImmutableBiMap;
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * Represents the data structure stored in the extraData field of the BlockHeader used when
+ * operating under an BFT consensus mechanism.
+ */
+<span class="fc" id="L45">public class IbftExtraDataCodec extends BftExtraDataCodec {</span>
+<span class="fc" id="L46">  private static final ImmutableBiMap&lt;VoteType, Byte&gt; voteToValue =</span>
+<span class="fc" id="L47">      ImmutableBiMap.of(</span>
+<span class="fc" id="L48">          VoteType.ADD, ADD_BYTE_VALUE,</span>
+<span class="fc" id="L49">          VoteType.DROP, DROP_BYTE_VALUE);</span>
+
+  /**
+   * Encode from addresses.
+   *
+   * @param addresses the addresses
+   * @return the bytes
+   */
+  public static Bytes encodeFromAddresses(final Collection&lt;Address&gt; addresses) {
+<span class="fc" id="L58">    return new IbftExtraDataCodec()</span>
+<span class="fc" id="L59">        .encode(</span>
+            new BftExtraData(
+<span class="fc" id="L61">                Bytes.wrap(new byte[EXTRA_VANITY_LENGTH]),</span>
+<span class="fc" id="L62">                Collections.emptyList(),</span>
+<span class="fc" id="L63">                Optional.empty(),</span>
+                0,
+                addresses));
+  }
+
+  /**
+   * Create genesis extra data string.
+   *
+   * @param validators the validators
+   * @return the string
+   */
+  public static String createGenesisExtraDataString(final List&lt;Address&gt; validators) {
+<span class="fc" id="L75">    return encodeFromAddresses(validators).toString();</span>
+  }
+
+  @Override
+  public BftExtraData decodeRaw(final Bytes input) {
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (input.isEmpty()) {</span>
+<span class="fc" id="L81">      throw new IllegalArgumentException(&quot;Invalid Bytes supplied - Bft Extra Data required.&quot;);</span>
+    }
+
+<span class="fc" id="L84">    final RLPInput rlpInput = new BytesValueRLPInput(input, false);</span>
+
+<span class="fc" id="L86">    rlpInput.enterList(); // This accounts for the &quot;root node&quot; which contains BFT data items.</span>
+<span class="fc" id="L87">    final Bytes vanityData = rlpInput.readBytes();</span>
+<span class="fc" id="L88">    final List&lt;Address&gt; validators = rlpInput.readList(Address::readFrom);</span>
+    final Optional&lt;Vote&gt; vote;
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (rlpInput.nextIsNull()) {</span>
+<span class="fc" id="L91">      vote = Optional.empty();</span>
+<span class="fc" id="L92">      rlpInput.skipNext();</span>
+    } else {
+<span class="fc" id="L94">      vote = Optional.of(decodeVote(rlpInput));</span>
+    }
+<span class="fc" id="L96">    final int round = rlpInput.readInt();</span>
+<span class="fc" id="L97">    final List&lt;SECPSignature&gt; seals =</span>
+<span class="fc" id="L98">        rlpInput.readList(</span>
+<span class="fc" id="L99">            rlp -&gt; SignatureAlgorithmFactory.getInstance().decodeSignature(rlp.readBytes()));</span>
+<span class="fc" id="L100">    rlpInput.leaveList();</span>
+
+<span class="fc" id="L102">    return new BftExtraData(vanityData, seals, vote, round, validators);</span>
+  }
+
+  @Override
+  protected Bytes encode(final BftExtraData bftExtraData, final EncodingType encodingType) {
+<span class="fc" id="L107">    final BytesValueRLPOutput encoder = new BytesValueRLPOutput();</span>
+<span class="fc" id="L108">    encoder.startList();</span>
+<span class="fc" id="L109">    encoder.writeBytes(bftExtraData.getVanityData());</span>
+<span class="fc" id="L110">    encoder.writeList(bftExtraData.getValidators(), (validator, rlp) -&gt; rlp.writeBytes(validator));</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (bftExtraData.getVote().isPresent()) {</span>
+<span class="fc" id="L112">      encodeVote(encoder, bftExtraData.getVote().get());</span>
+    } else {
+<span class="fc" id="L114">      encoder.writeNull();</span>
+    }
+
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    if (encodingType != EncodingType.EXCLUDE_COMMIT_SEALS_AND_ROUND_NUMBER) {</span>
+<span class="fc" id="L118">      encoder.writeInt(bftExtraData.getRound());</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">      if (encodingType != EncodingType.EXCLUDE_COMMIT_SEALS) {</span>
+<span class="fc" id="L120">        encoder.writeList(</span>
+<span class="fc" id="L121">            bftExtraData.getSeals(), (committer, rlp) -&gt; rlp.writeBytes(committer.encodedBytes()));</span>
+      }
+    }
+<span class="fc" id="L124">    encoder.endList();</span>
+
+<span class="fc" id="L126">    return encoder.encoded();</span>
+  }
+
+  private void encodeVote(final RLPOutput rlpOutput, final Vote vote) {
+<span class="pc bpc" id="L130" title="1 of 2 branches missed.">    final VoteType voteType = vote.isAuth() ? VoteType.ADD : VoteType.DROP;</span>
+<span class="fc" id="L131">    rlpOutput.startList();</span>
+<span class="fc" id="L132">    rlpOutput.writeBytes(vote.getRecipient());</span>
+<span class="fc" id="L133">    rlpOutput.writeByte(voteToValue.get(voteType));</span>
+<span class="fc" id="L134">    rlpOutput.endList();</span>
+<span class="fc" id="L135">  }</span>
+
+  private Vote decodeVote(final RLPInput rlpInput) {
+<span class="fc" id="L138">    rlpInput.enterList();</span>
+<span class="fc" id="L139">    final Address recipient = Address.readFrom(rlpInput);</span>
+<span class="fc" id="L140">    final VoteType vote = voteToValue.inverse().get(rlpInput.readByte());</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">    if (vote == null) {</span>
+<span class="fc" id="L142">      throw new RLPException(&quot;Vote field was of an incorrect binary value.&quot;);</span>
+    }
+<span class="fc" id="L144">    rlpInput.leaveList();</span>
+
+<span class="fc" id="L146">    return new Vote(recipient, vote);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

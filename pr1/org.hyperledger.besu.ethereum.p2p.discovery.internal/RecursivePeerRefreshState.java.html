@@ -1,0 +1,391 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RecursivePeerRefreshState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">RecursivePeerRefreshState.java</span></div><h1>RecursivePeerRefreshState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.PeerDiscoveryStatus;
+
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RecursivePeerRefreshState {
+<span class="fc" id="L36">  private static final Logger LOG = LoggerFactory.getLogger(RecursivePeerRefreshState.class);</span>
+  private static final int MAX_CONCURRENT_REQUESTS = 3;
+  private Bytes target;
+  private final PeerDiscoveryPermissions peerPermissions;
+  private final PeerTable peerTable;
+  private final DiscoveryPeer localPeer;
+
+  private final BondingAgent bondingAgent;
+  private final FindNeighbourDispatcher findNeighbourDispatcher;
+<span class="fc" id="L45">  private Optional&lt;RoundTimeout&gt; currentRoundTimeout = Optional.empty();</span>
+<span class="fc" id="L46">  private boolean iterativeSearchInProgress = false;</span>
+  private final int maxRounds;
+  private int currentRound;
+
+<span class="fc" id="L50">  private final NavigableMap&lt;Bytes, MetadataPeer&gt; oneTrueMap = new TreeMap&lt;&gt;();</span>
+
+  private final TimerUtil timerUtil;
+  private final int timeoutPeriodInSeconds;
+
+  List&lt;DiscoveryPeer&gt; initialPeers;
+
+  RecursivePeerRefreshState(
+      final BondingAgent bondingAgent,
+      final FindNeighbourDispatcher neighborFinder,
+      final TimerUtil timerUtil,
+      final DiscoveryPeer localPeer,
+      final PeerTable peerTable,
+      final PeerDiscoveryPermissions peerPermissions,
+      final int timeoutPeriodInSeconds,
+<span class="fc" id="L65">      final int maxRounds) {</span>
+<span class="fc" id="L66">    this.bondingAgent = bondingAgent;</span>
+<span class="fc" id="L67">    this.findNeighbourDispatcher = neighborFinder;</span>
+<span class="fc" id="L68">    this.timerUtil = timerUtil;</span>
+<span class="fc" id="L69">    this.localPeer = localPeer;</span>
+<span class="fc" id="L70">    this.peerTable = peerTable;</span>
+<span class="fc" id="L71">    this.peerPermissions = peerPermissions;</span>
+<span class="fc" id="L72">    this.timeoutPeriodInSeconds = timeoutPeriodInSeconds;</span>
+<span class="fc" id="L73">    this.maxRounds = maxRounds;</span>
+<span class="fc" id="L74">  }</span>
+
+  void start(final List&lt;DiscoveryPeer&gt; initialPeers, final Bytes target) {
+    // TODO check this flag earlier
+<span class="pc bpc" id="L78" title="1 of 2 branches missed.">    if (iterativeSearchInProgress) {</span>
+<span class="nc" id="L79">      LOG.debug(</span>
+<span class="nc" id="L80">          &quot;Skip peer search because previous search ({}) is still in progress.&quot;, currentRound);</span>
+<span class="nc" id="L81">      return;</span>
+    }
+<span class="fc" id="L83">    LOG.debug(&quot;Start peer search.&quot;);</span>
+<span class="fc" id="L84">    iterativeSearchInProgress = true;</span>
+<span class="fc" id="L85">    this.target = target;</span>
+<span class="fc" id="L86">    currentRoundTimeout.ifPresent(RoundTimeout::cancelTimeout);</span>
+<span class="fc" id="L87">    currentRound = 0;</span>
+<span class="fc" id="L88">    oneTrueMap.clear();</span>
+<span class="fc" id="L89">    addInitialPeers(initialPeers);</span>
+<span class="fc" id="L90">    bondingInitiateRound();</span>
+<span class="fc" id="L91">  }</span>
+
+  private boolean reachedMaximumNumberOfRounds() {
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">    return currentRound &gt;= maxRounds;</span>
+  }
+
+  private void addInitialPeers(final List&lt;DiscoveryPeer&gt; initialPeers) {
+<span class="fc" id="L98">    LOG.debug(&quot;{} INITIAL PEERS: {}&quot;, initialPeers.size(), initialPeers);</span>
+<span class="fc" id="L99">    this.initialPeers = initialPeers;</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    for (final DiscoveryPeer peer : initialPeers) {</span>
+<span class="fc" id="L101">      final MetadataPeer iterationParticipant =</span>
+<span class="fc" id="L102">          new MetadataPeer(peer, PeerDistanceCalculator.distance(target, peer.getId()));</span>
+<span class="fc" id="L103">      oneTrueMap.put(peer.getId(), iterationParticipant);</span>
+<span class="fc" id="L104">    }</span>
+<span class="fc" id="L105">  }</span>
+
+  private void bondingInitiateRound() {
+<span class="fc" id="L108">    currentRoundTimeout.ifPresent(RoundTimeout::cancelTimeout);</span>
+<span class="fc" id="L109">    final List&lt;MetadataPeer&gt; candidates = bondingRoundCandidates();</span>
+<span class="fc bfc" id="L110" title="All 2 branches covered.">    if (candidates.isEmpty()) {</span>
+      // All peers are already bonded (or failed to bond) so immediately switch to neighbours round
+<span class="fc" id="L112">      LOG.debug(&quot;Skipping bonding round because no candidates are available&quot;);</span>
+<span class="fc" id="L113">      neighboursInitiateRound();</span>
+<span class="fc" id="L114">      return;</span>
+    }
+<span class="fc" id="L116">    LOG.debug(&quot;Initiating bonding round with {} candidates&quot;, candidates.size());</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    for (final MetadataPeer peer : candidates) {</span>
+<span class="fc" id="L118">      peer.bondingStarted();</span>
+<span class="fc" id="L119">      bondingAgent.performBonding(peer.getPeer());</span>
+<span class="fc" id="L120">    }</span>
+<span class="fc" id="L121">    currentRoundTimeout = Optional.of(scheduleTimeout(this::bondingCancelOutstandingRequests));</span>
+<span class="fc" id="L122">  }</span>
+
+  private RoundTimeout scheduleTimeout(final Runnable onTimeout) {
+<span class="fc" id="L125">    final AtomicBoolean timeoutCancelled = new AtomicBoolean(false);</span>
+<span class="fc" id="L126">    final long timerId =</span>
+<span class="fc" id="L127">        timerUtil.setTimer(</span>
+<span class="fc" id="L128">            TimeUnit.SECONDS.toMillis(this.timeoutPeriodInSeconds),</span>
+<span class="fc" id="L129">            () -&gt; performIfNotCancelled(onTimeout, timeoutCancelled));</span>
+<span class="fc" id="L130">    return new RoundTimeout(timeoutCancelled, timerId);</span>
+  }
+
+  private void performIfNotCancelled(final Runnable action, final AtomicBoolean cancelled) {
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">    if (!cancelled.get()) {</span>
+<span class="fc" id="L135">      action.run();</span>
+    }
+<span class="fc" id="L137">  }</span>
+
+  private void bondingCancelOutstandingRequests() {
+<span class="fc" id="L140">    LOG.debug(&quot;Bonding round timed out&quot;);</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">    for (final Map.Entry&lt;Bytes, MetadataPeer&gt; entry : oneTrueMap.entrySet()) {</span>
+<span class="fc" id="L142">      final MetadataPeer metadataPeer = entry.getValue();</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">      if (metadataPeer.hasOutstandingBondRequest()) {</span>
+        // We're setting bonding to &quot;complete&quot; here, by &quot;cancelling&quot; the outstanding request.
+<span class="fc" id="L145">        metadataPeer.bondingComplete();</span>
+      }
+<span class="fc" id="L147">    }</span>
+<span class="fc" id="L148">    neighboursInitiateRound();</span>
+<span class="fc" id="L149">  }</span>
+
+  private void neighboursInitiateRound() {
+<span class="fc" id="L152">    currentRoundTimeout.ifPresent(RoundTimeout::cancelTimeout);</span>
+<span class="fc" id="L153">    final List&lt;MetadataPeer&gt; candidates = neighboursRoundCandidates();</span>
+<span class="pc bpc" id="L154" title="1 of 4 branches missed.">    if (candidates.isEmpty() || reachedMaximumNumberOfRounds()) {</span>
+<span class="fc" id="L155">      LOG.debug(</span>
+          &quot;Iterative peer search complete.  {} peers processed over {} rounds.&quot;,
+<span class="fc" id="L157">          oneTrueMap.size(),</span>
+<span class="fc" id="L158">          currentRound + 1);</span>
+<span class="fc" id="L159">      iterativeSearchInProgress = false;</span>
+<span class="fc" id="L160">      return;</span>
+    }
+<span class="fc" id="L162">    LOG.debug(</span>
+        &quot;Initiating neighbours round with {} candidates from {} tracked nodes&quot;,
+<span class="fc" id="L164">        candidates.size(),</span>
+<span class="fc" id="L165">        oneTrueMap.size());</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    for (final MetadataPeer peer : candidates) {</span>
+<span class="fc" id="L167">      peer.findNeighboursStarted();</span>
+<span class="fc" id="L168">      findNeighbourDispatcher.findNeighbours(peer.getPeer(), target);</span>
+<span class="fc" id="L169">    }</span>
+<span class="fc" id="L170">    currentRoundTimeout = Optional.of(scheduleTimeout(this::neighboursCancelOutstandingRequests));</span>
+<span class="fc" id="L171">    currentRound++;</span>
+<span class="fc" id="L172">  }</span>
+
+  private void neighboursCancelOutstandingRequests() {
+<span class="fc" id="L175">    LOG.debug(&quot;Neighbours round timed out&quot;);</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">    for (final Map.Entry&lt;Bytes, MetadataPeer&gt; entry : oneTrueMap.entrySet()) {</span>
+<span class="fc" id="L177">      final MetadataPeer metadataPeer = entry.getValue();</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">      if (metadataPeer.hasOutstandingNeighboursRequest()) {</span>
+<span class="fc" id="L179">        metadataPeer.findNeighboursFailed();</span>
+      }
+<span class="fc" id="L181">    }</span>
+<span class="fc" id="L182">    bondingInitiateRound();</span>
+<span class="fc" id="L183">  }</span>
+
+  private boolean satisfiesMapAdditionCriteria(final DiscoveryPeer discoPeer) {
+<span class="fc bfc" id="L186" title="All 2 branches covered.">    return !oneTrueMap.containsKey(discoPeer.getId())</span>
+<span class="pc bpc" id="L187" title="2 of 4 branches missed.">        &amp;&amp; (initialPeers.contains(discoPeer) || !peerTable.get(discoPeer).isPresent())</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">        &amp;&amp; !discoPeer.getId().equals(localPeer.getId());</span>
+  }
+
+  void onNeighboursReceived(final DiscoveryPeer peer, final List&lt;DiscoveryPeer&gt; peers) {
+<span class="fc" id="L192">    final MetadataPeer metadataPeer = oneTrueMap.get(peer.getId());</span>
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">    if (metadataPeer == null) {</span>
+<span class="nc" id="L194">      return;</span>
+    }
+<span class="fc" id="L196">    LOG.debug(</span>
+        &quot;Received neighbours packet with {} neighbours from {}&quot;,
+<span class="fc" id="L198">        peers.size(),</span>
+<span class="fc" id="L199">        peer.getEnodeURLString());</span>
+<span class="fc bfc" id="L200" title="All 2 branches covered.">    for (final DiscoveryPeer receivedDiscoPeer : peers) {</span>
+<span class="fc bfc" id="L201" title="All 2 branches covered.">      if (satisfiesMapAdditionCriteria(receivedDiscoPeer)) {</span>
+<span class="fc" id="L202">        final MetadataPeer receivedMetadataPeer =</span>
+            new MetadataPeer(
+                receivedDiscoPeer,
+<span class="fc" id="L205">                PeerDistanceCalculator.distance(target, receivedDiscoPeer.getId()));</span>
+<span class="fc" id="L206">        oneTrueMap.put(receivedDiscoPeer.getId(), receivedMetadataPeer);</span>
+      }
+<span class="fc" id="L208">    }</span>
+
+<span class="fc bfc" id="L210" title="All 2 branches covered.">    if (!metadataPeer.hasOutstandingNeighboursRequest()) {</span>
+<span class="fc" id="L211">      return;</span>
+    }
+<span class="fc" id="L213">    metadataPeer.findNeighboursComplete();</span>
+<span class="fc bfc" id="L214" title="All 2 branches covered.">    if (neighboursRoundTermination()) {</span>
+<span class="fc" id="L215">      bondingInitiateRound();</span>
+    }
+<span class="fc" id="L217">  }</span>
+
+  void onBondingComplete(final DiscoveryPeer peer) {
+<span class="fc" id="L220">    final MetadataPeer iterationParticipant = oneTrueMap.get(peer.getId());</span>
+<span class="fc bfc" id="L221" title="All 2 branches covered.">    if (iterationParticipant == null) {</span>
+<span class="fc" id="L222">      return;</span>
+    }
+<span class="fc bfc" id="L224" title="All 2 branches covered.">    if (!iterationParticipant.hasOutstandingBondRequest()) {</span>
+<span class="fc" id="L225">      return;</span>
+    }
+<span class="fc" id="L227">    iterationParticipant.bondingComplete();</span>
+<span class="fc bfc" id="L228" title="All 2 branches covered.">    if (bondingRoundTermination()) {</span>
+<span class="fc" id="L229">      neighboursInitiateRound();</span>
+    }
+<span class="fc" id="L231">  }</span>
+
+  private boolean neighboursRoundTermination() {
+<span class="fc bfc" id="L234" title="All 2 branches covered.">    for (final Map.Entry&lt;Bytes, MetadataPeer&gt; entry : oneTrueMap.entrySet()) {</span>
+<span class="fc" id="L235">      final MetadataPeer metadataPeer = entry.getValue();</span>
+<span class="fc bfc" id="L236" title="All 2 branches covered.">      if (metadataPeer.hasOutstandingNeighboursRequest()) {</span>
+<span class="fc" id="L237">        return false;</span>
+      }
+<span class="fc" id="L239">    }</span>
+<span class="fc" id="L240">    return true;</span>
+  }
+
+  private boolean bondingRoundTermination() {
+<span class="fc bfc" id="L244" title="All 2 branches covered.">    for (final Map.Entry&lt;Bytes, MetadataPeer&gt; entry : oneTrueMap.entrySet()) {</span>
+<span class="fc" id="L245">      final MetadataPeer metadataPeer = entry.getValue();</span>
+<span class="fc bfc" id="L246" title="All 2 branches covered.">      if (metadataPeer.hasOutstandingBondRequest()) {</span>
+<span class="fc" id="L247">        return false;</span>
+      }
+<span class="fc" id="L249">    }</span>
+<span class="fc" id="L250">    return true;</span>
+  }
+
+  private List&lt;MetadataPeer&gt; bondingRoundCandidates() {
+<span class="fc" id="L254">    return oneTrueMap.values().stream()</span>
+<span class="fc" id="L255">        .filter(MetadataPeer::isBondingCandidate)</span>
+<span class="fc" id="L256">        .filter(p -&gt; peerPermissions.allowOutboundBonding(p.getPeer()))</span>
+<span class="fc" id="L257">        .collect(Collectors.toList());</span>
+  }
+
+  private List&lt;MetadataPeer&gt; neighboursRoundCandidates() {
+<span class="fc" id="L261">    return oneTrueMap.values().stream()</span>
+<span class="fc" id="L262">        .filter(MetadataPeer::isNeighboursRoundCandidate)</span>
+<span class="fc" id="L263">        .filter(p -&gt; peerPermissions.allowOutboundNeighborsRequest(p.getPeer()))</span>
+<span class="fc" id="L264">        .limit(MAX_CONCURRENT_REQUESTS)</span>
+<span class="fc" id="L265">        .collect(Collectors.toList());</span>
+  }
+
+  @VisibleForTesting
+  void cancel() {
+<span class="fc" id="L270">    iterativeSearchInProgress = false;</span>
+<span class="fc" id="L271">  }</span>
+
+  public static class MetadataPeer implements Comparable&lt;MetadataPeer&gt; {
+
+    DiscoveryPeer peer;
+    int distance;
+
+<span class="fc" id="L278">    boolean bondingStarted = false;</span>
+<span class="fc" id="L279">    boolean bondingComplete = false;</span>
+<span class="fc" id="L280">    boolean findNeighboursStarted = false;</span>
+<span class="fc" id="L281">    boolean findNeighboursComplete = false;</span>
+
+<span class="fc" id="L283">    MetadataPeer(final DiscoveryPeer peer, final int distance) {</span>
+<span class="fc" id="L284">      this.peer = peer;</span>
+<span class="fc" id="L285">      this.distance = distance;</span>
+<span class="fc" id="L286">    }</span>
+
+    DiscoveryPeer getPeer() {
+<span class="fc" id="L289">      return peer;</span>
+    }
+
+    void bondingStarted() {
+<span class="fc" id="L293">      this.bondingStarted = true;</span>
+<span class="fc" id="L294">    }</span>
+
+    void bondingComplete() {
+<span class="fc" id="L297">      this.bondingComplete = true;</span>
+<span class="fc" id="L298">    }</span>
+
+    void findNeighboursStarted() {
+<span class="fc" id="L301">      this.findNeighboursStarted = true;</span>
+<span class="fc" id="L302">    }</span>
+
+    void findNeighboursComplete() {
+<span class="fc" id="L305">      this.findNeighboursComplete = true;</span>
+<span class="fc" id="L306">    }</span>
+
+    void findNeighboursFailed() {
+<span class="fc" id="L309">      this.findNeighboursComplete = true;</span>
+<span class="fc" id="L310">    }</span>
+
+    private boolean isBondingCandidate() {
+<span class="pc bpc" id="L313" title="1 of 6 branches missed.">      return !bondingComplete &amp;&amp; !bondingStarted &amp;&amp; peer.getStatus() == PeerDiscoveryStatus.KNOWN;</span>
+    }
+
+    private boolean isNeighboursRoundCandidate() {
+<span class="fc bfc" id="L317" title="All 4 branches covered.">      return peer.getStatus() == PeerDiscoveryStatus.BONDED &amp;&amp; !findNeighboursStarted;</span>
+    }
+
+    private boolean hasOutstandingBondRequest() {
+<span class="fc bfc" id="L321" title="All 4 branches covered.">      return bondingStarted &amp;&amp; !bondingComplete;</span>
+    }
+
+    private boolean hasOutstandingNeighboursRequest() {
+<span class="fc bfc" id="L325" title="All 4 branches covered.">      return findNeighboursStarted &amp;&amp; !findNeighboursComplete;</span>
+    }
+
+    @Override
+    public int compareTo(final MetadataPeer o) {
+<span class="nc bnc" id="L330" title="All 2 branches missed.">      if (this.distance &gt; o.distance) {</span>
+<span class="nc" id="L331">        return 1;</span>
+      }
+<span class="nc" id="L333">      return -1;</span>
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+<span class="nc bnc" id="L338" title="All 2 branches missed.">      if (this == o) return true;</span>
+<span class="nc bnc" id="L339" title="All 4 branches missed.">      if (o == null || getClass() != o.getClass()) return false;</span>
+<span class="nc" id="L340">      final MetadataPeer that = (MetadataPeer) o;</span>
+<span class="nc" id="L341">      return Objects.equals(peer.getId(), that.peer.getId());</span>
+    }
+
+    @Override
+    public int hashCode() {
+<span class="nc" id="L346">      return Objects.hash(peer.getId());</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L351">      return peer + &quot;: &quot; + distance;</span>
+    }
+  }
+
+  @FunctionalInterface
+  public interface FindNeighbourDispatcher {
+    /**
+     * Sends a FIND_NEIGHBORS message to a {@link DiscoveryPeer}, in search of a target value.
+     *
+     * @param peer the peer to interrogate
+     * @param target the target node ID to find
+     */
+    void findNeighbours(final DiscoveryPeer peer, final Bytes target);
+  }
+
+  @FunctionalInterface
+  public interface BondingAgent {
+    /**
+     * Initiates a bonding PING-PONG cycle with a peer.
+     *
+     * @param peer The targeted peer.
+     */
+    void performBonding(final DiscoveryPeer peer);
+  }
+
+  private class RoundTimeout {
+    private final AtomicBoolean timeoutCancelled;
+    private final long timerId;
+
+<span class="fc" id="L380">    private RoundTimeout(final AtomicBoolean timeoutCancelled, final long timerId) {</span>
+<span class="fc" id="L381">      this.timeoutCancelled = timeoutCancelled;</span>
+<span class="fc" id="L382">      this.timerId = timerId;</span>
+<span class="fc" id="L383">    }</span>
+
+    public void cancelTimeout() {
+<span class="fc" id="L386">      timerUtil.cancelTimer(timerId);</span>
+<span class="fc" id="L387">      timeoutCancelled.set(true);</span>
+<span class="fc" id="L388">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

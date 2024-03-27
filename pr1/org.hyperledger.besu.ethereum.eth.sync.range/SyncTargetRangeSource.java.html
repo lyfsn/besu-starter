@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SyncTargetRangeSource.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.range</a> &gt; <span class="el_source">SyncTargetRangeSource.java</span></div><h1>SyncTargetRangeSource.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.range;
+
+import static java.util.Collections.emptyList;
+import static java.util.concurrent.CompletableFuture.completedFuture;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.fullsync.SyncTerminationCondition;
+
+import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class SyncTargetRangeSource implements Iterator&lt;SyncTargetRange&gt; {
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(SyncTargetRangeSource.class);</span>
+<span class="fc" id="L41">  private static final Duration RETRY_DELAY_DURATION = Duration.ofSeconds(2);</span>
+
+  private final RangeHeadersFetcher fetcher;
+  private final SyncTargetChecker syncTargetChecker;
+  private final EthPeer peer;
+  private final EthScheduler ethScheduler;
+  private final int rangeTimeoutsPermitted;
+  private final Duration newHeaderWaitDuration;
+  private final SyncTerminationCondition terminationCondition;
+
+<span class="fc" id="L51">  private final Queue&lt;SyncTargetRange&gt; retrievedRanges = new ArrayDeque&lt;&gt;();</span>
+  private BlockHeader lastRangeEnd;
+<span class="fc" id="L53">  private boolean reachedEndOfRanges = false;</span>
+<span class="fc" id="L54">  private Optional&lt;CompletableFuture&lt;List&lt;BlockHeader&gt;&gt;&gt; pendingRequests = Optional.empty();</span>
+<span class="fc" id="L55">  private int requestFailureCount = 0;</span>
+
+  public SyncTargetRangeSource(
+      final RangeHeadersFetcher fetcher,
+      final SyncTargetChecker syncTargetChecker,
+      final EthScheduler ethScheduler,
+      final EthPeer peer,
+      final BlockHeader commonAncestor,
+      final int rangeTimeoutsPermitted,
+      final SyncTerminationCondition terminationCondition) {
+<span class="fc" id="L65">    this(</span>
+        fetcher,
+        syncTargetChecker,
+        ethScheduler,
+        peer,
+        commonAncestor,
+        rangeTimeoutsPermitted,
+<span class="fc" id="L72">        Duration.ofSeconds(5),</span>
+        terminationCondition);
+<span class="fc" id="L74">  }</span>
+
+  public SyncTargetRangeSource(
+      final RangeHeadersFetcher fetcher,
+      final SyncTargetChecker syncTargetChecker,
+      final EthScheduler ethScheduler,
+      final EthPeer peer,
+      final BlockHeader commonAncestor,
+      final int rangeTimeoutsPermitted,
+      final Duration newHeaderWaitDuration,
+<span class="fc" id="L84">      final SyncTerminationCondition terminationCondition) {</span>
+<span class="fc" id="L85">    this.fetcher = fetcher;</span>
+<span class="fc" id="L86">    this.syncTargetChecker = syncTargetChecker;</span>
+<span class="fc" id="L87">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L88">    this.peer = peer;</span>
+<span class="fc" id="L89">    this.lastRangeEnd = commonAncestor;</span>
+<span class="fc" id="L90">    this.rangeTimeoutsPermitted = rangeTimeoutsPermitted;</span>
+<span class="fc" id="L91">    this.newHeaderWaitDuration = newHeaderWaitDuration;</span>
+<span class="fc" id="L92">    this.terminationCondition = terminationCondition;</span>
+<span class="fc" id="L93">  }</span>
+
+  @Override
+  public boolean hasNext() {
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">    return terminationCondition.shouldContinueDownload()</span>
+<span class="fc bfc" id="L98" title="All 4 branches covered.">        &amp;&amp; (!retrievedRanges.isEmpty()</span>
+            || (requestFailureCount &lt; rangeTimeoutsPermitted
+<span class="fc bfc" id="L100" title="All 4 branches covered.">                &amp;&amp; syncTargetChecker.shouldContinueDownloadingFromSyncTarget(peer, lastRangeEnd)</span>
+                &amp;&amp; !reachedEndOfRanges));
+  }
+
+  @Override
+  public SyncTargetRange next() {
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (!retrievedRanges.isEmpty()) {</span>
+<span class="fc" id="L107">      return retrievedRanges.poll();</span>
+    }
+<span class="fc bfc" id="L109" title="All 2 branches covered.">    if (pendingRequests.isPresent()) {</span>
+<span class="fc" id="L110">      return getRangeFromPendingRequest();</span>
+    }
+<span class="fc bfc" id="L112" title="All 2 branches covered.">    if (reachedEndOfRanges) {</span>
+<span class="fc" id="L113">      return null;</span>
+    }
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    if (fetcher.nextRangeEndsAtChainHead(peer, lastRangeEnd)) {</span>
+<span class="fc" id="L116">      reachedEndOfRanges = true;</span>
+<span class="fc" id="L117">      return new SyncTargetRange(peer, lastRangeEnd);</span>
+    }
+<span class="fc" id="L119">    pendingRequests = Optional.of(getNextRangeHeaders());</span>
+<span class="fc" id="L120">    return getRangeFromPendingRequest();</span>
+  }
+
+  private CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; getNextRangeHeaders() {
+<span class="fc" id="L124">    return fetcher</span>
+<span class="fc" id="L125">        .getNextRangeHeaders(peer, lastRangeEnd)</span>
+<span class="fc" id="L126">        .exceptionally(</span>
+            error -&gt; {
+<span class="fc" id="L128">              LOG.debug(&quot;Failed to retrieve range headers&quot;, error);</span>
+<span class="fc" id="L129">              return emptyList();</span>
+            })
+<span class="fc bfc" id="L131" title="All 2 branches covered.">        .thenCompose(range -&gt; range.isEmpty() ? pauseBriefly() : completedFuture(range));</span>
+  }
+
+  /**
+   * Pause after failing to get new range to prevent requesting new range headers in a tight loop.
+   *
+   * @return a future that after the pause completes with an empty list.
+   */
+  private CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; pauseBriefly() {
+<span class="fc" id="L140">    return ethScheduler.scheduleFutureTask(</span>
+<span class="fc" id="L141">        () -&gt; completedFuture(emptyList()), RETRY_DELAY_DURATION);</span>
+  }
+
+  private SyncTargetRange getRangeFromPendingRequest() {
+<span class="fc" id="L145">    final CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; pendingRequest = this.pendingRequests.get();</span>
+    try {
+<span class="fc" id="L147">      final List&lt;BlockHeader&gt; newHeaders =</span>
+<span class="fc" id="L148">          pendingRequest.get(newHeaderWaitDuration.toMillis(), MILLISECONDS);</span>
+<span class="fc" id="L149">      this.pendingRequests = Optional.empty();</span>
+<span class="fc bfc" id="L150" title="All 2 branches covered.">      if (newHeaders.isEmpty()) {</span>
+<span class="fc" id="L151">        requestFailureCount++;</span>
+      } else {
+<span class="fc" id="L153">        requestFailureCount = 0;</span>
+      }
+<span class="fc bfc" id="L155" title="All 2 branches covered.">      for (final BlockHeader header : newHeaders) {</span>
+<span class="fc" id="L156">        retrievedRanges.add(new SyncTargetRange(peer, lastRangeEnd, header));</span>
+<span class="fc" id="L157">        lastRangeEnd = header;</span>
+<span class="fc" id="L158">      }</span>
+<span class="fc" id="L159">      return retrievedRanges.poll();</span>
+<span class="fc" id="L160">    } catch (final InterruptedException e) {</span>
+<span class="fc" id="L161">      LOG.trace(&quot;Interrupted while waiting for new range headers&quot;, e);</span>
+<span class="fc" id="L162">      return null;</span>
+<span class="fc" id="L163">    } catch (final ExecutionException e) {</span>
+<span class="fc" id="L164">      LOG.debug(&quot;Failed to retrieve new range headers&quot;, e);</span>
+<span class="fc" id="L165">      this.pendingRequests = Optional.empty();</span>
+<span class="fc" id="L166">      requestFailureCount++;</span>
+<span class="fc" id="L167">      return null;</span>
+<span class="fc" id="L168">    } catch (final TimeoutException e) {</span>
+<span class="fc" id="L169">      return null;</span>
+    }
+  }
+
+  public interface SyncTargetChecker {
+    boolean shouldContinueDownloadingFromSyncTarget(EthPeer peer, BlockHeader lastRangeHeader);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InsufficientPeersPermissioningProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning.node</a> &gt; <span class="el_source">InsufficientPeersPermissioningProvider.java</span></div><h1>InsufficientPeersPermissioningProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning.node;
+
+import org.hyperledger.besu.ethereum.p2p.network.P2PNetwork;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeURLImpl;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Collection;
+import java.util.Optional;
+
+/**
+ * A permissioning provider that only provides an answer when we have no peers outside of our
+ * bootnodes
+ */
+public class InsufficientPeersPermissioningProvider implements ContextualNodePermissioningProvider {
+  private final P2PNetwork p2pNetwork;
+  private final Collection&lt;EnodeURL&gt; bootnodeEnodes;
+  private long nonBootnodePeerConnections;
+<span class="fc" id="L35">  private final Subscribers&lt;Runnable&gt; permissioningUpdateSubscribers = Subscribers.create();</span>
+
+  /**
+   * Creates the provider observing the provided p2p network
+   *
+   * @param p2pNetwork the p2p network to observe
+   * @param bootnodeEnodes the bootnodes that this node is configured to connect to
+   */
+  public InsufficientPeersPermissioningProvider(
+<span class="fc" id="L44">      final P2PNetwork p2pNetwork, final Collection&lt;EnodeURL&gt; bootnodeEnodes) {</span>
+<span class="fc" id="L45">    this.p2pNetwork = p2pNetwork;</span>
+<span class="fc" id="L46">    this.bootnodeEnodes = bootnodeEnodes;</span>
+<span class="fc" id="L47">    this.nonBootnodePeerConnections = countP2PNetworkNonBootnodeConnections();</span>
+<span class="fc" id="L48">    p2pNetwork.subscribeConnect(this::handleConnect);</span>
+<span class="fc" id="L49">    p2pNetwork.subscribeDisconnect(this::handleDisconnect);</span>
+<span class="fc" id="L50">  }</span>
+
+  private boolean isNotABootnode(final PeerConnection peerConnection) {
+<span class="fc" id="L53">    return bootnodeEnodes.stream()</span>
+<span class="fc" id="L54">        .noneMatch(</span>
+            (bootNode) -&gt;
+<span class="fc" id="L56">                EnodeURLImpl.sameListeningEndpoint(peerConnection.getRemoteEnode(), bootNode));</span>
+  }
+
+  private long countP2PNetworkNonBootnodeConnections() {
+<span class="fc" id="L60">    return p2pNetwork.getPeers().stream().filter(this::isNotABootnode).count();</span>
+  }
+
+  @Override
+  public Optional&lt;Boolean&gt; isPermitted(
+      final EnodeURL sourceEnode, final EnodeURL destinationEnode) {
+<span class="fc" id="L66">    final Optional&lt;EnodeURL&gt; maybeSelfEnode = p2pNetwork.getLocalEnode();</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    if (nonBootnodePeerConnections &gt; 0) {</span>
+<span class="fc" id="L68">      return Optional.empty();</span>
+<span class="fc bfc" id="L69" title="All 2 branches covered.">    } else if (!maybeSelfEnode.isPresent()) {</span>
+      // The local node is not yet ready, so we can't validate enodes yet
+<span class="fc" id="L71">      return Optional.empty();</span>
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">    } else if (checkEnode(maybeSelfEnode.get(), sourceEnode)</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">        &amp;&amp; checkEnode(maybeSelfEnode.get(), destinationEnode)) {</span>
+<span class="fc" id="L74">      return Optional.of(true);</span>
+    } else {
+<span class="fc" id="L76">      return Optional.empty();</span>
+    }
+  }
+
+  private boolean checkEnode(final EnodeURL localEnode, final EnodeURL enode) {
+<span class="fc bfc" id="L81" title="All 2 branches covered.">    return (EnodeURLImpl.sameListeningEndpoint(localEnode, enode)</span>
+<span class="fc" id="L82">        || bootnodeEnodes.stream()</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">            .anyMatch(bootNode -&gt; EnodeURLImpl.sameListeningEndpoint(bootNode, enode)));</span>
+  }
+
+  private void handleConnect(final PeerConnection peerConnection) {
+<span class="fc bfc" id="L87" title="All 2 branches covered.">    if (isNotABootnode(peerConnection)) {</span>
+      // if the first non bootnode peer seen
+<span class="fc bfc" id="L89" title="All 2 branches covered.">      if (++nonBootnodePeerConnections == 1) {</span>
+<span class="fc" id="L90">        permissioningUpdateSubscribers.forEach(Runnable::run);</span>
+      }
+    }
+<span class="fc" id="L93">  }</span>
+
+  private void handleDisconnect(
+      final PeerConnection peerConnection,
+      final DisconnectReason reason,
+      final boolean initiatedByPeer) {
+<span class="fc bfc" id="L99" title="All 2 branches covered.">    if (isNotABootnode(peerConnection)) {</span>
+      // if we just lost the last non bootnode
+<span class="fc bfc" id="L101" title="All 2 branches covered.">      if (--nonBootnodePeerConnections == 0) {</span>
+<span class="fc" id="L102">        permissioningUpdateSubscribers.forEach(Runnable::run);</span>
+      }
+    }
+<span class="fc" id="L105">  }</span>
+
+  @Override
+  public long subscribeToUpdates(final Runnable callback) {
+<span class="fc" id="L109">    return permissioningUpdateSubscribers.subscribe(callback);</span>
+  }
+
+  @Override
+  public boolean unsubscribeFromUpdates(final long id) {
+<span class="nc" id="L114">    return permissioningUpdateSubscribers.unsubscribe(id);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

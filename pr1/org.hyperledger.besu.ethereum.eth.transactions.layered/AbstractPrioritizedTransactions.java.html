@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractPrioritizedTransactions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.layered</a> &gt; <span class="el_source">AbstractPrioritizedTransactions.java</span></div><h1>AbstractPrioritizedTransactions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.layered;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionAddedResult;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+/**
+ * Holds the current set of executable pending transactions, that are candidate for inclusion on
+ * next block. The pending transactions are kept sorted by paid fee descending.
+ */
+<span class="fc" id="L38">public abstract class AbstractPrioritizedTransactions extends AbstractSequentialTransactionsLayer {</span>
+  protected final TreeSet&lt;PendingTransaction&gt; orderByFee;
+  protected final MiningParameters miningParameters;
+
+  public AbstractPrioritizedTransactions(
+      final TransactionPoolConfiguration poolConfig,
+      final TransactionsLayer prioritizedTransactions,
+      final TransactionPoolMetrics metrics,
+      final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
+          transactionReplacementTester,
+      final BlobCache blobCache,
+      final MiningParameters miningParameters) {
+<span class="fc" id="L50">    super(poolConfig, prioritizedTransactions, transactionReplacementTester, metrics, blobCache);</span>
+<span class="fc" id="L51">    this.orderByFee = new TreeSet&lt;&gt;(this::compareByFee);</span>
+<span class="fc" id="L52">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L53">  }</span>
+
+  @Override
+  public void reset() {
+<span class="fc" id="L57">    super.reset();</span>
+<span class="fc" id="L58">    orderByFee.clear();</span>
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public String name() {
+<span class="fc" id="L63">    return &quot;prioritized&quot;;</span>
+  }
+
+  @Override
+  protected TransactionAddedResult canAdd(
+      final PendingTransaction pendingTransaction, final int gap) {
+<span class="fc" id="L69">    final var senderTxs = txsBySender.get(pendingTransaction.getSender());</span>
+
+<span class="fc bfc" id="L71" title="All 4 branches covered.">    if (hasExpectedNonce(senderTxs, pendingTransaction, gap) &amp;&amp; hasPriority(pendingTransaction)) {</span>
+
+<span class="fc" id="L73">      return TransactionAddedResult.ADDED;</span>
+    }
+
+<span class="fc" id="L76">    return TransactionAddedResult.TRY_NEXT_LAYER;</span>
+  }
+
+  @Override
+  protected void internalAdd(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs, final PendingTransaction addedTx) {
+<span class="fc" id="L82">    orderByFee.add(addedTx);</span>
+<span class="fc" id="L83">  }</span>
+
+  @Override
+  protected void internalReplaced(final PendingTransaction replacedTx) {
+<span class="fc" id="L87">    orderByFee.remove(replacedTx);</span>
+<span class="fc" id="L88">  }</span>
+
+  private boolean hasPriority(final PendingTransaction pendingTransaction) {
+    // if it does not pass the promotion filter, then has not priority
+<span class="fc bfc" id="L92" title="All 2 branches covered.">    if (!promotionFilter(pendingTransaction)) {</span>
+<span class="fc" id="L93">      return false;</span>
+    }
+
+    // if there is space add it, otherwise check if it has more value than the last one
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    if (orderByFee.size() &lt; poolConfig.getMaxPrioritizedTransactions()) {</span>
+<span class="fc" id="L98">      return true;</span>
+    }
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    return compareByFee(pendingTransaction, orderByFee.first()) &gt; 0;</span>
+  }
+
+  @Override
+  protected int maxTransactionsNumber() {
+<span class="fc" id="L105">    return poolConfig.getMaxPrioritizedTransactions();</span>
+  }
+
+  @Override
+  protected PendingTransaction getEvictable() {
+<span class="fc" id="L110">    return orderByFee.first();</span>
+  }
+
+  protected abstract int compareByFee(final PendingTransaction pt1, final PendingTransaction pt2);
+
+  @Override
+  protected void internalRemove(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction removedTx,
+      final RemovalReason removalReason) {
+<span class="fc" id="L120">    orderByFee.remove(removedTx);</span>
+<span class="fc" id="L121">  }</span>
+
+  @Override
+  public List&lt;PendingTransaction&gt; promote(
+      final Predicate&lt;PendingTransaction&gt; promotionFilter,
+      final long freeSpace,
+      final int freeSlots) {
+<span class="nc" id="L128">    return List.of();</span>
+  }
+
+  @Override
+  public Stream&lt;PendingTransaction&gt; stream() {
+<span class="fc" id="L133">    return orderByFee.descendingSet().stream();</span>
+  }
+
+  @Override
+  protected long cacheFreeSpace() {
+<span class="fc" id="L138">    return Integer.MAX_VALUE;</span>
+  }
+
+  @Override
+  protected void internalConsistencyCheck(
+      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
+<span class="nc" id="L144">    super.internalConsistencyCheck(prevLayerTxsBySender);</span>
+
+<span class="nc" id="L146">    final var controlOrderByFee = new TreeSet&lt;&gt;(this::compareByFee);</span>
+<span class="nc" id="L147">    controlOrderByFee.addAll(pendingTransactions.values());</span>
+
+<span class="nc" id="L149">    final var itControl = controlOrderByFee.iterator();</span>
+<span class="nc" id="L150">    final var itCurrent = orderByFee.iterator();</span>
+
+<span class="nc bnc" id="L152" title="All 2 branches missed.">    while (itControl.hasNext()) {</span>
+<span class="nc bnc" id="L153" title="All 2 branches missed.">      assert itControl.next().equals(itCurrent.next())</span>
+          : &quot;orderByFee does not match pendingTransactions&quot;;
+    }
+
+<span class="nc bnc" id="L157" title="All 2 branches missed.">    assert itCurrent.hasNext() == false : &quot;orderByFee has more elements that pendingTransactions&quot;;</span>
+<span class="nc" id="L158">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

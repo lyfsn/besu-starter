@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MetricsPushGatewayService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.metrics.prometheus</a> &gt; <span class="el_source">MetricsPushGatewayService.java</span></div><h1>MetricsPushGatewayService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.metrics.prometheus;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.metrics.MetricsService;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.io.IOException;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+import io.prometheus.client.exporter.PushGateway;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Metrics push gateway service. */
+public class MetricsPushGatewayService implements MetricsService {
+<span class="nc" id="L35">  private static final Logger LOG = LoggerFactory.getLogger(MetricsPushGatewayService.class);</span>
+
+  private PushGateway pushGateway;
+  private ScheduledExecutorService scheduledExecutorService;
+  private final MetricsConfiguration config;
+  private final MetricsSystem metricsSystem;
+
+  /**
+   * Instantiates a new Metrics push gateway service.
+   *
+   * @param configuration the configuration
+   * @param metricsSystem the metrics system
+   */
+  public MetricsPushGatewayService(
+<span class="nc" id="L49">      final MetricsConfiguration configuration, final MetricsSystem metricsSystem) {</span>
+<span class="nc" id="L50">    this.metricsSystem = metricsSystem;</span>
+<span class="nc" id="L51">    validateConfig(configuration);</span>
+<span class="nc" id="L52">    config = configuration;</span>
+<span class="nc" id="L53">  }</span>
+
+  private void validateConfig(final MetricsConfiguration config) {
+<span class="nc" id="L56">    checkArgument(</span>
+<span class="nc bnc" id="L57" title="All 4 branches missed.">        config.getPushPort() &gt;= 0 &amp;&amp; config.getPushPort() &lt; 65536, &quot;Invalid port configuration.&quot;);</span>
+<span class="nc bnc" id="L58" title="All 2 branches missed.">    checkArgument(config.getPushHost() != null, &quot;Required host is not configured.&quot;);</span>
+<span class="nc" id="L59">    checkArgument(</span>
+<span class="nc bnc" id="L60" title="All 4 branches missed.">        !(config.isEnabled() &amp;&amp; config.isPushEnabled()),</span>
+        &quot;Metrics Push Gateway Service cannot run concurrent with the normal metrics.&quot;);
+<span class="nc" id="L62">    checkArgument(</span>
+        metricsSystem instanceof PrometheusMetricsSystem,
+        &quot;Push Gateway requires a Prometheus Metrics System.&quot;);
+<span class="nc" id="L65">  }</span>
+
+  @Override
+  public CompletableFuture&lt;?&gt; start() {
+<span class="nc" id="L69">    LOG.info(</span>
+        &quot;Starting metrics push gateway service pushing to {}:{}&quot;,
+<span class="nc" id="L71">        config.getPushHost(),</span>
+<span class="nc" id="L72">        config.getPushPort());</span>
+
+<span class="nc" id="L74">    pushGateway = new PushGateway(config.getPushHost() + &quot;:&quot; + config.getPushPort());</span>
+
+    // Create the executor
+<span class="nc" id="L77">    scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();</span>
+<span class="nc" id="L78">    scheduledExecutorService.scheduleAtFixedRate(</span>
+        this::pushMetrics,
+<span class="nc" id="L80">        config.getPushInterval() / 2,</span>
+<span class="nc" id="L81">        config.getPushInterval(),</span>
+        TimeUnit.SECONDS);
+<span class="nc" id="L83">    return CompletableFuture.completedFuture(null);</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;?&gt; stop() {
+<span class="nc" id="L88">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+    try {
+      // Calling shutdown now cancels the pending push, which is desirable.
+<span class="nc" id="L91">      scheduledExecutorService.shutdownNow();</span>
+<span class="nc" id="L92">      scheduledExecutorService.awaitTermination(30, TimeUnit.SECONDS);</span>
+      try {
+<span class="nc" id="L94">        pushGateway.delete(config.getPrometheusJob());</span>
+<span class="nc" id="L95">      } catch (final Exception e) {</span>
+<span class="nc" id="L96">        LOG.error(&quot;Could not clean up results on the Prometheus Push Gateway.&quot;, e);</span>
+        // Do not complete exceptionally, the gateway may be down and failures
+        // here cause the shutdown to loop.  Failure is acceptable.
+<span class="nc" id="L99">      }</span>
+<span class="nc" id="L100">      resultFuture.complete(null);</span>
+<span class="nc" id="L101">    } catch (final InterruptedException e) {</span>
+<span class="nc" id="L102">      LOG.error(&quot;Unable to shutdown push metrics service gracefully&quot;, e);</span>
+<span class="nc" id="L103">      resultFuture.completeExceptionally(e);</span>
+<span class="nc" id="L104">    }</span>
+<span class="nc" id="L105">    return resultFuture;</span>
+  }
+
+  @Override
+  public Optional&lt;Integer&gt; getPort() {
+<span class="nc" id="L110">    return Optional.empty();</span>
+  }
+
+  private void pushMetrics() {
+    try {
+<span class="nc" id="L115">      pushGateway.pushAdd(</span>
+<span class="nc" id="L116">          ((PrometheusMetricsSystem) metricsSystem).getRegistry(), config.getPrometheusJob());</span>
+<span class="nc" id="L117">    } catch (final IOException e) {</span>
+<span class="nc" id="L118">      LOG.warn(&quot;Could not push metrics&quot;, e);</span>
+<span class="nc" id="L119">    }</span>
+<span class="nc" id="L120">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

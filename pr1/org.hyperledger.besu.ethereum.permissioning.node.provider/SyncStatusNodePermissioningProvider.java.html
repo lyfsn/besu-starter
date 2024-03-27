@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SyncStatusNodePermissioningProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning.node.provider</a> &gt; <span class="el_source">SyncStatusNodePermissioningProvider.java</span></div><h1>SyncStatusNodePermissioningProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning.node.provider;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.permissioning.NodeConnectionPermissioningProvider;
+
+import java.net.URI;
+import java.util.Collection;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
+
+public class SyncStatusNodePermissioningProvider implements NodeConnectionPermissioningProvider {
+
+  private final Synchronizer synchronizer;
+  private final Set&lt;URI&gt; fixedNodes;
+  private final Counter checkCounter;
+  private final Counter checkCounterPermitted;
+  private final Counter checkCounterUnpermitted;
+  private final long inSyncSubscriberId;
+<span class="fc" id="L40">  private final AtomicBoolean hasReachedSync = new AtomicBoolean(false);</span>
+
+  public SyncStatusNodePermissioningProvider(
+      final Synchronizer synchronizer,
+      final Collection&lt;EnodeURL&gt; fixedNodes,
+<span class="fc" id="L45">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L46">    checkNotNull(synchronizer);</span>
+<span class="fc" id="L47">    this.synchronizer = synchronizer;</span>
+<span class="fc" id="L48">    this.inSyncSubscriberId = this.synchronizer.subscribeInSync(this::handleInSyncEvent, 0);</span>
+<span class="fc" id="L49">    this.fixedNodes =</span>
+<span class="fc" id="L50">        fixedNodes.stream().map(EnodeURL::toURIWithoutDiscoveryPort).collect(Collectors.toSet());</span>
+
+<span class="fc" id="L52">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.PERMISSIONING,
+        &quot;sync_status_node_sync_reached&quot;,
+        &quot;Whether the sync status permissioning provider has realised sync yet&quot;,
+<span class="fc bfc" id="L56" title="All 2 branches covered.">        () -&gt; hasReachedSync.get() ? 1 : 0);</span>
+<span class="fc" id="L57">    this.checkCounter =</span>
+<span class="fc" id="L58">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;sync_status_node_check_count&quot;,
+            &quot;Number of times the sync status permissioning provider has been checked&quot;);
+<span class="fc" id="L62">    this.checkCounterPermitted =</span>
+<span class="fc" id="L63">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;sync_status_node_check_count_permitted&quot;,
+            &quot;Number of times the sync status permissioning provider has been checked and returned permitted&quot;);
+<span class="fc" id="L67">    this.checkCounterUnpermitted =</span>
+<span class="fc" id="L68">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;sync_status_node_check_count_unpermitted&quot;,
+            &quot;Number of times the sync status permissioning provider has been checked and returned unpermitted&quot;);
+<span class="fc" id="L72">  }</span>
+
+  private void handleInSyncEvent(final boolean isInSync) {
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    if (isInSync) {</span>
+<span class="pc bpc" id="L76" title="1 of 2 branches missed.">      if (hasReachedSync.compareAndSet(false, true)) {</span>
+<span class="fc" id="L77">        synchronizer.unsubscribeInSync(inSyncSubscriberId);</span>
+      }
+    }
+<span class="fc" id="L80">  }</span>
+
+  /**
+   * Before reaching a sync'd state, the node will only be allowed to talk to its fixedNodes
+   * (outgoing connections). After reaching a sync'd state, it is expected that other providers will
+   * check the permissions (most likely the smart contract based provider). That's why we always
+   * return true after reaching a sync'd state.
+   *
+   * @param sourceEnode the enode source of the packet or connection
+   * @param destinationEnode the enode target of the packet or connection
+   * @return true, if the communication from sourceEnode to destinationEnode is permitted, false
+   *     otherwise
+   */
+  @Override
+  public boolean isConnectionPermitted(
+      final EnodeURL sourceEnode, final EnodeURL destinationEnode) {
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    if (hasReachedSync.get()) {</span>
+<span class="fc" id="L97">      return true;</span>
+    } else {
+<span class="fc" id="L99">      checkCounter.inc();</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">      if (fixedNodes.contains(destinationEnode.toURIWithoutDiscoveryPort())) {</span>
+<span class="fc" id="L101">        checkCounterPermitted.inc();</span>
+<span class="fc" id="L102">        return true;</span>
+      } else {
+<span class="fc" id="L104">        checkCounterUnpermitted.inc();</span>
+<span class="fc" id="L105">        return false;</span>
+      }
+    }
+  }
+
+  public boolean hasReachedSync() {
+<span class="fc" id="L111">    return hasReachedSync.get();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

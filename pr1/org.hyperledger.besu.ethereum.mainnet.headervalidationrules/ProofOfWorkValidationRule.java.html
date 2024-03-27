@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ProofOfWorkValidationRule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet.headervalidationrules</a> &gt; <span class="el_source">ProofOfWorkValidationRule.java</span></div><h1>ProofOfWorkValidationRule.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet.headervalidationrules;
+
+import static java.lang.Boolean.FALSE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.DetachedBlockHeaderValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.EpochCalculator;
+import org.hyperledger.besu.ethereum.mainnet.PoWHasher;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolution;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+
+import java.math.BigInteger;
+import java.util.Optional;
+
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public final class ProofOfWorkValidationRule implements DetachedBlockHeaderValidationRule {
+
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(ProofOfWorkValidationRule.class);</span>
+
+<span class="fc" id="L39">  private static final BigInteger ETHASH_TARGET_UPPER_BOUND = BigInteger.valueOf(2).pow(256);</span>
+
+  private final PoWHasher hasher;
+
+  private final EpochCalculator epochCalculator;
+  private final Optional&lt;FeeMarket&gt; feeMarket;
+
+  public ProofOfWorkValidationRule(
+      final EpochCalculator epochCalculator,
+      final PoWHasher hasher,
+<span class="fc" id="L49">      final Optional&lt;FeeMarket&gt; feeMarket) {</span>
+<span class="fc" id="L50">    this.epochCalculator = epochCalculator;</span>
+<span class="fc" id="L51">    this.hasher = hasher;</span>
+<span class="fc" id="L52">    this.feeMarket = feeMarket;</span>
+<span class="fc" id="L53">  }</span>
+
+  public ProofOfWorkValidationRule(final EpochCalculator epochCalculator, final PoWHasher hasher) {
+<span class="fc" id="L56">    this(epochCalculator, hasher, Optional.empty());</span>
+<span class="fc" id="L57">  }</span>
+
+  @Override
+  public boolean validate(final BlockHeader header, final BlockHeader parent) {
+
+<span class="fc bfc" id="L62" title="All 2 branches covered.">    if (imlementsBaseFeeMarket()) {</span>
+<span class="pc bpc" id="L63" title="1 of 2 branches missed.">      if (header.getBaseFee().isEmpty()) {</span>
+<span class="fc" id="L64">        LOG.info(&quot;Invalid block header: missing mandatory base fee.&quot;);</span>
+<span class="fc" id="L65">        return false;</span>
+      }
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    } else if (header.getBaseFee().isPresent()) {</span>
+<span class="fc" id="L68">      LOG.info(&quot;Invalid block header: presence of basefee in a non-eip1559 block&quot;);</span>
+<span class="fc" id="L69">      return false;</span>
+    }
+
+<span class="fc" id="L72">    final Hash headerHash = hashHeader(header);</span>
+<span class="fc" id="L73">    PoWSolution solution =</span>
+<span class="fc" id="L74">        hasher.hash(header.getNonce(), header.getNumber(), epochCalculator, headerHash);</span>
+
+<span class="fc bfc" id="L76" title="All 2 branches covered.">    if (header.getDifficulty().isZero()) {</span>
+<span class="fc" id="L77">      LOG.info(&quot;Invalid block header: difficulty is 0&quot;);</span>
+<span class="fc" id="L78">      return false;</span>
+    }
+<span class="fc" id="L80">    final BigInteger difficulty = header.getDifficulty().toUnsignedBigInteger();</span>
+    final UInt256 target =
+<span class="fc bfc" id="L82" title="All 2 branches covered.">        difficulty.equals(BigInteger.ONE)</span>
+<span class="fc" id="L83">            ? UInt256.MAX_VALUE</span>
+<span class="fc" id="L84">            : UInt256.valueOf(ETHASH_TARGET_UPPER_BOUND.divide(difficulty));</span>
+<span class="fc" id="L85">    final UInt256 result = UInt256.fromBytes(solution.getSolution());</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">    if (result.compareTo(target) &gt; 0) {</span>
+<span class="fc" id="L87">      LOG.info(</span>
+          &quot;Invalid block header: the EthHash result {} was greater than the target {}.\n&quot;
+              + &quot;Failing header:\n{}&quot;,
+          result,
+          target,
+          header);
+<span class="fc" id="L93">      return false;</span>
+    }
+
+<span class="fc" id="L96">    final Hash mixedHash = solution.getMixHash();</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    if (!header.getMixHash().equals(mixedHash)) {</span>
+<span class="fc" id="L98">      LOG.info(</span>
+          &quot;Invalid block header: header mixed hash {} does not equal calculated mixed hash {}.\n&quot;
+              + &quot;Failing header:\n{}&quot;,
+<span class="fc" id="L101">          header.getMixHash(),</span>
+          mixedHash,
+          header);
+<span class="fc" id="L104">      return false;</span>
+    }
+
+<span class="fc" id="L107">    return true;</span>
+  }
+
+  Hash hashHeader(final BlockHeader header) {
+<span class="fc" id="L111">    final BytesValueRLPOutput out = new BytesValueRLPOutput();</span>
+
+    // Encode header without nonce and mixhash
+<span class="fc" id="L114">    out.startList();</span>
+<span class="fc" id="L115">    out.writeBytes(header.getParentHash());</span>
+<span class="fc" id="L116">    out.writeBytes(header.getOmmersHash());</span>
+<span class="fc" id="L117">    out.writeBytes(header.getCoinbase());</span>
+<span class="fc" id="L118">    out.writeBytes(header.getStateRoot());</span>
+<span class="fc" id="L119">    out.writeBytes(header.getTransactionsRoot());</span>
+<span class="fc" id="L120">    out.writeBytes(header.getReceiptsRoot());</span>
+<span class="fc" id="L121">    out.writeBytes(header.getLogsBloom());</span>
+<span class="fc" id="L122">    out.writeUInt256Scalar(header.getDifficulty());</span>
+<span class="fc" id="L123">    out.writeLongScalar(header.getNumber());</span>
+<span class="fc" id="L124">    out.writeLongScalar(header.getGasLimit());</span>
+<span class="fc" id="L125">    out.writeLongScalar(header.getGasUsed());</span>
+<span class="fc" id="L126">    out.writeLongScalar(header.getTimestamp());</span>
+<span class="fc" id="L127">    out.writeBytes(header.getExtraData());</span>
+<span class="pc bpc" id="L128" title="3 of 4 branches missed.">    if (imlementsBaseFeeMarket() &amp;&amp; header.getBaseFee().isPresent()) {</span>
+<span class="nc" id="L129">      out.writeUInt256Scalar(header.getBaseFee().get());</span>
+    }
+<span class="fc" id="L131">    out.endList();</span>
+
+<span class="fc" id="L133">    return Hash.hash(out.encoded());</span>
+  }
+
+  @Override
+  public boolean includeInLightValidation() {
+<span class="fc" id="L138">    return false;</span>
+  }
+
+  private boolean imlementsBaseFeeMarket() {
+<span class="fc" id="L142">    return feeMarket.map(FeeMarket::implementsBaseFee).orElse(FALSE);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,792 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateTransaction.java</span></div><h1>PrivateTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static com.google.common.base.Preconditions.checkState;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+import static org.hyperledger.besu.plugin.data.Restriction.RESTRICTED;
+import static org.hyperledger.besu.plugin.data.Restriction.UNRESTRICTED;
+import static org.hyperledger.besu.plugin.data.Restriction.UNSUPPORTED;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.plugin.data.Restriction;
+
+import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.collect.Lists;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** An operation submitted by an external actor to be applied to the system. */
+public class PrivateTransaction implements org.hyperledger.besu.plugin.data.PrivateTransaction {
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(PrivateTransaction.class);</span>
+
+  // Used for transactions that are not tied to a specific chain
+  // (i.e. does not have a chain id associated with it).
+<span class="fc" id="L59">  private static final BigInteger REPLAY_UNPROTECTED_V_BASE = BigInteger.valueOf(27);</span>
+<span class="fc" id="L60">  private static final BigInteger REPLAY_UNPROTECTED_V_BASE_PLUS_1 = BigInteger.valueOf(28);</span>
+
+<span class="fc" id="L62">  private static final BigInteger REPLAY_PROTECTED_V_BASE = BigInteger.valueOf(35);</span>
+
+  // The v signature parameter starts at 36 because 1 is the first valid chainId so:
+  // chainId &gt; 1 implies that 2 * chainId + V_BASE &gt; 36.
+<span class="fc" id="L66">  private static final BigInteger REPLAY_PROTECTED_V_MIN = BigInteger.valueOf(36);</span>
+
+<span class="fc" id="L68">  private static final BigInteger TWO = BigInteger.valueOf(2);</span>
+
+  private final long nonce;
+
+  private final Wei gasPrice;
+
+  private final long gasLimit;
+
+  private final Optional&lt;Address&gt; to;
+
+  private final Wei value;
+
+  private final SECPSignature signature;
+
+  private final Bytes payload;
+
+  private final Optional&lt;BigInteger&gt; chainId;
+
+  private final Bytes privateFrom;
+
+  private final Optional&lt;List&lt;Bytes&gt;&gt; privateFor;
+
+  private final Optional&lt;Bytes&gt; privacyGroupId;
+
+  private final Restriction restriction;
+
+  // Caches a &quot;hash&quot; of a portion of the transaction used for sender recovery.
+  // Note that this hash does not include the transaction signature, so it does not
+  // fully identify the transaction (use the result of the {@code hash()} for that).
+  // It is only used to compute said signature and recover the sender from it.
+  protected volatile Bytes32 hashNoSignature;
+
+  // Caches the transaction sender.
+  protected volatile Address sender;
+
+<span class="fc" id="L103">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L104">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  public static Builder builder() {
+<span class="fc" id="L107">    return new Builder();</span>
+  }
+
+  public static PrivateTransaction readFrom(
+      final org.hyperledger.besu.plugin.data.PrivateTransaction p) {
+
+<span class="fc" id="L113">    final BigInteger v = p.getV();</span>
+    final byte recId;
+<span class="fc" id="L115">    Optional&lt;BigInteger&gt; chainId = p.getChainId();</span>
+<span class="pc bpc" id="L116" title="2 of 4 branches missed.">    if (v.equals(REPLAY_UNPROTECTED_V_BASE) || v.equals(REPLAY_UNPROTECTED_V_BASE_PLUS_1)) {</span>
+<span class="nc" id="L117">      recId = v.subtract(REPLAY_UNPROTECTED_V_BASE).byteValueExact();</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">    } else if (v.compareTo(REPLAY_PROTECTED_V_MIN) &gt; 0) {</span>
+<span class="fc" id="L119">      chainId = Optional.of(v.subtract(REPLAY_PROTECTED_V_BASE).divide(TWO));</span>
+<span class="fc" id="L120">      recId = v.subtract(TWO.multiply(chainId.get()).add(REPLAY_PROTECTED_V_BASE)).byteValueExact();</span>
+    } else {
+<span class="nc" id="L122">      throw new RuntimeException(</span>
+<span class="nc" id="L123">          String.format(&quot;An unsupported encoded `v` value of %s was found&quot;, v));</span>
+    }
+
+<span class="fc" id="L126">    final SECPSignature signature =</span>
+<span class="fc" id="L127">        SIGNATURE_ALGORITHM.get().createSignature(p.getR(), p.getS(), recId);</span>
+
+    final Builder b =
+<span class="fc" id="L130">        builder()</span>
+<span class="fc" id="L131">            .nonce(p.getNonce())</span>
+<span class="fc" id="L132">            .gasPrice(Wei.of(p.getGasPrice().getAsBigInteger()))</span>
+<span class="fc" id="L133">            .gasLimit(p.getGasLimit())</span>
+<span class="fc" id="L134">            .to(p.getTo().map(Address::wrap).orElse(null))</span>
+<span class="fc" id="L135">            .value(Wei.of(p.getValue().getAsBigInteger()))</span>
+<span class="fc" id="L136">            .sender(Address.wrap(p.getSender()))</span>
+<span class="fc" id="L137">            .payload(p.getPayload())</span>
+<span class="fc" id="L138">            .privateFrom(p.getPrivateFrom())</span>
+<span class="fc" id="L139">            .restriction(p.getRestriction())</span>
+<span class="fc" id="L140">            .signature(signature);</span>
+
+<span class="fc" id="L142">    chainId.ifPresent(b::chainId);</span>
+<span class="fc" id="L143">    p.getPrivateFor().ifPresent(b::privateFor);</span>
+<span class="fc" id="L144">    p.getPrivacyGroupId().ifPresent(b::privacyGroupId);</span>
+
+<span class="fc" id="L146">    return b.build();</span>
+  }
+
+  @SuppressWarnings({&quot;unchecked&quot;})
+  public static PrivateTransaction readFrom(final RLPInput input) throws RLPException {
+<span class="fc" id="L151">    input.enterList();</span>
+
+    final Builder builder =
+<span class="fc" id="L154">        builder()</span>
+<span class="fc" id="L155">            .nonce(input.readLongScalar())</span>
+<span class="fc" id="L156">            .gasPrice(Wei.of(input.readUInt256Scalar()))</span>
+<span class="fc" id="L157">            .gasLimit(input.readLongScalar())</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">            .to(input.readBytes(v -&gt; v.size() == 0 ? null : Address.wrap(v)))</span>
+<span class="fc" id="L159">            .value(Wei.of(input.readUInt256Scalar()))</span>
+<span class="fc" id="L160">            .payload(input.readBytes());</span>
+
+<span class="fc" id="L162">    final BigInteger v = input.readBigIntegerScalar();</span>
+    final byte recId;
+<span class="fc" id="L164">    Optional&lt;BigInteger&gt; chainId = Optional.empty();</span>
+<span class="pc bpc" id="L165" title="1 of 4 branches missed.">    if (v.equals(REPLAY_UNPROTECTED_V_BASE) || v.equals(REPLAY_UNPROTECTED_V_BASE_PLUS_1)) {</span>
+<span class="fc" id="L166">      recId = v.subtract(REPLAY_UNPROTECTED_V_BASE).byteValueExact();</span>
+<span class="pc bpc" id="L167" title="1 of 2 branches missed.">    } else if (v.compareTo(REPLAY_PROTECTED_V_MIN) &gt; 0) {</span>
+<span class="fc" id="L168">      chainId = Optional.of(v.subtract(REPLAY_PROTECTED_V_BASE).divide(TWO));</span>
+<span class="fc" id="L169">      recId = v.subtract(TWO.multiply(chainId.get()).add(REPLAY_PROTECTED_V_BASE)).byteValueExact();</span>
+    } else {
+<span class="nc" id="L171">      throw new RuntimeException(</span>
+<span class="nc" id="L172">          String.format(&quot;An unsupported encoded `v` value of %s was found&quot;, v));</span>
+    }
+<span class="fc" id="L174">    final BigInteger r = input.readUInt256Scalar().toUnsignedBigInteger();</span>
+<span class="fc" id="L175">    final BigInteger s = input.readUInt256Scalar().toUnsignedBigInteger();</span>
+<span class="fc" id="L176">    final SECPSignature signature = SIGNATURE_ALGORITHM.get().createSignature(r, s, recId);</span>
+
+<span class="fc" id="L178">    final Bytes privateFrom = input.readBytes();</span>
+<span class="fc" id="L179">    final Object privateForOrPrivacyGroupId = resolvePrivateForOrPrivacyGroupId(input.readAsRlp());</span>
+<span class="fc" id="L180">    final Restriction restriction = convertToEnum(input.readBytes());</span>
+
+<span class="fc" id="L182">    input.leaveList();</span>
+
+<span class="fc" id="L184">    chainId.ifPresent(builder::chainId);</span>
+
+<span class="fc bfc" id="L186" title="All 2 branches covered.">    if (privateForOrPrivacyGroupId instanceof List) {</span>
+<span class="fc" id="L187">      return builder</span>
+<span class="fc" id="L188">          .signature(signature)</span>
+<span class="fc" id="L189">          .privateFrom(privateFrom)</span>
+<span class="fc" id="L190">          .privateFor((List&lt;Bytes&gt;) privateForOrPrivacyGroupId)</span>
+<span class="fc" id="L191">          .restriction(restriction)</span>
+<span class="fc" id="L192">          .build();</span>
+    } else {
+<span class="fc" id="L194">      return builder</span>
+<span class="fc" id="L195">          .signature(signature)</span>
+<span class="fc" id="L196">          .privateFrom(privateFrom)</span>
+<span class="fc" id="L197">          .privacyGroupId((Bytes) privateForOrPrivacyGroupId)</span>
+<span class="fc" id="L198">          .restriction(restriction)</span>
+<span class="fc" id="L199">          .build();</span>
+    }
+  }
+
+  private static Object resolvePrivateForOrPrivacyGroupId(final RLPInput item) {
+<span class="fc bfc" id="L204" title="All 2 branches covered.">    return item.nextIsList() ? item.readList(RLPInput::readBytes) : item.readBytes();</span>
+  }
+
+  private static Restriction convertToEnum(final Bytes readBytes) {
+<span class="fc bfc" id="L208" title="All 2 branches covered.">    if (readBytes.equals(RESTRICTED.getBytes())) {</span>
+<span class="fc" id="L209">      return RESTRICTED;</span>
+<span class="fc bfc" id="L210" title="All 2 branches covered.">    } else if (readBytes.equals(UNRESTRICTED.getBytes())) {</span>
+<span class="fc" id="L211">      return UNRESTRICTED;</span>
+    } else {
+<span class="fc" id="L213">      LOG.error(&quot;Transaction restriction '{}' not supported&quot;, readBytes.toString());</span>
+<span class="fc" id="L214">      return UNSUPPORTED;</span>
+    }
+  }
+
+  /**
+   * Instantiates a transaction instance.
+   *
+   * @param nonce the nonce
+   * @param gasPrice the gas price
+   * @param gasLimit the gas limit
+   * @param to the transaction recipient
+   * @param value the value being transferred to the recipient
+   * @param signature the signature
+   * @param payload the payload
+   * @param sender the transaction sender
+   * @param chainId the chain id to apply the transaction to
+   *     &lt;p&gt;The {@code to} will be an {@code Optional.empty()} for a contract creation transaction;
+   *     otherwise it should contain an address.
+   *     &lt;p&gt;The {@code chainId} must be greater than 0 to be applied to a specific chain; otherwise
+   *     it will default to any chain.
+   * @param privacyGroupId The privacy group id of this private transaction
+   * @param privateFrom The public key of the sender of this private transaction
+   * @param privateFor An array of the public keys of the intended recipients of this private
+   *     transaction
+   * @param restriction the restriction of this private transaction
+   */
+  protected PrivateTransaction(
+      final long nonce,
+      final Wei gasPrice,
+      final long gasLimit,
+      final Optional&lt;Address&gt; to,
+      final Wei value,
+      final SECPSignature signature,
+      final Bytes payload,
+      final Address sender,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Bytes privateFrom,
+      final Optional&lt;List&lt;Bytes&gt;&gt; privateFor,
+      final Optional&lt;Bytes&gt; privacyGroupId,
+<span class="fc" id="L253">      final Restriction restriction) {</span>
+<span class="fc" id="L254">    this.nonce = nonce;</span>
+<span class="fc" id="L255">    this.gasPrice = gasPrice;</span>
+<span class="fc" id="L256">    this.gasLimit = gasLimit;</span>
+<span class="fc" id="L257">    this.to = to;</span>
+<span class="fc" id="L258">    this.value = value;</span>
+<span class="fc" id="L259">    this.signature = signature;</span>
+<span class="fc" id="L260">    this.payload = payload;</span>
+<span class="fc" id="L261">    this.sender = sender;</span>
+<span class="fc" id="L262">    this.chainId = chainId;</span>
+<span class="fc" id="L263">    this.privateFrom = privateFrom;</span>
+<span class="fc" id="L264">    this.privateFor = privateFor;</span>
+<span class="fc" id="L265">    this.privacyGroupId = privacyGroupId;</span>
+<span class="fc" id="L266">    this.restriction = restriction;</span>
+<span class="fc" id="L267">  }</span>
+
+  protected PrivateTransaction(final PrivateTransaction privateTransaction) {
+<span class="fc" id="L270">    this(</span>
+<span class="fc" id="L271">        privateTransaction.getNonce(),</span>
+<span class="fc" id="L272">        privateTransaction.getGasPrice(),</span>
+<span class="fc" id="L273">        privateTransaction.getGasLimit(),</span>
+<span class="fc" id="L274">        privateTransaction.getTo(),</span>
+<span class="fc" id="L275">        privateTransaction.getValue(),</span>
+<span class="fc" id="L276">        privateTransaction.getSignature(),</span>
+<span class="fc" id="L277">        privateTransaction.getPayload(),</span>
+<span class="fc" id="L278">        privateTransaction.getSender(),</span>
+<span class="fc" id="L279">        privateTransaction.getChainId(),</span>
+<span class="fc" id="L280">        privateTransaction.getPrivateFrom(),</span>
+<span class="fc" id="L281">        privateTransaction.getPrivateFor(),</span>
+<span class="fc" id="L282">        privateTransaction.getPrivacyGroupId(),</span>
+<span class="fc" id="L283">        privateTransaction.getRestriction());</span>
+<span class="fc" id="L284">  }</span>
+
+  /**
+   * Returns the transaction nonce.
+   *
+   * @return the transaction nonce
+   */
+  @Override
+  public long getNonce() {
+<span class="fc" id="L293">    return nonce;</span>
+  }
+
+  /**
+   * Return the transaction gas price.
+   *
+   * @return the transaction gas price
+   */
+  @Override
+  public Wei getGasPrice() {
+<span class="fc" id="L303">    return gasPrice;</span>
+  }
+
+  /**
+   * Returns the transaction gas limit.
+   *
+   * @return the transaction gas limit
+   */
+  @Override
+  public long getGasLimit() {
+<span class="fc" id="L313">    return gasLimit;</span>
+  }
+
+  /**
+   * Returns the transaction recipient.
+   *
+   * &lt;p&gt;The {@code Optional&lt;Address&gt;} will be {@code Optional.empty()} if the transaction is a
+   * contract creation; otherwise it will contain the message call transaction recipient.
+   *
+   * @return the transaction recipient if a message call; otherwise {@code Optional.empty()}
+   */
+  @Override
+  public Optional&lt;Address&gt; getTo() {
+<span class="fc" id="L326">    return to;</span>
+  }
+
+  /**
+   * Returns the value transferred in the transaction.
+   *
+   * @return the value transferred in the transaction
+   */
+  @Override
+  public Wei getValue() {
+<span class="fc" id="L336">    return value;</span>
+  }
+
+  /**
+   * Returns the signature used to sign the transaction.
+   *
+   * @return the signature used to sign the transaction
+   */
+  public SECPSignature getSignature() {
+<span class="fc" id="L345">    return signature;</span>
+  }
+
+  /**
+   * Returns the transaction payload.
+   *
+   * @return the transaction payload
+   */
+  @Override
+  public Bytes getPayload() {
+<span class="fc" id="L355">    return payload;</span>
+  }
+
+  /**
+   * Return the transaction chain id (if it exists)
+   *
+   * &lt;p&gt;The {@code OptionalInt} will be {@code OptionalInt.empty()} if the transaction is not tied
+   * to a specific chain.
+   *
+   * @return the transaction chain id if it exists; otherwise {@code OptionalInt.empty()}
+   */
+  @Override
+  public Optional&lt;BigInteger&gt; getChainId() {
+<span class="fc" id="L368">    return chainId;</span>
+  }
+
+  /**
+   * Returns the enclave public key of the sender.
+   *
+   * @return the enclave public key of the sender.
+   */
+  @Override
+  public Bytes getPrivateFrom() {
+<span class="fc" id="L378">    return privateFrom;</span>
+  }
+
+  /**
+   * Returns the enclave public keys of the receivers.
+   *
+   * @return the enclave public keys of the receivers
+   */
+  @Override
+  public Optional&lt;List&lt;Bytes&gt;&gt; getPrivateFor() {
+<span class="fc" id="L388">    return privateFor;</span>
+  }
+
+  /**
+   * Returns the enclave privacy group id.
+   *
+   * @return the enclave privacy group id.
+   */
+  @Override
+  public Optional&lt;Bytes&gt; getPrivacyGroupId() {
+<span class="fc" id="L398">    return privacyGroupId;</span>
+  }
+
+  /**
+   * Returns the restriction of this private transaction.
+   *
+   * @return the restriction
+   */
+  @Override
+  public Restriction getRestriction() {
+<span class="fc" id="L408">    return restriction;</span>
+  }
+
+  /**
+   * Returns the transaction sender.
+   *
+   * @return the transaction sender
+   */
+  @Override
+  public Address getSender() {
+<span class="fc bfc" id="L418" title="All 2 branches covered.">    if (sender == null) {</span>
+<span class="fc" id="L419">      final SECPPublicKey publicKey =</span>
+          SIGNATURE_ALGORITHM
+<span class="fc" id="L421">              .get()</span>
+<span class="fc" id="L422">              .recoverPublicKeyFromSignature(getOrComputeSenderRecoveryHash(), signature)</span>
+<span class="fc" id="L423">              .orElseThrow(</span>
+                  () -&gt;
+<span class="nc" id="L425">                      new IllegalStateException(</span>
+                          &quot;Cannot recover public key from signature for &quot; + this));
+<span class="fc" id="L427">      sender = Address.extract(Hash.hash(publicKey.getEncodedBytes()));</span>
+    }
+<span class="fc" id="L429">    return sender;</span>
+  }
+
+  private Bytes32 getOrComputeSenderRecoveryHash() {
+<span class="pc bpc" id="L433" title="1 of 2 branches missed.">    if (hashNoSignature == null) {</span>
+<span class="fc" id="L434">      hashNoSignature =</span>
+<span class="fc" id="L435">          computeSenderRecoveryHash(</span>
+              nonce,
+              gasPrice,
+              gasLimit,
+<span class="fc" id="L439">              to.orElse(null),</span>
+              value,
+              payload,
+              chainId,
+              privateFrom,
+              privateFor,
+              privacyGroupId,
+<span class="fc" id="L446">              restriction.getBytes());</span>
+    }
+<span class="fc" id="L448">    return hashNoSignature;</span>
+  }
+
+  /**
+   * Writes the transaction to RLP
+   *
+   * @param out the output to write the transaction to
+   */
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L457">    out.writeRLPBytes(serialize(this).encoded());</span>
+<span class="fc" id="L458">  }</span>
+
+  public static BytesValueRLPOutput serialize(
+      final org.hyperledger.besu.plugin.data.PrivateTransaction t) {
+<span class="fc" id="L462">    final BytesValueRLPOutput out = new BytesValueRLPOutput();</span>
+<span class="fc" id="L463">    out.startList();</span>
+
+<span class="fc" id="L465">    out.writeLongScalar(t.getNonce());</span>
+<span class="fc" id="L466">    out.writeUInt256Scalar((Wei) t.getGasPrice());</span>
+<span class="fc" id="L467">    out.writeLongScalar(t.getGasLimit());</span>
+<span class="fc bfc" id="L468" title="All 2 branches covered.">    out.writeBytes(t.getTo().isPresent() ? t.getTo().get() : Bytes.EMPTY);</span>
+<span class="fc" id="L469">    out.writeUInt256Scalar((Wei) t.getValue());</span>
+<span class="fc" id="L470">    out.writeBytes(t.getPayload());</span>
+<span class="fc" id="L471">    out.writeBigIntegerScalar(t.getV());</span>
+<span class="fc" id="L472">    out.writeBigIntegerScalar(t.getR());</span>
+<span class="fc" id="L473">    out.writeBigIntegerScalar(t.getS());</span>
+<span class="fc" id="L474">    out.writeBytes(t.getPrivateFrom());</span>
+<span class="fc" id="L475">    t.getPrivateFor()</span>
+<span class="fc" id="L476">        .ifPresent(privateFor -&gt; out.writeList(privateFor, (bv, rlpO) -&gt; rlpO.writeBytes(bv)));</span>
+<span class="fc" id="L477">    t.getPrivacyGroupId().ifPresent(out::writeBytes);</span>
+<span class="fc" id="L478">    out.writeBytes(t.getRestriction().getBytes());</span>
+
+<span class="fc" id="L480">    out.endList();</span>
+<span class="fc" id="L481">    return out;</span>
+  }
+
+  @Override
+  public BigInteger getR() {
+<span class="fc" id="L486">    return signature.getR();</span>
+  }
+
+  @Override
+  public BigInteger getS() {
+<span class="fc" id="L491">    return signature.getS();</span>
+  }
+
+  @Override
+  public BigInteger getV() {
+    final BigInteger v;
+<span class="fc" id="L497">    final BigInteger recId = BigInteger.valueOf(signature.getRecId());</span>
+<span class="fc bfc" id="L498" title="All 2 branches covered.">    if (!chainId.isPresent()) {</span>
+<span class="fc" id="L499">      v = recId.add(REPLAY_UNPROTECTED_V_BASE);</span>
+    } else {
+<span class="fc" id="L501">      v = recId.add(REPLAY_PROTECTED_V_BASE).add(TWO.multiply(chainId.get()));</span>
+    }
+<span class="fc" id="L503">    return v;</span>
+  }
+
+  /**
+   * Returns whether the transaction is a contract creation
+   *
+   * @return {@code true} if this is a contract-creation transaction; otherwise {@code false}
+   */
+  public boolean isContractCreation() {
+<span class="pc bpc" id="L512" title="1 of 2 branches missed.">    return !getTo().isPresent();</span>
+  }
+
+  /**
+   * Calculates the up-front cost for the gas the transaction can use.
+   *
+   * @return the up-front cost for the gas the transaction can use.
+   */
+  public Wei getUpfrontGasCost() {
+<span class="nc" id="L521">    return getGasPrice().multiply(getGasLimit());</span>
+  }
+
+  /**
+   * Calculates the up-front cost for the transaction.
+   *
+   * &lt;p&gt;The up-front cost is paid by the sender account before the transaction is executed. The
+   * sender must have the amount in its account balance to execute and some of this amount may be
+   * refunded after the transaction has executed.
+   *
+   * @return the up-front gas cost for the transaction
+   */
+  public Wei getUpfrontCost() {
+<span class="nc" id="L534">    return getUpfrontGasCost().add(getValue());</span>
+  }
+
+  /**
+   * Determines the privacy group id. Either returning the value of privacyGroupId field if it
+   * exists or calculating the EEA privacyGroupId from the privateFrom and privateFor fields.
+   *
+   * @return the privacyGroupId
+   */
+  public Bytes32 determinePrivacyGroupId() {
+<span class="fc bfc" id="L544" title="All 2 branches covered.">    if (getPrivacyGroupId().isPresent()) {</span>
+<span class="fc" id="L545">      return Bytes32.wrap(getPrivacyGroupId().get());</span>
+    } else {
+<span class="fc" id="L547">      final List&lt;Bytes&gt; privateFor = getPrivateFor().orElse(Lists.newArrayList());</span>
+<span class="fc" id="L548">      return PrivacyGroupUtil.calculateEeaPrivacyGroupId(getPrivateFrom(), privateFor);</span>
+    }
+  }
+
+  private static Bytes32 computeSenderRecoveryHash(
+      final long nonce,
+      final Wei gasPrice,
+      final long gasLimit,
+      final Address to,
+      final Wei value,
+      final Bytes payload,
+      final Optional&lt;BigInteger&gt; chainId,
+      final Bytes privateFrom,
+      final Optional&lt;List&lt;Bytes&gt;&gt; privateFor,
+      final Optional&lt;Bytes&gt; privacyGroupId,
+      final Bytes restriction) {
+<span class="fc" id="L564">    return keccak256(</span>
+<span class="fc" id="L565">        RLP.encode(</span>
+            out -&gt; {
+<span class="fc" id="L567">              out.startList();</span>
+<span class="fc" id="L568">              out.writeLongScalar(nonce);</span>
+<span class="fc" id="L569">              out.writeUInt256Scalar(gasPrice);</span>
+<span class="fc" id="L570">              out.writeLongScalar(gasLimit);</span>
+<span class="fc bfc" id="L571" title="All 2 branches covered.">              out.writeBytes(to == null ? Bytes.EMPTY : to);</span>
+<span class="fc" id="L572">              out.writeUInt256Scalar(value);</span>
+<span class="fc" id="L573">              out.writeBytes(payload);</span>
+<span class="fc bfc" id="L574" title="All 2 branches covered.">              if (chainId.isPresent()) {</span>
+<span class="fc" id="L575">                out.writeBigIntegerScalar(chainId.get());</span>
+<span class="fc" id="L576">                out.writeUInt256Scalar(UInt256.ZERO);</span>
+<span class="fc" id="L577">                out.writeUInt256Scalar(UInt256.ZERO);</span>
+              }
+<span class="fc" id="L579">              out.writeBytes(privateFrom);</span>
+<span class="fc" id="L580">              privateFor.ifPresent(pF -&gt; out.writeList(pF, (bv, rlpO) -&gt; rlpO.writeBytes(bv)));</span>
+<span class="fc" id="L581">              privacyGroupId.ifPresent(out::writeBytes);</span>
+<span class="fc" id="L582">              out.writeBytes(restriction);</span>
+<span class="fc" id="L583">              out.endList();</span>
+<span class="fc" id="L584">            }));</span>
+  }
+
+  @Override
+  public boolean equals(final Object other) {
+<span class="pc bpc" id="L589" title="1 of 2 branches missed.">    if (!(other instanceof PrivateTransaction)) {</span>
+<span class="nc" id="L590">      return false;</span>
+    }
+<span class="fc" id="L592">    final PrivateTransaction that = (PrivateTransaction) other;</span>
+<span class="pc bpc" id="L593" title="2 of 4 branches missed.">    return this.chainId.equals(that.chainId)</span>
+        &amp;&amp; this.gasLimit == that.gasLimit
+<span class="pc bpc" id="L595" title="2 of 4 branches missed.">        &amp;&amp; this.gasPrice.equals(that.gasPrice)</span>
+        &amp;&amp; this.nonce == that.nonce
+<span class="pc bpc" id="L597" title="1 of 2 branches missed.">        &amp;&amp; this.payload.equals(that.payload)</span>
+<span class="pc bpc" id="L598" title="1 of 2 branches missed.">        &amp;&amp; this.signature.equals(that.signature)</span>
+<span class="pc bpc" id="L599" title="1 of 2 branches missed.">        &amp;&amp; this.to.equals(that.to)</span>
+<span class="pc bpc" id="L600" title="1 of 2 branches missed.">        &amp;&amp; this.value.equals(that.value)</span>
+<span class="pc bpc" id="L601" title="1 of 2 branches missed.">        &amp;&amp; this.privateFor.equals(that.privateFor)</span>
+<span class="pc bpc" id="L602" title="1 of 2 branches missed.">        &amp;&amp; this.privateFrom.equals(that.privateFrom)</span>
+<span class="pc bpc" id="L603" title="1 of 2 branches missed.">        &amp;&amp; this.restriction.equals(that.restriction);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L608">    return Objects.hash(</span>
+<span class="nc" id="L609">        nonce,</span>
+        gasPrice,
+<span class="nc" id="L611">        gasLimit,</span>
+        to,
+        value,
+        payload,
+        signature,
+        chainId,
+        privateFor,
+        privateFrom,
+        restriction);
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L624">    final StringBuilder sb = new StringBuilder();</span>
+<span class="nc bnc" id="L625" title="All 2 branches missed.">    sb.append(isContractCreation() ? &quot;ContractCreation&quot; : &quot;MessageCall&quot;).append(&quot;{&quot;);</span>
+<span class="nc" id="L626">    sb.append(&quot;nonce=&quot;).append(getNonce()).append(&quot;, &quot;);</span>
+<span class="nc" id="L627">    sb.append(&quot;gasPrice=&quot;).append(getGasPrice()).append(&quot;, &quot;);</span>
+<span class="nc" id="L628">    sb.append(&quot;gasLimit=&quot;).append(getGasLimit()).append(&quot;, &quot;);</span>
+<span class="nc bnc" id="L629" title="All 2 branches missed.">    if (getTo().isPresent()) sb.append(&quot;to=&quot;).append(getTo().get()).append(&quot;, &quot;);</span>
+<span class="nc" id="L630">    sb.append(&quot;value=&quot;).append(getValue()).append(&quot;, &quot;);</span>
+<span class="nc" id="L631">    sb.append(&quot;sig=&quot;).append(getSignature()).append(&quot;, &quot;);</span>
+<span class="nc bnc" id="L632" title="All 2 branches missed.">    if (chainId.isPresent()) sb.append(&quot;chainId=&quot;).append(getChainId().get()).append(&quot;, &quot;);</span>
+<span class="nc" id="L633">    sb.append(&quot;payload=&quot;).append(getPayload()).append(&quot;, &quot;);</span>
+<span class="nc" id="L634">    sb.append(&quot;privateFrom=&quot;).append(getPrivateFrom()).append(&quot;, &quot;);</span>
+<span class="nc bnc" id="L635" title="All 2 branches missed.">    if (getPrivateFor().isPresent())</span>
+<span class="nc" id="L636">      sb.append(&quot;privateFor=&quot;)</span>
+<span class="nc" id="L637">          .append(Arrays.toString(getPrivateFor().get().toArray()))</span>
+<span class="nc" id="L638">          .append(&quot;, &quot;);</span>
+<span class="nc bnc" id="L639" title="All 2 branches missed.">    if (getPrivacyGroupId().isPresent())</span>
+<span class="nc" id="L640">      sb.append(&quot;privacyGroupId=&quot;).append(getPrivacyGroupId().get()).append(&quot;, &quot;);</span>
+<span class="nc" id="L641">    sb.append(&quot;restriction=&quot;).append(getRestriction());</span>
+<span class="nc" id="L642">    return sb.append(&quot;}&quot;).toString();</span>
+  }
+
+  public Optional&lt;Address&gt; contractAddress() {
+<span class="nc bnc" id="L646" title="All 2 branches missed.">    if (isContractCreation()) {</span>
+<span class="nc" id="L647">      return Optional.of(Address.contractAddress(getSender(), getNonce()));</span>
+    }
+<span class="nc" id="L649">    return Optional.empty();</span>
+  }
+
+<span class="fc" id="L652">  public static class Builder {</span>
+
+<span class="fc" id="L654">    protected long nonce = -1L;</span>
+
+    protected Wei gasPrice;
+
+<span class="fc" id="L658">    protected long gasLimit = -1L;</span>
+
+    protected Address to;
+
+    protected Wei value;
+
+    protected SECPSignature signature;
+
+    protected Bytes payload;
+
+    protected Address sender;
+
+<span class="fc" id="L670">    protected Optional&lt;BigInteger&gt; chainId = Optional.empty();</span>
+
+    protected Bytes privateFrom;
+
+<span class="fc" id="L674">    protected Optional&lt;List&lt;Bytes&gt;&gt; privateFor = Optional.empty();</span>
+
+<span class="fc" id="L676">    protected Optional&lt;Bytes&gt; privacyGroupId = Optional.empty();</span>
+
+    protected Restriction restriction;
+
+    public Builder chainId(final BigInteger chainId) {
+<span class="fc" id="L681">      this.chainId = Optional.of(chainId);</span>
+<span class="fc" id="L682">      return this;</span>
+    }
+
+    public Builder gasPrice(final Wei gasPrice) {
+<span class="fc" id="L686">      this.gasPrice = gasPrice;</span>
+<span class="fc" id="L687">      return this;</span>
+    }
+
+    public Builder gasLimit(final long gasLimit) {
+<span class="fc" id="L691">      this.gasLimit = gasLimit;</span>
+<span class="fc" id="L692">      return this;</span>
+    }
+
+    public Builder nonce(final long nonce) {
+<span class="fc" id="L696">      this.nonce = nonce;</span>
+<span class="fc" id="L697">      return this;</span>
+    }
+
+    public Builder value(final Wei value) {
+<span class="fc" id="L701">      this.value = value;</span>
+<span class="fc" id="L702">      return this;</span>
+    }
+
+    public Builder to(final Address to) {
+<span class="fc" id="L706">      this.to = to;</span>
+<span class="fc" id="L707">      return this;</span>
+    }
+
+    public Builder payload(final Bytes payload) {
+<span class="fc" id="L711">      this.payload = payload;</span>
+<span class="fc" id="L712">      return this;</span>
+    }
+
+    public Builder sender(final Address sender) {
+<span class="fc" id="L716">      this.sender = sender;</span>
+<span class="fc" id="L717">      return this;</span>
+    }
+
+    public Builder signature(final SECPSignature signature) {
+<span class="fc" id="L721">      this.signature = signature;</span>
+<span class="fc" id="L722">      return this;</span>
+    }
+
+    public Builder privacyGroupId(final Bytes privacyGroupId) {
+<span class="fc" id="L726">      this.privacyGroupId = Optional.of(privacyGroupId);</span>
+<span class="fc" id="L727">      return this;</span>
+    }
+
+    public Builder privateFrom(final Bytes privateFrom) {
+<span class="fc" id="L731">      this.privateFrom = privateFrom;</span>
+<span class="fc" id="L732">      return this;</span>
+    }
+
+    public Builder privateFor(final List&lt;Bytes&gt; privateFor) {
+<span class="fc" id="L736">      this.privateFor = Optional.of(privateFor);</span>
+<span class="fc" id="L737">      return this;</span>
+    }
+
+    public Builder restriction(final Restriction restriction) {
+<span class="fc" id="L741">      this.restriction = restriction;</span>
+<span class="fc" id="L742">      return this;</span>
+    }
+
+    public PrivateTransaction build() {
+<span class="fc bfc" id="L746" title="All 4 branches covered.">      if (privacyGroupId.isPresent() &amp;&amp; privateFor.isPresent()) {</span>
+<span class="fc" id="L747">        throw new IllegalArgumentException(</span>
+            &quot;Private transaction should contain either privacyGroup or privateFor, but not both&quot;);
+      }
+<span class="fc" id="L750">      return new PrivateTransaction(</span>
+          nonce,
+          gasPrice,
+          gasLimit,
+<span class="fc" id="L754">          Optional.ofNullable(to),</span>
+          value,
+          signature,
+          payload,
+          sender,
+          chainId,
+          privateFrom,
+          privateFor,
+          privacyGroupId,
+          restriction);
+    }
+
+    public PrivateTransaction signAndBuild(final KeyPair keys) {
+<span class="pc bpc" id="L767" title="1 of 2 branches missed.">      checkState(</span>
+          signature == null, &quot;The transaction signature has already been provided to this builder&quot;);
+<span class="fc" id="L769">      signature(computeSignature(keys));</span>
+<span class="fc" id="L770">      sender(Address.extract(Hash.hash(keys.getPublicKey().getEncodedBytes())));</span>
+<span class="fc" id="L771">      return build();</span>
+    }
+
+    protected SECPSignature computeSignature(final KeyPair keys) {
+<span class="fc" id="L775">      final Bytes32 hash =</span>
+<span class="fc" id="L776">          computeSenderRecoveryHash(</span>
+              nonce,
+              gasPrice,
+              gasLimit,
+              to,
+              value,
+              payload,
+              chainId,
+              privateFrom,
+              privateFor,
+              privacyGroupId,
+<span class="fc" id="L787">              restriction.getBytes());</span>
+<span class="fc" id="L788">      return SIGNATURE_ALGORITHM.get().sign(hash, keys);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FullFlatDbStrategy.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai.storage.flat</a> &gt; <span class="el_source">FullFlatDbStrategy.java</span></div><h1>FullFlatDbStrategy.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.bonsai.storage.flat;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_INFO_STATE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_STORAGE_STORAGE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+
+public class FullFlatDbStrategy extends FlatDbStrategy {
+
+  protected final Counter getAccountNotFoundInFlatDatabaseCounter;
+
+  protected final Counter getStorageValueNotFoundInFlatDatabaseCounter;
+
+  public FullFlatDbStrategy(
+      final MetricsSystem metricsSystem, final CodeStorageStrategy codeStorageStrategy) {
+<span class="fc" id="L42">    super(metricsSystem, codeStorageStrategy);</span>
+
+<span class="fc" id="L44">    getAccountNotFoundInFlatDatabaseCounter =</span>
+<span class="fc" id="L45">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_account_missing_flat_database&quot;,
+            &quot;Number of accounts not found in the flat database&quot;);
+
+<span class="fc" id="L50">    getStorageValueNotFoundInFlatDatabaseCounter =</span>
+<span class="fc" id="L51">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_storagevalue_missing_flat_database&quot;,
+            &quot;Number of storage slots not found in the flat database&quot;);
+<span class="fc" id="L55">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getFlatAccount(
+      final Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      final NodeLoader nodeLoader,
+      final Hash accountHash,
+      final SegmentedKeyValueStorage storage) {
+<span class="fc" id="L63">    getAccountCounter.inc();</span>
+<span class="fc" id="L64">    final Optional&lt;Bytes&gt; accountFound =</span>
+<span class="fc" id="L65">        storage.get(ACCOUNT_INFO_STATE, accountHash.toArrayUnsafe()).map(Bytes::wrap);</span>
+<span class="pc bpc" id="L66" title="1 of 2 branches missed.">    if (accountFound.isPresent()) {</span>
+<span class="nc" id="L67">      getAccountFoundInFlatDatabaseCounter.inc();</span>
+    } else {
+<span class="fc" id="L69">      getAccountNotFoundInFlatDatabaseCounter.inc();</span>
+    }
+<span class="fc" id="L71">    return accountFound;</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getFlatStorageValueByStorageSlotKey(
+      final Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      final Supplier&lt;Optional&lt;Hash&gt;&gt; storageRootSupplier,
+      final NodeLoader nodeLoader,
+      final Hash accountHash,
+      final StorageSlotKey storageSlotKey,
+      final SegmentedKeyValueStorage storage) {
+<span class="nc" id="L82">    getStorageValueCounter.inc();</span>
+<span class="nc" id="L83">    final Optional&lt;Bytes&gt; storageFound =</span>
+        storage
+<span class="nc" id="L85">            .get(</span>
+                ACCOUNT_STORAGE_STORAGE,
+<span class="nc" id="L87">                Bytes.concatenate(accountHash, storageSlotKey.getSlotHash()).toArrayUnsafe())</span>
+<span class="nc" id="L88">            .map(Bytes::wrap);</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">    if (storageFound.isPresent()) {</span>
+<span class="nc" id="L90">      getStorageValueFlatDatabaseCounter.inc();</span>
+    } else {
+<span class="nc" id="L92">      getStorageValueNotFoundInFlatDatabaseCounter.inc();</span>
+    }
+
+<span class="nc" id="L95">    return storageFound;</span>
+  }
+
+  @Override
+  public void resetOnResync(final SegmentedKeyValueStorage storage) {
+    // NOOP
+    // not need to reset anything in full mode
+<span class="fc" id="L102">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

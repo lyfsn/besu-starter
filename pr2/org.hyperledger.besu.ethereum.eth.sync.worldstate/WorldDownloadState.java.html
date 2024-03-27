@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WorldDownloadState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.worldstate</a> &gt; <span class="el_source">WorldDownloadState.java</span></div><h1>WorldDownloadState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.worldstate;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.manager.task.EthTask;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.services.tasks.InMemoryTasksPriorityQueues;
+import org.hyperledger.besu.services.tasks.Task;
+import org.hyperledger.besu.services.tasks.TasksPriorityProvider;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.time.Clock;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class WorldDownloadState&lt;REQUEST extends TasksPriorityProvider&gt; {
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(WorldDownloadState.class);</span>
+
+  private boolean downloadWasResumed;
+  protected final InMemoryTasksPriorityQueues&lt;REQUEST&gt; pendingRequests;
+
+  protected final int maxRequestsWithoutProgress;
+  private final Clock clock;
+<span class="fc" id="L46">  private final Set&lt;EthTask&lt;?&gt;&gt; outstandingRequests =</span>
+<span class="fc" id="L47">      Collections.newSetFromMap(new ConcurrentHashMap&lt;&gt;());</span>
+  protected CompletableFuture&lt;Void&gt; internalFuture;
+  private CompletableFuture&lt;Void&gt; downloadFuture;
+  // Volatile so monitoring can access it without having to synchronize.
+<span class="fc" id="L51">  protected volatile int requestsSinceLastProgress = 0;</span>
+  private final long minMillisBeforeStalling;
+  private volatile long timestampOfLastProgress;
+  protected Bytes rootNodeData;
+
+  protected final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  protected WorldStateDownloadProcess worldStateDownloadProcess;
+
+  public WorldDownloadState(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final InMemoryTasksPriorityQueues&lt;REQUEST&gt; pendingRequests,
+      final int maxRequestsWithoutProgress,
+      final long minMillisBeforeStalling,
+<span class="fc" id="L64">      final Clock clock) {</span>
+<span class="fc" id="L65">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L66">    this.minMillisBeforeStalling = minMillisBeforeStalling;</span>
+<span class="fc" id="L67">    this.timestampOfLastProgress = clock.millis();</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">    this.downloadWasResumed = !pendingRequests.isEmpty();</span>
+<span class="fc" id="L69">    this.pendingRequests = pendingRequests;</span>
+<span class="fc" id="L70">    this.maxRequestsWithoutProgress = maxRequestsWithoutProgress;</span>
+<span class="fc" id="L71">    this.clock = clock;</span>
+<span class="fc" id="L72">    this.internalFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L73">    this.downloadFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L74">    this.internalFuture.whenComplete(this::cleanup);</span>
+<span class="fc" id="L75">    this.downloadFuture.exceptionally(</span>
+        error -&gt; {
+          // Propagate cancellation back to our internal future.
+<span class="fc bfc" id="L78" title="All 2 branches covered.">          if (error instanceof CancellationException) {</span>
+<span class="fc" id="L79">            this.internalFuture.cancel(true);</span>
+          }
+<span class="fc" id="L81">          return null;</span>
+        });
+<span class="fc" id="L83">  }</span>
+
+  public void reset() {
+<span class="nc" id="L86">    this.timestampOfLastProgress = clock.millis();</span>
+<span class="nc" id="L87">    this.requestsSinceLastProgress = 0;</span>
+<span class="nc" id="L88">    this.downloadWasResumed = true;</span>
+<span class="nc" id="L89">    this.internalFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="nc" id="L90">    this.downloadFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="nc" id="L91">    this.internalFuture.whenComplete(this::cleanup);</span>
+<span class="nc" id="L92">    this.downloadFuture.exceptionally(</span>
+        error -&gt; {
+          // Propagate cancellation back to our internal future.
+<span class="nc bnc" id="L95" title="All 2 branches missed.">          if (error instanceof CancellationException) {</span>
+<span class="nc" id="L96">            this.internalFuture.cancel(true);</span>
+          }
+<span class="nc" id="L98">          return null;</span>
+        });
+<span class="nc" id="L100">  }</span>
+
+  private synchronized void cleanup(final Void result, final Throwable error) {
+    // Handle cancellations
+<span class="fc bfc" id="L104" title="All 2 branches covered.">    if (internalFuture.isCancelled()) {</span>
+<span class="fc" id="L105">      LOG.info(&quot;World state download cancelled&quot;);</span>
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    } else if (error != null) {</span>
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">      if (!(ExceptionUtils.rootCause(error) instanceof StalledDownloadException)) {</span>
+<span class="nc" id="L108">        LOG.info(&quot;World state download failed. &quot;, error);</span>
+      }
+    }
+
+<span class="fc" id="L112">    cleanupQueues();</span>
+
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">      if (worldStateDownloadProcess != null) {</span>
+<span class="fc" id="L116">        worldStateDownloadProcess.abort();</span>
+      }
+<span class="fc" id="L118">      downloadFuture.completeExceptionally(error);</span>
+    } else {
+<span class="fc" id="L120">      downloadFuture.complete(result);</span>
+    }
+<span class="fc" id="L122">  }</span>
+
+  protected synchronized void cleanupQueues() {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    for (final EthTask&lt;?&gt; outstandingRequest : outstandingRequests) {</span>
+<span class="fc" id="L126">      outstandingRequest.cancel();</span>
+<span class="fc" id="L127">    }</span>
+<span class="fc" id="L128">    pendingRequests.clear();</span>
+<span class="fc" id="L129">  }</span>
+
+  public boolean downloadWasResumed() {
+<span class="fc" id="L132">    return downloadWasResumed;</span>
+  }
+
+  public void addOutstandingTask(final EthTask&lt;?&gt; task) {
+<span class="fc" id="L136">    outstandingRequests.add(task);</span>
+<span class="fc" id="L137">  }</span>
+
+  public void removeOutstandingTask(final EthTask&lt;?&gt; task) {
+<span class="fc" id="L140">    outstandingRequests.remove(task);</span>
+<span class="fc" id="L141">  }</span>
+
+  public int getOutstandingTaskCount() {
+<span class="nc" id="L144">    return outstandingRequests.size();</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; getDownloadFuture() {
+<span class="fc" id="L148">    return downloadFuture;</span>
+  }
+
+  public synchronized void enqueueRequest(final REQUEST request) {
+<span class="fc bfc" id="L152" title="All 2 branches covered.">    if (!internalFuture.isDone()) {</span>
+<span class="fc" id="L153">      pendingRequests.add(request);</span>
+<span class="fc" id="L154">      notifyAll();</span>
+    }
+<span class="fc" id="L156">  }</span>
+
+  public synchronized void enqueueRequests(final Stream&lt;REQUEST&gt; requests) {
+<span class="fc bfc" id="L159" title="All 2 branches covered.">    if (!internalFuture.isDone()) {</span>
+<span class="fc" id="L160">      requests.forEach(pendingRequests::add);</span>
+<span class="fc" id="L161">      notifyAll();</span>
+    }
+<span class="fc" id="L163">  }</span>
+
+  public synchronized Task&lt;REQUEST&gt; dequeueRequestBlocking() {
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    while (!internalFuture.isDone()) {</span>
+<span class="fc" id="L167">      Task&lt;REQUEST&gt; task = pendingRequests.remove();</span>
+<span class="fc bfc" id="L168" title="All 2 branches covered.">      if (task != null) {</span>
+<span class="fc" id="L169">        return task;</span>
+      }
+      try {
+<span class="fc" id="L172">        wait();</span>
+<span class="nc" id="L173">      } catch (final InterruptedException e) {</span>
+<span class="nc" id="L174">        Thread.currentThread().interrupt();</span>
+<span class="nc" id="L175">        return null;</span>
+<span class="fc" id="L176">      }</span>
+<span class="fc" id="L177">    }</span>
+<span class="fc" id="L178">    return null;</span>
+  }
+
+  public synchronized void setRootNodeData(final Bytes rootNodeData) {
+<span class="fc" id="L182">    this.rootNodeData = rootNodeData;</span>
+<span class="fc" id="L183">  }</span>
+
+  public synchronized void requestComplete(
+      final boolean madeProgress, final long minMillisBeforeStalling) {
+<span class="fc bfc" id="L187" title="All 2 branches covered.">    if (madeProgress) {</span>
+<span class="fc" id="L188">      requestsSinceLastProgress = 0;</span>
+<span class="fc" id="L189">      timestampOfLastProgress = clock.millis();</span>
+    } else {
+<span class="fc" id="L191">      requestsSinceLastProgress++;</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">      if (requestsSinceLastProgress &gt;= maxRequestsWithoutProgress</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">          &amp;&amp; timestampOfLastProgress + minMillisBeforeStalling &lt; clock.millis()) {</span>
+<span class="fc" id="L194">        markAsStalled(maxRequestsWithoutProgress);</span>
+      }
+    }
+<span class="fc" id="L197">  }</span>
+
+  public synchronized void requestComplete(final boolean madeProgress) {
+<span class="fc" id="L200">    requestComplete(madeProgress, minMillisBeforeStalling);</span>
+<span class="fc" id="L201">  }</span>
+
+  public int getRequestsSinceLastProgress() {
+<span class="nc" id="L204">    return requestsSinceLastProgress;</span>
+  }
+
+  protected synchronized void markAsStalled(final int maxNodeRequestRetries) {
+<span class="fc" id="L208">    final String message =</span>
+        &quot;Download stalled due to too many failures to retrieve node data (&gt;&quot;
+            + maxNodeRequestRetries
+            + &quot; requests without making progress)&quot;;
+
+<span class="fc" id="L213">    final WorldStateDownloaderException e = new StalledDownloadException(message);</span>
+<span class="fc" id="L214">    internalFuture.completeExceptionally(e);</span>
+<span class="fc" id="L215">  }</span>
+
+  public synchronized boolean isDownloading() {
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    return !internalFuture.isDone();</span>
+  }
+
+  public synchronized void notifyTaskAvailable() {
+<span class="nc" id="L222">    notifyAll();</span>
+<span class="nc" id="L223">  }</span>
+
+  public CompletableFuture&lt;Void&gt; startDownload(
+      final WorldStateDownloadProcess worldStateDownloadProcess, final EthScheduler ethScheduler) {
+<span class="fc" id="L227">    this.worldStateDownloadProcess = worldStateDownloadProcess;</span>
+<span class="fc" id="L228">    final CompletableFuture&lt;Void&gt; processFuture = worldStateDownloadProcess.start(ethScheduler);</span>
+
+<span class="fc" id="L230">    processFuture.whenComplete(</span>
+        (result, error) -&gt; {
+<span class="pc bpc" id="L232" title="1 of 2 branches missed.">          if (error != null</span>
+<span class="pc bpc" id="L233" title="1 of 2 branches missed.">              &amp;&amp; !(ExceptionUtils.rootCause(error) instanceof CancellationException)) {</span>
+            // The pipeline is only ever cancelled by us or shutdown closing the EthScheduler
+            // In either case we don't want to consider the download failed as we either already
+            // dealing with it or it's just a normal shutdown. Hence, don't propagate
+            // CancellationException
+<span class="nc" id="L238">            internalFuture.completeExceptionally(error);</span>
+          }
+<span class="fc" id="L240">        });</span>
+<span class="fc" id="L241">    return downloadFuture;</span>
+  }
+
+  public void setWorldStateDownloadProcess(
+      final WorldStateDownloadProcess worldStateDownloadProcess) {
+<span class="fc" id="L246">    this.worldStateDownloadProcess = worldStateDownloadProcess;</span>
+<span class="fc" id="L247">  }</span>
+
+  public abstract boolean checkCompletion(final BlockHeader header);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

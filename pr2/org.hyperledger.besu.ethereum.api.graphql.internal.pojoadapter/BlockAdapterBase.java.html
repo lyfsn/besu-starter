@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockAdapterBase.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter</a> &gt; <span class="el_source">BlockAdapterBase.java</span></div><h1>BlockAdapterBase.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.graphql.GraphQLContextType;
+import org.hyperledger.besu.ethereum.api.query.BlockWithMetadata;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.query.LogsQuery;
+import org.hyperledger.besu.ethereum.api.query.TransactionWithMetadata;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.transaction.CallParameter;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.evm.log.LogTopic;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+
+import com.google.common.primitives.Longs;
+import graphql.schema.DataFetchingEnvironment;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+@SuppressWarnings(&quot;unused&quot;) // reflected by GraphQL
+public class BlockAdapterBase extends AdapterBase {
+
+  private final BlockHeader header;
+
+<span class="fc" id="L56">  BlockAdapterBase(final BlockHeader header) {</span>
+<span class="fc" id="L57">    this.header = header;</span>
+<span class="fc" id="L58">  }</span>
+
+  public Optional&lt;NormalBlockAdapter&gt; getParent(final DataFetchingEnvironment environment) {
+<span class="fc" id="L61">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L62">    final Hash parentHash = header.getParentHash();</span>
+<span class="fc" id="L63">    final Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; block =</span>
+<span class="fc" id="L64">        query.blockByHash(parentHash);</span>
+<span class="fc" id="L65">    return block.map(NormalBlockAdapter::new);</span>
+  }
+
+  public Bytes32 getHash() {
+<span class="fc" id="L69">    return header.getHash();</span>
+  }
+
+  public Bytes getNonce() {
+<span class="fc" id="L73">    final long nonce = header.getNonce();</span>
+<span class="fc" id="L74">    final byte[] bytes = Longs.toByteArray(nonce);</span>
+<span class="fc" id="L75">    return Bytes.wrap(bytes);</span>
+  }
+
+  public Bytes32 getTransactionsRoot() {
+<span class="fc" id="L79">    return header.getTransactionsRoot();</span>
+  }
+
+  public Bytes32 getStateRoot() {
+<span class="fc" id="L83">    return header.getStateRoot();</span>
+  }
+
+  public Bytes32 getReceiptsRoot() {
+<span class="fc" id="L87">    return header.getReceiptsRoot();</span>
+  }
+
+  public AccountAdapter getMiner(final DataFetchingEnvironment environment) {
+
+<span class="fc" id="L92">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L93">    long blockNumber = header.getNumber();</span>
+<span class="fc" id="L94">    final Long bn = environment.getArgument(&quot;block&quot;);</span>
+<span class="pc bpc" id="L95" title="1 of 2 branches missed.">    if (bn != null) {</span>
+<span class="nc" id="L96">      blockNumber = bn;</span>
+    }
+
+<span class="fc" id="L99">    return query</span>
+<span class="fc" id="L100">        .getAndMapWorldState(blockNumber, ws -&gt; Optional.ofNullable(ws.get(header.getCoinbase())))</span>
+<span class="fc" id="L101">        .map(AccountAdapter::new)</span>
+<span class="fc" id="L102">        .orElseGet(() -&gt; new EmptyAccountAdapter(header.getCoinbase()));</span>
+  }
+
+  public Bytes getExtraData() {
+<span class="fc" id="L106">    return header.getExtraData();</span>
+  }
+
+  public Optional&lt;Wei&gt; getBaseFeePerGas() {
+<span class="fc" id="L110">    return header.getBaseFee();</span>
+  }
+
+  public Long getGasLimit() {
+<span class="fc" id="L114">    return header.getGasLimit();</span>
+  }
+
+  public Long getGasUsed() {
+<span class="fc" id="L118">    return header.getGasUsed();</span>
+  }
+
+  public Long getTimestamp() {
+<span class="fc" id="L122">    return header.getTimestamp();</span>
+  }
+
+  public Bytes getLogsBloom() {
+<span class="fc" id="L126">    return header.getLogsBloom();</span>
+  }
+
+  public Bytes32 getMixHash() {
+<span class="fc" id="L130">    return header.getMixHash();</span>
+  }
+
+  public Difficulty getDifficulty() {
+<span class="fc" id="L134">    return header.getDifficulty();</span>
+  }
+
+  public Bytes32 getOmmerHash() {
+<span class="fc" id="L138">    return header.getOmmersHash();</span>
+  }
+
+  public Long getNumber() {
+<span class="fc" id="L142">    return header.getNumber();</span>
+  }
+
+  public AccountAdapter getAccount(final DataFetchingEnvironment environment) {
+<span class="fc" id="L146">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L147">    final long bn = header.getNumber();</span>
+<span class="fc" id="L148">    final Address address = environment.getArgument(&quot;address&quot;);</span>
+<span class="fc" id="L149">    return query</span>
+<span class="fc" id="L150">        .getAndMapWorldState(</span>
+<span class="fc" id="L151">            bn, ws -&gt; Optional.of(new AccountAdapter(ws.get(address), Optional.of(bn))))</span>
+<span class="fc" id="L152">        .get();</span>
+  }
+
+  public List&lt;LogAdapter&gt; getLogs(final DataFetchingEnvironment environment) {
+
+<span class="fc" id="L157">    final Map&lt;String, Object&gt; filter = environment.getArgument(&quot;filter&quot;);</span>
+
+    @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L160">    final List&lt;Address&gt; addresses = (List&lt;Address&gt;) filter.get(&quot;addresses&quot;);</span>
+    @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L162">    final List&lt;List&lt;Bytes32&gt;&gt; topics = (List&lt;List&lt;Bytes32&gt;&gt;) filter.get(&quot;topics&quot;);</span>
+
+<span class="fc" id="L164">    final List&lt;List&lt;LogTopic&gt;&gt; transformedTopics = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L165" title="All 2 branches covered.">    for (final List&lt;Bytes32&gt; topic : topics) {</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">      if (topic.isEmpty()) {</span>
+<span class="fc" id="L167">        transformedTopics.add(Collections.singletonList(null));</span>
+      } else {
+<span class="fc" id="L169">        transformedTopics.add(topic.stream().map(LogTopic::of).toList());</span>
+      }
+<span class="fc" id="L171">    }</span>
+<span class="fc" id="L172">    final LogsQuery query =</span>
+<span class="fc" id="L173">        new LogsQuery.Builder().addresses(addresses).topics(transformedTopics).build();</span>
+
+<span class="fc" id="L175">    final BlockchainQueries blockchain = getBlockchainQueries(environment);</span>
+
+<span class="fc" id="L177">    final Hash hash = header.getHash();</span>
+<span class="fc" id="L178">    final List&lt;LogWithMetadata&gt; logs = blockchain.matchingLogs(hash, query, () -&gt; true);</span>
+<span class="fc" id="L179">    final List&lt;LogAdapter&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L180" title="All 2 branches covered.">    for (final LogWithMetadata log : logs) {</span>
+<span class="fc" id="L181">      results.add(new LogAdapter(log));</span>
+<span class="fc" id="L182">    }</span>
+<span class="fc" id="L183">    return results;</span>
+  }
+
+  public Long getEstimateGas(final DataFetchingEnvironment environment) {
+<span class="fc" id="L187">    final Optional&lt;CallResult&gt; result = executeCall(environment);</span>
+<span class="fc" id="L188">    return result.map(CallResult::getGasUsed).orElse(0L);</span>
+  }
+
+  public Optional&lt;CallResult&gt; getCall(final DataFetchingEnvironment environment) {
+<span class="fc" id="L192">    return executeCall(environment);</span>
+  }
+
+  private Optional&lt;CallResult&gt; executeCall(final DataFetchingEnvironment environment) {
+<span class="fc" id="L196">    final Map&lt;String, Object&gt; callData = environment.getArgument(&quot;data&quot;);</span>
+<span class="fc" id="L197">    final Address from = (Address) callData.get(&quot;from&quot;);</span>
+<span class="fc" id="L198">    final Address to = (Address) callData.get(&quot;to&quot;);</span>
+<span class="fc" id="L199">    final Long gas = (Long) callData.get(&quot;gas&quot;);</span>
+<span class="fc" id="L200">    final UInt256 gasPrice = (UInt256) callData.get(&quot;gasPrice&quot;);</span>
+<span class="fc" id="L201">    final UInt256 value = (UInt256) callData.get(&quot;value&quot;);</span>
+<span class="fc" id="L202">    final Bytes data = (Bytes) callData.get(&quot;data&quot;);</span>
+<span class="fc" id="L203">    final Optional&lt;Wei&gt; maxFeePerGas =</span>
+<span class="fc" id="L204">        Optional.ofNullable((UInt256) callData.get(&quot;maxFeePerGas&quot;)).map(Wei::of);</span>
+<span class="fc" id="L205">    final Optional&lt;Wei&gt; maxPriorityFeePerGas =</span>
+<span class="fc" id="L206">        Optional.ofNullable((UInt256) callData.get(&quot;maxPriorityFeePerGas&quot;)).map(Wei::of);</span>
+
+<span class="fc" id="L208">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L209">    final ProtocolSchedule protocolSchedule =</span>
+<span class="fc" id="L210">        environment.getGraphQlContext().get(GraphQLContextType.PROTOCOL_SCHEDULE);</span>
+<span class="fc" id="L211">    final long bn = header.getNumber();</span>
+<span class="fc" id="L212">    final long gasCap = environment.getGraphQlContext().get(GraphQLContextType.GAS_CAP);</span>
+<span class="fc" id="L213">    final TransactionSimulator transactionSimulator =</span>
+        new TransactionSimulator(
+<span class="fc" id="L215">            query.getBlockchain(), query.getWorldStateArchive(), protocolSchedule, gasCap);</span>
+
+<span class="fc" id="L217">    long gasParam = -1;</span>
+<span class="fc" id="L218">    Wei gasPriceParam = null;</span>
+<span class="fc" id="L219">    Wei valueParam = null;</span>
+<span class="pc bpc" id="L220" title="1 of 2 branches missed.">    if (gas != null) {</span>
+<span class="nc" id="L221">      gasParam = gas;</span>
+    }
+<span class="pc bpc" id="L223" title="1 of 2 branches missed.">    if (gasPrice != null) {</span>
+<span class="nc" id="L224">      gasPriceParam = Wei.of(gasPrice);</span>
+    }
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">    if (value != null) {</span>
+<span class="nc" id="L227">      valueParam = Wei.of(value);</span>
+    }
+<span class="fc" id="L229">    final CallParameter param =</span>
+        new CallParameter(
+            from,
+            to,
+            gasParam,
+            gasPriceParam,
+            maxPriorityFeePerGas,
+            maxFeePerGas,
+            valueParam,
+            data,
+<span class="fc" id="L239">            Optional.empty());</span>
+
+    ImmutableTransactionValidationParams.Builder transactionValidationParams =
+<span class="fc" id="L242">        ImmutableTransactionValidationParams.builder()</span>
+<span class="fc" id="L243">            .from(TransactionValidationParams.transactionSimulator());</span>
+<span class="fc" id="L244">    transactionValidationParams.isAllowExceedingBalance(true);</span>
+
+<span class="fc" id="L246">    return transactionSimulator.process(</span>
+        param,
+<span class="fc" id="L248">        transactionValidationParams.build(),</span>
+        OperationTracer.NO_TRACING,
+        (mutableWorldState, transactionSimulatorResult) -&gt;
+<span class="fc" id="L251">            transactionSimulatorResult.map(</span>
+                result -&gt; {
+<span class="fc" id="L253">                  long status = 0;</span>
+<span class="pc bpc" id="L254" title="1 of 2 branches missed.">                  if (result.isSuccessful()) {</span>
+<span class="fc" id="L255">                    status = 1;</span>
+                  }
+<span class="fc" id="L257">                  return new CallResult(status, result.getGasEstimate(), result.getOutput());</span>
+                }),
+        header);
+  }
+
+  Bytes getRawHeader() {
+<span class="nc" id="L263">    final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L264">    header.writeTo(rlpOutput);</span>
+<span class="nc" id="L265">    return rlpOutput.encoded();</span>
+  }
+
+  Bytes getRaw(final DataFetchingEnvironment environment) {
+<span class="nc" id="L269">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="nc" id="L270">    return query</span>
+<span class="nc" id="L271">        .getBlockchain()</span>
+<span class="nc" id="L272">        .getBlockBody(header.getBlockHash())</span>
+<span class="nc" id="L273">        .map(</span>
+            blockBody -&gt; {
+<span class="nc" id="L275">              final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L276">              blockBody.writeWrappedBodyTo(rlpOutput);</span>
+<span class="nc" id="L277">              return rlpOutput.encoded();</span>
+            })
+<span class="nc" id="L279">        .orElse(Bytes.EMPTY);</span>
+  }
+
+  Optional&lt;Bytes32&gt; getWithdrawalsRoot() {
+<span class="fc" id="L283">    return header.getWithdrawalsRoot().map(Function.identity());</span>
+  }
+
+  Optional&lt;List&lt;WithdrawalAdapter&gt;&gt; getWithdrawals(final DataFetchingEnvironment environment) {
+<span class="fc" id="L287">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L288">    return query</span>
+<span class="fc" id="L289">        .getBlockchain()</span>
+<span class="fc" id="L290">        .getBlockBody(header.getBlockHash())</span>
+<span class="fc" id="L291">        .flatMap(</span>
+            blockBody -&gt;
+<span class="fc" id="L293">                blockBody</span>
+<span class="fc" id="L294">                    .getWithdrawals()</span>
+<span class="fc" id="L295">                    .map(wl -&gt; wl.stream().map(WithdrawalAdapter::new).toList()));</span>
+  }
+
+  public Optional&lt;Long&gt; getBlobGasUsed() {
+<span class="fc" id="L299">    return header.getBlobGasUsed();</span>
+  }
+
+  public Optional&lt;Long&gt; getExcessBlobGas() {
+<span class="fc" id="L303">    return header.getExcessBlobGas().map(BlobGas::toLong);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

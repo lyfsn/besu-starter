@@ -1,0 +1,493 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonRpcHttpOptions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.options.stable</a> &gt; <span class="el_source">JsonRpcHttpOptions.java</span></div><h1>JsonRpcHttpOptions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.options.stable;
+
+import static java.util.Arrays.asList;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration.DEFAULT_JSON_RPC_PORT;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration.DEFAULT_PRETTY_JSON_ENABLED;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.RpcApis.DEFAULT_RPC_APIS;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.RpcApis.VALID_APIS;
+
+import org.hyperledger.besu.cli.DefaultCommandValues;
+import org.hyperledger.besu.cli.custom.CorsAllowedOriginsProperty;
+import org.hyperledger.besu.cli.custom.RpcAuthFileValidator;
+import org.hyperledger.besu.cli.util.CommandLineUtils;
+import org.hyperledger.besu.ethereum.api.jsonrpc.JsonRpcConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.JwtAlgorithm;
+import org.hyperledger.besu.ethereum.api.tls.FileBasedPasswordProvider;
+import org.hyperledger.besu.ethereum.api.tls.TlsClientAuthConfiguration;
+import org.hyperledger.besu.ethereum.api.tls.TlsConfiguration;
+
+import java.io.File;
+import java.nio.file.Path;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+
+import com.google.common.base.Strings;
+import org.slf4j.Logger;
+import picocli.CommandLine;
+
+/**
+ * Handles configuration options for the JSON-RPC HTTP service, including validation and creation of
+ * a JSON-RPC configuration.
+ */
+<span class="fc" id="L55">public class JsonRpcHttpOptions {</span>
+<span class="fc" id="L56">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-enabled&quot;},
+      description = &quot;Set to start the JSON-RPC HTTP service (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L59">  private final Boolean isRpcHttpEnabled = false;</span>
+
+  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.
+  @CommandLine.Option(
+      names = {&quot;--rpc-http-host&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_HOST_FORMAT_HELP,
+      description = &quot;Host for JSON-RPC HTTP to listen on (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private String rpcHttpHost;
+
+<span class="fc" id="L69">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-port&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_PORT_FORMAT_HELP,
+      description = &quot;Port for JSON-RPC HTTP to listen on (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L74">  private final Integer rpcHttpPort = DEFAULT_JSON_RPC_PORT;</span>
+
+<span class="fc" id="L76">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-max-active-connections&quot;},
+      description =
+          &quot;Maximum number of HTTP connections allowed for JSON-RPC (default: ${DEFAULT-VALUE}). Once this limit is reached, incoming connections will be rejected.&quot;,
+      arity = &quot;1&quot;)
+<span class="fc" id="L81">  private final Integer rpcHttpMaxConnections = DefaultCommandValues.DEFAULT_HTTP_MAX_CONNECTIONS;</span>
+
+  // A list of origins URLs that are accepted by the JsonRpcHttpServer (CORS)
+<span class="fc" id="L84">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-cors-origins&quot;},
+      description = &quot;Comma separated origin domain URLs for CORS validation (default: none)&quot;)
+  private final CorsAllowedOriginsProperty rpcHttpCorsAllowedOrigins =
+      new CorsAllowedOriginsProperty();
+
+<span class="fc" id="L90">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-api&quot;, &quot;--rpc-http-apis&quot;},
+      paramLabel = &quot;&lt;api name&gt;&quot;,
+      split = &quot; {0,1}, {0,1}&quot;,
+      arity = &quot;1..*&quot;,
+      description =
+          &quot;Comma separated list of APIs to enable on JSON-RPC HTTP service (default: ${DEFAULT-VALUE})&quot;)
+  private final List&lt;String&gt; rpcHttpApis = DEFAULT_RPC_APIS;
+
+<span class="fc" id="L99">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-api-method-no-auth&quot;, &quot;--rpc-http-api-methods-no-auth&quot;},
+      paramLabel = &quot;&lt;api name&gt;&quot;,
+      split = &quot; {0,1}, {0,1}&quot;,
+      arity = &quot;1..*&quot;,
+      description =
+          &quot;Comma separated list of API methods to exclude from RPC authentication services, RPC HTTP authentication must be enabled&quot;)
+  private final List&lt;String&gt; rpcHttpApiMethodsNoAuth = new ArrayList&lt;String&gt;();
+
+<span class="fc" id="L108">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-authentication-enabled&quot;},
+      description =
+          &quot;Require authentication for the JSON-RPC HTTP service (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L112">  private final Boolean isRpcHttpAuthenticationEnabled = false;</span>
+
+<span class="fc" id="L114">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @CommandLine.Option(
+      names = {&quot;--rpc-http-authentication-credentials-file&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Storage file for JSON-RPC HTTP authentication credentials (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private String rpcHttpAuthenticationCredentialsFile = null;
+
+<span class="fc" id="L123">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-authentication-jwt-public-key-file&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description = &quot;JWT public key file for JSON-RPC HTTP authentication&quot;,
+      arity = &quot;1&quot;)
+  private final File rpcHttpAuthenticationPublicKeyFile = null;
+
+<span class="fc" id="L130">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-authentication-jwt-algorithm&quot;},
+      description =
+          &quot;Encryption algorithm used for HTTP JWT public key. Possible values are ${COMPLETION-CANDIDATES}&quot;
+              + &quot; (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private final JwtAlgorithm rpcHttpAuthenticationAlgorithm =
+      DefaultCommandValues.DEFAULT_JWT_ALGORITHM;
+
+<span class="fc" id="L139">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-enabled&quot;},
+      description = &quot;Enable TLS for the JSON-RPC HTTP service (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L142">  private final Boolean isRpcHttpTlsEnabled = false;</span>
+
+<span class="fc" id="L144">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-keystore-file&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Keystore (PKCS#12) containing key/certificate for the JSON-RPC HTTP service. Required if TLS is enabled.&quot;)
+  private final Path rpcHttpTlsKeyStoreFile = null;
+
+<span class="fc" id="L151">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-keystore-password-file&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;File containing password to unlock keystore for the JSON-RPC HTTP service. Required if TLS is enabled.&quot;)
+  private final Path rpcHttpTlsKeyStorePasswordFile = null;
+
+<span class="fc" id="L158">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-client-auth-enabled&quot;},
+      description =
+          &quot;Enable TLS client authentication for the JSON-RPC HTTP service (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L162">  private final Boolean isRpcHttpTlsClientAuthEnabled = false;</span>
+
+<span class="fc" id="L164">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-known-clients-file&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description =
+          &quot;Path to file containing clients certificate common name and fingerprint for client authentication&quot;)
+  private final Path rpcHttpTlsKnownClientsFile = null;
+
+<span class="fc" id="L171">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-ca-clients-enabled&quot;},
+      description =
+          &quot;Enable to accept clients certificate signed by a valid CA for client authentication (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L175">  private final Boolean isRpcHttpTlsCAClientsEnabled = false;</span>
+
+<span class="fc" id="L177">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-protocol&quot;, &quot;--rpc-http-tls-protocols&quot;},
+      description = &quot;Comma separated list of TLS protocols to support (default: ${DEFAULT-VALUE})&quot;,
+      split = &quot;,&quot;,
+      arity = &quot;1..*&quot;)
+  private final List&lt;String&gt; rpcHttpTlsProtocols =
+      new ArrayList&lt;&gt;(DefaultCommandValues.DEFAULT_TLS_PROTOCOLS);
+
+<span class="fc" id="L185">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-tls-cipher-suite&quot;, &quot;--rpc-http-tls-cipher-suites&quot;},
+      description = &quot;Comma separated list of TLS cipher suites to support&quot;,
+      split = &quot;,&quot;,
+      arity = &quot;1..*&quot;)
+  private final List&lt;String&gt; rpcHttpTlsCipherSuites = new ArrayList&lt;&gt;();
+
+<span class="fc" id="L192">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-max-batch-size&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_INTEGER_FORMAT_HELP,
+      description =
+          &quot;Specifies the maximum number of requests in a single RPC batch request via RPC. -1 specifies no limit  (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L197">  private final Integer rpcHttpMaxBatchSize = DefaultCommandValues.DEFAULT_HTTP_MAX_BATCH_SIZE;</span>
+
+<span class="fc" id="L199">  @CommandLine.Option(</span>
+      names = {&quot;--rpc-http-max-request-content-length&quot;},
+      paramLabel = DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP,
+      description = &quot;Specifies the maximum request content length. (default: ${DEFAULT-VALUE})&quot;)
+  private final Long rpcHttpMaxRequestContentLength =
+<span class="fc" id="L204">      DefaultCommandValues.DEFAULT_MAX_REQUEST_CONTENT_LENGTH;</span>
+
+<span class="fc" id="L206">  @CommandLine.Option(</span>
+      names = {&quot;--json-pretty-print-enabled&quot;},
+      description = &quot;Enable JSON pretty print format (default: ${DEFAULT-VALUE})&quot;)
+<span class="fc" id="L209">  private final Boolean prettyJsonEnabled = DEFAULT_PRETTY_JSON_ENABLED;</span>
+
+  /**
+   * Validates the Rpc Http options.
+   *
+   * @param logger Logger instance
+   * @param commandLine CommandLine instance
+   * @param configuredApis Predicate for configured APIs
+   */
+  public void validate(
+      final Logger logger, final CommandLine commandLine, final Predicate&lt;String&gt; configuredApis) {
+
+<span class="fc bfc" id="L221" title="All 2 branches covered.">    if (!rpcHttpApis.stream().allMatch(configuredApis)) {</span>
+<span class="fc" id="L222">      final List&lt;String&gt; invalidHttpApis = new ArrayList&lt;&gt;(rpcHttpApis);</span>
+<span class="fc" id="L223">      invalidHttpApis.removeAll(VALID_APIS);</span>
+<span class="fc" id="L224">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;Invalid value for option '--rpc-http-api': invalid entries found &quot; + invalidHttpApis);
+    }
+
+<span class="fc" id="L229">    final boolean validHttpApiMethods =</span>
+<span class="fc" id="L230">        rpcHttpApiMethodsNoAuth.stream().allMatch(RpcMethod::rpcMethodExists);</span>
+
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (!validHttpApiMethods) {</span>
+<span class="fc" id="L233">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;Invalid value for option '--rpc-http-api-methods-no-auth', options must be valid RPC methods&quot;);
+    }
+
+<span class="fc bfc" id="L238" title="All 2 branches covered.">    if (isRpcHttpAuthenticationEnabled) {</span>
+<span class="fc bfc" id="L239" title="All 2 branches covered.">      CommandLineUtils.checkOptionDependencies(</span>
+          logger,
+          commandLine,
+          &quot;--rpc-http-authentication-public-key-file&quot;,
+          rpcHttpAuthenticationPublicKeyFile == null,
+<span class="fc" id="L244">          List.of(&quot;--rpc-http-authentication-jwt-algorithm&quot;));</span>
+    }
+
+<span class="fc bfc" id="L247" title="All 2 branches covered.">    if (isRpcHttpAuthenticationEnabled</span>
+<span class="pc bpc" id="L248" title="1 of 4 branches missed.">        &amp;&amp; rpcHttpAuthenticationCredentialsFile(commandLine) == null</span>
+        &amp;&amp; rpcHttpAuthenticationPublicKeyFile == null) {
+<span class="fc" id="L250">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;Unable to authenticate JSON-RPC HTTP endpoint without a supplied credentials file or authentication public key file&quot;);
+    }
+
+<span class="fc" id="L255">    checkDependencies(logger, commandLine);</span>
+
+<span class="fc bfc" id="L257" title="All 2 branches covered.">    if (isRpcTlsConfigurationRequired()) {</span>
+<span class="fc" id="L258">      validateTls(commandLine);</span>
+    }
+<span class="fc" id="L260">  }</span>
+
+  /**
+   * Creates a JsonRpcConfiguration based on the provided options.
+   *
+   * @param hostsAllowlist List of hosts allowed
+   * @param defaultHostAddress Default host address
+   * @param timoutSec timeout in seconds
+   * @return A JsonRpcConfiguration instance
+   */
+  public JsonRpcConfiguration jsonRpcConfiguration(
+      final List&lt;String&gt; hostsAllowlist, final String defaultHostAddress, final Long timoutSec) {
+
+<span class="fc" id="L273">    final JsonRpcConfiguration jsonRpcConfiguration = JsonRpcConfiguration.createDefault();</span>
+<span class="fc" id="L274">    jsonRpcConfiguration.setEnabled(isRpcHttpEnabled);</span>
+<span class="fc" id="L275">    jsonRpcConfiguration.setHost(</span>
+<span class="fc bfc" id="L276" title="All 2 branches covered.">        Strings.isNullOrEmpty(rpcHttpHost) ? defaultHostAddress : rpcHttpHost);</span>
+<span class="fc" id="L277">    jsonRpcConfiguration.setPort(rpcHttpPort);</span>
+<span class="fc" id="L278">    jsonRpcConfiguration.setMaxActiveConnections(rpcHttpMaxConnections);</span>
+<span class="fc" id="L279">    jsonRpcConfiguration.setCorsAllowedDomains(rpcHttpCorsAllowedOrigins);</span>
+<span class="fc" id="L280">    jsonRpcConfiguration.setRpcApis(rpcHttpApis.stream().distinct().collect(Collectors.toList()));</span>
+<span class="fc" id="L281">    jsonRpcConfiguration.setNoAuthRpcApis(</span>
+<span class="fc" id="L282">        rpcHttpApiMethodsNoAuth.stream().distinct().collect(Collectors.toList()));</span>
+<span class="fc" id="L283">    jsonRpcConfiguration.setHostsAllowlist(hostsAllowlist);</span>
+<span class="fc" id="L284">    jsonRpcConfiguration.setAuthenticationEnabled(isRpcHttpAuthenticationEnabled);</span>
+<span class="fc" id="L285">    jsonRpcConfiguration.setAuthenticationCredentialsFile(rpcHttpAuthenticationCredentialsFile);</span>
+<span class="fc" id="L286">    jsonRpcConfiguration.setAuthenticationPublicKeyFile(rpcHttpAuthenticationPublicKeyFile);</span>
+<span class="fc" id="L287">    jsonRpcConfiguration.setAuthenticationAlgorithm(rpcHttpAuthenticationAlgorithm);</span>
+<span class="fc" id="L288">    jsonRpcConfiguration.setTlsConfiguration(rpcHttpTlsConfiguration());</span>
+<span class="fc" id="L289">    jsonRpcConfiguration.setHttpTimeoutSec(timoutSec);</span>
+<span class="fc" id="L290">    jsonRpcConfiguration.setMaxBatchSize(rpcHttpMaxBatchSize);</span>
+<span class="fc" id="L291">    jsonRpcConfiguration.setMaxRequestContentLength(rpcHttpMaxRequestContentLength);</span>
+<span class="fc" id="L292">    jsonRpcConfiguration.setPrettyJsonEnabled(prettyJsonEnabled);</span>
+<span class="fc" id="L293">    return jsonRpcConfiguration;</span>
+  }
+
+  /**
+   * Checks dependencies between options.
+   *
+   * @param logger Logger instance
+   * @param commandLine CommandLine instance
+   */
+  public void checkDependencies(final Logger logger, final CommandLine commandLine) {
+<span class="fc" id="L303">    checkRpcTlsClientAuthOptionsDependencies(logger, commandLine);</span>
+<span class="fc" id="L304">    checkRpcTlsOptionsDependencies(logger, commandLine);</span>
+<span class="fc" id="L305">    checkRpcHttpOptionsDependencies(logger, commandLine);</span>
+<span class="fc" id="L306">  }</span>
+
+  private void checkRpcTlsClientAuthOptionsDependencies(
+      final Logger logger, final CommandLine commandLine) {
+<span class="fc" id="L310">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--rpc-http-tls-client-auth-enabled&quot;,
+<span class="fc bfc" id="L314" title="All 2 branches covered.">        !isRpcHttpTlsClientAuthEnabled,</span>
+<span class="fc" id="L315">        asList(&quot;--rpc-http-tls-known-clients-file&quot;, &quot;--rpc-http-tls-ca-clients-enabled&quot;));</span>
+<span class="fc" id="L316">  }</span>
+
+  private void checkRpcTlsOptionsDependencies(final Logger logger, final CommandLine commandLine) {
+<span class="fc" id="L319">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--rpc-http-tls-enabled&quot;,
+<span class="fc bfc" id="L323" title="All 2 branches covered.">        !isRpcHttpTlsEnabled,</span>
+<span class="fc" id="L324">        asList(</span>
+            &quot;--rpc-http-tls-keystore-file&quot;,
+            &quot;--rpc-http-tls-keystore-password-file&quot;,
+            &quot;--rpc-http-tls-client-auth-enabled&quot;,
+            &quot;--rpc-http-tls-known-clients-file&quot;,
+            &quot;--rpc-http-tls-ca-clients-enabled&quot;,
+            &quot;--rpc-http-tls-protocols&quot;,
+            &quot;--rpc-http-tls-cipher-suite&quot;,
+            &quot;--rpc-http-tls-cipher-suites&quot;));
+<span class="fc" id="L333">  }</span>
+
+  private void checkRpcHttpOptionsDependencies(final Logger logger, final CommandLine commandLine) {
+<span class="fc" id="L336">    CommandLineUtils.checkOptionDependencies(</span>
+        logger,
+        commandLine,
+        &quot;--rpc-http-enabled&quot;,
+<span class="fc bfc" id="L340" title="All 2 branches covered.">        !isRpcHttpEnabled,</span>
+<span class="fc" id="L341">        asList(</span>
+            &quot;--rpc-http-api&quot;,
+            &quot;--rpc-http-apis&quot;,
+            &quot;--rpc-http-api-method-no-auth&quot;,
+            &quot;--rpc-http-api-methods-no-auth&quot;,
+            &quot;--rpc-http-cors-origins&quot;,
+            &quot;--rpc-http-host&quot;,
+            &quot;--rpc-http-port&quot;,
+            &quot;--rpc-http-max-active-connections&quot;,
+            &quot;--rpc-http-authentication-enabled&quot;,
+            &quot;--rpc-http-authentication-credentials-file&quot;,
+            &quot;--rpc-http-authentication-public-key-file&quot;,
+            &quot;--rpc-http-tls-enabled&quot;,
+            &quot;--rpc-http-tls-keystore-file&quot;,
+            &quot;--rpc-http-tls-keystore-password-file&quot;,
+            &quot;--rpc-http-tls-client-auth-enabled&quot;,
+            &quot;--rpc-http-tls-known-clients-file&quot;,
+            &quot;--rpc-http-tls-ca-clients-enabled&quot;,
+            &quot;--rpc-http-authentication-jwt-algorithm&quot;,
+            &quot;--rpc-http-tls-protocols&quot;,
+            &quot;--rpc-http-tls-cipher-suite&quot;,
+            &quot;--rpc-http-tls-cipher-suites&quot;));
+<span class="fc" id="L363">  }</span>
+
+  private void validateTls(final CommandLine commandLine) {
+<span class="fc bfc" id="L366" title="All 2 branches covered.">    if (rpcHttpTlsKeyStoreFile == null) {</span>
+<span class="fc" id="L367">      throw new CommandLine.ParameterException(</span>
+          commandLine, &quot;Keystore file is required when TLS is enabled for JSON-RPC HTTP endpoint&quot;);
+    }
+
+<span class="fc bfc" id="L371" title="All 2 branches covered.">    if (rpcHttpTlsKeyStorePasswordFile == null) {</span>
+<span class="fc" id="L372">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;File containing password to unlock keystore is required when TLS is enabled for JSON-RPC HTTP endpoint&quot;);
+    }
+
+<span class="fc bfc" id="L377" title="All 2 branches covered.">    if (isRpcHttpTlsClientAuthEnabled</span>
+<span class="fc bfc" id="L378" title="All 4 branches covered.">        &amp;&amp; !isRpcHttpTlsCAClientsEnabled</span>
+        &amp;&amp; rpcHttpTlsKnownClientsFile == null) {
+<span class="fc" id="L380">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;Known-clients file must be specified or CA clients must be enabled when TLS client authentication is enabled for JSON-RPC HTTP endpoint&quot;);
+    }
+
+<span class="fc" id="L385">    rpcHttpTlsProtocols.retainAll(getJDKEnabledProtocols());</span>
+<span class="fc bfc" id="L386" title="All 2 branches covered.">    if (rpcHttpTlsProtocols.isEmpty()) {</span>
+<span class="fc" id="L387">      throw new CommandLine.ParameterException(</span>
+          commandLine,
+          &quot;No valid TLS protocols specified (the following protocols are enabled: &quot;
+<span class="fc" id="L390">              + getJDKEnabledProtocols()</span>
+              + &quot;)&quot;);
+    }
+
+<span class="fc bfc" id="L394" title="All 2 branches covered.">    for (final String cipherSuite : rpcHttpTlsCipherSuites) {</span>
+<span class="fc bfc" id="L395" title="All 2 branches covered.">      if (!getJDKEnabledCipherSuites().contains(cipherSuite)) {</span>
+<span class="fc" id="L396">        throw new CommandLine.ParameterException(</span>
+            commandLine, &quot;Invalid TLS cipher suite specified &quot; + cipherSuite);
+      }
+<span class="fc" id="L399">    }</span>
+<span class="fc" id="L400">  }</span>
+
+  private Optional&lt;TlsConfiguration&gt; rpcHttpTlsConfiguration() {
+<span class="fc bfc" id="L403" title="All 2 branches covered.">    if (!isRpcTlsConfigurationRequired()) {</span>
+<span class="fc" id="L404">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L407">    rpcHttpTlsCipherSuites.retainAll(getJDKEnabledCipherSuites());</span>
+
+<span class="fc" id="L409">    return Optional.of(</span>
+<span class="fc" id="L410">        TlsConfiguration.Builder.aTlsConfiguration()</span>
+<span class="fc" id="L411">            .withKeyStorePath(rpcHttpTlsKeyStoreFile)</span>
+<span class="fc" id="L412">            .withKeyStorePasswordSupplier(</span>
+                new FileBasedPasswordProvider(rpcHttpTlsKeyStorePasswordFile))
+<span class="fc" id="L414">            .withClientAuthConfiguration(rpcHttpTlsClientAuthConfiguration())</span>
+<span class="fc" id="L415">            .withSecureTransportProtocols(rpcHttpTlsProtocols)</span>
+<span class="fc" id="L416">            .withCipherSuites(rpcHttpTlsCipherSuites)</span>
+<span class="fc" id="L417">            .build());</span>
+  }
+
+  private boolean isRpcTlsConfigurationRequired() {
+<span class="fc bfc" id="L421" title="All 4 branches covered.">    return isRpcHttpEnabled &amp;&amp; isRpcHttpTlsEnabled;</span>
+  }
+
+  private TlsClientAuthConfiguration rpcHttpTlsClientAuthConfiguration() {
+<span class="fc bfc" id="L425" title="All 2 branches covered.">    if (isRpcHttpTlsClientAuthEnabled) {</span>
+<span class="fc" id="L426">      return TlsClientAuthConfiguration.Builder.aTlsClientAuthConfiguration()</span>
+<span class="fc" id="L427">          .withKnownClientsFile(rpcHttpTlsKnownClientsFile)</span>
+<span class="fc" id="L428">          .withCaClientsEnabled(isRpcHttpTlsCAClientsEnabled)</span>
+<span class="fc" id="L429">          .build();</span>
+    }
+
+<span class="fc" id="L432">    return null;</span>
+  }
+
+  private static List&lt;String&gt; getJDKEnabledCipherSuites() {
+    try {
+<span class="fc" id="L437">      final SSLContext context = SSLContext.getInstance(&quot;TLS&quot;);</span>
+<span class="fc" id="L438">      context.init(null, null, null);</span>
+<span class="fc" id="L439">      final SSLEngine engine = context.createSSLEngine();</span>
+<span class="fc" id="L440">      return Arrays.asList(engine.getEnabledCipherSuites());</span>
+<span class="nc" id="L441">    } catch (final KeyManagementException | NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L442">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  private static List&lt;String&gt; getJDKEnabledProtocols() {
+    try {
+<span class="fc" id="L448">      final SSLContext context = SSLContext.getInstance(&quot;TLS&quot;);</span>
+<span class="fc" id="L449">      context.init(null, null, null);</span>
+<span class="fc" id="L450">      final SSLEngine engine = context.createSSLEngine();</span>
+<span class="fc" id="L451">      return Arrays.asList(engine.getEnabledProtocols());</span>
+<span class="nc" id="L452">    } catch (final KeyManagementException | NoSuchAlgorithmException e) {</span>
+<span class="nc" id="L453">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  private String rpcHttpAuthenticationCredentialsFile(final CommandLine commandLine) {
+<span class="fc" id="L458">    final String filename = rpcHttpAuthenticationCredentialsFile;</span>
+
+<span class="pc bpc" id="L460" title="1 of 2 branches missed.">    if (filename != null) {</span>
+<span class="nc" id="L461">      RpcAuthFileValidator.validate(commandLine, filename, &quot;HTTP&quot;);</span>
+    }
+<span class="fc" id="L463">    return filename;</span>
+  }
+
+  /**
+   * Returns the list of APIs enabled for RPC over HTTP.
+   *
+   * @return A list of APIs
+   */
+  public List&lt;String&gt; getRpcHttpApis() {
+<span class="fc" id="L472">    return rpcHttpApis;</span>
+  }
+
+  /**
+   * Returns the port for RPC over HTTP.
+   *
+   * @return The port number
+   */
+  public Integer getRpcHttpPort() {
+<span class="fc" id="L481">    return rpcHttpPort;</span>
+  }
+
+  /**
+   * Checks if RPC over HTTP is enabled.
+   *
+   * @return true if enabled, false otherwise
+   */
+  public Boolean isRpcHttpEnabled() {
+<span class="fc" id="L490">    return isRpcHttpEnabled;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

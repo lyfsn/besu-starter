@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PingPacketData.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">PingPacketData.java</span></div><h1>PingPacketData.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.Endpoint;
+import org.hyperledger.besu.ethereum.rlp.MalformedRLPInputException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+
+import java.util.Optional;
+
+import org.apache.tuweni.units.bigints.UInt64;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PingPacketData implements PacketData {
+
+  /* Fixed value that represents we're using v5 of the P2P discovery protocol. */
+  private static final int VERSION = 5;
+
+  /* Source. If the field is garbage this is empty and we might need to recover it another way. From our bonded peers, for example. */
+  private final Optional&lt;Endpoint&gt; maybeFrom;
+
+  /* Destination. */
+  private final Endpoint to;
+
+  /* In seconds after epoch. */
+  private final long expiration;
+
+  /* Current sequence number of the sending node’s record */
+  private final UInt64 enrSeq;
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(PingPacketData.class);</span>
+
+  private PingPacketData(
+      final Optional&lt;Endpoint&gt; maybeFrom,
+      final Endpoint to,
+      final long expiration,
+<span class="fc" id="L52">      final UInt64 enrSeq) {</span>
+<span class="pc bpc" id="L53" title="1 of 2 branches missed.">    checkArgument(to != null, &quot;destination endpoint cannot be null&quot;);</span>
+<span class="pc bpc" id="L54" title="1 of 2 branches missed.">    checkArgument(expiration &gt;= 0, &quot;expiration cannot be negative&quot;);</span>
+
+<span class="fc" id="L56">    this.maybeFrom = maybeFrom;</span>
+<span class="fc" id="L57">    this.to = to;</span>
+<span class="fc" id="L58">    this.expiration = expiration;</span>
+<span class="fc" id="L59">    this.enrSeq = enrSeq;</span>
+<span class="fc" id="L60">  }</span>
+
+  public static PingPacketData create(
+      final Optional&lt;Endpoint&gt; from, final Endpoint to, final UInt64 enrSeq) {
+<span class="pc bpc" id="L64" title="1 of 2 branches missed.">    checkArgument(</span>
+<span class="pc bpc" id="L65" title="1 of 2 branches missed.">        enrSeq != null &amp;&amp; UInt64.ZERO.compareTo(enrSeq) &lt; 0, &quot;enrSeq cannot be null or negative&quot;);</span>
+<span class="fc" id="L66">    return create(from, to, PacketData.defaultExpiration(), enrSeq);</span>
+  }
+
+  static PingPacketData create(
+      final Optional&lt;Endpoint&gt; from,
+      final Endpoint to,
+      final long expirationSec,
+      final UInt64 enrSeq) {
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">    checkArgument(</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">        enrSeq != null &amp;&amp; UInt64.ZERO.compareTo(enrSeq) &lt; 0, &quot;enrSeq cannot be null or negative&quot;);</span>
+<span class="fc" id="L76">    return new PingPacketData(from, to, expirationSec, enrSeq);</span>
+  }
+
+  public static PingPacketData readFrom(final RLPInput in) {
+<span class="fc" id="L80">    in.enterList();</span>
+    // The first element signifies the &quot;version&quot;, but this value is ignored as of EIP-8
+<span class="fc" id="L82">    in.readBigIntegerScalar();</span>
+<span class="fc" id="L83">    Optional&lt;Endpoint&gt; from = Optional.empty();</span>
+<span class="fc" id="L84">    Optional&lt;Endpoint&gt; to = Optional.empty();</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (in.nextIsList()) {</span>
+<span class="fc" id="L86">      to = Endpoint.maybeDecodeStandalone(in);</span>
+      // https://github.com/ethereum/devp2p/blob/master/discv4.md#ping-packet-0x01
+<span class="fc bfc" id="L88" title="All 2 branches covered.">      if (in.nextIsList()) { // if there are two, the first is the from address, next is the to</span>
+        // address
+<span class="fc" id="L90">        from = to;</span>
+<span class="fc" id="L91">        to = Endpoint.maybeDecodeStandalone(in);</span>
+      }
+    } else {
+<span class="nc" id="L94">      throw new DevP2PException(&quot;missing address in ping packet&quot;);</span>
+    }
+<span class="fc" id="L96">    final long expiration = in.readLongScalar();</span>
+<span class="fc" id="L97">    UInt64 enrSeq = null;</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    if (!in.isEndOfCurrentList()) {</span>
+      try {
+<span class="fc" id="L100">        enrSeq = UInt64.valueOf(in.readBigIntegerScalar());</span>
+<span class="fc" id="L101">        LOG.trace(&quot;read PING enr as long scalar&quot;);</span>
+<span class="fc" id="L102">      } catch (MalformedRLPInputException malformed) {</span>
+<span class="fc" id="L103">        LOG.trace(&quot;failed to read PING enr as scalar, trying to read bytes instead&quot;);</span>
+<span class="fc" id="L104">        enrSeq = UInt64.fromBytes(in.readBytes());</span>
+<span class="fc" id="L105">      }</span>
+    }
+<span class="fc" id="L107">    in.leaveListLenient();</span>
+<span class="fc" id="L108">    return new PingPacketData(from, to.get(), expiration, enrSeq);</span>
+  }
+
+  /**
+   * Used by test classes to read legacy encodes of Pings which used a byte array for the ENR field
+   *
+   * @deprecated Only to be used by internal tests to confirm backward compatibility.
+   * @param in input stream to read from
+   * @return PingPacketData parsed from input, using legacy encode.
+   */
+  @Deprecated
+  public static PingPacketData legacyReadFrom(final RLPInput in) { // only for testing, do not use
+<span class="fc" id="L120">    in.enterList();</span>
+    // The first element signifies the &quot;version&quot;, but this value is ignored as of EIP-8
+<span class="fc" id="L122">    in.readBigIntegerScalar();</span>
+<span class="fc" id="L123">    final Optional&lt;Endpoint&gt; from = Endpoint.maybeDecodeStandalone(in);</span>
+<span class="fc" id="L124">    final Endpoint to = Endpoint.decodeStandalone(in);</span>
+<span class="fc" id="L125">    final long expiration = in.readLongScalar();</span>
+<span class="fc" id="L126">    UInt64 enrSeq = null;</span>
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">    if (!in.isEndOfCurrentList()) {</span>
+<span class="fc" id="L128">      enrSeq = UInt64.fromBytes(in.readBytes());</span>
+    }
+<span class="fc" id="L130">    in.leaveListLenient();</span>
+<span class="fc" id="L131">    return new PingPacketData(from, to, expiration, enrSeq);</span>
+  }
+
+  @Override
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L136">    out.startList();</span>
+<span class="fc" id="L137">    out.writeIntScalar(VERSION);</span>
+<span class="fc bfc" id="L138" title="All 2 branches covered.">    if (maybeFrom.isPresent()) {</span>
+<span class="fc" id="L139">      maybeFrom.get().encodeStandalone(out);</span>
+    }
+<span class="fc" id="L141">    to.encodeStandalone(out);</span>
+<span class="fc" id="L142">    out.writeLongScalar(expiration);</span>
+<span class="fc" id="L143">    out.writeBigIntegerScalar(enrSeq.toBigInteger());</span>
+<span class="fc" id="L144">    out.endList();</span>
+<span class="fc" id="L145">  }</span>
+
+  /**
+   * @deprecated Only to be used by internal tests to confirm backward compatibility.
+   * @param out stream to write to
+   */
+  @Deprecated
+  public void legacyWriteTo(final RLPOutput out) {
+<span class="nc" id="L153">    out.startList();</span>
+<span class="nc" id="L154">    out.writeIntScalar(VERSION);</span>
+<span class="nc" id="L155">    maybeFrom</span>
+<span class="nc" id="L156">        .orElseThrow(</span>
+            () -&gt;
+<span class="nc" id="L158">                new IllegalStateException(</span>
+                    &quot;Attempting to serialize invalid PING packet. Missing 'from' field&quot;))
+<span class="nc" id="L160">        .encodeStandalone(out);</span>
+<span class="nc" id="L161">    to.encodeStandalone(out);</span>
+<span class="nc" id="L162">    out.writeLongScalar(expiration);</span>
+<span class="nc" id="L163">    out.writeBytes(</span>
+<span class="nc" id="L164">        getEnrSeq()</span>
+<span class="nc" id="L165">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L167">                    new IllegalStateException(</span>
+                        &quot;Attempting to serialize invalid PING packet. Missing 'enrSeq' field&quot;))
+<span class="nc" id="L169">            .toBytes());</span>
+<span class="nc" id="L170">    out.endList();</span>
+<span class="nc" id="L171">  }</span>
+
+  public Optional&lt;Endpoint&gt; getFrom() {
+<span class="fc" id="L174">    return maybeFrom;</span>
+  }
+
+  public Endpoint getTo() {
+<span class="fc" id="L178">    return to;</span>
+  }
+
+  public long getExpiration() {
+<span class="fc" id="L182">    return expiration;</span>
+  }
+
+  public Optional&lt;UInt64&gt; getEnrSeq() {
+<span class="fc" id="L186">    return Optional.ofNullable(enrSeq);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L191">    return &quot;PingPacketData{&quot;</span>
+        + &quot;from=&quot;
+<span class="nc" id="L193">        + maybeFrom.map(Object::toString).orElse(&quot;INVALID&quot;)</span>
+        + &quot;, to=&quot;
+        + to
+        + &quot;, expiration=&quot;
+        + expiration
+        + &quot;, enrSeq=&quot;
+        + enrSeq
+        + '}';
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

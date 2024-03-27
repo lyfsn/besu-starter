@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieNodeDecoder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.patricia</a> &gt; <span class="el_source">TrieNodeDecoder.java</span></div><h1>TrieNodeDecoder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.patricia;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.ethereum.trie.NullNode;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+import com.google.common.collect.Streams;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class TrieNodeDecoder {
+<span class="fc" id="L37">  private static final StoredNodeFactory&lt;Bytes&gt; emptyNodeFactory =</span>
+<span class="pc" id="L38">      new StoredNodeFactory&lt;&gt;((l, h) -&gt; Optional.empty(), Function.identity(), Function.identity());</span>
+
+  // Hide constructor for static utility class
+  private TrieNodeDecoder() {}
+
+  /**
+   * Decode an rlp-encoded trie node
+   *
+   * @param location The location in the trie.
+   * @param rlp The rlp-encoded node
+   * @return A {@code Node} representation of the rlp data
+   */
+  public static Node&lt;Bytes&gt; decode(final Bytes location, final Bytes rlp) {
+<span class="fc" id="L51">    return emptyNodeFactory.decode(location, rlp);</span>
+  }
+
+  /**
+   * Flattens this node and all of its inlined nodes and node references into a list.
+   *
+   * @param location The location in the trie.
+   * @param nodeRlp The bytes of the trie node to be decoded.
+   * @return A list of nodes and node references embedded in the given rlp.
+   */
+  public static List&lt;Node&lt;Bytes&gt;&gt; decodeNodes(final Bytes location, final Bytes nodeRlp) {
+<span class="fc" id="L62">    final Node&lt;Bytes&gt; node = decode(location, nodeRlp);</span>
+<span class="fc" id="L63">    final List&lt;Node&lt;Bytes&gt;&gt; nodes = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L64">    nodes.add(node);</span>
+
+<span class="fc" id="L66">    final List&lt;Node&lt;Bytes&gt;&gt; toProcess = new ArrayList&lt;&gt;(node.getChildren());</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    while (!toProcess.isEmpty()) {</span>
+<span class="fc" id="L68">      final Node&lt;Bytes&gt; currentNode = toProcess.remove(0);</span>
+<span class="fc bfc" id="L69" title="All 2 branches covered.">      if (Objects.equals(NullNode.instance(), currentNode)) {</span>
+        // Skip null nodes
+<span class="fc" id="L71">        continue;</span>
+      }
+<span class="fc" id="L73">      nodes.add(currentNode);</span>
+
+<span class="fc bfc" id="L75" title="All 2 branches covered.">      if (!currentNode.isReferencedByHash()) {</span>
+        // If current node is inlined, that means we can process its children
+<span class="fc" id="L77">        toProcess.addAll(currentNode.getChildren());</span>
+      }
+<span class="fc" id="L79">    }</span>
+
+<span class="fc" id="L81">    return nodes;</span>
+  }
+
+  /**
+   * Walks the trie in a bread-first manner, returning the list of nodes encountered in order. If
+   * any nodes are missing from the nodeLoader, those nodes are just skipped.
+   *
+   * @param nodeLoader The NodeLoader for looking up nodes by hash
+   * @param rootHash The hash of the root node
+   * @param maxDepth The maximum depth to traverse to. A value of zero will traverse the root node
+   *     only.
+   * @return A stream non-null nodes in the breadth-first traversal order.
+   */
+  public static Stream&lt;Node&lt;Bytes&gt;&gt; breadthFirstDecoder(
+      final NodeLoader nodeLoader, final Bytes32 rootHash, final int maxDepth) {
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">    checkArgument(maxDepth &gt;= 0);</span>
+<span class="fc" id="L97">    return Streams.stream(new BreadthFirstIterator(nodeLoader, rootHash, maxDepth));</span>
+  }
+
+  /**
+   * Walks the trie in a bread-first manner, returning the list of nodes encountered in order. If
+   * any nodes are missing from the nodeLoader, those nodes are just skipped.
+   *
+   * @param nodeLoader The NodeLoader for looking up nodes by hash
+   * @param rootHash The hash of the root node
+   * @return A stream non-null nodes in the breadth-first traversal order.
+   */
+  public static Stream&lt;Node&lt;Bytes&gt;&gt; breadthFirstDecoder(
+      final NodeLoader nodeLoader, final Bytes32 rootHash) {
+<span class="fc" id="L110">    return breadthFirstDecoder(nodeLoader, rootHash, Integer.MAX_VALUE);</span>
+  }
+
+  private static class BreadthFirstIterator implements Iterator&lt;Node&lt;Bytes&gt;&gt; {
+
+    private final int maxDepth;
+    private final StoredNodeFactory&lt;Bytes&gt; nodeFactory;
+
+<span class="fc" id="L118">    private int currentDepth = 0;</span>
+<span class="fc" id="L119">    private final List&lt;Node&lt;Bytes&gt;&gt; currentNodes = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L120">    private final List&lt;Node&lt;Bytes&gt;&gt; nextNodes = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L122">    BreadthFirstIterator(final NodeLoader nodeLoader, final Bytes32 rootHash, final int maxDepth) {</span>
+<span class="fc" id="L123">      this.maxDepth = maxDepth;</span>
+<span class="fc" id="L124">      this.nodeFactory =</span>
+<span class="fc" id="L125">          new StoredNodeFactory&lt;&gt;(nodeLoader, Function.identity(), Function.identity());</span>
+
+<span class="fc" id="L127">      nodeLoader</span>
+<span class="fc" id="L128">          .getNode(Bytes.EMPTY, rootHash)</span>
+<span class="fc" id="L129">          .map(h -&gt; TrieNodeDecoder.decode(Bytes.EMPTY, h))</span>
+<span class="fc" id="L130">          .ifPresent(currentNodes::add);</span>
+<span class="fc" id="L131">    }</span>
+
+    @Override
+    public boolean hasNext() {
+<span class="fc bfc" id="L135" title="All 4 branches covered.">      return !currentNodes.isEmpty() &amp;&amp; currentDepth &lt;= maxDepth;</span>
+    }
+
+    @Override
+    public Node&lt;Bytes&gt; next() {
+<span class="pc bpc" id="L140" title="1 of 2 branches missed.">      if (!hasNext()) {</span>
+<span class="nc" id="L141">        throw new NoSuchElementException();</span>
+      }
+
+<span class="fc" id="L144">      final Node&lt;Bytes&gt; nextNode = currentNodes.remove(0);</span>
+
+<span class="fc" id="L146">      final List&lt;Node&lt;Bytes&gt;&gt; children = new ArrayList&lt;&gt;(nextNode.getChildren());</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">      while (!children.isEmpty()) {</span>
+<span class="fc" id="L148">        Node&lt;Bytes&gt; child = children.remove(0);</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">        if (Objects.equals(child, NullNode.instance())) {</span>
+          // Ignore null nodes
+<span class="fc" id="L151">          continue;</span>
+        }
+<span class="fc bfc" id="L153" title="All 2 branches covered.">        if (child.isReferencedByHash()) {</span>
+          // Retrieve hash-referenced child
+<span class="fc" id="L155">          final Optional&lt;Node&lt;Bytes&gt;&gt; maybeChildNode = nodeFactory.retrieve(null, child.getHash());</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">          if (maybeChildNode.isEmpty()) {</span>
+<span class="fc" id="L157">            continue;</span>
+          }
+<span class="fc" id="L159">          child = maybeChildNode.get();</span>
+        }
+<span class="fc" id="L161">        nextNodes.add(child);</span>
+<span class="fc" id="L162">      }</span>
+
+      // Set up next level
+<span class="fc bfc" id="L165" title="All 2 branches covered.">      if (currentNodes.isEmpty()) {</span>
+<span class="fc" id="L166">        currentDepth += 1;</span>
+<span class="fc" id="L167">        currentNodes.addAll(nextNodes);</span>
+<span class="fc" id="L168">        nextNodes.clear();</span>
+      }
+
+<span class="fc" id="L171">      return nextNode;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

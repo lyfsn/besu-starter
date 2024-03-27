@@ -1,0 +1,478 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieLogHelper.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.storage</a> &gt; <span class="el_source">TrieLogHelper.java</span></div><h1>TrieLogHelper.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.cli.subcommands.storage;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.cli.options.stable.DataStorageOptions.BONSAI_STORAGE_FORMAT_MAX_LAYERS_TO_LOAD;
+import static org.hyperledger.besu.controller.BesuController.DATABASE_PATH;
+import static org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration.Unstable.DEFAULT_BONSAI_TRIE_LOG_PRUNING_WINDOW_SIZE;
+
+import org.hyperledger.besu.cli.options.stable.DataStorageOptions;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogFactoryImpl;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogLayer;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Helper class for counting and pruning trie logs */
+<span class="fc" id="L57">public class TrieLogHelper {</span>
+  private static final String TRIE_LOG_FILE = &quot;trieLogsToRetain&quot;;
+  private static final long BATCH_SIZE = 20_000;
+  private static final int ROCKSDB_MAX_INSERTS_PER_TRANSACTION = 1000;
+<span class="fc" id="L61">  private static final Logger LOG = LoggerFactory.getLogger(TrieLogHelper.class);</span>
+
+  boolean prune(
+      final DataStorageConfiguration config,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final MutableBlockchain blockchain,
+      final Path dataDirectoryPath) {
+
+<span class="fc" id="L69">    final String batchFileNameBase =</span>
+<span class="fc" id="L70">        dataDirectoryPath.resolve(DATABASE_PATH).resolve(TRIE_LOG_FILE).toString();</span>
+
+<span class="fc" id="L72">    validatePruneConfiguration(config);</span>
+
+<span class="fc" id="L74">    final long layersToRetain = config.getBonsaiMaxLayersToLoad();</span>
+
+<span class="fc" id="L76">    final long chainHeight = blockchain.getChainHeadBlockNumber();</span>
+
+<span class="fc" id="L78">    final long lastBlockNumberToRetainTrieLogsFor = chainHeight - layersToRetain + 1;</span>
+
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">    if (!validatePruneRequirements(</span>
+        blockchain,
+        chainHeight,
+        lastBlockNumberToRetainTrieLogsFor,
+        rootWorldStateStorage,
+        layersToRetain)) {
+<span class="nc" id="L86">      return false;</span>
+    }
+
+<span class="fc" id="L89">    final long numberOfBatches = calculateNumberOfBatches(layersToRetain);</span>
+<span class="fc" id="L90">    LOG.info(&quot;Retain {} trie logs, processing in {} batches&quot;, layersToRetain, numberOfBatches);</span>
+
+<span class="fc" id="L92">    processTrieLogBatches(</span>
+        rootWorldStateStorage,
+        blockchain,
+        chainHeight,
+        lastBlockNumberToRetainTrieLogsFor,
+        numberOfBatches,
+        batchFileNameBase);
+
+    // Should only be layersToRetain left but loading extra just in case of an unforeseen bug
+<span class="fc" id="L101">    final long countAfterPrune =</span>
+        rootWorldStateStorage
+<span class="fc" id="L103">            .streamTrieLogKeys(layersToRetain + DEFAULT_BONSAI_TRIE_LOG_PRUNING_WINDOW_SIZE)</span>
+<span class="fc" id="L104">            .count();</span>
+<span class="fc bfc" id="L105" title="All 2 branches covered.">    if (countAfterPrune == layersToRetain) {</span>
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">      if (deleteFiles(batchFileNameBase, numberOfBatches)) {</span>
+<span class="fc" id="L107">        return true;</span>
+      } else {
+<span class="nc" id="L109">        throw new IllegalStateException(</span>
+            &quot;There was an error deleting the trie log backup files. Please ensure besu is working before deleting them manually.&quot;);
+      }
+    } else {
+<span class="fc" id="L113">      throw new IllegalStateException(</span>
+<span class="fc" id="L114">          String.format(</span>
+              &quot;Remaining trie logs (%d) did not match %s (%d). Trie logs backup files (in %s) have not been deleted, it is safe to rerun the subcommand.&quot;,
+<span class="fc" id="L116">              countAfterPrune,</span>
+              BONSAI_STORAGE_FORMAT_MAX_LAYERS_TO_LOAD,
+<span class="fc" id="L118">              layersToRetain,</span>
+              batchFileNameBase));
+    }
+  }
+
+  private void processTrieLogBatches(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final MutableBlockchain blockchain,
+      final long chainHeight,
+      final long lastBlockNumberToRetainTrieLogsFor,
+      final long numberOfBatches,
+      final String batchFileNameBase) {
+
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    for (long batchNumber = 1; batchNumber &lt;= numberOfBatches; batchNumber++) {</span>
+<span class="fc" id="L132">      final String batchFileName = batchFileNameBase + &quot;-&quot; + batchNumber;</span>
+<span class="fc" id="L133">      final long firstBlockOfBatch = chainHeight - ((batchNumber - 1) * BATCH_SIZE);</span>
+<span class="fc" id="L134">      final long lastBlockOfBatch =</span>
+<span class="fc" id="L135">          Math.max(chainHeight - (batchNumber * BATCH_SIZE), lastBlockNumberToRetainTrieLogsFor);</span>
+<span class="fc" id="L136">      final List&lt;Hash&gt; trieLogKeys =</span>
+<span class="fc" id="L137">          getTrieLogKeysForBlocks(blockchain, firstBlockOfBatch, lastBlockOfBatch);</span>
+
+<span class="fc" id="L139">      LOG.info(&quot;Saving trie logs to retain in file {} (batch {})...&quot;, batchFileName, batchNumber);</span>
+<span class="fc" id="L140">      saveTrieLogBatches(batchFileName, rootWorldStateStorage, trieLogKeys);</span>
+    }
+
+<span class="fc" id="L143">    LOG.info(&quot;Clear trie logs...&quot;);</span>
+<span class="fc" id="L144">    rootWorldStateStorage.clearTrieLog();</span>
+
+<span class="fc bfc" id="L146" title="All 2 branches covered.">    for (long batchNumber = 1; batchNumber &lt;= numberOfBatches; batchNumber++) {</span>
+<span class="fc" id="L147">      restoreTrieLogBatches(rootWorldStateStorage, batchNumber, batchFileNameBase);</span>
+    }
+<span class="fc" id="L149">  }</span>
+
+  private void saveTrieLogBatches(
+      final String batchFileName,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final List&lt;Hash&gt; trieLogKeys) {
+
+    try {
+<span class="fc" id="L157">      saveTrieLogsInFile(trieLogKeys, rootWorldStateStorage, batchFileName);</span>
+<span class="nc" id="L158">    } catch (IOException e) {</span>
+<span class="nc" id="L159">      LOG.error(&quot;Error saving trie logs to file: {}&quot;, e.getMessage());</span>
+<span class="nc" id="L160">      throw new RuntimeException(e);</span>
+<span class="fc" id="L161">    }</span>
+<span class="fc" id="L162">  }</span>
+
+  private void restoreTrieLogBatches(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final long batchNumber,
+      final String batchFileNameBase) {
+
+    try {
+<span class="fc" id="L170">      LOG.info(&quot;Restoring trie logs retained from batch {}...&quot;, batchNumber);</span>
+<span class="fc" id="L171">      recreateTrieLogs(rootWorldStateStorage, batchNumber, batchFileNameBase);</span>
+<span class="nc" id="L172">    } catch (IOException e) {</span>
+<span class="nc" id="L173">      LOG.error(&quot;Error recreating trie logs from batch {}: {}&quot;, batchNumber, e.getMessage());</span>
+<span class="nc" id="L174">      throw new RuntimeException(e);</span>
+<span class="fc" id="L175">    }</span>
+<span class="fc" id="L176">  }</span>
+
+  private boolean deleteFiles(final String batchFileNameBase, final long numberOfBatches) {
+
+<span class="fc" id="L180">    LOG.info(&quot;Deleting files...&quot;);</span>
+
+    try {
+<span class="fc bfc" id="L183" title="All 2 branches covered.">      for (long batchNumber = 1; batchNumber &lt;= numberOfBatches; batchNumber++) {</span>
+<span class="fc" id="L184">        File file = new File(batchFileNameBase + &quot;-&quot; + batchNumber);</span>
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">        if (file.exists()) {</span>
+<span class="fc" id="L186">          file.delete();</span>
+        }
+      }
+<span class="fc" id="L189">      return true;</span>
+<span class="nc" id="L190">    } catch (Exception e) {</span>
+<span class="nc" id="L191">      LOG.error(&quot;Error deleting files&quot;, e);</span>
+<span class="nc" id="L192">      return false;</span>
+    }
+  }
+
+  private List&lt;Hash&gt; getTrieLogKeysForBlocks(
+      final MutableBlockchain blockchain,
+      final long firstBlockOfBatch,
+      final long lastBlockOfBatch) {
+<span class="fc" id="L200">    final List&lt;Hash&gt; trieLogKeys = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L201" title="All 2 branches covered.">    for (long i = firstBlockOfBatch; i &gt;= lastBlockOfBatch; i--) {</span>
+<span class="fc" id="L202">      final Optional&lt;BlockHeader&gt; header = blockchain.getBlockHeader(i);</span>
+<span class="fc" id="L203">      header.ifPresentOrElse(</span>
+<span class="fc" id="L204">          blockHeader -&gt; trieLogKeys.add(blockHeader.getHash()),</span>
+<span class="nc" id="L205">          () -&gt; LOG.error(&quot;Error retrieving block&quot;));</span>
+    }
+<span class="fc" id="L207">    return trieLogKeys;</span>
+  }
+
+  private long calculateNumberOfBatches(final long layersToRetain) {
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">    return layersToRetain / BATCH_SIZE + ((layersToRetain % BATCH_SIZE == 0) ? 0 : 1);</span>
+  }
+
+  private boolean validatePruneRequirements(
+      final MutableBlockchain blockchain,
+      final long chainHeight,
+      final long lastBlockNumberToRetainTrieLogsFor,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final long layersToRetain) {
+
+<span class="fc bfc" id="L221" title="All 2 branches covered.">    if (lastBlockNumberToRetainTrieLogsFor &lt; 0) {</span>
+<span class="fc" id="L222">      throw new IllegalArgumentException(</span>
+          &quot;Trying to retain more trie logs than chain length (&quot;
+              + chainHeight
+              + &quot;), skipping pruning&quot;);
+    }
+
+    // Need to ensure we're loading at least layersToRetain if they exist
+    // plus extra threshold to account forks and orphans
+<span class="fc" id="L230">    final long clampedCountBeforePruning =</span>
+        rootWorldStateStorage
+<span class="fc" id="L232">            .streamTrieLogKeys(layersToRetain + DEFAULT_BONSAI_TRIE_LOG_PRUNING_WINDOW_SIZE)</span>
+<span class="fc" id="L233">            .count();</span>
+<span class="fc bfc" id="L234" title="All 2 branches covered.">    if (clampedCountBeforePruning &lt; layersToRetain) {</span>
+<span class="fc" id="L235">      throw new IllegalArgumentException(</span>
+<span class="fc" id="L236">          String.format(</span>
+              &quot;Trie log count (%d) is less than retention limit (%d), skipping pruning&quot;,
+<span class="fc" id="L238">              clampedCountBeforePruning, layersToRetain));</span>
+    }
+
+<span class="fc" id="L241">    final Optional&lt;Hash&gt; finalizedBlockHash = blockchain.getFinalized();</span>
+
+<span class="fc bfc" id="L243" title="All 2 branches covered.">    if (finalizedBlockHash.isEmpty()) {</span>
+<span class="fc" id="L244">      throw new RuntimeException(&quot;No finalized block present, can't safely run trie log prune&quot;);</span>
+    } else {
+<span class="fc" id="L246">      final Hash finalizedHash = finalizedBlockHash.get();</span>
+<span class="fc" id="L247">      final Optional&lt;BlockHeader&gt; finalizedBlockHeader = blockchain.getBlockHeader(finalizedHash);</span>
+<span class="pc bpc" id="L248" title="1 of 2 branches missed.">      if (finalizedBlockHeader.isPresent()</span>
+<span class="fc bfc" id="L249" title="All 2 branches covered.">          &amp;&amp; finalizedBlockHeader.get().getNumber() &lt; lastBlockNumberToRetainTrieLogsFor) {</span>
+<span class="fc" id="L250">        throw new IllegalArgumentException(</span>
+            &quot;Trying to prune more layers than the finalized block height, skipping pruning&quot;);
+      }
+    }
+<span class="fc" id="L254">    return true;</span>
+  }
+
+  private void recreateTrieLogs(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final long batchNumber,
+      final String batchFileNameBase)
+      throws IOException {
+    // process in chunk to avoid OOM
+<span class="fc" id="L263">    final String batchFileName = batchFileNameBase + &quot;-&quot; + batchNumber;</span>
+<span class="fc" id="L264">    IdentityHashMap&lt;byte[], byte[]&gt; trieLogsToRetain = readTrieLogsFromFile(batchFileName);</span>
+<span class="fc" id="L265">    final int chunkSize = ROCKSDB_MAX_INSERTS_PER_TRANSACTION;</span>
+<span class="fc" id="L266">    List&lt;byte[]&gt; keys = new ArrayList&lt;&gt;(trieLogsToRetain.keySet());</span>
+
+<span class="fc bfc" id="L268" title="All 2 branches covered.">    for (int startIndex = 0; startIndex &lt; keys.size(); startIndex += chunkSize) {</span>
+<span class="fc" id="L269">      processTransactionChunk(startIndex, chunkSize, keys, trieLogsToRetain, rootWorldStateStorage);</span>
+    }
+<span class="fc" id="L271">  }</span>
+
+  private void processTransactionChunk(
+      final int startIndex,
+      final int chunkSize,
+      final List&lt;byte[]&gt; keys,
+      final IdentityHashMap&lt;byte[], byte[]&gt; trieLogsToRetain,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage) {
+
+<span class="fc" id="L280">    var updater = rootWorldStateStorage.updater();</span>
+<span class="fc" id="L281">    int endIndex = Math.min(startIndex + chunkSize, keys.size());</span>
+
+<span class="fc bfc" id="L283" title="All 2 branches covered.">    for (int i = startIndex; i &lt; endIndex; i++) {</span>
+<span class="fc" id="L284">      byte[] key = keys.get(i);</span>
+<span class="fc" id="L285">      byte[] value = trieLogsToRetain.get(key);</span>
+<span class="fc" id="L286">      updater.getTrieLogStorageTransaction().put(key, value);</span>
+<span class="fc" id="L287">      LOG.info(&quot;Key({}): {}&quot;, i, Bytes32.wrap(key).toShortHexString());</span>
+    }
+
+<span class="fc" id="L290">    updater.getTrieLogStorageTransaction().commit();</span>
+<span class="fc" id="L291">  }</span>
+
+  @VisibleForTesting
+  void validatePruneConfiguration(final DataStorageConfiguration config) {
+<span class="fc" id="L295">    checkArgument(</span>
+<span class="fc bfc" id="L296" title="All 2 branches covered.">        config.getBonsaiMaxLayersToLoad()</span>
+            &gt;= DataStorageConfiguration.Unstable.MINIMUM_BONSAI_TRIE_LOG_RETENTION_LIMIT,
+<span class="fc" id="L298">        String.format(</span>
+            BONSAI_STORAGE_FORMAT_MAX_LAYERS_TO_LOAD + &quot; minimum value is %d&quot;,
+<span class="fc" id="L300">            DataStorageConfiguration.Unstable.MINIMUM_BONSAI_TRIE_LOG_RETENTION_LIMIT));</span>
+<span class="fc" id="L301">    checkArgument(</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">        config.getUnstable().getBonsaiTrieLogPruningWindowSize() &gt; 0,</span>
+<span class="fc" id="L303">        String.format(</span>
+            DataStorageOptions.Unstable.BONSAI_TRIE_LOG_PRUNING_WINDOW_SIZE
+                + &quot;=%d must be greater than 0&quot;,
+<span class="fc" id="L306">            config.getUnstable().getBonsaiTrieLogPruningWindowSize()));</span>
+<span class="pc" id="L307">    checkArgument(</span>
+<span class="fc" id="L308">        config.getUnstable().getBonsaiTrieLogPruningWindowSize()</span>
+<span class="pc bpc" id="L309" title="1 of 2 branches missed.">            &gt; config.getBonsaiMaxLayersToLoad(),</span>
+<span class="fc" id="L310">        String.format(</span>
+            DataStorageOptions.Unstable.BONSAI_TRIE_LOG_PRUNING_WINDOW_SIZE
+                + &quot;=%d must be greater than &quot;
+                + BONSAI_STORAGE_FORMAT_MAX_LAYERS_TO_LOAD
+                + &quot;=%d&quot;,
+<span class="fc" id="L315">            config.getUnstable().getBonsaiTrieLogPruningWindowSize(),</span>
+<span class="fc" id="L316">            config.getBonsaiMaxLayersToLoad()));</span>
+<span class="nc" id="L317">  }</span>
+
+  private void saveTrieLogsInFile(
+      final List&lt;Hash&gt; trieLogsKeys,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final String batchFileName)
+      throws IOException {
+
+<span class="fc" id="L325">    File file = new File(batchFileName);</span>
+<span class="pc bpc" id="L326" title="1 of 2 branches missed.">    if (file.exists()) {</span>
+<span class="nc" id="L327">      LOG.warn(&quot;File already exists {}, skipping file creation&quot;, batchFileName);</span>
+<span class="nc" id="L328">      return;</span>
+    }
+
+<span class="fc" id="L331">    try (FileOutputStream fos = new FileOutputStream(file)) {</span>
+<span class="fc" id="L332">      ObjectOutputStream oos = new ObjectOutputStream(fos);</span>
+<span class="fc" id="L333">      oos.writeObject(getTrieLogs(trieLogsKeys, rootWorldStateStorage));</span>
+<span class="fc" id="L334">    } catch (IOException e) {</span>
+<span class="fc" id="L335">      LOG.error(e.getMessage());</span>
+<span class="fc" id="L336">      throw new RuntimeException(e);</span>
+<span class="fc" id="L337">    }</span>
+<span class="fc" id="L338">  }</span>
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  IdentityHashMap&lt;byte[], byte[]&gt; readTrieLogsFromFile(final String batchFileName) {
+
+    IdentityHashMap&lt;byte[], byte[]&gt; trieLogs;
+<span class="fc" id="L344">    try (FileInputStream fis = new FileInputStream(batchFileName);</span>
+<span class="fc" id="L345">        ObjectInputStream ois = new ObjectInputStream(fis)) {</span>
+
+<span class="fc" id="L347">      trieLogs = (IdentityHashMap&lt;byte[], byte[]&gt;) ois.readObject();</span>
+<span class="nc" id="L348">    } catch (IOException | ClassNotFoundException e) {</span>
+<span class="nc" id="L349">      LOG.error(e.getMessage());</span>
+<span class="nc" id="L350">      throw new RuntimeException(e);</span>
+<span class="fc" id="L351">    }</span>
+
+<span class="fc" id="L353">    return trieLogs;</span>
+  }
+
+  private void saveTrieLogsAsRlpInFile(
+      final List&lt;Hash&gt; trieLogsKeys,
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final String batchFileName) {
+<span class="fc" id="L360">    File file = new File(batchFileName);</span>
+<span class="pc bpc" id="L361" title="1 of 2 branches missed.">    if (file.exists()) {</span>
+<span class="nc" id="L362">      LOG.warn(&quot;File already exists {}, skipping file creation&quot;, batchFileName);</span>
+<span class="nc" id="L363">      return;</span>
+    }
+
+<span class="fc" id="L366">    final IdentityHashMap&lt;byte[], byte[]&gt; trieLogs =</span>
+<span class="fc" id="L367">        getTrieLogs(trieLogsKeys, rootWorldStateStorage);</span>
+<span class="fc" id="L368">    final Bytes rlp =</span>
+<span class="fc" id="L369">        RLP.encode(</span>
+            o -&gt;
+<span class="fc" id="L371">                o.writeList(</span>
+<span class="fc" id="L372">                    trieLogs.entrySet(), (val, out) -&gt; out.writeRaw(Bytes.wrap(val.getValue()))));</span>
+    try {
+<span class="fc" id="L374">      Files.write(file.toPath(), rlp.toArrayUnsafe());</span>
+<span class="nc" id="L375">    } catch (IOException e) {</span>
+<span class="nc" id="L376">      LOG.error(e.getMessage());</span>
+<span class="nc" id="L377">      throw new RuntimeException(e);</span>
+<span class="fc" id="L378">    }</span>
+<span class="fc" id="L379">  }</span>
+
+  IdentityHashMap&lt;byte[], byte[]&gt; readTrieLogsAsRlpFromFile(final String batchFileName) {
+    try {
+<span class="fc" id="L383">      final Bytes file = Bytes.wrap(Files.readAllBytes(Path.of(batchFileName)));</span>
+<span class="fc" id="L384">      final BytesValueRLPInput input = new BytesValueRLPInput(file, false);</span>
+
+<span class="fc" id="L386">      input.enterList();</span>
+<span class="fc" id="L387">      final IdentityHashMap&lt;byte[], byte[]&gt; trieLogs = new IdentityHashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L388" title="All 2 branches covered.">      while (!input.isEndOfCurrentList()) {</span>
+<span class="fc" id="L389">        final Bytes trieLogBytes = input.currentListAsBytes();</span>
+<span class="fc" id="L390">        TrieLogLayer trieLogLayer =</span>
+<span class="fc" id="L391">            TrieLogFactoryImpl.readFrom(new BytesValueRLPInput(Bytes.wrap(trieLogBytes), false));</span>
+<span class="fc" id="L392">        trieLogs.put(trieLogLayer.getBlockHash().toArrayUnsafe(), trieLogBytes.toArrayUnsafe());</span>
+<span class="fc" id="L393">      }</span>
+<span class="fc" id="L394">      input.leaveList();</span>
+
+<span class="fc" id="L396">      return trieLogs;</span>
+<span class="nc" id="L397">    } catch (IOException e) {</span>
+<span class="nc" id="L398">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  private IdentityHashMap&lt;byte[], byte[]&gt; getTrieLogs(
+      final List&lt;Hash&gt; trieLogKeys, final BonsaiWorldStateKeyValueStorage rootWorldStateStorage) {
+<span class="fc" id="L404">    IdentityHashMap&lt;byte[], byte[]&gt; trieLogsToRetain = new IdentityHashMap&lt;&gt;();</span>
+
+<span class="fc" id="L406">    LOG.info(&quot;Obtaining trielogs from db, this may take a few minutes...&quot;);</span>
+<span class="fc" id="L407">    trieLogKeys.forEach(</span>
+        hash -&gt;
+<span class="fc" id="L409">            rootWorldStateStorage</span>
+<span class="fc" id="L410">                .getTrieLog(hash)</span>
+<span class="fc" id="L411">                .ifPresent(trieLog -&gt; trieLogsToRetain.put(hash.toArrayUnsafe(), trieLog)));</span>
+<span class="fc" id="L412">    return trieLogsToRetain;</span>
+  }
+
+  TrieLogCount getCount(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final int limit,
+      final Blockchain blockchain) {
+<span class="nc" id="L419">    final AtomicInteger total = new AtomicInteger();</span>
+<span class="nc" id="L420">    final AtomicInteger canonicalCount = new AtomicInteger();</span>
+<span class="nc" id="L421">    final AtomicInteger forkCount = new AtomicInteger();</span>
+<span class="nc" id="L422">    final AtomicInteger orphanCount = new AtomicInteger();</span>
+<span class="nc" id="L423">    rootWorldStateStorage</span>
+<span class="nc" id="L424">        .streamTrieLogKeys(limit)</span>
+<span class="nc" id="L425">        .map(Bytes32::wrap)</span>
+<span class="nc" id="L426">        .map(Hash::wrap)</span>
+<span class="nc" id="L427">        .forEach(</span>
+            hash -&gt; {
+<span class="nc" id="L429">              total.getAndIncrement();</span>
+<span class="nc" id="L430">              blockchain</span>
+<span class="nc" id="L431">                  .getBlockHeader(hash)</span>
+<span class="nc" id="L432">                  .ifPresentOrElse(</span>
+                      (header) -&gt; {
+<span class="nc" id="L434">                        long number = header.getNumber();</span>
+<span class="nc" id="L435">                        final Optional&lt;BlockHeader&gt; headerByNumber =</span>
+<span class="nc" id="L436">                            blockchain.getBlockHeader(number);</span>
+<span class="nc bnc" id="L437" title="All 2 branches missed.">                        if (headerByNumber.isPresent()</span>
+<span class="nc bnc" id="L438" title="All 2 branches missed.">                            &amp;&amp; headerByNumber.get().getHash().equals(hash)) {</span>
+<span class="nc" id="L439">                          canonicalCount.getAndIncrement();</span>
+                        } else {
+<span class="nc" id="L441">                          forkCount.getAndIncrement();</span>
+                        }
+<span class="nc" id="L443">                      },</span>
+<span class="nc" id="L444">                      orphanCount::getAndIncrement);</span>
+<span class="nc" id="L445">            });</span>
+
+<span class="nc" id="L447">    return new TrieLogCount(total.get(), canonicalCount.get(), forkCount.get(), orphanCount.get());</span>
+  }
+
+  void printCount(final PrintWriter out, final TrieLogCount count) {
+<span class="nc" id="L451">    out.printf(</span>
+        &quot;trieLog count: %s\n - canonical count: %s\n - fork count: %s\n - orphaned count: %s\n&quot;,
+<span class="nc" id="L453">        count.total, count.canonicalCount, count.forkCount, count.orphanCount);</span>
+<span class="nc" id="L454">  }</span>
+
+  void importTrieLog(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage, final Path trieLogFilePath) {
+
+<span class="nc" id="L459">    var trieLog = readTrieLogsAsRlpFromFile(trieLogFilePath.toString());</span>
+
+<span class="nc" id="L461">    var updater = rootWorldStateStorage.updater();</span>
+<span class="nc" id="L462">    trieLog.forEach((key, value) -&gt; updater.getTrieLogStorageTransaction().put(key, value));</span>
+<span class="nc" id="L463">    updater.getTrieLogStorageTransaction().commit();</span>
+<span class="nc" id="L464">  }</span>
+
+  void exportTrieLog(
+      final BonsaiWorldStateKeyValueStorage rootWorldStateStorage,
+      final List&lt;Hash&gt; trieLogHash,
+      final Path directoryPath)
+      throws IOException {
+<span class="fc" id="L471">    final String trieLogFile = directoryPath.toString();</span>
+
+<span class="fc" id="L473">    saveTrieLogsAsRlpInFile(trieLogHash, rootWorldStateStorage, trieLogFile);</span>
+<span class="fc" id="L474">  }</span>
+
+<span class="nc" id="L476">  record TrieLogCount(int total, int canonicalCount, int forkCount, int orphanCount) {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

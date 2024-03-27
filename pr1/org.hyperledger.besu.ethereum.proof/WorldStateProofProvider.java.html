@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WorldStateProofProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.proof</a> &gt; <span class="el_source">WorldStateProofProvider.java</span></div><h1>WorldStateProofProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.proof;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.InnerNodeDiscoveryManager;
+import org.hyperledger.besu.ethereum.trie.InnerNodeDiscoveryManager.InnerNode;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.Proof;
+import org.hyperledger.besu.ethereum.trie.patricia.RemoveVisitor;
+import org.hyperledger.besu.ethereum.trie.patricia.SimpleMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.function.Function;
+
+import com.google.common.collect.Ordering;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/**
+ * The WorldStateProofProvider class is responsible for providing proofs for world state entries. It
+ * interacts with the underlying storage and trie data structures to generate proofs.
+ */
+public class WorldStateProofProvider {
+
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+
+<span class="fc" id="L53">  public WorldStateProofProvider(final WorldStateStorageCoordinator worldStateStorageCoordinator) {</span>
+<span class="fc" id="L54">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L55">  }</span>
+
+  public Optional&lt;WorldStateProof&gt; getAccountProof(
+      final Hash worldStateRoot,
+      final Address accountAddress,
+      final List&lt;UInt256&gt; accountStorageKeys) {
+
+<span class="fc bfc" id="L62" title="All 2 branches covered.">    if (!worldStateStorageCoordinator.isWorldStateAvailable(worldStateRoot, null)) {</span>
+<span class="fc" id="L63">      return Optional.empty();</span>
+    } else {
+<span class="fc" id="L65">      final Hash accountHash = accountAddress.addressHash();</span>
+<span class="fc" id="L66">      final Proof&lt;Bytes&gt; accountProof =</span>
+<span class="fc" id="L67">          newAccountStateTrie(worldStateRoot).getValueWithProof(accountHash);</span>
+
+<span class="fc" id="L69">      return accountProof</span>
+<span class="fc" id="L70">          .getValue()</span>
+<span class="fc" id="L71">          .map(RLP::input)</span>
+<span class="fc" id="L72">          .map(StateTrieAccountValue::readFrom)</span>
+<span class="fc" id="L73">          .map(</span>
+              account -&gt; {
+<span class="fc" id="L75">                final SortedMap&lt;UInt256, Proof&lt;Bytes&gt;&gt; storageProofs =</span>
+<span class="fc" id="L76">                    getStorageProofs(accountHash, account, accountStorageKeys);</span>
+<span class="fc" id="L77">                return new WorldStateProof(account, accountProof, storageProofs);</span>
+              });
+    }
+  }
+
+  private SortedMap&lt;UInt256, Proof&lt;Bytes&gt;&gt; getStorageProofs(
+      final Hash accountHash,
+      final StateTrieAccountValue account,
+      final List&lt;UInt256&gt; accountStorageKeys) {
+<span class="fc" id="L86">    final MerkleTrie&lt;Bytes32, Bytes&gt; storageTrie =</span>
+<span class="fc" id="L87">        newAccountStorageTrie(accountHash, account.getStorageRoot());</span>
+<span class="fc" id="L88">    final NavigableMap&lt;UInt256, Proof&lt;Bytes&gt;&gt; storageProofs = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L89">    accountStorageKeys.forEach(</span>
+<span class="fc" id="L90">        key -&gt; storageProofs.put(key, storageTrie.getValueWithProof(Hash.hash(key))));</span>
+<span class="fc" id="L91">    return storageProofs;</span>
+  }
+
+  /**
+   * Retrieves the proof-related nodes for an account in the specified world state.
+   *
+   * @param worldStateRoot The root hash of the world state.
+   * @param accountHash The hash of the account.
+   * @return A list of proof-related nodes for the account.
+   */
+  public List&lt;Bytes&gt; getAccountProofRelatedNodes(
+      final Hash worldStateRoot, final Bytes32 accountHash) {
+<span class="fc" id="L103">    final Proof&lt;Bytes&gt; accountProof =</span>
+<span class="fc" id="L104">        newAccountStateTrie(worldStateRoot).getValueWithProof(accountHash);</span>
+<span class="fc" id="L105">    return accountProof.getProofRelatedNodes();</span>
+  }
+
+  /**
+   * Retrieves the proof-related nodes for a storage slot in the specified account storage trie.
+   *
+   * @param storageRoot The root hash of the account storage trie.
+   * @param accountHash The hash of the account.
+   * @param slotHash The hash of the storage slot.
+   * @return A list of proof-related nodes for the storage slot.
+   */
+  public List&lt;Bytes&gt; getStorageProofRelatedNodes(
+      final Bytes32 storageRoot, final Bytes32 accountHash, final Bytes32 slotHash) {
+<span class="fc" id="L118">    final Proof&lt;Bytes&gt; storageProof =</span>
+<span class="fc" id="L119">        newAccountStorageTrie(Hash.wrap(accountHash), storageRoot).getValueWithProof(slotHash);</span>
+<span class="fc" id="L120">    return storageProof.getProofRelatedNodes();</span>
+  }
+
+  private MerkleTrie&lt;Bytes, Bytes&gt; newAccountStateTrie(final Bytes32 rootHash) {
+<span class="fc" id="L124">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L125">        worldStateStorageCoordinator::getAccountStateTrieNode, rootHash, b -&gt; b, b -&gt; b);</span>
+  }
+
+  private MerkleTrie&lt;Bytes32, Bytes&gt; newAccountStorageTrie(
+      final Hash accountHash, final Bytes32 rootHash) {
+<span class="fc" id="L130">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+        (location, hash) -&gt;
+<span class="fc" id="L132">            worldStateStorageCoordinator.getAccountStorageTrieNode(accountHash, location, hash),</span>
+        rootHash,
+<span class="fc" id="L134">        b -&gt; b,</span>
+<span class="fc" id="L135">        b -&gt; b);</span>
+  }
+
+  /**
+   * Checks if a range proof is valid for a given range of keys.
+   *
+   * @param startKeyHash The hash of the starting key in the range.
+   * @param endKeyHash The hash of the ending key in the range.
+   * @param rootHash The root hash of the Merkle Trie.
+   * @param proofs The list of proofs for the keys in the range.
+   * @param keys The TreeMap of key-value pairs representing the range.
+   * @return {@code true} if the range proof is valid, {@code false} otherwise.
+   */
+  public boolean isValidRangeProof(
+      final Bytes32 startKeyHash,
+      final Bytes32 endKeyHash,
+      final Bytes32 rootHash,
+      final List&lt;Bytes&gt; proofs,
+      final SortedMap&lt;Bytes32, Bytes&gt; keys) {
+
+    // check if it's monotonic increasing
+<span class="pc bpc" id="L156" title="1 of 2 branches missed.">    if (!Ordering.natural().isOrdered(keys.keySet())) {</span>
+<span class="nc" id="L157">      return false;</span>
+    }
+
+    // when proof is empty we need to have all the keys to reconstruct the trie
+<span class="fc bfc" id="L161" title="All 2 branches covered.">    if (proofs.isEmpty()) {</span>
+<span class="fc" id="L162">      final MerkleTrie&lt;Bytes, Bytes&gt; trie = new SimpleMerklePatriciaTrie&lt;&gt;(Function.identity());</span>
+      // add the received keys in the trie
+<span class="fc bfc" id="L164" title="All 2 branches covered.">      for (Map.Entry&lt;Bytes32, Bytes&gt; key : keys.entrySet()) {</span>
+<span class="fc" id="L165">        trie.put(key.getKey(), key.getValue());</span>
+<span class="fc" id="L166">      }</span>
+
+<span class="fc" id="L168">      return rootHash.equals(trie.getRootHash());</span>
+    }
+
+    // reconstruct a part of the trie with the proof
+<span class="fc" id="L172">    final Map&lt;Bytes32, Bytes&gt; proofsEntries = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">    for (Bytes proof : proofs) {</span>
+<span class="fc" id="L174">      proofsEntries.put(Hash.hash(proof), proof);</span>
+<span class="fc" id="L175">    }</span>
+
+<span class="fc bfc" id="L177" title="All 2 branches covered.">    if (keys.isEmpty()) {</span>
+<span class="fc" id="L178">      final MerkleTrie&lt;Bytes, Bytes&gt; trie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+              new InnerNodeDiscoveryManager&lt;&gt;(
+<span class="fc" id="L181">                  (location, hash) -&gt; Optional.ofNullable(proofsEntries.get(hash)),</span>
+<span class="fc" id="L182">                  Function.identity(),</span>
+<span class="fc" id="L183">                  Function.identity(),</span>
+                  startKeyHash,
+                  endKeyHash,
+                  false),
+              rootHash);
+      try {
+        // check if there is not missing element
+        // a missing node will throw an exception while it is loading
+        // @see org.hyperledger.besu.ethereum.trie.StoredNode#load()
+<span class="nc" id="L192">        trie.entriesFrom(startKeyHash, Integer.MAX_VALUE);</span>
+<span class="fc" id="L193">      } catch (MerkleTrieException e) {</span>
+<span class="fc" id="L194">        return false;</span>
+<span class="nc" id="L195">      }</span>
+<span class="nc" id="L196">      return true;</span>
+    }
+
+    // search inner nodes in the range created by the proofs and remove
+<span class="fc" id="L200">    final InnerNodeDiscoveryManager&lt;Bytes&gt; snapStoredNodeFactory =</span>
+        new InnerNodeDiscoveryManager&lt;&gt;(
+<span class="fc" id="L202">            (location, hash) -&gt; Optional.ofNullable(proofsEntries.get(hash)),</span>
+<span class="fc" id="L203">            Function.identity(),</span>
+<span class="fc" id="L204">            Function.identity(),</span>
+            startKeyHash,
+<span class="fc" id="L206">            keys.lastKey(),</span>
+            true);
+<span class="fc" id="L208">    final MerkleTrie&lt;Bytes, Bytes&gt; trie =</span>
+        new StoredMerklePatriciaTrie&lt;&gt;(snapStoredNodeFactory, rootHash);
+    // filling out innerNodes of the InnerNodeDiscoveryManager by walking through the trie
+<span class="fc" id="L211">    trie.visitAll(node -&gt; {});</span>
+<span class="fc" id="L212">    final List&lt;InnerNode&gt; innerNodes = snapStoredNodeFactory.getInnerNodes();</span>
+<span class="fc bfc" id="L213" title="All 2 branches covered.">    for (InnerNode innerNode : innerNodes) {</span>
+<span class="fc" id="L214">      trie.removePath(</span>
+<span class="fc" id="L215">          Bytes.concatenate(innerNode.location(), innerNode.path()), new RemoveVisitor&lt;&gt;(false));</span>
+<span class="fc" id="L216">    }</span>
+
+    // add the received keys in the trie to reconstruct the trie
+<span class="fc bfc" id="L219" title="All 2 branches covered.">    for (Map.Entry&lt;Bytes32, Bytes&gt; account : keys.entrySet()) {</span>
+<span class="fc" id="L220">      trie.put(account.getKey(), account.getValue());</span>
+<span class="fc" id="L221">    }</span>
+
+    // check if the generated root hash is valid
+<span class="fc" id="L224">    return rootHash.equals(trie.getRootHash());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Pipeline.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.pipeline</a> &gt; <span class="el_source">Pipeline.java</span></div><h1>Pipeline.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.pipeline;
+
+import static java.util.stream.Collectors.toList;
+
+import org.hyperledger.besu.services.pipeline.exception.AsyncOperationException;
+import org.hyperledger.besu.util.ExceptionUtils;
+import org.hyperledger.besu.util.log.LogUtil;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
+
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The Pipeline.
+ *
+ * @param &lt;I&gt; the type parameter
+ */
+public class Pipeline&lt;I&gt; {
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(Pipeline.class);</span>
+  private final Pipe&lt;I&gt; inputPipe;
+  private final Collection&lt;Stage&gt; stages;
+  private final Collection&lt;Pipe&lt;?&gt;&gt; pipes;
+  private final CompleterStage&lt;?&gt; completerStage;
+<span class="fc" id="L52">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L53">  private final Tracer tracer =</span>
+<span class="fc" id="L54">      GlobalOpenTelemetry.getTracer(&quot;org.hyperledger.besu.services.pipeline&quot;, &quot;1.0.0&quot;);</span>
+
+  /**
+   * Flags that the pipeline is being completed so that when we abort we can close the streams
+   * without the completion stage then marking the future successful before we finish the abort
+   * process and mark it as exceptionally completed. We can't just use synchronized because it winds
+   * up being the same thread coming in via a callback so already has the lock.
+   */
+<span class="fc" id="L62">  private final AtomicBoolean completing = new AtomicBoolean(false);</span>
+
+<span class="fc" id="L64">  private final CompletableFuture&lt;Void&gt; overallFuture = new CompletableFuture&lt;&gt;();</span>
+  private final String name;
+  private final boolean tracingEnabled;
+  private volatile List&lt;Future&lt;?&gt;&gt; futures;
+
+  /**
+   * Instantiates a new Pipeline.
+   *
+   * @param inputPipe the input pipe
+   * @param name the name
+   * @param tracingEnabled the tracing enabled
+   * @param stages the stages
+   * @param pipes the pipes
+   * @param completerStage the completer stage
+   */
+  Pipeline(
+      final Pipe&lt;I&gt; inputPipe,
+      final String name,
+      final boolean tracingEnabled,
+      final Collection&lt;Stage&gt; stages,
+      final Collection&lt;Pipe&lt;?&gt;&gt; pipes,
+<span class="fc" id="L85">      final CompleterStage&lt;?&gt; completerStage) {</span>
+<span class="fc" id="L86">    this.inputPipe = inputPipe;</span>
+<span class="fc" id="L87">    this.tracingEnabled = tracingEnabled;</span>
+<span class="fc" id="L88">    this.name = name;</span>
+<span class="fc" id="L89">    this.stages = stages;</span>
+<span class="fc" id="L90">    this.pipes = pipes;</span>
+<span class="fc" id="L91">    this.completerStage = completerStage;</span>
+<span class="fc" id="L92">  }</span>
+
+  /**
+   * Get the input pipe for this pipeline.
+   *
+   * @return the input pipe.
+   */
+  public Pipe&lt;I&gt; getInputPipe() {
+<span class="fc" id="L100">    return inputPipe;</span>
+  }
+
+  /**
+   * Starts execution of the pipeline. Each stage in the pipeline requires a dedicated thread from
+   * the supplied executor service.
+   *
+   * @param executorService the {@link ExecutorService} to execute each stage in.
+   * @return a future that will be completed when the pipeline completes. If the pipeline fails or
+   *     is aborted the returned future will be completed exceptionally.
+   */
+  public synchronized CompletableFuture&lt;Void&gt; start(final ExecutorService executorService) {
+<span class="pc bpc" id="L112" title="1 of 2 branches missed.">    if (!started.compareAndSet(false, true)) {</span>
+<span class="nc" id="L113">      return overallFuture;</span>
+    }
+<span class="fc" id="L115">    futures =</span>
+<span class="fc" id="L116">        Stream.concat(stages.stream(), Stream.of(completerStage))</span>
+<span class="fc" id="L117">            .map(task -&gt; runWithErrorHandling(executorService, task))</span>
+<span class="fc" id="L118">            .collect(toList());</span>
+<span class="fc" id="L119">    completerStage</span>
+<span class="fc" id="L120">        .getFuture()</span>
+<span class="fc" id="L121">        .whenComplete(</span>
+            (result, error) -&gt; {
+<span class="fc bfc" id="L123" title="All 2 branches covered.">              if (completing.compareAndSet(false, true)) {</span>
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">                if (error != null) {</span>
+<span class="nc" id="L125">                  overallFuture.completeExceptionally(error);</span>
+                } else {
+<span class="fc" id="L127">                  overallFuture.complete(null);</span>
+                }
+              }
+<span class="fc" id="L130">            });</span>
+<span class="fc" id="L131">    overallFuture.exceptionally(</span>
+        error -&gt; {
+<span class="fc bfc" id="L133" title="All 2 branches covered.">          if (ExceptionUtils.rootCause(error) instanceof CancellationException) {</span>
+<span class="fc" id="L134">            abort();</span>
+          }
+<span class="fc" id="L136">          return null;</span>
+        });
+<span class="fc" id="L138">    return overallFuture;</span>
+  }
+
+  /**
+   * Abort execution of this pipeline. The future returned by {@link #start(ExecutorService)} will
+   * be completed with a {@link CancellationException}.
+   *
+   * &lt;p&gt;A best effort is made to halt all processing by the pipeline immediately by interrupting
+   * each execution thread and pipes connecting each stage will no longer accept or provide further
+   * items.
+   */
+  public void abort() {
+<span class="fc" id="L150">    final CancellationException exception = new CancellationException(&quot;Pipeline aborted&quot;);</span>
+<span class="fc" id="L151">    abort(exception);</span>
+<span class="fc" id="L152">  }</span>
+
+  private Future&lt;?&gt; runWithErrorHandling(final ExecutorService executorService, final Stage task) {
+<span class="fc" id="L155">    return executorService.submit(</span>
+        () -&gt; {
+<span class="fc" id="L157">          Span taskSpan = null;</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">          if (tracingEnabled) {</span>
+<span class="fc" id="L159">            taskSpan =</span>
+                tracer
+<span class="fc" id="L161">                    .spanBuilder(task.getName())</span>
+<span class="fc" id="L162">                    .setAttribute(&quot;pipeline&quot;, name)</span>
+<span class="fc" id="L163">                    .setSpanKind(SpanKind.INTERNAL)</span>
+<span class="fc" id="L164">                    .startSpan();</span>
+          }
+<span class="fc" id="L166">          final Thread thread = Thread.currentThread();</span>
+<span class="fc" id="L167">          final String originalName = thread.getName();</span>
+          try {
+<span class="fc" id="L169">            thread.setName(originalName + &quot; (&quot; + task.getName() + &quot;)&quot;);</span>
+<span class="fc" id="L170">            task.run();</span>
+<span class="fc" id="L171">          } catch (final Throwable t) {</span>
+<span class="fc bfc" id="L172" title="All 2 branches covered.">            if (tracingEnabled) {</span>
+<span class="fc" id="L173">              taskSpan.setStatus(StatusCode.ERROR);</span>
+            }
+<span class="pc bpc" id="L175" title="3 of 6 branches missed.">            if (t instanceof CompletionException</span>
+                || t instanceof CancellationException
+                || t instanceof AsyncOperationException) {
+<span class="nc" id="L178">              LOG.trace(&quot;Unhandled exception in pipeline. Aborting.&quot;, t);</span>
+            } else {
+<span class="fc" id="L180">              LOG.info(</span>
+<span class="fc" id="L181">                  LogUtil.summarizeBesuStackTrace(</span>
+                      &quot;Unexpected exception in pipeline. Aborting.&quot;, t));
+<span class="fc" id="L183">              LOG.debug(&quot;Unexpected exception in pipeline. Aborting.&quot;, t);</span>
+            }
+            try {
+<span class="fc" id="L186">              abort(t);</span>
+<span class="nc" id="L187">            } catch (final Throwable t2) {</span>
+              // Seems excessive but exceptions that propagate out of this method won't be logged
+              // because the executor just completes the future exceptionally, and we never
+              // need to call get on it which would normally expose the error.
+<span class="nc" id="L191">              LOG.error(&quot;Failed to abort pipeline after error&quot;, t2);</span>
+<span class="fc" id="L192">            }</span>
+          } finally {
+<span class="fc bfc" id="L194" title="All 2 branches covered.">            if (tracingEnabled) {</span>
+<span class="fc" id="L195">              taskSpan.end();</span>
+            }
+<span class="fc" id="L197">            thread.setName(originalName);</span>
+          }
+<span class="fc" id="L199">        });</span>
+  }
+
+  private synchronized void abort(final Throwable error) {
+<span class="fc bfc" id="L203" title="All 2 branches covered.">    if (completing.compareAndSet(false, true)) {</span>
+<span class="fc" id="L204">      inputPipe.abort();</span>
+<span class="fc" id="L205">      pipes.forEach(Pipe::abort);</span>
+<span class="fc" id="L206">      futures.forEach(future -&gt; future.cancel(true));</span>
+<span class="fc" id="L207">      overallFuture.completeExceptionally(error);</span>
+    }
+<span class="fc" id="L209">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

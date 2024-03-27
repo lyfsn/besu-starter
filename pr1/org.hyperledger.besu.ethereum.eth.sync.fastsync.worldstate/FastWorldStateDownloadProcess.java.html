@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastWorldStateDownloadProcess.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate</a> &gt; <span class="el_source">FastWorldStateDownloadProcess.java</span></div><h1>FastWorldStateDownloadProcess.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.hyperledger.besu.services.pipeline.PipelineBuilder.createPipelineFrom;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.TaskQueueIterator;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloadProcess;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.services.pipeline.Pipe;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.services.pipeline.PipelineBuilder;
+import org.hyperledger.besu.services.pipeline.WritePipe;
+import org.hyperledger.besu.services.tasks.Task;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FastWorldStateDownloadProcess implements WorldStateDownloadProcess {
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(FastWorldStateDownloadProcess.class);</span>
+  private final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; fetchDataPipeline;
+  private final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; completionPipeline;
+  private final WritePipe&lt;Task&lt;NodeDataRequest&gt;&gt; requestsToComplete;
+
+  private FastWorldStateDownloadProcess(
+      final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; fetchDataPipeline,
+      final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; completionPipeline,
+<span class="fc" id="L50">      final WritePipe&lt;Task&lt;NodeDataRequest&gt;&gt; requestsToComplete) {</span>
+<span class="fc" id="L51">    this.fetchDataPipeline = fetchDataPipeline;</span>
+<span class="fc" id="L52">    this.completionPipeline = completionPipeline;</span>
+<span class="fc" id="L53">    this.requestsToComplete = requestsToComplete;</span>
+<span class="fc" id="L54">  }</span>
+
+  public static Builder builder() {
+<span class="fc" id="L57">    return new Builder();</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; start(final EthScheduler ethScheduler) {
+<span class="fc" id="L62">    final CompletableFuture&lt;Void&gt; fetchDataFuture = ethScheduler.startPipeline(fetchDataPipeline);</span>
+<span class="fc" id="L63">    final CompletableFuture&lt;Void&gt; completionFuture = ethScheduler.startPipeline(completionPipeline);</span>
+
+<span class="fc" id="L65">    fetchDataFuture.whenComplete(</span>
+        (result, error) -&gt; {
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">          if (error != null) {</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">            if (!(ExceptionUtils.rootCause(error) instanceof CancellationException)) {</span>
+<span class="nc" id="L69">              LOG.error(&quot;Pipeline failed&quot;, error);</span>
+            }
+<span class="fc" id="L71">            completionPipeline.abort();</span>
+          } else {
+            // No more data to fetch, so propagate the pipe closure onto the completion pipe.
+<span class="nc" id="L74">            requestsToComplete.close();</span>
+          }
+<span class="fc" id="L76">        });</span>
+
+<span class="fc" id="L78">    completionFuture.exceptionally(</span>
+        error -&gt; {
+<span class="pc bpc" id="L80" title="1 of 2 branches missed.">          if (!(ExceptionUtils.rootCause(error) instanceof CancellationException)) {</span>
+<span class="nc" id="L81">            LOG.error(&quot;Pipeline failed&quot;, error);</span>
+          }
+<span class="fc" id="L83">          fetchDataPipeline.abort();</span>
+<span class="fc" id="L84">          return null;</span>
+        });
+<span class="fc" id="L86">    return completionFuture;</span>
+  }
+
+  @Override
+  public void abort() {
+<span class="nc" id="L91">    fetchDataPipeline.abort();</span>
+<span class="nc" id="L92">    completionPipeline.abort();</span>
+<span class="nc" id="L93">  }</span>
+
+<span class="fc" id="L95">  public static class Builder {</span>
+
+    private int hashCountPerRequest;
+    private int maxOutstandingRequests;
+    private LoadLocalDataStep loadLocalDataStep;
+    private FastWorldDownloadState downloadState;
+    private MetricsSystem metricsSystem;
+    private RequestDataStep requestDataStep;
+    private BlockHeader pivotBlockHeader;
+    private PersistDataStep persistDataStep;
+    private CompleteTaskStep completeTaskStep;
+
+    public Builder hashCountPerRequest(final int hashCountPerRequest) {
+<span class="fc" id="L108">      this.hashCountPerRequest = hashCountPerRequest;</span>
+<span class="fc" id="L109">      return this;</span>
+    }
+
+    public Builder maxOutstandingRequests(final int maxOutstandingRequests) {
+<span class="fc" id="L113">      this.maxOutstandingRequests = maxOutstandingRequests;</span>
+<span class="fc" id="L114">      return this;</span>
+    }
+
+    public Builder loadLocalDataStep(final LoadLocalDataStep loadLocalDataStep) {
+<span class="fc" id="L118">      this.loadLocalDataStep = loadLocalDataStep;</span>
+<span class="fc" id="L119">      return this;</span>
+    }
+
+    public Builder requestDataStep(final RequestDataStep requestDataStep) {
+<span class="fc" id="L123">      this.requestDataStep = requestDataStep;</span>
+<span class="fc" id="L124">      return this;</span>
+    }
+
+    public Builder persistDataStep(final PersistDataStep persistDataStep) {
+<span class="fc" id="L128">      this.persistDataStep = persistDataStep;</span>
+<span class="fc" id="L129">      return this;</span>
+    }
+
+    public Builder completeTaskStep(final CompleteTaskStep completeTaskStep) {
+<span class="fc" id="L133">      this.completeTaskStep = completeTaskStep;</span>
+<span class="fc" id="L134">      return this;</span>
+    }
+
+    public Builder downloadState(final FastWorldDownloadState downloadState) {
+<span class="fc" id="L138">      this.downloadState = downloadState;</span>
+<span class="fc" id="L139">      return this;</span>
+    }
+
+    public Builder pivotBlockHeader(final BlockHeader pivotBlockHeader) {
+<span class="fc" id="L143">      this.pivotBlockHeader = pivotBlockHeader;</span>
+<span class="fc" id="L144">      return this;</span>
+    }
+
+    public Builder metricsSystem(final MetricsSystem metricsSystem) {
+<span class="fc" id="L148">      this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L149">      return this;</span>
+    }
+
+    public FastWorldStateDownloadProcess build() {
+<span class="fc" id="L153">      checkNotNull(loadLocalDataStep);</span>
+<span class="fc" id="L154">      checkNotNull(requestDataStep);</span>
+<span class="fc" id="L155">      checkNotNull(persistDataStep);</span>
+<span class="fc" id="L156">      checkNotNull(completeTaskStep);</span>
+<span class="fc" id="L157">      checkNotNull(downloadState);</span>
+<span class="fc" id="L158">      checkNotNull(pivotBlockHeader);</span>
+<span class="fc" id="L159">      checkNotNull(metricsSystem);</span>
+
+      // Room for the requests we expect to do in parallel plus some buffer but not unlimited.
+<span class="fc" id="L162">      final int bufferCapacity = hashCountPerRequest * 2;</span>
+<span class="fc" id="L163">      final LabelledMetric&lt;Counter&gt; outputCounter =</span>
+<span class="fc" id="L164">          metricsSystem.createLabelledCounter(</span>
+              BesuMetricCategory.SYNCHRONIZER,
+              &quot;world_state_pipeline_processed_total&quot;,
+              &quot;Number of entries processed by each world state download pipeline stage&quot;,
+              &quot;step&quot;,
+              &quot;action&quot;);
+
+<span class="fc" id="L171">      final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; completionPipeline =</span>
+<span class="fc" id="L172">          PipelineBuilder.&lt;Task&lt;NodeDataRequest&gt;&gt;createPipeline(</span>
+                  &quot;requestDataAvailable&quot;, bufferCapacity, outputCounter, true, &quot;node_data_request&quot;)
+<span class="fc" id="L174">              .andFinishWith(</span>
+                  &quot;requestCompleteTask&quot;,
+                  task -&gt;
+<span class="fc" id="L177">                      completeTaskStep.markAsCompleteOrFailed(</span>
+                          pivotBlockHeader, downloadState, task));
+
+<span class="fc" id="L180">      final Pipe&lt;Task&lt;NodeDataRequest&gt;&gt; requestsToComplete = completionPipeline.getInputPipe();</span>
+<span class="fc" id="L181">      final Pipeline&lt;Task&lt;NodeDataRequest&gt;&gt; fetchDataPipeline =</span>
+<span class="fc" id="L182">          createPipelineFrom(</span>
+                  &quot;requestDequeued&quot;,
+                  new TaskQueueIterator&lt;&gt;(downloadState),
+                  bufferCapacity,
+                  outputCounter,
+                  true,
+                  &quot;world_state_download&quot;)
+<span class="fc" id="L189">              .thenFlatMapInParallel(</span>
+                  &quot;requestLoadLocalData&quot;,
+<span class="fc" id="L191">                  task -&gt; loadLocalDataStep.loadLocalData(task, requestsToComplete),</span>
+                  3,
+                  bufferCapacity)
+<span class="fc" id="L194">              .inBatches(hashCountPerRequest)</span>
+<span class="fc" id="L195">              .thenProcessAsync(</span>
+                  &quot;batchDownloadData&quot;,
+                  requestTasks -&gt;
+<span class="fc" id="L198">                      requestDataStep.requestData(requestTasks, pivotBlockHeader, downloadState),</span>
+                  maxOutstandingRequests)
+<span class="fc" id="L200">              .thenProcess(</span>
+                  &quot;batchPersistData&quot;,
+<span class="fc" id="L202">                  tasks -&gt; persistDataStep.persist(tasks, pivotBlockHeader, downloadState))</span>
+<span class="fc" id="L203">              .andFinishWith(</span>
+<span class="fc" id="L204">                  &quot;batchDataDownloaded&quot;, tasks -&gt; tasks.forEach(requestsToComplete::put));</span>
+
+<span class="fc" id="L206">      return new FastWorldStateDownloadProcess(</span>
+          fetchDataPipeline, completionPipeline, requestsToComplete);
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Subscribers.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.util</a> &gt; <span class="el_source">Subscribers.java</span></div><h1>Subscribers.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.util;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+
+import com.google.common.collect.ImmutableSet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Tracks subscribers that should be notified when some event occurred. This class is safe to use
+ * from multiple threads.
+ *
+ * &lt;p&gt;Each subscriber is assigned a unique ID which can be used to unsubscribe. This approach was
+ * chosen over using the subscriber's object identity to eliminate a common trap believing that
+ * method references are equal when they refer to the same method. For example, if object identity
+ * were used to track subscribers it would be possible to write the incorrect code:
+ *
+ * &lt;pre&gt;
+ * &lt;code&gt;subscribers.subscribe(this::onSomeEvent);
+ * subscribers.unsubscribe(this::onSomeEvent);&lt;/code&gt;
+ * &lt;/pre&gt;
+ *
+ * &lt;p&gt;Since the two separate &lt;code&gt;this::onSomeEvent&lt;/code&gt; are not equal, the subscriber wouldn't
+ * be removed. This bug is avoided by assigning each subscriber a unique ID and using that to
+ * unsubscribe.
+ *
+ * @param &lt;T&gt; the type of subscribers
+ */
+public class Subscribers&lt;T&gt; {
+<span class="fc" id="L47">  private static final Subscribers&lt;?&gt; NONE = new EmptySubscribers&lt;&gt;();</span>
+<span class="fc" id="L48">  private static final Logger LOG = LoggerFactory.getLogger(Subscribers.class);</span>
+
+<span class="fc" id="L50">  private final AtomicLong subscriberId = new AtomicLong();</span>
+<span class="fc" id="L51">  private final Map&lt;Long, T&gt; subscribers = new ConcurrentHashMap&lt;&gt;();</span>
+
+  private final boolean suppressCallbackExceptions;
+
+<span class="fc" id="L55">  private Subscribers(final boolean suppressCallbackExceptions) {</span>
+<span class="fc" id="L56">    this.suppressCallbackExceptions = suppressCallbackExceptions;</span>
+<span class="fc" id="L57">  }</span>
+
+  /**
+   * None subscribers.
+   *
+   * @param &lt;T&gt; the type parameter
+   * @return the subscribers
+   */
+  @SuppressWarnings(&quot;unchecked&quot;)
+  public static &lt;T&gt; Subscribers&lt;T&gt; none() {
+<span class="fc" id="L67">    return (Subscribers&lt;T&gt;) NONE;</span>
+  }
+
+  /**
+   * Create subscribers.
+   *
+   * @param &lt;T&gt; the type parameter
+   * @return the subscribers
+   */
+  public static &lt;T&gt; Subscribers&lt;T&gt; create() {
+<span class="fc" id="L77">    return new Subscribers&lt;T&gt;(false);</span>
+  }
+
+  /**
+   * Create subscribers.
+   *
+   * @param &lt;T&gt; the type parameter
+   * @param catchCallbackExceptions the catch callback exceptions
+   * @return the subscribers
+   */
+  public static &lt;T&gt; Subscribers&lt;T&gt; create(final boolean catchCallbackExceptions) {
+<span class="fc" id="L88">    return new Subscribers&lt;T&gt;(catchCallbackExceptions);</span>
+  }
+
+  /**
+   * Add a subscriber to the list.
+   *
+   * @param subscriber the subscriber to add
+   * @return the ID assigned to this subscriber
+   */
+  public long subscribe(final T subscriber) {
+<span class="fc" id="L98">    final long id = subscriberId.getAndIncrement();</span>
+<span class="fc" id="L99">    subscribers.put(id, subscriber);</span>
+<span class="fc" id="L100">    return id;</span>
+  }
+
+  /**
+   * Remove a subscriber from the list.
+   *
+   * @param subscriberId the ID of the subscriber to remove
+   * @return &lt;code&gt;true&lt;/code&gt; if a subscriber with that ID was found and removed, otherwise &lt;code&gt;
+   *          false&lt;/code&gt;
+   */
+  public boolean unsubscribe(final long subscriberId) {
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    return subscribers.remove(subscriberId) != null;</span>
+  }
+
+  /**
+   * Iterate through the current list of subscribers. This is typically used to deliver events e.g.:
+   *
+   * &lt;pre&gt;
+   * &lt;code&gt;subscribers.forEach(subscriber -&amp;gt; subscriber.onEvent());&lt;/code&gt;
+   * &lt;/pre&gt;
+   *
+   * @param action the action to perform for each subscriber
+   */
+  public void forEach(final Consumer&lt;T&gt; action) {
+<span class="fc" id="L124">    ImmutableSet.copyOf(</span>
+            // we copy here to ensure that our callback, which may add another subscriber on this
+            // event, won't trigger that new additional subscriber
+<span class="fc" id="L127">            subscribers.values())</span>
+<span class="fc" id="L128">        .forEach(</span>
+            subscriber -&gt; {
+              try {
+<span class="fc" id="L131">                action.accept(subscriber);</span>
+<span class="fc" id="L132">              } catch (final Exception e) {</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">                if (suppressCallbackExceptions) {</span>
+<span class="fc" id="L134">                  LOG.debug(&quot;Error in callback: {}&quot;, e);</span>
+                } else {
+<span class="fc" id="L136">                  throw e;</span>
+                }
+<span class="fc" id="L138">              }</span>
+<span class="fc" id="L139">            });</span>
+<span class="fc" id="L140">  }</span>
+
+  /**
+   * Get the current subscriber count.
+   *
+   * @return the current number of subscribers.
+   */
+  public int getSubscriberCount() {
+<span class="fc" id="L148">    return subscribers.size();</span>
+  }
+
+  private static class EmptySubscribers&lt;T&gt; extends Subscribers&lt;T&gt; {
+
+    private EmptySubscribers() {
+<span class="fc" id="L154">      super(false);</span>
+<span class="fc" id="L155">    }</span>
+
+    @Override
+    public long subscribe(final T subscriber) {
+<span class="nc" id="L159">      throw new UnsupportedOperationException();</span>
+    }
+
+    @Override
+    public boolean unsubscribe(final long subscriberId) {
+<span class="nc" id="L164">      return false;</span>
+    }
+
+    @Override
+    public void forEach(final Consumer&lt;T&gt; action) {
+<span class="fc" id="L169">      return;</span>
+    }
+
+    @Override
+    public int getSubscriberCount() {
+<span class="fc" id="L174">      return 0;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

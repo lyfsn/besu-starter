@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TraceServiceImpl.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services</a> &gt; <span class="el_source">TraceServiceImpl.java</span></div><h1>TraceServiceImpl.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.TraceBlock.ChainUpdater;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.Tracer;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.plugin.Unstable;
+import org.hyperledger.besu.plugin.data.BlockTraceResult;
+import org.hyperledger.besu.plugin.data.TransactionTraceResult;
+import org.hyperledger.besu.plugin.services.TraceService;
+import org.hyperledger.besu.plugin.services.tracer.BlockAwareOperationTracer;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.stream.LongStream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Trace service implementation. */
+@Unstable
+public class TraceServiceImpl implements TraceService {
+<span class="fc" id="L54">  private static final Logger LOG = LoggerFactory.getLogger(TraceServiceImpl.class);</span>
+
+  private final BlockchainQueries blockchainQueries;
+  private final ProtocolSchedule protocolSchedule;
+
+  /**
+   * Instantiates a new TraceServiceImpl service.
+   *
+   * @param blockchainQueries the blockchainQueries
+   * @param protocolSchedule the protocolSchedule
+   */
+  public TraceServiceImpl(
+<span class="fc" id="L66">      final BlockchainQueries blockchainQueries, final ProtocolSchedule protocolSchedule) {</span>
+<span class="fc" id="L67">    this.blockchainQueries = blockchainQueries;</span>
+<span class="fc" id="L68">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L69">  }</span>
+
+  /**
+   * Traces block
+   *
+   * @param blockNumber the block number to be traced
+   * @param tracer an instance of OperationTracer
+   */
+  @Override
+  public BlockTraceResult traceBlock(
+      final long blockNumber, final BlockAwareOperationTracer tracer) {
+<span class="fc" id="L80">    return traceBlock(blockchainQueries.getBlockchain().getBlockByNumber(blockNumber), tracer);</span>
+  }
+
+  /**
+   * Traces block
+   *
+   * @param hash the block hash to be traced
+   * @param tracer an instance of OperationTracer
+   */
+  @Override
+  public BlockTraceResult traceBlock(final Hash hash, final BlockAwareOperationTracer tracer) {
+<span class="nc" id="L91">    return traceBlock(blockchainQueries.getBlockchain().getBlockByHash(hash), tracer);</span>
+  }
+
+  private BlockTraceResult traceBlock(
+      final Optional&lt;Block&gt; maybeBlock, final BlockAwareOperationTracer tracer) {
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">    checkArgument(tracer != null);</span>
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">    if (maybeBlock.isEmpty()) {</span>
+<span class="nc" id="L98">      return BlockTraceResult.empty();</span>
+    }
+
+<span class="fc" id="L101">    final Optional&lt;List&lt;TransactionProcessingResult&gt;&gt; results = trace(maybeBlock.get(), tracer);</span>
+
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">    if (results.isEmpty()) {</span>
+<span class="nc" id="L104">      return BlockTraceResult.empty();</span>
+    }
+
+<span class="fc" id="L107">    final BlockTraceResult.Builder builder = BlockTraceResult.builder();</span>
+
+<span class="fc" id="L109">    final List&lt;TransactionProcessingResult&gt; transactionProcessingResults = results.get();</span>
+<span class="fc" id="L110">    final List&lt;Transaction&gt; transactions = maybeBlock.get().getBody().getTransactions();</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    for (int i = 0; i &lt; transactionProcessingResults.size(); i++) {</span>
+<span class="fc" id="L112">      final TransactionProcessingResult transactionProcessingResult =</span>
+<span class="fc" id="L113">          transactionProcessingResults.get(i);</span>
+      final TransactionTraceResult transactionTraceResult =
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">          transactionProcessingResult.isInvalid()</span>
+<span class="nc" id="L116">              ? TransactionTraceResult.error(</span>
+<span class="nc" id="L117">                  transactions.get(i).getHash(),</span>
+<span class="nc" id="L118">                  transactionProcessingResult.getValidationResult().getErrorMessage())</span>
+<span class="fc" id="L119">              : TransactionTraceResult.success(transactions.get(i).getHash());</span>
+
+<span class="fc" id="L121">      builder.addTransactionTraceResult(transactionTraceResult);</span>
+    }
+
+<span class="fc" id="L124">    return builder.build();</span>
+  }
+
+  /**
+   * Traces range of blocks
+   *
+   * @param fromBlockNumber the beginning of the range (inclusive)
+   * @param toBlockNumber the end of the range (inclusive)
+   * @param beforeTracing Function which performs an operation on a MutableWorldState before tracing
+   * @param afterTracing Function which performs an operation on a MutableWorldState after tracing
+   * @param tracer an instance of OperationTracer
+   */
+  @Override
+  public void trace(
+      final long fromBlockNumber,
+      final long toBlockNumber,
+      final Consumer&lt;WorldUpdater&gt; beforeTracing,
+      final Consumer&lt;WorldUpdater&gt; afterTracing,
+      final BlockAwareOperationTracer tracer) {
+<span class="pc bpc" id="L143" title="1 of 2 branches missed.">    checkArgument(tracer != null);</span>
+<span class="fc" id="L144">    LOG.debug(&quot;Tracing from block {} to block {}&quot;, fromBlockNumber, toBlockNumber);</span>
+<span class="fc" id="L145">    final Blockchain blockchain = blockchainQueries.getBlockchain();</span>
+<span class="fc" id="L146">    final List&lt;Block&gt; blocks =</span>
+<span class="fc" id="L147">        LongStream.rangeClosed(fromBlockNumber, toBlockNumber)</span>
+<span class="fc" id="L148">            .mapToObj(</span>
+                number -&gt;
+                    blockchain
+<span class="fc" id="L151">                        .getBlockByNumber(number)</span>
+<span class="pc" id="L152">                        .orElseThrow(() -&gt; new RuntimeException(&quot;Block not found &quot; + number)))</span>
+<span class="fc" id="L153">            .toList();</span>
+<span class="fc" id="L154">    Tracer.processTracing(</span>
+        blockchainQueries,
+<span class="fc" id="L156">        blocks.get(0).getHash(),</span>
+        traceableState -&gt; {
+<span class="fc" id="L158">          final WorldUpdater worldStateUpdater = traceableState.updater();</span>
+<span class="fc" id="L159">          final ChainUpdater chainUpdater = new ChainUpdater(traceableState, worldStateUpdater);</span>
+<span class="fc" id="L160">          beforeTracing.accept(worldStateUpdater);</span>
+<span class="fc" id="L161">          final List&lt;TransactionProcessingResult&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L162">          blocks.forEach(</span>
+              block -&gt; {
+<span class="fc" id="L164">                results.addAll(trace(blockchain, block, chainUpdater, tracer));</span>
+<span class="fc" id="L165">              });</span>
+<span class="fc" id="L166">          afterTracing.accept(chainUpdater.getNextUpdater());</span>
+<span class="fc" id="L167">          return Optional.of(results);</span>
+        });
+<span class="fc" id="L169">  }</span>
+
+  private Optional&lt;List&lt;TransactionProcessingResult&gt;&gt; trace(
+      final Block block, final BlockAwareOperationTracer tracer) {
+<span class="fc" id="L173">    LOG.debug(&quot;Tracing block {}&quot;, block.toLogString());</span>
+<span class="fc" id="L174">    final Blockchain blockchain = blockchainQueries.getBlockchain();</span>
+
+<span class="fc" id="L176">    final Optional&lt;List&lt;TransactionProcessingResult&gt;&gt; results =</span>
+<span class="fc" id="L177">        Tracer.processTracing(</span>
+            blockchainQueries,
+<span class="fc" id="L179">            block.getHash(),</span>
+            traceableState -&gt;
+<span class="fc" id="L181">                Optional.of(trace(blockchain, block, new ChainUpdater(traceableState), tracer)));</span>
+
+<span class="fc" id="L183">    return results;</span>
+  }
+
+  private List&lt;TransactionProcessingResult&gt; trace(
+      final Blockchain blockchain,
+      final Block block,
+      final ChainUpdater chainUpdater,
+      final BlockAwareOperationTracer tracer) {
+<span class="fc" id="L191">    final List&lt;TransactionProcessingResult&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L192">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(block.getHeader());</span>
+<span class="fc" id="L193">    final MainnetTransactionProcessor transactionProcessor = protocolSpec.getTransactionProcessor();</span>
+<span class="fc" id="L194">    final BlockHeader header = block.getHeader();</span>
+<span class="fc" id="L195">    tracer.traceStartBlock(block.getHeader(), block.getBody());</span>
+
+<span class="fc" id="L197">    block</span>
+<span class="fc" id="L198">        .getBody()</span>
+<span class="fc" id="L199">        .getTransactions()</span>
+<span class="fc" id="L200">        .forEach(</span>
+            transaction -&gt; {
+<span class="fc" id="L202">              final Optional&lt;BlockHeader&gt; maybeParentHeader =</span>
+<span class="fc" id="L203">                  blockchain.getBlockHeader(header.getParentHash());</span>
+<span class="fc" id="L204">              final Wei blobGasPrice =</span>
+                  protocolSpec
+<span class="fc" id="L206">                      .getFeeMarket()</span>
+<span class="fc" id="L207">                      .blobGasPricePerGas(</span>
+                          maybeParentHeader
+<span class="fc" id="L209">                              .map(parent -&gt; calculateExcessBlobGasForParent(protocolSpec, parent))</span>
+<span class="fc" id="L210">                              .orElse(BlobGas.ZERO));</span>
+
+<span class="fc" id="L212">              final WorldUpdater worldUpdater = chainUpdater.getNextUpdater();</span>
+<span class="fc" id="L213">              final TransactionProcessingResult result =</span>
+<span class="fc" id="L214">                  transactionProcessor.processTransaction(</span>
+                      blockchain,
+                      worldUpdater,
+                      header,
+                      transaction,
+<span class="fc" id="L219">                      protocolSpec.getMiningBeneficiaryCalculator().calculateBeneficiary(header),</span>
+                      tracer,
+                      new CachingBlockHashLookup(header, blockchain),
+<span class="fc" id="L222">                      false,</span>
+                      blobGasPrice);
+
+<span class="fc" id="L225">              results.add(result);</span>
+<span class="fc" id="L226">            });</span>
+
+<span class="fc" id="L228">    tracer.traceEndBlock(block.getHeader(), block.getBody());</span>
+
+<span class="fc" id="L230">    return results;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

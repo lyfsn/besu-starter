@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapSyncMetricsManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">SnapSyncMetricsManager.java</span></div><h1>SnapSyncMetricsManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import static io.netty.util.internal.ObjectUtil.checkNonEmpty;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncMetricsManager.Step.HEAL_TRIE;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.MathContext;
+import java.math.RoundingMode;
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Manages the metrics related to the SnapSync process. */
+public class SnapSyncMetricsManager {
+
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(SnapSyncMetricsManager.class);</span>
+<span class="fc" id="L43">  private static final long PRINT_DELAY = TimeUnit.MINUTES.toMillis(1);</span>
+
+  private final MetricsSystem metricsSystem;
+  private final EthContext ethContext;
+
+  /** Represents the progress status of the snapsync process. */
+  private final AtomicReference&lt;BigDecimal&gt; percentageProgress;
+
+  /**
+   * Represents the number of accounts downloaded during the initial step of the snapsync process.
+   */
+  private final AtomicLong nbAccountsDownloaded;
+
+  /** Represents the number of slots downloaded during the initial step of the snapsync process. */
+  private final AtomicLong nbSlotsDownloaded;
+
+  /** Represents the number of code entries downloaded. */
+  private final AtomicLong nbCodes;
+
+  /**
+   * Represents the number of trie nodes generated during the initial step of the snapsync process.
+   */
+  private final AtomicLong nbTrieNodesGenerated;
+
+  /** Represents the number of flat accounts healed during the healing process. */
+  private final AtomicLong nbFlatAccountsHealed;
+
+  /** Represents the number of flat slots healed during the healing process. */
+  private final AtomicLong nbFlatSlotsHealed;
+
+  /** Represents the number of trie nodes healed during the healing process. */
+  private final AtomicLong nbTrieNodesHealed;
+
+  private long startSyncTime;
+
+<span class="nc" id="L78">  private final Map&lt;Bytes32, BigInteger&gt; lastRangeIndex = new HashMap&lt;&gt;();</span>
+
+  private long lastNotifyTimestamp;
+
+<span class="nc" id="L82">  public SnapSyncMetricsManager(final MetricsSystem metricsSystem, final EthContext ethContext) {</span>
+<span class="nc" id="L83">    this.metricsSystem = metricsSystem;</span>
+<span class="nc" id="L84">    this.ethContext = ethContext;</span>
+<span class="nc" id="L85">    percentageProgress = new AtomicReference&lt;&gt;(new BigDecimal(0));</span>
+<span class="nc" id="L86">    nbAccountsDownloaded = new AtomicLong(0);</span>
+<span class="nc" id="L87">    nbSlotsDownloaded = new AtomicLong(0);</span>
+<span class="nc" id="L88">    nbCodes = new AtomicLong(0);</span>
+<span class="nc" id="L89">    nbTrieNodesGenerated = new AtomicLong(0);</span>
+<span class="nc" id="L90">    nbFlatAccountsHealed = new AtomicLong(0);</span>
+<span class="nc" id="L91">    nbFlatSlotsHealed = new AtomicLong(0);</span>
+<span class="nc" id="L92">    nbTrieNodesHealed = new AtomicLong(0);</span>
+<span class="nc" id="L93">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_generated_nodes_total&quot;,
+        &quot;Total number of data nodes generated as part of snap sync world state download&quot;,
+<span class="nc" id="L97">        nbTrieNodesGenerated::get);</span>
+<span class="nc" id="L98">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_healed_nodes_total&quot;,
+        &quot;Total number of data nodes healed as part of snap sync world state heal process&quot;,
+<span class="nc" id="L102">        nbTrieNodesHealed::get);</span>
+<span class="nc" id="L103">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_accounts_total&quot;,
+        &quot;Total number of accounts downloaded as part of snap sync world state&quot;,
+<span class="nc" id="L107">        nbAccountsDownloaded::get);</span>
+<span class="nc" id="L108">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_slots_total&quot;,
+        &quot;Total number of slots downloaded as part of snap sync world state&quot;,
+<span class="nc" id="L112">        nbSlotsDownloaded::get);</span>
+<span class="nc" id="L113">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_flat_accounts_healed_total&quot;,
+        &quot;Total number of accounts healed in the flat database as part of snap sync world state&quot;,
+<span class="nc" id="L117">        nbFlatAccountsHealed::get);</span>
+<span class="nc" id="L118">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_flat_slots_healed_total&quot;,
+        &quot;Total number of slots healed in the flat database as part of snap sync world state&quot;,
+<span class="nc" id="L122">        nbFlatSlotsHealed::get);</span>
+<span class="nc" id="L123">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.SYNCHRONIZER,
+        &quot;snap_world_state_codes_total&quot;,
+        &quot;Total number of codes downloaded as part of snap sync world state&quot;,
+<span class="nc" id="L127">        nbCodes::get);</span>
+<span class="nc" id="L128">  }</span>
+
+  public void initRange(final Map&lt;Bytes32, Bytes32&gt; ranges) {
+<span class="nc bnc" id="L131" title="All 2 branches missed.">    for (Map.Entry&lt;Bytes32, Bytes32&gt; entry : ranges.entrySet()) {</span>
+<span class="nc" id="L132">      this.lastRangeIndex.put(entry.getValue(), entry.getKey().toUnsignedBigInteger());</span>
+<span class="nc" id="L133">    }</span>
+<span class="nc" id="L134">    this.startSyncTime = System.currentTimeMillis();</span>
+<span class="nc" id="L135">    this.lastNotifyTimestamp = startSyncTime;</span>
+<span class="nc" id="L136">  }</span>
+
+  public void notifyRangeProgress(
+      final Step step, final Bytes32 startKeyHash, final Bytes32 endKeyHash) {
+<span class="nc" id="L140">    checkNonEmpty(lastRangeIndex, &quot;snapsync range collection&quot;);</span>
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    if (lastRangeIndex.containsKey(endKeyHash)) {</span>
+<span class="nc" id="L142">      final BigInteger lastPos = lastRangeIndex.get(endKeyHash);</span>
+<span class="nc" id="L143">      final BigInteger newPos = startKeyHash.toUnsignedBigInteger();</span>
+<span class="nc" id="L144">      percentageProgress.getAndAccumulate(</span>
+<span class="nc" id="L145">          BigDecimal.valueOf(100)</span>
+<span class="nc" id="L146">              .multiply(new BigDecimal(newPos.subtract(lastPos)))</span>
+<span class="nc" id="L147">              .divide(</span>
+<span class="nc" id="L148">                  new BigDecimal(RangeManager.MAX_RANGE.toUnsignedBigInteger()),</span>
+                  MathContext.DECIMAL32),
+          BigDecimal::add);
+<span class="nc" id="L151">      lastRangeIndex.put(endKeyHash, newPos);</span>
+<span class="nc" id="L152">      print(step);</span>
+    }
+<span class="nc" id="L154">  }</span>
+
+  public void notifyAccountsDownloaded(final long nbAccounts) {
+<span class="nc" id="L157">    this.nbAccountsDownloaded.getAndAdd(nbAccounts);</span>
+<span class="nc" id="L158">  }</span>
+
+  public void notifySlotsDownloaded(final long nbSlots) {
+<span class="nc" id="L161">    this.nbSlotsDownloaded.getAndAdd(nbSlots);</span>
+<span class="nc" id="L162">  }</span>
+
+  public void notifyCodeDownloaded() {
+<span class="nc" id="L165">    this.nbCodes.getAndIncrement();</span>
+<span class="nc" id="L166">  }</span>
+
+  public void notifyNodesGenerated(final long nbNodes) {
+<span class="nc" id="L169">    this.nbTrieNodesGenerated.getAndAdd(nbNodes);</span>
+<span class="nc" id="L170">  }</span>
+
+  public void notifyTrieNodesHealed(final long nbNodes) {
+<span class="nc" id="L173">    this.nbTrieNodesHealed.getAndAdd(nbNodes);</span>
+<span class="nc" id="L174">    print(HEAL_TRIE);</span>
+<span class="nc" id="L175">  }</span>
+
+  private void print(final Step step) {
+<span class="nc" id="L178">    final long now = System.currentTimeMillis();</span>
+<span class="nc bnc" id="L179" title="All 2 branches missed.">    if (now - lastNotifyTimestamp &gt;= PRINT_DELAY) {</span>
+<span class="nc" id="L180">      lastNotifyTimestamp = now;</span>
+<span class="nc" id="L181">      int peerCount = -1; // ethContext is not available in tests</span>
+<span class="nc bnc" id="L182" title="All 4 branches missed.">      if (ethContext != null &amp;&amp; ethContext.getEthPeers().peerCount() &gt;= 0) {</span>
+<span class="nc" id="L183">        peerCount = ethContext.getEthPeers().peerCount();</span>
+      }
+<span class="nc bnc" id="L185" title="All 4 branches missed.">      switch (step) {</span>
+        case DOWNLOAD -&gt; {
+<span class="nc" id="L187">          LOG.debug(</span>
+              &quot;Worldstate {} in progress accounts={}, slots={}, codes={}, nodes={}&quot;,
+              step.message,
+              nbAccountsDownloaded,
+              nbSlotsDownloaded,
+              nbCodes,
+              nbTrieNodesGenerated);
+<span class="nc" id="L194">          LOG.info(</span>
+              &quot;Worldstate {} progress: {}%, Peer count: {}&quot;,
+<span class="nc" id="L196">              step.message, percentageProgress.get().setScale(2, RoundingMode.HALF_UP), peerCount);</span>
+<span class="nc" id="L197">        }</span>
+        case HEAL_FLAT -&gt; {
+<span class="nc" id="L199">          LOG.debug(</span>
+              &quot;Worldstate {} in progress accounts={}, slots={}&quot;,
+              step.message,
+              nbFlatAccountsHealed,
+              nbFlatSlotsHealed);
+<span class="nc" id="L204">          LOG.info(</span>
+              &quot;Worldstate {} progress: {}%, Peer count: {}&quot;,
+<span class="nc" id="L206">              step.message, percentageProgress.get().setScale(2, RoundingMode.HALF_UP), peerCount);</span>
+<span class="nc" id="L207">        }</span>
+        case HEAL_TRIE -&gt; {
+<span class="nc" id="L209">          LOG.info(</span>
+              &quot;Healed {} world state trie nodes, Peer count: {}&quot;,
+<span class="nc" id="L211">              nbTrieNodesHealed.get(),</span>
+<span class="nc" id="L212">              peerCount);</span>
+        }
+      }
+    }
+<span class="nc" id="L216">  }</span>
+
+  public void notifySnapSyncCompleted() {
+<span class="nc" id="L219">    final Duration duration = Duration.ofMillis(System.currentTimeMillis() - startSyncTime);</span>
+<span class="nc" id="L220">    LOG.info(</span>
+        &quot;Finished worldstate snapsync with nodes {} (healed={}) duration {}{}:{},{}.&quot;,
+<span class="nc" id="L222">        nbTrieNodesGenerated.addAndGet(nbTrieNodesHealed.get()),</span>
+        nbTrieNodesHealed,
+<span class="nc bnc" id="L224" title="All 2 branches missed.">        duration.toHoursPart() &gt; 0 ? (duration.toHoursPart() + &quot;:&quot;) : &quot;&quot;,</span>
+<span class="nc" id="L225">        duration.toMinutesPart(),</span>
+<span class="nc" id="L226">        duration.toSecondsPart(),</span>
+<span class="nc" id="L227">        duration.toMillisPart());</span>
+<span class="nc" id="L228">  }</span>
+
+  public MetricsSystem getMetricsSystem() {
+<span class="nc" id="L231">    return metricsSystem;</span>
+  }
+
+<span class="fc" id="L234">  public enum Step {</span>
+<span class="fc" id="L235">    DOWNLOAD(&quot;download&quot;),</span>
+<span class="fc" id="L236">    HEAL_TRIE(&quot;trie node healing&quot;),</span>
+<span class="fc" id="L237">    HEAL_FLAT(&quot;flat database healing&quot;);</span>
+
+    final String message;
+
+<span class="fc" id="L241">    Step(final String message) {</span>
+<span class="fc" id="L242">      this.message = message;</span>
+<span class="fc" id="L243">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

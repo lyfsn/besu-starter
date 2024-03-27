@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ImportBlocksStep.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">ImportBlocksStep.java</span></div><h1>ImportBlocksStep.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.core.BlockWithReceipts;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.ValidationPolicy;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.exceptions.InvalidBlockException;
+import org.hyperledger.besu.ethereum.mainnet.BlockImportResult;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+
+import java.util.List;
+import java.util.OptionalLong;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ImportBlocksStep implements Consumer&lt;List&lt;BlockWithReceipts&gt;&gt; {
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(ImportBlocksStep.class);</span>
+<span class="fc" id="L38">  private static final long PRINT_DELAY = TimeUnit.SECONDS.toMillis(30L);</span>
+
+  private final ProtocolSchedule protocolSchedule;
+  protected final ProtocolContext protocolContext;
+  private final ValidationPolicy headerValidationPolicy;
+  private final ValidationPolicy ommerValidationPolicy;
+  private final EthContext ethContext;
+<span class="fc" id="L45">  private long accumulatedTime = 0L;</span>
+<span class="fc" id="L46">  private OptionalLong logStartBlock = OptionalLong.empty();</span>
+  private final BlockHeader pivotHeader;
+
+  public ImportBlocksStep(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final ValidationPolicy headerValidationPolicy,
+      final ValidationPolicy ommerValidationPolicy,
+      final EthContext ethContext,
+<span class="fc" id="L55">      final BlockHeader pivotHeader) {</span>
+<span class="fc" id="L56">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L57">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L58">    this.headerValidationPolicy = headerValidationPolicy;</span>
+<span class="fc" id="L59">    this.ommerValidationPolicy = ommerValidationPolicy;</span>
+<span class="fc" id="L60">    this.ethContext = ethContext;</span>
+<span class="fc" id="L61">    this.pivotHeader = pivotHeader;</span>
+<span class="fc" id="L62">  }</span>
+
+  @Override
+  public void accept(final List&lt;BlockWithReceipts&gt; blocksWithReceipts) {
+<span class="fc" id="L66">    final long startTime = System.nanoTime();</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    for (final BlockWithReceipts blockWithReceipts : blocksWithReceipts) {</span>
+<span class="fc bfc" id="L68" title="All 2 branches covered.">      if (!importBlock(blockWithReceipts)) {</span>
+<span class="fc" id="L69">        throw InvalidBlockException.fromInvalidBlock(blockWithReceipts.getHeader());</span>
+      }
+<span class="fc" id="L71">      LOG.atTrace()</span>
+<span class="fc" id="L72">          .setMessage(&quot;Imported block {}&quot;)</span>
+<span class="fc" id="L73">          .addArgument(blockWithReceipts.getBlock()::toLogString)</span>
+<span class="fc" id="L74">          .log();</span>
+<span class="fc" id="L75">    }</span>
+<span class="fc bfc" id="L76" title="All 2 branches covered.">    if (logStartBlock.isEmpty()) {</span>
+<span class="fc" id="L77">      logStartBlock = OptionalLong.of(blocksWithReceipts.get(0).getNumber());</span>
+    }
+<span class="fc" id="L79">    final long lastBlock = blocksWithReceipts.get(blocksWithReceipts.size() - 1).getNumber();</span>
+<span class="fc" id="L80">    int peerCount = -1; // ethContext is not available in tests</span>
+<span class="pc bpc" id="L81" title="1 of 4 branches missed.">    if (ethContext != null &amp;&amp; ethContext.getEthPeers().peerCount() &gt;= 0) {</span>
+<span class="fc" id="L82">      peerCount = ethContext.getEthPeers().peerCount();</span>
+    }
+<span class="fc" id="L84">    final long endTime = System.nanoTime();</span>
+
+<span class="fc" id="L86">    accumulatedTime += TimeUnit.MILLISECONDS.convert(endTime - startTime, TimeUnit.NANOSECONDS);</span>
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">    if (accumulatedTime &gt; PRINT_DELAY) {</span>
+<span class="nc" id="L88">      final long blocksPercent = getBlocksPercent(lastBlock, pivotHeader.getNumber());</span>
+<span class="nc" id="L89">      LOG.info(</span>
+          &quot;Block import progress: {} of {} ({}%)&quot;,
+<span class="nc" id="L91">          lastBlock, pivotHeader.getNumber(), blocksPercent);</span>
+<span class="nc" id="L92">      LOG.debug(</span>
+          &quot;Completed importing chain segment {} to {} ({} blocks in {}ms), Peer count: {}&quot;,
+<span class="nc" id="L94">          logStartBlock.getAsLong(),</span>
+<span class="nc" id="L95">          lastBlock,</span>
+<span class="nc" id="L96">          lastBlock - logStartBlock.getAsLong() + 1,</span>
+<span class="nc" id="L97">          accumulatedTime,</span>
+<span class="nc" id="L98">          peerCount);</span>
+<span class="nc" id="L99">      accumulatedTime = 0L;</span>
+<span class="nc" id="L100">      logStartBlock = OptionalLong.empty();</span>
+    }
+<span class="fc" id="L102">  }</span>
+
+  @VisibleForTesting
+  protected static long getBlocksPercent(final long lastBlock, final long totalBlocks) {
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (totalBlocks == 0) {</span>
+<span class="fc" id="L107">      return 0;</span>
+    }
+<span class="fc" id="L109">    final long blocksPercent = (100 * lastBlock / totalBlocks);</span>
+<span class="fc" id="L110">    return blocksPercent;</span>
+  }
+
+  protected boolean importBlock(final BlockWithReceipts blockWithReceipts) {
+<span class="fc" id="L114">    final BlockImporter importer =</span>
+<span class="fc" id="L115">        protocolSchedule.getByBlockHeader(blockWithReceipts.getHeader()).getBlockImporter();</span>
+<span class="fc" id="L116">    final BlockImportResult blockImportResult =</span>
+<span class="fc" id="L117">        importer.fastImportBlock(</span>
+            protocolContext,
+<span class="fc" id="L119">            blockWithReceipts.getBlock(),</span>
+<span class="fc" id="L120">            blockWithReceipts.getReceipts(),</span>
+<span class="fc" id="L121">            headerValidationPolicy.getValidationModeForNextBlock(),</span>
+<span class="fc" id="L122">            ommerValidationPolicy.getValidationModeForNextBlock());</span>
+<span class="fc" id="L123">    return blockImportResult.isImported();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

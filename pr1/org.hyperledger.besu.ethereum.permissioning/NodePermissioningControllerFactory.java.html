@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NodePermissioningControllerFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning</a> &gt; <span class="el_source">NodePermissioningControllerFactory.java</span></div><h1>NodePermissioningControllerFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeURLImpl;
+import org.hyperledger.besu.ethereum.permissioning.node.NodePermissioningController;
+import org.hyperledger.besu.ethereum.permissioning.node.provider.SyncStatusNodePermissioningProvider;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.permissioning.NodeConnectionPermissioningProvider;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.collect.Lists;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="fc" id="L38">public class NodePermissioningControllerFactory {</span>
+
+<span class="fc" id="L40">  private static final Logger LOG =</span>
+<span class="fc" id="L41">      LoggerFactory.getLogger(NodePermissioningControllerFactory.class);</span>
+
+  public NodePermissioningController create(
+      final PermissioningConfiguration permissioningConfiguration,
+      final Synchronizer synchronizer,
+      final Collection&lt;EnodeURL&gt; fixedNodes,
+      final Bytes localNodeId,
+      final TransactionSimulator transactionSimulator,
+      final MetricsSystem metricsSystem,
+      final Blockchain blockchain,
+      final List&lt;NodeConnectionPermissioningProvider&gt; pluginProviders) {
+
+<span class="fc" id="L53">    ArrayList&lt;NodeConnectionPermissioningProvider&gt; providers = Lists.newArrayList(pluginProviders);</span>
+
+    final Optional&lt;SyncStatusNodePermissioningProvider&gt; syncStatusProviderOptional;
+
+<span class="fc bfc" id="L57" title="All 2 branches covered.">    if (permissioningConfiguration.getLocalConfig().isPresent()) {</span>
+<span class="fc" id="L58">      LocalPermissioningConfiguration localPermissioningConfiguration =</span>
+<span class="fc" id="L59">          permissioningConfiguration.getLocalConfig().get();</span>
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">      if (localPermissioningConfiguration.isNodeAllowlistEnabled()) {</span>
+<span class="fc" id="L61">        NodeLocalConfigPermissioningController localProvider =</span>
+            new NodeLocalConfigPermissioningController(
+                localPermissioningConfiguration,
+                new ArrayList&lt;&gt;(fixedNodes),
+                localNodeId,
+                metricsSystem);
+<span class="fc" id="L67">        providers.add(localProvider);</span>
+      }
+    }
+
+<span class="fc bfc" id="L71" title="All 2 branches covered.">    if (permissioningConfiguration.getSmartContractConfig().isPresent()</span>
+        &amp;&amp; permissioningConfiguration
+<span class="fc" id="L73">            .getSmartContractConfig()</span>
+<span class="fc" id="L74">            .get()</span>
+<span class="fc bfc" id="L75" title="All 2 branches covered.">            .isSmartContractNodeAllowlistEnabled()) {</span>
+
+<span class="fc" id="L77">      configureNodePermissioningSmartContractProvider(</span>
+          permissioningConfiguration, transactionSimulator, metricsSystem, providers);
+
+<span class="fc bfc" id="L80" title="All 2 branches covered.">      if (fixedNodes.isEmpty()) {</span>
+<span class="fc" id="L81">        syncStatusProviderOptional = Optional.empty();</span>
+      } else {
+<span class="fc" id="L83">        syncStatusProviderOptional =</span>
+<span class="fc" id="L84">            Optional.of(</span>
+                new SyncStatusNodePermissioningProvider(synchronizer, fixedNodes, metricsSystem));
+      }
+    } else {
+<span class="fc" id="L88">      syncStatusProviderOptional = Optional.empty();</span>
+    }
+
+<span class="fc" id="L91">    final NodePermissioningController nodePermissioningController =</span>
+        new NodePermissioningController(syncStatusProviderOptional, providers);
+
+<span class="fc" id="L94">    permissioningConfiguration</span>
+<span class="fc" id="L95">        .getSmartContractConfig()</span>
+<span class="fc" id="L96">        .ifPresent(</span>
+            config -&gt; {
+<span class="fc bfc" id="L98" title="All 2 branches covered.">              if (config.isSmartContractNodeAllowlistEnabled()) {</span>
+<span class="fc" id="L99">                validatePermissioningContract(</span>
+                    nodePermissioningController,
+<span class="fc" id="L101">                    permissioningConfiguration.getSmartContractConfig().get());</span>
+              }
+<span class="fc" id="L103">            });</span>
+
+<span class="fc" id="L105">    return nodePermissioningController;</span>
+  }
+
+  private void configureNodePermissioningSmartContractProvider(
+      final PermissioningConfiguration permissioningConfiguration,
+      final TransactionSimulator transactionSimulator,
+      final MetricsSystem metricsSystem,
+      final List&lt;NodeConnectionPermissioningProvider&gt; providers) {
+<span class="fc" id="L113">    final SmartContractPermissioningConfiguration smartContractPermissioningConfig =</span>
+<span class="fc" id="L114">        permissioningConfiguration.getSmartContractConfig().get();</span>
+<span class="fc" id="L115">    final Address nodePermissioningSmartContractAddress =</span>
+<span class="fc" id="L116">        smartContractPermissioningConfig.getNodeSmartContractAddress();</span>
+
+    final NodeConnectionPermissioningProvider smartContractProvider;
+<span class="pc bpc" id="L119" title="2 of 3 branches missed.">    switch (smartContractPermissioningConfig.getNodeSmartContractInterfaceVersion()) {</span>
+      case 1:
+        {
+<span class="fc" id="L122">          smartContractProvider =</span>
+              new NodeSmartContractPermissioningController(
+                  nodePermissioningSmartContractAddress, transactionSimulator, metricsSystem);
+<span class="fc" id="L125">          break;</span>
+        }
+      case 2:
+        {
+<span class="nc" id="L129">          smartContractProvider =</span>
+              new NodeSmartContractV2PermissioningController(
+                  nodePermissioningSmartContractAddress, transactionSimulator, metricsSystem);
+<span class="nc" id="L132">          break;</span>
+        }
+      default:
+<span class="nc" id="L135">        throw new IllegalStateException(</span>
+            &quot;Invalid node Smart contract permissioning interface version&quot;);
+    }
+<span class="fc" id="L138">    providers.add(smartContractProvider);</span>
+<span class="fc" id="L139">  }</span>
+
+  private void validatePermissioningContract(
+      final NodePermissioningController nodePermissioningController,
+      final SmartContractPermissioningConfiguration smartContractPermissioningConfig) {
+<span class="fc" id="L144">    LOG.debug(&quot;Validating onchain node permissioning smart contract configuration&quot;);</span>
+
+    // eliminate the sync status and other checks, so we can just check the smart contract function
+<span class="fc" id="L147">    final NodePermissioningController tempControllerCheckingSmartContractOnly =</span>
+        new NodePermissioningController(
+<span class="fc" id="L149">            Optional.empty(), nodePermissioningController.getProviders());</span>
+
+    try {
+      // the enodeURLs don't matter. We just want to check if a call to the smart contract succeeds
+<span class="fc" id="L153">      tempControllerCheckingSmartContractOnly.isPermitted(</span>
+<span class="fc" id="L154">          EnodeURLImpl.fromString(</span>
+              &quot;enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303&quot;),
+<span class="fc" id="L156">          EnodeURLImpl.fromString(</span>
+              &quot;enode://6f8a80d14311c39f35f516fa664deaaaa13e85b2f7493f37f6144d86991ec012937307647bd3b9a82abe2974e1407241d54947bbb39763a4cac9f77166ad92a0@10.3.58.6:30303&quot;));
+<span class="fc" id="L158">      LOG.debug(</span>
+          &quot;Successful validation of onchain node permissioning smart contract configuration!&quot;);
+<span class="fc" id="L160">    } catch (Exception e) {</span>
+<span class="fc" id="L161">      final String msg =</span>
+<span class="fc" id="L162">          String.format(</span>
+              &quot;Error: node permissioning contract at address %s does not match the expected interface version %s.&quot;,
+<span class="fc" id="L164">              smartContractPermissioningConfig.getNodeSmartContractAddress(),</span>
+<span class="fc" id="L165">              smartContractPermissioningConfig.getNodeSmartContractInterfaceVersion());</span>
+<span class="fc" id="L166">      throw new IllegalStateException(msg, e);</span>
+<span class="fc" id="L167">    }</span>
+<span class="fc" id="L168">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

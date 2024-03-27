@@ -1,0 +1,317 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PostMergeContext.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.merge</a> &gt; <span class="el_source">PostMergeContext.java</span></div><h1>PostMergeContext.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.merge;
+
+import org.hyperledger.besu.consensus.merge.blockcreation.PayloadIdentifier;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ConsensusContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockValueCalculator;
+import org.hyperledger.besu.ethereum.core.BlockWithReceipts;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Comparator;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.EvictingQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Post merge context. */
+public class PostMergeContext implements MergeContext {
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(PostMergeContext.class);</span>
+  /** The Max blocks in progress. */
+  static final int MAX_BLOCKS_IN_PROGRESS = 12;
+
+<span class="fc" id="L46">  private static final AtomicReference&lt;PostMergeContext&gt; singleton = new AtomicReference&lt;&gt;();</span>
+
+<span class="fc" id="L48">  private static final Comparator&lt;BlockWithReceipts&gt; compareByGasUsedDesc =</span>
+<span class="fc" id="L49">      Comparator.comparingLong(</span>
+              (BlockWithReceipts blockWithReceipts) -&gt;
+<span class="fc" id="L51">                  blockWithReceipts.getBlock().getHeader().getGasUsed())</span>
+<span class="fc" id="L52">          .reversed();</span>
+
+  private final AtomicReference&lt;SyncState&gt; syncState;
+  private final AtomicReference&lt;Difficulty&gt; terminalTotalDifficulty;
+  // initial postMerge state is indeterminate until it is set:
+<span class="fc" id="L57">  private final AtomicReference&lt;Optional&lt;Boolean&gt;&gt; isPostMerge =</span>
+<span class="fc" id="L58">      new AtomicReference&lt;&gt;(Optional.empty());</span>
+<span class="fc" id="L59">  private final Subscribers&lt;MergeStateHandler&gt; newMergeStateCallbackSubscribers =</span>
+<span class="fc" id="L60">      Subscribers.create();</span>
+<span class="fc" id="L61">  private final Subscribers&lt;UnverifiedForkchoiceListener&gt;</span>
+<span class="fc" id="L62">      newUnverifiedForkchoiceCallbackSubscribers = Subscribers.create();</span>
+
+<span class="fc" id="L64">  private final EvictingQueue&lt;PayloadWrapper&gt; blocksInProgress =</span>
+<span class="fc" id="L65">      EvictingQueue.create(MAX_BLOCKS_IN_PROGRESS);</span>
+
+  // latest finalized block
+<span class="fc" id="L68">  private final AtomicReference&lt;BlockHeader&gt; lastFinalized = new AtomicReference&lt;&gt;();</span>
+<span class="fc" id="L69">  private final AtomicReference&lt;BlockHeader&gt; lastSafeBlock = new AtomicReference&lt;&gt;();</span>
+<span class="fc" id="L70">  private final AtomicReference&lt;Optional&lt;BlockHeader&gt;&gt; terminalPoWBlock =</span>
+<span class="fc" id="L71">      new AtomicReference&lt;&gt;(Optional.empty());</span>
+<span class="fc" id="L72">  private final BlockValueCalculator blockValueCalculator = new BlockValueCalculator();</span>
+  private boolean isPostMergeAtGenesis;
+
+  /** Instantiates a new Post merge context. */
+  @VisibleForTesting
+  PostMergeContext() {
+<span class="fc" id="L78">    this(Difficulty.ZERO);</span>
+<span class="fc" id="L79">  }</span>
+
+  /**
+   * Instantiates a new Post merge context.
+   *
+   * @param difficulty the difficulty
+   */
+  @VisibleForTesting
+<span class="fc" id="L87">  PostMergeContext(final Difficulty difficulty) {</span>
+<span class="fc" id="L88">    this.terminalTotalDifficulty = new AtomicReference&lt;&gt;(difficulty);</span>
+<span class="fc" id="L89">    this.syncState = new AtomicReference&lt;&gt;();</span>
+<span class="fc" id="L90">  }</span>
+
+  /**
+   * Get post merge context.
+   *
+   * @return the post merge context
+   */
+  public static PostMergeContext get() {
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    if (singleton.get() == null) {</span>
+<span class="fc" id="L99">      singleton.compareAndSet(null, new PostMergeContext());</span>
+    }
+<span class="fc" id="L101">    return singleton.get();</span>
+  }
+
+  @Override
+  public &lt;C extends ConsensusContext&gt; C as(final Class&lt;C&gt; klass) {
+<span class="fc" id="L106">    return klass.cast(this);</span>
+  }
+
+  @Override
+  public PostMergeContext setTerminalTotalDifficulty(final Difficulty newTerminalTotalDifficulty) {
+<span class="pc bpc" id="L111" title="1 of 2 branches missed.">    if (newTerminalTotalDifficulty == null) {</span>
+<span class="nc" id="L112">      throw new IllegalStateException(&quot;cannot set null terminal total difficulty&quot;);</span>
+    }
+<span class="fc" id="L114">    terminalTotalDifficulty.set(newTerminalTotalDifficulty);</span>
+<span class="fc" id="L115">    return this;</span>
+  }
+
+  @Override
+  public void setIsPostMerge(final Difficulty totalDifficulty) {
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (isPostMerge.get().orElse(Boolean.FALSE)) {</span>
+      // if we have finalized, we never switch back to a pre-merge once we have transitioned
+      // post-TTD.
+<span class="fc" id="L123">      return;</span>
+    }
+<span class="fc" id="L125">    final boolean newState = terminalTotalDifficulty.get().lessOrEqualThan(totalDifficulty);</span>
+<span class="fc" id="L126">    final Optional&lt;Boolean&gt; oldState = isPostMerge.getAndSet(Optional.of(newState));</span>
+
+    // if we are past TTD, set it:
+<span class="fc bfc" id="L129" title="All 2 branches covered.">    if (newState)</span>
+<span class="fc" id="L130">      Optional.ofNullable(syncState.get())</span>
+<span class="fc" id="L131">          .ifPresent(ss -&gt; ss.setReachedTerminalDifficulty(newState));</span>
+
+<span class="fc bfc" id="L133" title="All 4 branches covered.">    if (oldState.isEmpty() || oldState.get() != newState) {</span>
+<span class="fc" id="L134">      newMergeStateCallbackSubscribers.forEach(</span>
+          newMergeStateCallback -&gt;
+<span class="fc" id="L136">              newMergeStateCallback.mergeStateChanged(</span>
+<span class="fc" id="L137">                  newState, oldState, Optional.of(totalDifficulty)));</span>
+    }
+<span class="fc" id="L139">  }</span>
+
+  @Override
+  public boolean isPostMerge() {
+<span class="fc" id="L143">    return isPostMerge.get().orElse(Boolean.FALSE);</span>
+  }
+
+  @Override
+  public PostMergeContext setSyncState(final SyncState syncState) {
+<span class="fc" id="L148">    this.syncState.set(syncState);</span>
+<span class="fc" id="L149">    return this;</span>
+  }
+
+  @Override
+  public boolean isSyncing() {
+<span class="fc bfc" id="L154" title="All 4 branches covered.">    return Optional.ofNullable(syncState.get()).map(s -&gt; !s.isInSync()).orElse(Boolean.TRUE)</span>
+        // this is necessary for when we do not have a sync target yet, like at startup.
+        // not being stopped at ttd implies we are syncing.
+<span class="fc" id="L157">        &amp;&amp; Optional.ofNullable(syncState.get())</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">            .map(s -&gt; !(s.hasReachedTerminalDifficulty().orElse(Boolean.FALSE)))</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">            .orElse(Boolean.TRUE);</span>
+  }
+
+  @Override
+  public void observeNewIsPostMergeState(final MergeStateHandler mergeStateHandler) {
+<span class="fc" id="L164">    newMergeStateCallbackSubscribers.subscribe(mergeStateHandler);</span>
+<span class="fc" id="L165">  }</span>
+
+  @Override
+  public long addNewUnverifiedForkchoiceListener(
+      final UnverifiedForkchoiceListener unverifiedForkchoiceListener) {
+<span class="fc" id="L170">    return newUnverifiedForkchoiceCallbackSubscribers.subscribe(unverifiedForkchoiceListener);</span>
+  }
+
+  @Override
+  public void removeNewUnverifiedForkchoiceListener(final long subscriberId) {
+<span class="nc" id="L175">    newUnverifiedForkchoiceCallbackSubscribers.unsubscribe(subscriberId);</span>
+<span class="nc" id="L176">  }</span>
+
+  @Override
+  public void fireNewUnverifiedForkchoiceEvent(
+      final Hash headBlockHash, final Hash safeBlockHash, final Hash finalizedBlockHash) {
+<span class="nc" id="L181">    final ForkchoiceEvent event =</span>
+        new ForkchoiceEvent(headBlockHash, safeBlockHash, finalizedBlockHash);
+<span class="nc" id="L183">    newUnverifiedForkchoiceCallbackSubscribers.forEach(cb -&gt; cb.onNewUnverifiedForkchoice(event));</span>
+<span class="nc" id="L184">  }</span>
+
+  @Override
+  public Difficulty getTerminalTotalDifficulty() {
+<span class="fc" id="L188">    return terminalTotalDifficulty.get();</span>
+  }
+
+  @Override
+  public void setFinalized(final BlockHeader blockHeader) {
+<span class="fc" id="L193">    lastFinalized.set(blockHeader);</span>
+<span class="fc" id="L194">  }</span>
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getFinalized() {
+<span class="fc" id="L198">    return Optional.ofNullable(lastFinalized.get());</span>
+  }
+
+  @Override
+  public void setSafeBlock(final BlockHeader blockHeader) {
+<span class="nc" id="L203">    lastSafeBlock.set(blockHeader);</span>
+<span class="nc" id="L204">  }</span>
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getSafeBlock() {
+<span class="nc" id="L208">    return Optional.ofNullable(lastSafeBlock.get());</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getTerminalPoWBlock() {
+<span class="fc" id="L213">    return terminalPoWBlock.get();</span>
+  }
+
+  @Override
+  public void setTerminalPoWBlock(final Optional&lt;BlockHeader&gt; hashAndNumber) {
+<span class="fc" id="L218">    terminalPoWBlock.set(hashAndNumber);</span>
+<span class="fc" id="L219">  }</span>
+
+  @Override
+  public boolean validateCandidateHead(final BlockHeader candidateHeader) {
+<span class="fc" id="L223">    return Optional.ofNullable(lastFinalized.get())</span>
+<span class="fc bfc" id="L224" title="All 2 branches covered.">        .map(finalized -&gt; candidateHeader.getNumber() &gt;= finalized.getNumber())</span>
+<span class="fc" id="L225">        .orElse(Boolean.TRUE);</span>
+  }
+
+  @Override
+  public void putPayloadById(final PayloadWrapper payloadWrapper) {
+<span class="fc" id="L230">    synchronized (blocksInProgress) {</span>
+<span class="fc" id="L231">      final Optional&lt;BlockWithReceipts&gt; maybeCurrBestBlock =</span>
+<span class="fc" id="L232">          retrieveBlockById(payloadWrapper.payloadIdentifier());</span>
+
+<span class="fc" id="L234">      maybeCurrBestBlock.ifPresentOrElse(</span>
+          currBestBlock -&gt; {
+<span class="fc bfc" id="L236" title="All 2 branches covered.">            if (compareByGasUsedDesc.compare(payloadWrapper.blockWithReceipts(), currBestBlock)</span>
+                &lt; 0) {
+<span class="fc" id="L238">              LOG.atDebug()</span>
+<span class="fc" id="L239">                  .setMessage(&quot;New proposal for payloadId {} {} is better than the previous one {}&quot;)</span>
+<span class="fc" id="L240">                  .addArgument(payloadWrapper.payloadIdentifier())</span>
+<span class="fc" id="L241">                  .addArgument(</span>
+<span class="nc" id="L242">                      () -&gt; logBlockProposal(payloadWrapper.blockWithReceipts().getBlock()))</span>
+<span class="pc" id="L243">                  .addArgument(() -&gt; logBlockProposal(currBestBlock.getBlock()))</span>
+<span class="fc" id="L244">                  .log();</span>
+<span class="fc" id="L245">              blocksInProgress.removeAll(</span>
+<span class="fc" id="L246">                  retrievePayloadsById(payloadWrapper.payloadIdentifier())</span>
+<span class="fc" id="L247">                      .collect(Collectors.toUnmodifiableList()));</span>
+<span class="fc" id="L248">              blocksInProgress.add(</span>
+                  new PayloadWrapper(
+<span class="fc" id="L250">                      payloadWrapper.payloadIdentifier(), payloadWrapper.blockWithReceipts()));</span>
+<span class="fc" id="L251">              logCurrentBestBlock(payloadWrapper.blockWithReceipts());</span>
+            }
+<span class="fc" id="L253">          },</span>
+          () -&gt;
+<span class="fc" id="L255">              blocksInProgress.add(</span>
+                  new PayloadWrapper(
+<span class="fc" id="L257">                      payloadWrapper.payloadIdentifier(), payloadWrapper.blockWithReceipts())));</span>
+<span class="fc" id="L258">    }</span>
+<span class="fc" id="L259">  }</span>
+
+  private void logCurrentBestBlock(final BlockWithReceipts blockWithReceipts) {
+<span class="pc bpc" id="L262" title="1 of 2 branches missed.">    if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L263">      final Block block = blockWithReceipts.getBlock();</span>
+<span class="nc" id="L264">      final float gasUsedPerc =</span>
+<span class="nc" id="L265">          100.0f * block.getHeader().getGasUsed() / block.getHeader().getGasLimit();</span>
+<span class="nc" id="L266">      final int txsNum = block.getBody().getTransactions().size();</span>
+<span class="nc" id="L267">      final Wei reward = blockValueCalculator.calculateBlockValue(blockWithReceipts);</span>
+
+<span class="nc" id="L269">      LOG.debug(</span>
+          &quot;Current best proposal for block {}: txs {}, gas used {}%, reward {}&quot;,
+<span class="nc" id="L271">          blockWithReceipts.getNumber(),</span>
+<span class="nc" id="L272">          txsNum,</span>
+<span class="nc" id="L273">          String.format(&quot;%1.2f&quot;, gasUsedPerc),</span>
+<span class="nc" id="L274">          reward.toHumanReadableString());</span>
+    }
+<span class="fc" id="L276">  }</span>
+
+  @Override
+  public Optional&lt;BlockWithReceipts&gt; retrieveBlockById(final PayloadIdentifier payloadId) {
+<span class="fc" id="L280">    synchronized (blocksInProgress) {</span>
+<span class="fc" id="L281">      return retrievePayloadsById(payloadId)</span>
+<span class="fc" id="L282">          .map(payloadWrapper -&gt; payloadWrapper.blockWithReceipts())</span>
+<span class="fc" id="L283">          .sorted(compareByGasUsedDesc)</span>
+<span class="fc" id="L284">          .findFirst();</span>
+    }
+  }
+
+  private Stream&lt;PayloadWrapper&gt; retrievePayloadsById(final PayloadIdentifier payloadId) {
+<span class="fc" id="L289">    return blocksInProgress.stream().filter(z -&gt; z.payloadIdentifier().equals(payloadId));</span>
+  }
+
+  private String logBlockProposal(final Block block) {
+<span class="nc" id="L293">    return &quot;block &quot;</span>
+<span class="nc" id="L294">        + block.toLogString()</span>
+        + &quot; gas used &quot;
+<span class="nc" id="L296">        + block.getHeader().getGasUsed()</span>
+        + &quot; transactions &quot;
+<span class="nc" id="L298">        + block.getBody().getTransactions().size();</span>
+  }
+
+  @Override
+  public boolean isPostMergeAtGenesis() {
+<span class="fc" id="L303">    return this.isPostMergeAtGenesis;</span>
+  }
+
+  /**
+   * Sets whether it is post merge at genesis
+   *
+   * @param isPostMergeAtGenesis the is post merge at genesis state
+   * @return the post merge context
+   */
+  public PostMergeContext setPostMergeAtGenesis(final boolean isPostMergeAtGenesis) {
+<span class="fc" id="L313">    this.isPostMergeAtGenesis = isPostMergeAtGenesis;</span>
+<span class="fc" id="L314">    return this;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

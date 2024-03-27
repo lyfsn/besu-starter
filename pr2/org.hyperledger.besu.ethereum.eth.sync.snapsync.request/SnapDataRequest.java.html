@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapDataRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync.request</a> &gt; <span class="el_source">SnapDataRequest.java</span></div><h1>SnapDataRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync.request;
+
+import static org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate.NodeDataRequest.MAX_CHILDREN;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.RequestType;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncProcessState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapWorldDownloadState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.AccountFlatDatabaseHealingRangeRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.AccountTrieNodeHealingRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.StorageFlatDatabaseHealingRangeRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.StorageTrieNodeHealingRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.TrieNodeHealingRequest;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloaderException;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.services.tasks.TasksPriorityProvider;
+
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public abstract class SnapDataRequest implements TasksPriorityProvider {
+
+<span class="fc" id="L44">  protected Optional&lt;TrieNodeHealingRequest&gt; possibleParent = Optional.empty();</span>
+  protected int depth;
+  protected long priority;
+<span class="fc" id="L47">  protected final AtomicInteger pendingChildren = new AtomicInteger(0);</span>
+
+  private final RequestType requestType;
+  private Hash rootHash;
+
+<span class="fc" id="L52">  protected SnapDataRequest(final RequestType requestType, final Hash originalRootHash) {</span>
+<span class="fc" id="L53">    this.requestType = requestType;</span>
+<span class="fc" id="L54">    this.rootHash = originalRootHash;</span>
+<span class="fc" id="L55">  }</span>
+
+  public static AccountRangeDataRequest createAccountRangeDataRequest(
+      final Hash rootHash, final Bytes32 startKeyHash, final Bytes32 endKeyHash) {
+<span class="fc" id="L59">    return new AccountRangeDataRequest(rootHash, startKeyHash, endKeyHash);</span>
+  }
+
+  public static AccountFlatDatabaseHealingRangeRequest createAccountFlatHealingRangeRequest(
+      final Hash rootHash, final Bytes32 startKeyHash, final Bytes32 endKeyHash) {
+<span class="fc" id="L64">    return new AccountFlatDatabaseHealingRangeRequest(rootHash, startKeyHash, endKeyHash);</span>
+  }
+
+  public static StorageFlatDatabaseHealingRangeRequest createStorageFlatHealingRangeRequest(
+      final Hash rootHash,
+      final Bytes32 accountHash,
+      final Bytes32 storageRoot,
+      final Bytes32 startKeyHash,
+      final Bytes32 endKeyHash) {
+<span class="fc" id="L73">    return new StorageFlatDatabaseHealingRangeRequest(</span>
+        rootHash, accountHash, storageRoot, startKeyHash, endKeyHash);
+  }
+
+  public static AccountRangeDataRequest createAccountDataRequest(
+      final Hash rootHash,
+      final Hash accountHash,
+      final Bytes32 startStorageRange,
+      final Bytes32 endStorageRange) {
+<span class="fc" id="L82">    return new AccountRangeDataRequest(rootHash, accountHash, startStorageRange, endStorageRange);</span>
+  }
+
+  public static StorageRangeDataRequest createStorageRangeDataRequest(
+      final Hash rootHash,
+      final Bytes32 accountHash,
+      final Bytes32 storageRoot,
+      final Bytes32 startKeyHash,
+      final Bytes32 endKeyHash) {
+<span class="fc" id="L91">    return new StorageRangeDataRequest(</span>
+        rootHash, accountHash, storageRoot, startKeyHash, endKeyHash);
+  }
+
+  public static AccountTrieNodeHealingRequest createAccountTrieNodeDataRequest(
+      final Hash hash, final Bytes location, final HashSet&lt;Bytes&gt; inconsistentAccounts) {
+<span class="fc" id="L97">    return new AccountTrieNodeHealingRequest(hash, hash, location, inconsistentAccounts);</span>
+  }
+
+  public static AccountTrieNodeHealingRequest createAccountTrieNodeDataRequest(
+      final Hash hash,
+      final Hash rootHash,
+      final Bytes location,
+      final HashSet&lt;Bytes&gt; inconsistentAccounts) {
+<span class="nc" id="L105">    return new AccountTrieNodeHealingRequest(hash, rootHash, location, inconsistentAccounts);</span>
+  }
+
+  public static StorageTrieNodeHealingRequest createStorageTrieNodeDataRequest(
+      final Hash hash, final Hash accountHash, final Hash rootHash, final Bytes location) {
+<span class="fc" id="L110">    return new StorageTrieNodeHealingRequest(hash, accountHash, rootHash, location);</span>
+  }
+
+  public static BytecodeRequest createBytecodeRequest(
+      final Bytes32 accountHash, final Hash rootHash, final Bytes32 codeHash) {
+<span class="fc" id="L115">    return new BytecodeRequest(rootHash, accountHash, codeHash);</span>
+  }
+
+  public int persist(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration snapSyncConfiguration) {
+<span class="fc" id="L124">    return doPersist(</span>
+        worldStateStorageCoordinator, updater, downloadState, snapSyncState, snapSyncConfiguration);
+  }
+
+  protected abstract int doPersist(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration snapSyncConfiguration);
+
+  public abstract boolean isResponseReceived();
+
+  public boolean isExpired(final SnapSyncProcessState snapSyncState) {
+<span class="nc" id="L138">    return false;</span>
+  }
+
+  public abstract Stream&lt;SnapDataRequest&gt; getChildRequests(
+      final SnapWorldDownloadState downloadState,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapSyncProcessState snapSyncState);
+
+  public void registerParent(final TrieNodeHealingRequest parent) {
+<span class="nc bnc" id="L147" title="All 2 branches missed.">    if (this.possibleParent.isPresent()) {</span>
+<span class="nc" id="L148">      throw new WorldStateDownloaderException(&quot;Cannot set parent twice&quot;);</span>
+    }
+<span class="nc" id="L150">    this.possibleParent = Optional.of(parent);</span>
+<span class="nc" id="L151">    this.depth = parent.depth + 1;</span>
+<span class="nc" id="L152">    this.priority = parent.priority * MAX_CHILDREN + parent.incrementChildren();</span>
+<span class="nc" id="L153">  }</span>
+
+  protected int incrementChildren() {
+<span class="nc" id="L156">    return pendingChildren.incrementAndGet();</span>
+  }
+
+  protected int saveParent(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration snapSyncConfiguration) {
+<span class="nc bnc" id="L165" title="All 2 branches missed.">    if (pendingChildren.decrementAndGet() == 0) {</span>
+<span class="nc" id="L166">      return persist(</span>
+          worldStateStorageCoordinator,
+          updater,
+          downloadState,
+          snapSyncState,
+          snapSyncConfiguration);
+    }
+<span class="nc" id="L173">    return 0;</span>
+  }
+
+<span class="nc" id="L176">  public void clear() {}</span>
+
+  public RequestType getRequestType() {
+<span class="nc" id="L179">    return requestType;</span>
+  }
+
+  public Hash getRootHash() {
+<span class="fc" id="L183">    return rootHash;</span>
+  }
+
+  public void setRootHash(final Hash rootHash) {
+<span class="fc" id="L187">    this.rootHash = rootHash;</span>
+<span class="fc" id="L188">  }</span>
+
+  @Override
+  public long getPriority() {
+<span class="fc" id="L192">    return 0;</span>
+  }
+
+  @Override
+  public int getDepth() {
+<span class="fc" id="L197">    return 0;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

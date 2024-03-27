@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractGetSignerMetricsMethod.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.jsonrpc</a> &gt; <span class="el_source">AbstractGetSignerMetricsMethod.java</span></div><h1>AbstractGetSignerMetricsMethod.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common.jsonrpc;
+
+import org.hyperledger.besu.consensus.common.BlockInterface;
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.SignerMetricResult;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.LongStream;
+
+/** The Abstract get signer metrics method. */
+public abstract class AbstractGetSignerMetricsMethod {
+
+  private static final long DEFAULT_RANGE_BLOCK = 100;
+
+  private final ValidatorProvider validatorProvider;
+  private final BlockInterface blockInterface;
+  private final BlockchainQueries blockchainQueries;
+
+  /**
+   * Instantiates a new Abstract get signer metrics method.
+   *
+   * @param validatorProvider the validator provider
+   * @param blockInterface the block interface
+   * @param blockchainQueries the blockchain queries
+   */
+  protected AbstractGetSignerMetricsMethod(
+      final ValidatorProvider validatorProvider,
+      final BlockInterface blockInterface,
+<span class="fc" id="L55">      final BlockchainQueries blockchainQueries) {</span>
+<span class="fc" id="L56">    this.validatorProvider = validatorProvider;</span>
+<span class="fc" id="L57">    this.blockInterface = blockInterface;</span>
+<span class="fc" id="L58">    this.blockchainQueries = blockchainQueries;</span>
+<span class="fc" id="L59">  }</span>
+
+  /**
+   * Response.
+   *
+   * @param requestContext the request context
+   * @return the json rpc response
+   */
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+
+<span class="fc" id="L69">    final Optional&lt;BlockParameter&gt; startBlockParameter =</span>
+<span class="fc" id="L70">        requestContext.getOptionalParameter(0, BlockParameter.class);</span>
+<span class="fc" id="L71">    final Optional&lt;BlockParameter&gt; endBlockParameter =</span>
+<span class="fc" id="L72">        requestContext.getOptionalParameter(1, BlockParameter.class);</span>
+
+<span class="fc" id="L74">    final long fromBlockNumber = getFromBlockNumber(startBlockParameter);</span>
+<span class="fc" id="L75">    final long toBlockNumber = getEndBlockNumber(endBlockParameter);</span>
+
+<span class="pc bpc" id="L77" title="1 of 2 branches missed.">    if (!isValidParameters(fromBlockNumber, toBlockNumber)) {</span>
+<span class="nc" id="L78">      return new JsonRpcErrorResponse(</span>
+<span class="nc" id="L79">          requestContext.getRequest().getId(), RpcErrorType.INVALID_PARAMS);</span>
+    }
+
+<span class="fc" id="L82">    final Map&lt;Address, SignerMetricResult&gt; proposersMap = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L83">    final long lastBlockIndex = toBlockNumber - 1;</span>
+
+    // go through each block (startBlock is inclusive and endBlock is exclusive)
+<span class="fc" id="L86">    LongStream.range(fromBlockNumber, toBlockNumber)</span>
+<span class="fc" id="L87">        .forEach(</span>
+            currentIndex -&gt; {
+<span class="fc" id="L89">              final Optional&lt;BlockHeader&gt; blockHeaderByNumber =</span>
+<span class="fc" id="L90">                  blockchainQueries.getBlockHeaderByNumber(currentIndex);</span>
+
+              // Get the number of blocks from each proposer in a given block range.
+<span class="fc" id="L93">              blockHeaderByNumber.ifPresent(</span>
+                  header -&gt; {
+<span class="fc" id="L95">                    final Address proposerAddress = blockInterface.getProposerOfBlock(header);</span>
+<span class="fc" id="L96">                    final SignerMetricResult signerMetric =</span>
+<span class="fc" id="L97">                        proposersMap.computeIfAbsent(proposerAddress, SignerMetricResult::new);</span>
+<span class="fc" id="L98">                    signerMetric.incrementeNbBlock();</span>
+                    // Add the block number of the last block proposed by each validator
+<span class="fc" id="L100">                    signerMetric.setLastProposedBlockNumber(currentIndex);</span>
+
+                    // Get All validators present in the last block of the range even
+                    // if they didn't propose a block
+<span class="fc bfc" id="L104" title="All 2 branches covered.">                    if (currentIndex == lastBlockIndex) {</span>
+<span class="fc" id="L105">                      validatorProvider</span>
+<span class="fc" id="L106">                          .getValidatorsAfterBlock(header)</span>
+<span class="fc" id="L107">                          .forEach(</span>
+                              address -&gt;
+<span class="fc" id="L109">                                  proposersMap.computeIfAbsent(address, SignerMetricResult::new));</span>
+                    }
+<span class="fc" id="L111">                  });</span>
+<span class="fc" id="L112">            });</span>
+
+<span class="fc" id="L114">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L115">        requestContext.getRequest().getId(), new ArrayList&lt;&gt;(proposersMap.values()));</span>
+  }
+
+  private long getFromBlockNumber(final Optional&lt;BlockParameter&gt; startBlockParameter) {
+<span class="fc" id="L119">    return startBlockParameter</span>
+<span class="fc" id="L120">        .map(this::resolveBlockNumber)</span>
+<span class="fc" id="L121">        .orElseGet(() -&gt; Math.max(0, blockchainQueries.headBlockNumber() - DEFAULT_RANGE_BLOCK));</span>
+  }
+
+  private long getEndBlockNumber(final Optional&lt;BlockParameter&gt; endBlockParameter) {
+<span class="fc" id="L125">    final long headBlockNumber = blockchainQueries.headBlockNumber();</span>
+<span class="fc" id="L126">    return endBlockParameter</span>
+<span class="fc" id="L127">        .map(this::resolveBlockNumber)</span>
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">        .filter(blockNumber -&gt; blockNumber &lt;= headBlockNumber)</span>
+<span class="fc" id="L129">        .orElse(headBlockNumber);</span>
+  }
+
+  private boolean isValidParameters(final long startBlock, final long endBlock) {
+<span class="pc bpc" id="L133" title="1 of 2 branches missed.">    return startBlock &lt; endBlock;</span>
+  }
+
+  private long resolveBlockNumber(final BlockParameter param) {
+<span class="fc bfc" id="L137" title="All 2 branches covered.">    if (param.getNumber().isPresent()) {</span>
+<span class="fc" id="L138">      return param.getNumber().get();</span>
+<span class="pc bpc" id="L139" title="1 of 2 branches missed.">    } else if (param.isEarliest()) {</span>
+<span class="nc" id="L140">      return BlockHeader.GENESIS_BLOCK_NUMBER;</span>
+<span class="pc bpc" id="L141" title="1 of 4 branches missed.">    } else if (param.isLatest() || param.isPending()) {</span>
+<span class="fc" id="L142">      return blockchainQueries.headBlockNumber();</span>
+    } else {
+<span class="nc" id="L144">      throw new IllegalStateException(&quot;Unknown block parameter type.&quot;);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

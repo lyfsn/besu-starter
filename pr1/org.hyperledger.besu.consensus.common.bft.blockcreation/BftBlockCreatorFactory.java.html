@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BftBlockCreatorFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.bft.blockcreation</a> &gt; <span class="el_source">BftBlockCreatorFactory.java</span></div><h1>BftBlockCreatorFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common.bft.blockcreation;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.config.BftConfigOptions;
+import org.hyperledger.besu.consensus.common.ConsensusHelpers;
+import org.hyperledger.besu.consensus.common.ForksSchedule;
+import org.hyperledger.besu.consensus.common.bft.BftContext;
+import org.hyperledger.besu.consensus.common.bft.BftExtraData;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.common.bft.Vote;
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.consensus.common.validator.ValidatorVote;
+import org.hyperledger.besu.consensus.common.validator.VoteProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.BlockCreator;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.AbstractGasLimitSpecification;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * The Bft block creator factory.
+ *
+ * @param &lt;T&gt; the type parameter
+ */
+public class BftBlockCreatorFactory&lt;T extends BftConfigOptions&gt; {
+  /** The Forks schedule. */
+  protected final ForksSchedule&lt;T&gt; forksSchedule;
+  /** The Mining parameters */
+  protected final MiningParameters miningParameters;
+
+  private final TransactionPool transactionPool;
+  /** The Protocol context. */
+  protected final ProtocolContext protocolContext;
+  /** The Protocol schedule. */
+  protected final ProtocolSchedule protocolSchedule;
+  /** The Bft extra data codec. */
+  protected final BftExtraDataCodec bftExtraDataCodec;
+  /** The scheduler for asynchronous block creation tasks */
+  protected final EthScheduler ethScheduler;
+
+  private final Address localAddress;
+
+  /**
+   * Instantiates a new Bft block creator factory.
+   *
+   * @param transactionPool the pending transactions
+   * @param protocolContext the protocol context
+   * @param protocolSchedule the protocol schedule
+   * @param forksSchedule the forks schedule
+   * @param miningParams the mining params
+   * @param localAddress the local address
+   * @param bftExtraDataCodec the bft extra data codec
+   * @param ethScheduler the scheduler for asynchronous block creation tasks
+   */
+  public BftBlockCreatorFactory(
+      final TransactionPool transactionPool,
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final ForksSchedule&lt;T&gt; forksSchedule,
+      final MiningParameters miningParams,
+      final Address localAddress,
+      final BftExtraDataCodec bftExtraDataCodec,
+<span class="fc" id="L90">      final EthScheduler ethScheduler) {</span>
+<span class="fc" id="L91">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L92">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L93">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L94">    this.forksSchedule = forksSchedule;</span>
+<span class="fc" id="L95">    this.localAddress = localAddress;</span>
+<span class="fc" id="L96">    this.miningParameters = miningParams;</span>
+<span class="fc" id="L97">    this.bftExtraDataCodec = bftExtraDataCodec;</span>
+<span class="fc" id="L98">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L99">  }</span>
+
+  /**
+   * Create block creator.
+   *
+   * @param parentHeader the parent header
+   * @param round the round
+   * @return the block creator
+   */
+  public BlockCreator create(final BlockHeader parentHeader, final int round) {
+<span class="nc" id="L109">    return new BftBlockCreator(</span>
+        miningParameters,
+        forksSchedule,
+        localAddress,
+<span class="nc" id="L113">        ph -&gt; createExtraData(round, ph),</span>
+        transactionPool,
+        protocolContext,
+        protocolSchedule,
+        parentHeader,
+        bftExtraDataCodec,
+        ethScheduler);
+  }
+
+  /**
+   * Sets extra data.
+   *
+   * @param extraData the extra data
+   */
+  public void setExtraData(final Bytes extraData) {
+
+<span class="nc" id="L129">    miningParameters.setExtraData(extraData.copy());</span>
+<span class="nc" id="L130">  }</span>
+
+  /**
+   * Sets min transaction gas price.
+   *
+   * @param minTransactionGasPrice the min transaction gas price
+   */
+  public void setMinTransactionGasPrice(final Wei minTransactionGasPrice) {
+<span class="nc" id="L138">    miningParameters.setMinTransactionGasPrice(minTransactionGasPrice);</span>
+<span class="nc" id="L139">  }</span>
+
+  /**
+   * Gets min transaction gas price.
+   *
+   * @return the min transaction gas price
+   */
+  public Wei getMinTransactionGasPrice() {
+<span class="nc" id="L147">    return miningParameters.getMinTransactionGasPrice();</span>
+  }
+
+  /**
+   * Gets min priority fee per gas
+   *
+   * @return min priority fee per gas
+   */
+  public Wei getMinPriorityFeePerGas() {
+<span class="nc" id="L156">    return miningParameters.getMinPriorityFeePerGas();</span>
+  }
+
+  /**
+   * Create extra data bytes.
+   *
+   * @param round the round
+   * @param parentHeader the parent header
+   * @return the bytes
+   */
+  public Bytes createExtraData(final int round, final BlockHeader parentHeader) {
+<span class="nc" id="L167">    final BftContext bftContext = protocolContext.getConsensusContext(BftContext.class);</span>
+<span class="nc" id="L168">    final ValidatorProvider validatorProvider = bftContext.getValidatorProvider();</span>
+<span class="nc" id="L169">    Optional&lt;VoteProvider&gt; voteProviderAfterBlock =</span>
+<span class="nc" id="L170">        validatorProvider.getVoteProviderAfterBlock(parentHeader);</span>
+<span class="nc" id="L171">    checkState(voteProviderAfterBlock.isPresent(), &quot;Bft requires a vote provider&quot;);</span>
+<span class="nc" id="L172">    final Optional&lt;ValidatorVote&gt; proposal =</span>
+<span class="nc" id="L173">        voteProviderAfterBlock.get().getVoteAfterBlock(parentHeader, localAddress);</span>
+
+<span class="nc" id="L175">    final List&lt;Address&gt; validators =</span>
+<span class="nc" id="L176">        new ArrayList&lt;&gt;(validatorProvider.getValidatorsAfterBlock(parentHeader));</span>
+
+<span class="nc" id="L178">    final BftExtraData extraData =</span>
+        new BftExtraData(
+<span class="nc" id="L180">            ConsensusHelpers.zeroLeftPad(</span>
+<span class="nc" id="L181">                miningParameters.getExtraData(), BftExtraDataCodec.EXTRA_VANITY_LENGTH),</span>
+<span class="nc" id="L182">            Collections.emptyList(),</span>
+<span class="nc" id="L183">            toVote(proposal),</span>
+            round,
+            validators);
+
+<span class="nc" id="L187">    return bftExtraDataCodec.encode(extraData);</span>
+  }
+
+  /**
+   * Change target gas limit.
+   *
+   * @param newTargetGasLimit the new target gas limit
+   */
+  public void changeTargetGasLimit(final Long newTargetGasLimit) {
+<span class="nc bnc" id="L196" title="All 2 branches missed.">    if (AbstractGasLimitSpecification.isValidTargetGasLimit(newTargetGasLimit)) {</span>
+<span class="nc" id="L197">      miningParameters.setTargetGasLimit(newTargetGasLimit);</span>
+    } else {
+<span class="nc" id="L199">      throw new UnsupportedOperationException(&quot;Specified target gas limit is invalid&quot;);</span>
+    }
+<span class="nc" id="L201">  }</span>
+
+  /**
+   * Gets local address.
+   *
+   * @return the local address
+   */
+  public Address getLocalAddress() {
+<span class="nc" id="L209">    return localAddress;</span>
+  }
+
+  private static Optional&lt;Vote&gt; toVote(final Optional&lt;ValidatorVote&gt; input) {
+<span class="nc" id="L213">    return input</span>
+<span class="nc" id="L214">        .map(v -&gt; Optional.of(new Vote(v.getRecipient(), v.getVotePolarity())))</span>
+<span class="nc" id="L215">        .orElse(Optional.empty());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

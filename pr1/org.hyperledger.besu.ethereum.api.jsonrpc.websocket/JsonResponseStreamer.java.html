@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonResponseStreamer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.websocket</a> &gt; <span class="el_source">JsonResponseStreamer.java</span></div><h1>JsonResponseStreamer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.websocket;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.concurrent.atomic.AtomicReference;
+
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.ServerWebSocket;
+import io.vertx.core.http.WebSocketFrame;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+class JsonResponseStreamer extends OutputStream {
+
+<span class="fc" id="L29">  private static final Logger LOG = LoggerFactory.getLogger(JsonResponseStreamer.class);</span>
+<span class="fc" id="L30">  private static final Buffer EMPTY_BUFFER = Buffer.buffer();</span>
+
+  private final ServerWebSocket response;
+<span class="fc" id="L33">  private final byte[] singleByteBuf = new byte[1];</span>
+<span class="fc" id="L34">  private boolean firstFrame = true;</span>
+<span class="fc" id="L35">  private boolean closed = false;</span>
+<span class="fc" id="L36">  private Buffer buffer = EMPTY_BUFFER;</span>
+<span class="fc" id="L37">  private final AtomicReference&lt;Throwable&gt; failure = new AtomicReference&lt;&gt;();</span>
+
+<span class="fc" id="L39">  public JsonResponseStreamer(final ServerWebSocket response) {</span>
+<span class="fc" id="L40">    this.response = response;</span>
+<span class="fc" id="L41">    this.response.exceptionHandler(</span>
+        event -&gt; {
+<span class="nc" id="L43">          LOG.debug(&quot;Write to remote address {} failed&quot;, response.remoteAddress(), event);</span>
+<span class="nc" id="L44">          failure.set(event);</span>
+<span class="nc" id="L45">        });</span>
+<span class="fc" id="L46">  }</span>
+
+  @Override
+  public void write(final int b) throws IOException {
+<span class="fc" id="L50">    singleByteBuf[0] = (byte) b;</span>
+<span class="fc" id="L51">    write(singleByteBuf, 0, 1);</span>
+<span class="fc" id="L52">  }</span>
+
+  @Override
+  public void write(final byte[] bbuf, final int off, final int len) throws IOException {
+<span class="fc" id="L56">    stopOnFailureOrClosed();</span>
+
+<span class="fc bfc" id="L58" title="All 2 branches covered.">    if (buffer != EMPTY_BUFFER) {</span>
+<span class="fc" id="L59">      writeFrame(buffer, false);</span>
+    }
+<span class="fc" id="L61">    Buffer buf = Buffer.buffer(len);</span>
+<span class="fc" id="L62">    buf.appendBytes(bbuf, off, len);</span>
+<span class="fc" id="L63">    buffer = buf;</span>
+<span class="fc" id="L64">  }</span>
+
+  private void writeFrame(final Buffer buf, final boolean isFinal) {
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    if (firstFrame) {</span>
+<span class="fc" id="L68">      response</span>
+<span class="fc" id="L69">          .writeFrame(WebSocketFrame.textFrame(buf.toString(), isFinal))</span>
+<span class="fc" id="L70">          .onFailure(this::handleFailure);</span>
+<span class="fc" id="L71">      firstFrame = false;</span>
+    } else {
+<span class="fc" id="L73">      response</span>
+<span class="fc" id="L74">          .writeFrame(WebSocketFrame.continuationFrame(buf, isFinal))</span>
+<span class="fc" id="L75">          .onFailure(this::handleFailure);</span>
+    }
+<span class="fc" id="L77">  }</span>
+
+  @Override
+  public void close() throws IOException {
+    // write last buffer only if there were no previous failures and not already closed
+<span class="pc bpc" id="L82" title="1 of 4 branches missed.">    if (!closed &amp;&amp; failure.get() == null) {</span>
+<span class="fc" id="L83">      writeFrame(buffer, true);</span>
+<span class="fc" id="L84">      closed = true;</span>
+    }
+<span class="fc" id="L86">  }</span>
+
+  private void stopOnFailureOrClosed() throws IOException {
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    if (closed) {</span>
+<span class="nc" id="L90">      throw new IOException(&quot;Stream closed&quot;);</span>
+    }
+
+<span class="fc" id="L93">    Throwable t = failure.get();</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    if (t != null) {</span>
+<span class="fc" id="L95">      LOG.debug(&quot;Stop writing to remote address {} due to a failure&quot;, response.remoteAddress(), t);</span>
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">      throw (t instanceof IOException) ? (IOException) t : new IOException(t);</span>
+    }
+<span class="fc" id="L98">  }</span>
+
+  private void handleFailure(final Throwable t) {
+<span class="fc" id="L101">    LOG.debug(&quot;Write to remote address {} failed&quot;, response.remoteAddress(), t);</span>
+<span class="fc" id="L102">    failure.set(t);</span>
+<span class="fc" id="L103">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

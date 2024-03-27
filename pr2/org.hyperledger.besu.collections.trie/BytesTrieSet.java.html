@@ -1,0 +1,313 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BytesTrieSet.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.collections.trie</a> &gt; <span class="el_source">BytesTrieSet.java</span></div><h1>BytesTrieSet.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.collections.trie;
+
+import java.util.AbstractSet;
+import java.util.ArrayDeque;
+import java.util.Arrays;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * A Bytes optimized set that stores values in a trie by byte
+ *
+ * @param &lt;E&gt; Type of trie
+ */
+public class BytesTrieSet&lt;E extends Bytes&gt; extends AbstractSet&lt;E&gt; {
+
+<span class="pc" id="L35">  record Node&lt;E extends Bytes&gt;(byte[] leafArray, E leafObject, Node&lt;E&gt;[] children) {</span>
+
+    @Override
+    public boolean equals(final Object o) {
+<span class="nc bnc" id="L39" title="All 2 branches missed.">      if (this == o) return true;</span>
+<span class="nc bnc" id="L40" title="All 2 branches missed.">      if (!(o instanceof Node&lt;?&gt; node)) return false;</span>
+<span class="nc bnc" id="L41" title="All 2 branches missed.">      return Arrays.equals(leafArray, node.leafArray)</span>
+<span class="nc bnc" id="L42" title="All 2 branches missed.">          &amp;&amp; Objects.equals(leafObject, node.leafObject)</span>
+<span class="nc bnc" id="L43" title="All 2 branches missed.">          &amp;&amp; Arrays.equals(children, node.children);</span>
+    }
+
+    @Override
+    public int hashCode() {
+<span class="nc" id="L48">      int result = Objects.hash(leafObject);</span>
+<span class="nc" id="L49">      result = 31 * result + Arrays.hashCode(leafArray);</span>
+<span class="nc" id="L50">      result = 31 * result + Arrays.hashCode(children);</span>
+<span class="nc" id="L51">      return result;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L56">      final StringBuilder sb = new StringBuilder(&quot;Node{&quot;);</span>
+<span class="nc" id="L57">      sb.append(&quot;leaf=&quot;);</span>
+<span class="nc bnc" id="L58" title="All 2 branches missed.">      if (leafObject == null) sb.append(&quot;null&quot;);</span>
+      else {
+<span class="nc" id="L60">        sb.append('[');</span>
+<span class="nc" id="L61">        System.out.println(leafObject.toHexString());</span>
+<span class="nc" id="L62">        sb.append(']');</span>
+      }
+<span class="nc" id="L64">      sb.append(&quot;, children=&quot;);</span>
+<span class="nc bnc" id="L65" title="All 2 branches missed.">      if (children == null) sb.append(&quot;null&quot;);</span>
+      else {
+<span class="nc" id="L67">        sb.append('[');</span>
+<span class="nc bnc" id="L68" title="All 2 branches missed.">        for (int i = 0; i &lt; children.length; ++i) {</span>
+<span class="nc bnc" id="L69" title="All 2 branches missed.">          if (children[i] == null) {</span>
+<span class="nc" id="L70">            continue;</span>
+          }
+<span class="nc bnc" id="L72" title="All 2 branches missed.">          sb.append(i == 0 ? &quot;&quot; : &quot;, &quot;).append(i).append(&quot;=&quot;).append(children[i]);</span>
+        }
+<span class="nc" id="L74">        sb.append(']');</span>
+      }
+<span class="nc" id="L76">      sb.append('}');</span>
+<span class="nc" id="L77">      return sb.toString();</span>
+    }
+  }
+
+  Node&lt;E&gt; root;
+
+<span class="fc" id="L83">  int size = 0;</span>
+  final int byteLength;
+
+  /**
+   * Create a BytesTrieSet with a fixed length
+   *
+   * @param byteLength length in bytes of the stored types
+   */
+<span class="fc" id="L91">  public BytesTrieSet(final int byteLength) {</span>
+<span class="fc" id="L92">    this.byteLength = byteLength;</span>
+<span class="fc" id="L93">  }</span>
+
+  static class NodeWalker&lt;E extends Bytes&gt; {
+    final Node&lt;E&gt; node;
+    int lastRead;
+
+<span class="fc" id="L99">    NodeWalker(final Node&lt;E&gt; node) {</span>
+<span class="fc" id="L100">      this.node = node;</span>
+<span class="fc" id="L101">      this.lastRead = -1;</span>
+<span class="fc" id="L102">    }</span>
+
+    NodeWalker&lt;E&gt; nextNodeWalker() {
+<span class="fc bfc" id="L105" title="All 2 branches covered.">      if (node.children == null) {</span>
+<span class="fc" id="L106">        return null;</span>
+      }
+<span class="fc bfc" id="L108" title="All 2 branches covered.">      while (lastRead &lt; 255) {</span>
+<span class="fc" id="L109">        lastRead++;</span>
+<span class="fc" id="L110">        Node&lt;E&gt; child = node.children[lastRead];</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">        if (child != null) {</span>
+<span class="fc" id="L112">          return new NodeWalker&lt;&gt;(child);</span>
+        }
+<span class="fc" id="L114">      }</span>
+<span class="fc" id="L115">      return null;</span>
+    }
+
+    E thisNode() {
+<span class="fc" id="L119">      return node.leafObject;</span>
+    }
+  }
+
+  @Override
+  public Iterator&lt;E&gt; iterator() {
+<span class="fc" id="L125">    var result =</span>
+<span class="fc" id="L126">        new Iterator&lt;E&gt;() {</span>
+<span class="fc" id="L127">          final Deque&lt;NodeWalker&lt;E&gt;&gt; stack = new ArrayDeque&lt;&gt;();</span>
+          E next;
+          E last;
+
+          @Override
+          public boolean hasNext() {
+<span class="fc bfc" id="L133" title="All 2 branches covered.">            return next != null;</span>
+          }
+
+          @Override
+          public E next() {
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">            if (next == null) {</span>
+<span class="nc" id="L139">              throw new NoSuchElementException();</span>
+            }
+<span class="fc" id="L141">            last = next;</span>
+<span class="fc" id="L142">            advance();</span>
+<span class="fc" id="L143">            return last;</span>
+          }
+
+          @Override
+          public void remove() {
+<span class="nc" id="L148">            BytesTrieSet.this.remove(last);</span>
+<span class="nc" id="L149">          }</span>
+
+          void advance() {
+<span class="fc bfc" id="L152" title="All 2 branches covered.">            while (!stack.isEmpty()) {</span>
+<span class="fc" id="L153">              NodeWalker&lt;E&gt; thisStep = stack.peek();</span>
+<span class="fc" id="L154">              var nextStep = thisStep.nextNodeWalker();</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">              if (nextStep == null) {</span>
+<span class="fc" id="L156">                stack.pop();</span>
+<span class="fc bfc" id="L157" title="All 2 branches covered.">                if (thisStep.thisNode() != null) {</span>
+<span class="fc" id="L158">                  next = thisStep.thisNode();</span>
+<span class="fc" id="L159">                  return;</span>
+                }
+              } else {
+<span class="fc" id="L162">                stack.push(nextStep);</span>
+              }
+<span class="fc" id="L164">            }</span>
+<span class="fc" id="L165">            next = null;</span>
+<span class="fc" id="L166">          }</span>
+        };
+<span class="fc bfc" id="L168" title="All 2 branches covered.">    if (root != null) {</span>
+<span class="fc" id="L169">      result.stack.add(new NodeWalker&lt;&gt;(root));</span>
+    }
+<span class="fc" id="L171">    result.advance();</span>
+<span class="fc" id="L172">    return result;</span>
+  }
+
+  @Override
+  public int size() {
+<span class="fc" id="L177">    return size;</span>
+  }
+
+  @Override
+  public boolean contains(final Object o) {
+<span class="fc bfc" id="L182" title="All 2 branches covered.">    if (!(o instanceof Bytes bytes)) {</span>
+<span class="fc" id="L183">      throw new IllegalArgumentException(</span>
+<span class="pc bpc" id="L184" title="1 of 2 branches missed.">          &quot;Expected Bytes, got &quot; + (o == null ? &quot;null&quot; : o.getClass().getName()));</span>
+    }
+<span class="fc" id="L186">    byte[] array = bytes.toArrayUnsafe();</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">    if (array.length != byteLength) {</span>
+<span class="fc" id="L188">      throw new IllegalArgumentException(</span>
+          &quot;Byte array is size &quot; + array.length + &quot; but set is size &quot; + byteLength);
+    }
+<span class="fc bfc" id="L191" title="All 2 branches covered.">    if (root == null) {</span>
+<span class="fc" id="L192">      return false;</span>
+    }
+<span class="fc" id="L194">    int level = 0;</span>
+<span class="fc" id="L195">    Node&lt;E&gt; current = root;</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">    while (current != null) {</span>
+<span class="fc bfc" id="L197" title="All 2 branches covered.">      if (current.leafObject != null) {</span>
+<span class="fc bfc" id="L198" title="All 2 branches covered.">        return Arrays.compare(current.leafArray, array) == 0;</span>
+      }
+<span class="fc" id="L200">      current = current.children[array[level] &amp; 0xff];</span>
+<span class="fc" id="L201">      level++;</span>
+    }
+<span class="fc" id="L203">    return false;</span>
+  }
+
+  @Override
+  public boolean remove(final Object o) {
+    // Two base cases, size==0 and size==1;
+<span class="fc bfc" id="L209" title="All 2 branches covered.">    if (!(o instanceof Bytes bytes)) {</span>
+<span class="fc" id="L210">      throw new IllegalArgumentException(</span>
+<span class="pc bpc" id="L211" title="1 of 2 branches missed.">          &quot;Expected Bytes, got &quot; + (o == null ? &quot;null&quot; : o.getClass().getName()));</span>
+    }
+<span class="fc" id="L213">    byte[] array = bytes.toArrayUnsafe();</span>
+<span class="fc bfc" id="L214" title="All 2 branches covered.">    if (array.length != byteLength) {</span>
+<span class="fc" id="L215">      throw new IllegalArgumentException(</span>
+          &quot;Byte array is size &quot; + array.length + &quot; but set is size &quot; + byteLength);
+    }
+    // Two base cases, size==0 and size==1;
+<span class="fc bfc" id="L219" title="All 2 branches covered.">    if (root == null) {</span>
+      // size==0 is easy, empty
+<span class="fc" id="L221">      return false;</span>
+    }
+<span class="fc bfc" id="L223" title="All 2 branches covered.">    if (root.leafObject != null) {</span>
+      // size==1 just check and possibly remove the root
+<span class="fc bfc" id="L225" title="All 2 branches covered.">      if (Arrays.compare(array, root.leafArray) == 0) {</span>
+<span class="fc" id="L226">        root = null;</span>
+<span class="fc" id="L227">        size--;</span>
+<span class="fc" id="L228">        return true;</span>
+      } else {
+<span class="fc" id="L230">        return false;</span>
+      }
+    }
+<span class="fc" id="L233">    int level = 0;</span>
+<span class="fc" id="L234">    Node&lt;E&gt; current = root;</span>
+    do {
+<span class="fc" id="L236">      int index = array[level] &amp; 0xff;</span>
+<span class="fc" id="L237">      Node&lt;E&gt; next = current.children[index];</span>
+<span class="fc bfc" id="L238" title="All 2 branches covered.">      if (next == null) {</span>
+<span class="fc" id="L239">        return false;</span>
+      }
+<span class="fc bfc" id="L241" title="All 2 branches covered.">      if (next.leafObject != null) {</span>
+<span class="fc bfc" id="L242" title="All 2 branches covered.">        if (Arrays.compare(array, next.leafArray) == 0) {</span>
+          // TODO there is no cleanup of empty branches
+<span class="fc" id="L244">          current.children[index] = null;</span>
+<span class="fc" id="L245">          size--;</span>
+<span class="fc" id="L246">          return true;</span>
+        } else {
+<span class="fc" id="L248">          return false;</span>
+        }
+      }
+<span class="fc" id="L251">      current = next;</span>
+
+<span class="fc" id="L253">      level++;</span>
+<span class="fc" id="L254">    } while (true);</span>
+  }
+
+  @SuppressWarnings({&quot;unchecked&quot;, &quot;rawtypes&quot;})
+  @Override
+  public boolean add(final E bytes) {
+<span class="fc" id="L260">    byte[] array = bytes.toArrayUnsafe();</span>
+<span class="fc bfc" id="L261" title="All 2 branches covered.">    if (array.length != byteLength) {</span>
+<span class="fc" id="L262">      throw new IllegalArgumentException(</span>
+          &quot;Byte array is size &quot; + array.length + &quot; but set is size &quot; + byteLength);
+    }
+    // Two base cases, size==0 and size==1;
+<span class="fc bfc" id="L266" title="All 2 branches covered.">    if (root == null) {</span>
+      // size==0 is easy, just add
+<span class="fc" id="L268">      root = new Node&lt;&gt;(array, bytes, null);</span>
+<span class="fc" id="L269">      size++;</span>
+<span class="fc" id="L270">      return true;</span>
+    }
+<span class="fc bfc" id="L272" title="All 2 branches covered.">    if (root.leafObject != null) {</span>
+      // size==1 first check then if no match make it look like n&gt;1
+<span class="fc bfc" id="L274" title="All 2 branches covered.">      if (Arrays.compare(array, root.leafArray) == 0) {</span>
+<span class="fc" id="L275">        return false;</span>
+      }
+<span class="fc" id="L277">      Node&lt;E&gt; oldRoot = root;</span>
+<span class="fc" id="L278">      root = new Node&lt;&gt;(null, null, new Node[256]);</span>
+<span class="fc" id="L279">      root.children[oldRoot.leafArray[0] &amp; 0xff] = oldRoot;</span>
+    }
+<span class="fc" id="L281">    int level = 0;</span>
+<span class="fc" id="L282">    Node&lt;E&gt; current = root;</span>
+    do {
+<span class="fc" id="L284">      int index = array[level] &amp; 0xff;</span>
+<span class="fc" id="L285">      Node&lt;E&gt; next = current.children[index];</span>
+<span class="fc bfc" id="L286" title="All 2 branches covered.">      if (next == null) {</span>
+<span class="fc" id="L287">        next = new Node&lt;&gt;(array, bytes, null);</span>
+<span class="fc" id="L288">        current.children[index] = next;</span>
+<span class="fc" id="L289">        size++;</span>
+<span class="fc" id="L290">        return true;</span>
+      }
+<span class="fc bfc" id="L292" title="All 2 branches covered.">      if (next.leafObject != null) {</span>
+<span class="fc bfc" id="L293" title="All 2 branches covered.">        if (Arrays.compare(array, next.leafArray) == 0) {</span>
+<span class="fc" id="L294">          return false;</span>
+        }
+<span class="fc" id="L296">        Node&lt;E&gt; newLeaf = new Node&lt;&gt;(null, null, new Node[256]);</span>
+<span class="fc" id="L297">        newLeaf.children[next.leafArray[level + 1] &amp; 0xff] = next;</span>
+<span class="fc" id="L298">        current.children[index] = newLeaf;</span>
+<span class="fc" id="L299">        next = newLeaf;</span>
+      }
+<span class="fc" id="L301">      level++;</span>
+
+<span class="fc" id="L303">      current = next;</span>
+
+<span class="fc" id="L305">    } while (true);</span>
+  }
+
+  @Override
+  public void clear() {
+<span class="fc" id="L310">    root = null;</span>
+<span class="fc" id="L311">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

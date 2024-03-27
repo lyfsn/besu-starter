@@ -1,0 +1,523 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>UpnpNatManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.nat.upnp</a> &gt; <span class="el_source">UpnpNatManager.java</span></div><h1>UpnpNatManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.nat.upnp;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.nat.NatMethod;
+import org.hyperledger.besu.nat.core.AbstractNatManager;
+import org.hyperledger.besu.nat.core.domain.NatPortMapping;
+import org.hyperledger.besu.nat.core.domain.NatServiceType;
+import org.hyperledger.besu.nat.core.domain.NetworkProtocol;
+import org.hyperledger.besu.nat.core.exception.NatInitializationException;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.jupnp.UpnpService;
+import org.jupnp.UpnpServiceImpl;
+import org.jupnp.model.action.ActionInvocation;
+import org.jupnp.model.message.UpnpResponse;
+import org.jupnp.model.meta.RemoteDevice;
+import org.jupnp.model.meta.RemoteDeviceIdentity;
+import org.jupnp.model.meta.RemoteService;
+import org.jupnp.model.types.UnsignedIntegerFourBytes;
+import org.jupnp.model.types.UnsignedIntegerTwoBytes;
+import org.jupnp.registry.Registry;
+import org.jupnp.registry.RegistryListener;
+import org.jupnp.support.igd.callback.GetExternalIP;
+import org.jupnp.support.igd.callback.PortMappingAdd;
+import org.jupnp.support.igd.callback.PortMappingDelete;
+import org.jupnp.support.model.PortMapping;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Manages underlying UPnP library &quot;jupnp&quot; and provides abstractions for asynchronously interacting
+ * with the NAT environment through UPnP.
+ */
+public class UpnpNatManager extends AbstractNatManager {
+<span class="fc" id="L60">  private static final Logger LOG = LoggerFactory.getLogger(UpnpNatManager.class);</span>
+
+  static final String SERVICE_TYPE_WAN_IP_CONNECTION = &quot;WANIPConnection&quot;;
+
+  private final UpnpService upnpService;
+  private final RegistryListener registryListener;
+
+  // internally-managed future. external queries for IP addresses will be copy()ed from this.
+<span class="fc" id="L68">  private final CompletableFuture&lt;String&gt; externalIpQueryFuture = new CompletableFuture&lt;&gt;();</span>
+
+<span class="fc" id="L70">  private final Map&lt;String, CompletableFuture&lt;RemoteService&gt;&gt; recognizedServices = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L71">  private final List&lt;NatPortMapping&gt; forwardedPorts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L72">  private Optional&lt;String&gt; discoveredOnLocalAddress = Optional.empty();</span>
+
+  /** Empty constructor. Creates in instance of UpnpServiceImpl. */
+  public UpnpNatManager() {
+    // this(new UpnpServiceImpl(new DefaultUpnpServiceConfiguration()));
+
+    // Workaround for an issue in the jupnp library: the ExecutorService used misconfigures
+    // its ThreadPoolExecutor, causing it to only launch a single thread. This prevents any work
+    // from getting done (effectively a deadlock). The issue is fixed here:
+    //   https://github.com/jupnp/jupnp/pull/117
+    // However, this fix has not made it into any releases yet.
+    // TODO: once a new release is available, remove this @Override
+<span class="fc" id="L84">    this(new UpnpServiceImpl(new BesuUpnpServiceConfiguration()));</span>
+<span class="fc" id="L85">  }</span>
+
+  /**
+   * Constructor
+   *
+   * @param service is the desired instance of UpnpService.
+   */
+  UpnpNatManager(final UpnpService service) {
+<span class="fc" id="L93">    super(NatMethod.UPNP);</span>
+<span class="fc" id="L94">    upnpService = service;</span>
+
+    // prime our recognizedServices map so we can use its key-set later
+<span class="fc" id="L97">    recognizedServices.put(SERVICE_TYPE_WAN_IP_CONNECTION, new CompletableFuture&lt;&gt;());</span>
+
+    // registry listener to observe new devices and look for specific services
+<span class="fc" id="L100">    registryListener =</span>
+<span class="fc" id="L101">        new BesuUpnpRegistryListener() {</span>
+          @Override
+          public void remoteDeviceAdded(final Registry registry, final RemoteDevice device) {
+<span class="fc" id="L104">            LOG.debug(&quot;UPnP Device discovered: &quot; + device.getDetails().getFriendlyName());</span>
+<span class="fc" id="L105">            inspectDeviceRecursive(device, recognizedServices.keySet());</span>
+<span class="fc" id="L106">          }</span>
+        };
+<span class="fc" id="L108">  }</span>
+
+  /**
+   * Start the manager. Must not be in started state.
+   *
+   * @throws IllegalStateException if already started.
+   */
+  @Override
+  public synchronized void doStart() throws NatInitializationException {
+<span class="fc" id="L117">    LOG.info(&quot;Starting UPnP Service&quot;);</span>
+    try {
+<span class="fc" id="L119">      upnpService.startup();</span>
+<span class="fc" id="L120">      upnpService.getRegistry().addListener(registryListener);</span>
+<span class="fc" id="L121">      initiateExternalIpQuery();</span>
+<span class="nc" id="L122">    } catch (Exception e) {</span>
+<span class="nc" id="L123">      throw new NatInitializationException(&quot;Failed start UPnP nat service.&quot;, e);</span>
+<span class="fc" id="L124">    }</span>
+<span class="fc" id="L125">  }</span>
+
+  /**
+   * Stop the manager. Must not be in stopped state.
+   *
+   * @throws IllegalStateException if stopped.
+   */
+  @Override
+  public synchronized void doStop() {
+<span class="fc" id="L134">    CompletableFuture&lt;Void&gt; portForwardReleaseFuture = releaseAllPortForwards();</span>
+    try {
+<span class="fc" id="L136">      LOG.info(&quot;Allowing 3 seconds to release all port forwards...&quot;);</span>
+<span class="fc" id="L137">      portForwardReleaseFuture.get(3, TimeUnit.SECONDS);</span>
+<span class="nc" id="L138">    } catch (Exception e) {</span>
+<span class="nc" id="L139">      LOG.warn(&quot;Caught exception while trying to release port forwards, ignoring&quot;, e);</span>
+<span class="fc" id="L140">    }</span>
+
+<span class="fc bfc" id="L142" title="All 2 branches covered.">    for (CompletableFuture&lt;RemoteService&gt; future : recognizedServices.values()) {</span>
+<span class="fc" id="L143">      future.cancel(true);</span>
+<span class="fc" id="L144">    }</span>
+
+<span class="fc" id="L146">    upnpService.getRegistry().removeListener(registryListener);</span>
+<span class="fc" id="L147">    upnpService.shutdown();</span>
+<span class="fc" id="L148">  }</span>
+
+  /**
+   * Returns the first of the discovered services of the given type, if any.
+   *
+   * @param type is the type descriptor of the desired service
+   * @return a CompletableFuture that will provide the desired RemoteService when completed
+   */
+  private synchronized CompletableFuture&lt;RemoteService&gt; getService(final String type) {
+<span class="fc" id="L157">    return recognizedServices.get(type);</span>
+  }
+
+  /**
+   * Get the discovered WANIPConnection service, if any.
+   *
+   * @return a CompletableFuture that will provide the WANIPConnection RemoteService when completed
+   */
+  @VisibleForTesting
+  synchronized CompletableFuture&lt;RemoteService&gt; getWANIPConnectionService() {
+<span class="fc" id="L167">    checkState(isStarted(), &quot;Cannot call getWANIPConnectionService() when in stopped state&quot;);</span>
+<span class="fc" id="L168">    return getService(SERVICE_TYPE_WAN_IP_CONNECTION);</span>
+  }
+
+  /**
+   * Returns a CompletableFuture that will wait for the given service type to be discovered. No new
+   * query will be performed, and if the service has already been discovered, the future will
+   * complete in the very near future.
+   *
+   * @param serviceType is the service type to wait to be discovered.
+   * @return future that will return the desired service once it is discovered, or null if the
+   *     future is cancelled.
+   */
+  private synchronized CompletableFuture&lt;RemoteService&gt; discoverService(final String serviceType) {
+<span class="fc" id="L181">    return recognizedServices.get(serviceType);</span>
+  }
+
+  /**
+   * Sends a UPnP request to the discovered IGD for the external ip address.
+   *
+   * @return A CompletableFuture that can be used to query the result (or error).
+   */
+  @Override
+  public CompletableFuture&lt;String&gt; retrieveExternalIPAddress() {
+<span class="pc" id="L191">    return externalIpQueryFuture.thenApply(x -&gt; x);</span>
+  }
+
+  /**
+   * Returns all known port mappings.
+   *
+   * @return The known port mappings wrapped in a {@link java.util.concurrent.Future}.
+   */
+  @Override
+  public CompletableFuture&lt;List&lt;NatPortMapping&gt;&gt; getPortMappings() {
+<span class="nc" id="L201">    checkState(isStarted(), &quot;Cannot call getPortMappings() when in stopped state&quot;);</span>
+<span class="nc" id="L202">    return CompletableFuture.completedFuture(forwardedPorts);</span>
+  }
+
+  /**
+   * Sends a UPnP request to the discovered IGD for the external ip address.
+   *
+   * &lt;p&gt;Note that this is not synchronized, as it is expected to be called within an
+   * already-synchronized context ({@link #start()}).
+   */
+  private void initiateExternalIpQuery() {
+<span class="fc" id="L212">    discoverService(SERVICE_TYPE_WAN_IP_CONNECTION)</span>
+<span class="fc" id="L213">        .thenAccept(</span>
+            service -&gt; {
+
+              // our query, which will be handled asynchronously by the jupnp library
+<span class="nc" id="L217">              GetExternalIP callback =</span>
+<span class="nc" id="L218">                  new GetExternalIP(service) {</span>
+
+                    /**
+                     * Override the success(ActionInvocation) version of success so that we can take
+                     * a peek at the network interface that we discovered this on.
+                     *
+                     * &lt;p&gt;Because the underlying jupnp library omits generics info in this method
+                     * signature, we must too when we override it.
+                     */
+                    @Override
+                    @SuppressWarnings(&quot;rawtypes&quot;)
+                    public void success(final ActionInvocation invocation) {
+<span class="nc" id="L230">                      RemoteService service = (RemoteService) invocation.getAction().getService();</span>
+<span class="nc" id="L231">                      RemoteDevice device = service.getDevice();</span>
+<span class="nc" id="L232">                      RemoteDeviceIdentity identity = device.getIdentity();</span>
+
+<span class="nc" id="L234">                      discoveredOnLocalAddress =</span>
+<span class="nc" id="L235">                          Optional.of(identity.getDiscoveredOnLocalAddress().getHostAddress());</span>
+
+<span class="nc" id="L237">                      super.success(invocation);</span>
+<span class="nc" id="L238">                    }</span>
+
+                    @Override
+                    protected void success(final String result) {
+
+<span class="nc" id="L243">                      LOG.info(</span>
+                          &quot;External IP address {} detected for internal address {}&quot;,
+                          result,
+<span class="nc" id="L246">                          discoveredOnLocalAddress.get());</span>
+
+<span class="nc" id="L248">                      externalIpQueryFuture.complete(result);</span>
+<span class="nc" id="L249">                    }</span>
+
+                    /**
+                     * Because the underlying jupnp library omits generics info in this method
+                     * signature, we must too when we override it.
+                     */
+                    @Override
+                    @SuppressWarnings(&quot;rawtypes&quot;)
+                    public void failure(
+                        final ActionInvocation invocation,
+                        final UpnpResponse operation,
+                        final String msg) {
+<span class="nc" id="L261">                      externalIpQueryFuture.completeExceptionally(new Exception(msg));</span>
+<span class="nc" id="L262">                    }</span>
+                  };
+<span class="nc" id="L264">              upnpService.getControlPoint().execute(callback);</span>
+<span class="nc" id="L265">            });</span>
+<span class="fc" id="L266">  }</span>
+
+  /**
+   * Convenience function to call {@link #requestPortForward(PortMapping)} with the following
+   * defaults:
+   *
+   * &lt;p&gt;enabled: true leaseDurationSeconds: 0 (indefinite) remoteHost: null internalClient: the
+   * local address used to discover gateway
+   *
+   * &lt;p&gt;In addition, port is used for both internal and external port values.
+   *
+   * @param port is the port to be used for both internal and external port values
+   * @param protocol is either UDP or TCP {@link NetworkProtocol}
+   * @param serviceType {@link NatServiceType}, often displayed in router UIs
+   */
+  public void requestPortForward(
+      final int port, final NetworkProtocol protocol, final NatServiceType serviceType) {
+<span class="fc" id="L283">    checkState(isStarted(), &quot;Cannot call requestPortForward() when in stopped state&quot;);</span>
+<span class="pc bpc" id="L284" title="1 of 2 branches missed.">    checkArgument(port != 0, &quot;Cannot map to internal port zero.&quot;);</span>
+<span class="nc" id="L285">    this.requestPortForward(</span>
+        new PortMapping(
+            true,
+            new UnsignedIntegerFourBytes(0),
+            null,
+            new UnsignedIntegerTwoBytes(port),
+            new UnsignedIntegerTwoBytes(port),
+            null,
+<span class="nc" id="L293">            toJupnpProtocol(protocol),</span>
+<span class="nc" id="L294">            serviceType.getValue()));</span>
+<span class="nc" id="L295">  }</span>
+
+  /**
+   * Sends a UPnP request to the discovered IGD to request a port forward.
+   *
+   * @param portMapping is a portMapping object describing the desired port mapping parameters.
+   * @return A CompletableFuture that can be used to query the result (or error).
+   */
+  private CompletableFuture&lt;Void&gt; requestPortForward(final PortMapping portMapping) {
+
+<span class="nc" id="L305">    CompletableFuture&lt;Void&gt; upnpQueryFuture = new CompletableFuture&lt;&gt;();</span>
+
+<span class="nc" id="L307">    return externalIpQueryFuture.thenCompose(</span>
+        address -&gt; {
+          // note that this future is a dependency of externalIpQueryFuture, so it must be completed
+          // by now
+<span class="nc" id="L311">          RemoteService service = getService(SERVICE_TYPE_WAN_IP_CONNECTION).join();</span>
+
+          // at this point, we should have the local address we discovered the IGD on,
+          // so we can prime the NewInternalClient field if it was omitted
+<span class="nc bnc" id="L315" title="All 2 branches missed.">          if (null == portMapping.getInternalClient()) {</span>
+<span class="nc" id="L316">            portMapping.setInternalClient(discoveredOnLocalAddress.get());</span>
+          }
+
+          // our query, which will be handled asynchronously by the jupnp library
+<span class="nc" id="L320">          PortMappingAdd callback =</span>
+<span class="nc" id="L321">              new PortMappingAdd(service, portMapping) {</span>
+                /**
+                 * Because the underlying jupnp library omits generics info in this method
+                 * signature, we must too when we override it.
+                 */
+                @Override
+                @SuppressWarnings(&quot;rawtypes&quot;)
+                public void success(final ActionInvocation invocation) {
+<span class="nc" id="L329">                  LOG.info(</span>
+                      &quot;Port forward request for {} {} -&gt; {} succeeded.&quot;,
+<span class="nc" id="L331">                      portMapping.getProtocol(),</span>
+<span class="nc" id="L332">                      portMapping.getInternalPort(),</span>
+<span class="nc" id="L333">                      portMapping.getExternalPort());</span>
+
+<span class="nc" id="L335">                  synchronized (forwardedPorts) {</span>
+<span class="nc" id="L336">                    final NatServiceType natServiceType =</span>
+<span class="nc" id="L337">                        NatServiceType.fromString(portMapping.getDescription());</span>
+<span class="nc" id="L338">                    final NatPortMapping natPortMapping =</span>
+                        new NatPortMapping(
+                            natServiceType,
+<span class="nc" id="L341">                            NetworkProtocol.valueOf(portMapping.getProtocol().name()),</span>
+<span class="nc" id="L342">                            portMapping.getInternalClient(),</span>
+<span class="nc" id="L343">                            portMapping.getRemoteHost(),</span>
+<span class="nc" id="L344">                            portMapping.getExternalPort().getValue().intValue(),</span>
+<span class="nc" id="L345">                            portMapping.getInternalPort().getValue().intValue());</span>
+<span class="nc" id="L346">                    forwardedPorts.add(natPortMapping);</span>
+<span class="nc" id="L347">                  }</span>
+
+<span class="nc" id="L349">                  upnpQueryFuture.complete(null);</span>
+<span class="nc" id="L350">                }</span>
+
+                /**
+                 * Because the underlying jupnp library omits generics info in this method
+                 * signature, we must too when we override it.
+                 */
+                @Override
+                @SuppressWarnings(&quot;rawtypes&quot;)
+                public void failure(
+                    final ActionInvocation invocation,
+                    final UpnpResponse operation,
+                    final String msg) {
+<span class="nc" id="L362">                  LOG.warn(</span>
+                      &quot;Port forward request for {} {} -&gt; {} failed: {}&quot;,
+<span class="nc" id="L364">                      portMapping.getProtocol(),</span>
+<span class="nc" id="L365">                      portMapping.getInternalPort(),</span>
+<span class="nc" id="L366">                      portMapping.getExternalPort(),</span>
+                      msg);
+<span class="nc" id="L368">                  upnpQueryFuture.completeExceptionally(new Exception(msg));</span>
+<span class="nc" id="L369">                }</span>
+              };
+
+<span class="nc" id="L372">          LOG.info(</span>
+              &quot;Requesting port forward for {} {} -&gt; {}&quot;,
+<span class="nc" id="L374">              portMapping.getProtocol(),</span>
+<span class="nc" id="L375">              portMapping.getInternalPort(),</span>
+<span class="nc" id="L376">              portMapping.getExternalPort());</span>
+
+<span class="nc" id="L378">          upnpService.getControlPoint().execute(callback);</span>
+
+<span class="nc" id="L380">          return upnpQueryFuture;</span>
+        });
+  }
+
+  /**
+   * Attempts to release any forwarded ports.
+   *
+   * &lt;p&gt;Note that this is not synchronized, as it is expected to be called within an
+   * already-synchronized context ({@link #stop()}).
+   *
+   * @return A CompletableFuture that will complete when all port forward requests have been made
+   */
+  private CompletableFuture&lt;Void&gt; releaseAllPortForwards() {
+    // if we haven't observed the WANIPConnection service yet, we should have no port forwards to
+    // release
+<span class="fc" id="L395">    CompletableFuture&lt;RemoteService&gt; wanIPConnectionServiceFuture =</span>
+<span class="fc" id="L396">        getService(SERVICE_TYPE_WAN_IP_CONNECTION);</span>
+<span class="pc bpc" id="L397" title="1 of 2 branches missed.">    if (!wanIPConnectionServiceFuture.isDone()) {</span>
+<span class="fc" id="L398">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="nc" id="L401">    RemoteService service = wanIPConnectionServiceFuture.join();</span>
+
+<span class="nc" id="L403">    List&lt;CompletableFuture&lt;Void&gt;&gt; futures = new ArrayList&lt;&gt;();</span>
+
+<span class="nc" id="L405">    boolean done = false;</span>
+<span class="nc bnc" id="L406" title="All 2 branches missed.">    while (!done) {</span>
+      NatPortMapping portMapping;
+<span class="nc" id="L408">      synchronized (forwardedPorts) {</span>
+<span class="nc bnc" id="L409" title="All 2 branches missed.">        if (forwardedPorts.isEmpty()) {</span>
+<span class="nc" id="L410">          done = true;</span>
+<span class="nc" id="L411">          continue;</span>
+        }
+
+<span class="nc" id="L414">        portMapping = forwardedPorts.get(0);</span>
+<span class="nc" id="L415">        forwardedPorts.remove(0);</span>
+<span class="nc" id="L416">      }</span>
+
+<span class="nc" id="L418">      LOG.info(</span>
+          &quot;Releasing port forward for {} {} -&gt; {}&quot;,
+<span class="nc" id="L420">          portMapping.getProtocol(),</span>
+<span class="nc" id="L421">          portMapping.getInternalPort(),</span>
+<span class="nc" id="L422">          portMapping.getExternalPort());</span>
+
+<span class="nc" id="L424">      CompletableFuture&lt;Void&gt; future = new CompletableFuture&lt;&gt;();</span>
+
+<span class="nc" id="L426">      PortMappingDelete callback =</span>
+<span class="nc" id="L427">          new PortMappingDelete(service, toJupnpPortMapping(portMapping)) {</span>
+            /**
+             * Because the underlying jupnp library omits generics info in this method signature, we
+             * must too when we override it.
+             */
+            @Override
+            @SuppressWarnings(&quot;rawtypes&quot;)
+            public void success(final ActionInvocation invocation) {
+<span class="nc" id="L435">              LOG.info(</span>
+                  &quot;Port forward {} {} -&gt; {} removed successfully.&quot;,
+<span class="nc" id="L437">                  portMapping.getProtocol(),</span>
+<span class="nc" id="L438">                  portMapping.getInternalPort(),</span>
+<span class="nc" id="L439">                  portMapping.getExternalPort());</span>
+
+<span class="nc" id="L441">              future.complete(null);</span>
+<span class="nc" id="L442">            }</span>
+
+            /**
+             * Because the underlying jupnp library omits generics info in this method signature, we
+             * must too when we override it.
+             */
+            @Override
+            @SuppressWarnings(&quot;rawtypes&quot;)
+            public void failure(
+                final ActionInvocation invocation, final UpnpResponse operation, final String msg) {
+<span class="nc" id="L452">              LOG.warn(</span>
+                  &quot;Port forward removal request for {} {} -&gt; {} failed (ignoring): {}&quot;,
+<span class="nc" id="L454">                  portMapping.getProtocol(),</span>
+<span class="nc" id="L455">                  portMapping.getInternalPort(),</span>
+<span class="nc" id="L456">                  portMapping.getExternalPort(),</span>
+                  msg);
+
+              // ignore exceptions; we did our best
+<span class="nc" id="L460">              future.complete(null);</span>
+<span class="nc" id="L461">            }</span>
+          };
+
+<span class="nc" id="L464">      upnpService.getControlPoint().execute(callback);</span>
+
+<span class="nc" id="L466">      futures.add(future);</span>
+<span class="nc" id="L467">    }</span>
+
+    // return a future that completes succeessfully only when each of our port delete requests
+    // complete
+<span class="nc" id="L471">    return CompletableFuture.allOf(futures.toArray(new CompletableFuture&lt;?&gt;[0]));</span>
+  }
+
+  /**
+   * Recursively crawls the given device to look for specific services.
+   *
+   * @param device is the device to inspect for desired services.
+   * @param serviceTypes is a set of service types to look for.
+   */
+  private void inspectDeviceRecursive(final RemoteDevice device, final Set&lt;String&gt; serviceTypes) {
+<span class="fc bfc" id="L481" title="All 2 branches covered.">    for (RemoteService service : device.getServices()) {</span>
+<span class="fc" id="L482">      String serviceType = service.getServiceType().getType();</span>
+<span class="pc bpc" id="L483" title="1 of 2 branches missed.">      if (serviceTypes.contains(serviceType)) {</span>
+<span class="fc" id="L484">        synchronized (this) {</span>
+          // log a warning if we detect a second WANIPConnection service
+<span class="fc" id="L486">          CompletableFuture&lt;RemoteService&gt; existingFuture = recognizedServices.get(serviceType);</span>
+<span class="pc bpc" id="L487" title="1 of 2 branches missed.">          if (existingFuture.isDone()) {</span>
+<span class="nc" id="L488">            LOG.warn(</span>
+                &quot;Detected multiple WANIPConnection services on network. This may interfere with NAT circumvention.&quot;);
+<span class="nc" id="L490">            continue;</span>
+          }
+<span class="fc" id="L492">          existingFuture.complete(service);</span>
+<span class="fc" id="L493">        }</span>
+      }
+    }
+<span class="pc bpc" id="L496" title="1 of 2 branches missed.">    for (RemoteDevice subDevice : device.getEmbeddedDevices()) {</span>
+<span class="nc" id="L497">      inspectDeviceRecursive(subDevice, serviceTypes);</span>
+    }
+<span class="fc" id="L499">  }</span>
+
+  private PortMapping.Protocol toJupnpProtocol(final NetworkProtocol protocol) {
+<span class="nc bnc" id="L502" title="All 3 branches missed.">    switch (protocol) {</span>
+      case UDP:
+<span class="nc" id="L504">        return PortMapping.Protocol.UDP;</span>
+      case TCP:
+<span class="nc" id="L506">        return PortMapping.Protocol.TCP;</span>
+    }
+<span class="nc" id="L508">    return null;</span>
+  }
+
+  private PortMapping toJupnpPortMapping(final NatPortMapping natPortMapping) {
+<span class="nc" id="L512">    return new PortMapping(</span>
+        true,
+        new UnsignedIntegerFourBytes(0),
+        null,
+<span class="nc" id="L516">        new UnsignedIntegerTwoBytes(natPortMapping.getExternalPort()),</span>
+<span class="nc" id="L517">        new UnsignedIntegerTwoBytes(natPortMapping.getInternalPort()),</span>
+        null,
+<span class="nc" id="L519">        toJupnpProtocol(natPortMapping.getProtocol()),</span>
+<span class="nc" id="L520">        natPortMapping.getNatServiceType().getValue());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

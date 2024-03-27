@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractEthTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">AbstractEthTask.java</span></div><h1>AbstractEthTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+
+import java.util.Collection;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Stopwatch;
+
+public abstract class AbstractEthTask&lt;T&gt; implements EthTask&lt;T&gt; {
+
+<span class="fc" id="L38">  private double taskTimeInSec = -1.0D;</span>
+  private final OperationTimer taskTimer;
+<span class="fc" id="L40">  protected final CompletableFuture&lt;T&gt; result = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L41">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+<span class="fc" id="L42">  private final Collection&lt;CompletableFuture&lt;?&gt;&gt; subTaskFutures = new ConcurrentLinkedDeque&lt;&gt;();</span>
+
+<span class="fc" id="L44">  protected AbstractEthTask(final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L45">    this.taskTimer = buildOperationTimer(metricsSystem, getClass().getSimpleName());</span>
+<span class="fc" id="L46">  }</span>
+
+<span class="fc" id="L48">  protected AbstractEthTask(final OperationTimer taskTimer) {</span>
+<span class="fc" id="L49">    this.taskTimer = taskTimer;</span>
+<span class="fc" id="L50">  }</span>
+
+  private static OperationTimer buildOperationTimer(
+      final MetricsSystem metricsSystem, final String taskName) {
+<span class="fc" id="L54">    final LabelledMetric&lt;OperationTimer&gt; ethTasksTimer =</span>
+<span class="fc" id="L55">        metricsSystem.createLabelledTimer(</span>
+            BesuMetricCategory.SYNCHRONIZER, &quot;task&quot;, &quot;Internal processing tasks&quot;, &quot;taskName&quot;);
+<span class="fc bfc" id="L57" title="All 2 branches covered.">    if (ethTasksTimer == NoOpMetricsSystem.NO_OP_LABELLED_1_OPERATION_TIMER) {</span>
+<span class="fc" id="L58">      return () -&gt;</span>
+<span class="fc" id="L59">          new OperationTimer.TimingContext() {</span>
+<span class="fc" id="L60">            final Stopwatch stopwatch = Stopwatch.createStarted();</span>
+
+            @Override
+            public double stopTimer() {
+<span class="fc" id="L64">              return stopwatch.elapsed(TimeUnit.MILLISECONDS) / 1000.0;</span>
+            }
+          };
+    } else {
+<span class="fc" id="L68">      return ethTasksTimer.labels(taskName);</span>
+    }
+  }
+
+  @Override
+  public final CompletableFuture&lt;T&gt; run() {
+<span class="pc bpc" id="L74" title="1 of 4 branches missed.">    if (!result.isDone() &amp;&amp; started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L75">      executeTaskTimed();</span>
+<span class="fc" id="L76">      result.whenComplete((r, t) -&gt; cleanup());</span>
+    }
+<span class="fc" id="L78">    return result;</span>
+  }
+
+  @Override
+  public final CompletableFuture&lt;T&gt; runAsync(final ExecutorService executor) {
+<span class="pc bpc" id="L83" title="1 of 4 branches missed.">    if (!result.isDone() &amp;&amp; started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L84">      executor.execute(this::executeTaskTimed);</span>
+<span class="fc" id="L85">      result.whenComplete((r, t) -&gt; cleanup());</span>
+    }
+<span class="fc" id="L87">    return result;</span>
+  }
+
+  @Override
+  public final void cancel() {
+<span class="fc" id="L92">    result.cancel(false);</span>
+<span class="fc" id="L93">  }</span>
+
+  @VisibleForTesting
+  public final boolean isDone() {
+<span class="fc" id="L97">    return result.isDone();</span>
+  }
+
+  public final boolean isFailed() {
+<span class="fc" id="L101">    return result.isCompletedExceptionally();</span>
+  }
+
+  @VisibleForTesting
+  public final boolean isCancelled() {
+<span class="fc" id="L106">    return result.isCancelled();</span>
+  }
+
+  /**
+   * Utility for executing completable futures that handles cleanup if this EthTask is cancelled.
+   *
+   * @param subTask a subTask to execute
+   * @param &lt;S&gt; the type of data returned from the CompletableFuture
+   * @return The completableFuture that was executed
+   */
+  protected final &lt;S&gt; CompletableFuture&lt;S&gt; executeSubTask(
+      final Supplier&lt;CompletableFuture&lt;S&gt;&gt; subTask) {
+<span class="fc" id="L118">    synchronized (result) {</span>
+<span class="pc bpc" id="L119" title="1 of 2 branches missed.">      if (!isCancelled()) {</span>
+<span class="fc" id="L120">        final CompletableFuture&lt;S&gt; subTaskFuture = subTask.get();</span>
+<span class="fc" id="L121">        subTaskFutures.add(subTaskFuture);</span>
+<span class="fc" id="L122">        subTaskFuture.whenComplete((r, t) -&gt; subTaskFutures.remove(subTaskFuture));</span>
+<span class="fc" id="L123">        return subTaskFuture;</span>
+      } else {
+<span class="nc" id="L125">        return CompletableFuture.failedFuture(new CancellationException());</span>
+      }
+    }
+  }
+
+  /**
+   * Helper method for sending subTask to worker that will clean up if this EthTask is cancelled.
+   *
+   * @param scheduler the scheduler that will run worker task
+   * @param subTask a subTask to execute
+   * @param &lt;S&gt; the type of data returned from the CompletableFuture
+   * @return The completableFuture that was executed
+   */
+  protected final &lt;S&gt; CompletableFuture&lt;S&gt; executeWorkerSubTask(
+      final EthScheduler scheduler, final Supplier&lt;CompletableFuture&lt;S&gt;&gt; subTask) {
+<span class="fc" id="L140">    return executeSubTask(() -&gt; scheduler.scheduleSyncWorkerTask(subTask));</span>
+  }
+
+  /** Execute core task logic. */
+  protected abstract void executeTask();
+
+  /** Executes the task while timed by a timer. */
+  public void executeTaskTimed() {
+<span class="fc" id="L148">    final OperationTimer.TimingContext timingContext = taskTimer.startTimer();</span>
+    try {
+<span class="fc" id="L150">      executeTask();</span>
+    } finally {
+<span class="fc" id="L152">      taskTimeInSec = timingContext.stopTimer();</span>
+    }
+<span class="fc" id="L154">  }</span>
+
+  public double getTaskTimeInSec() {
+<span class="fc" id="L157">    return taskTimeInSec;</span>
+  }
+
+  /** Cleanup any resources when task completes. */
+  protected void cleanup() {
+<span class="fc bfc" id="L162" title="All 2 branches covered.">    for (final CompletableFuture&lt;?&gt; subTaskFuture : subTaskFutures) {</span>
+<span class="fc" id="L163">      subTaskFuture.cancel(false);</span>
+<span class="fc" id="L164">    }</span>
+<span class="fc" id="L165">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

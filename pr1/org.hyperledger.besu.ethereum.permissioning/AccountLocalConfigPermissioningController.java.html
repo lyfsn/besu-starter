@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AccountLocalConfigPermissioningController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning</a> &gt; <span class="el_source">AccountLocalConfigPermissioningController.java</span></div><h1>AccountLocalConfigPermissioningController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.permissioning.AllowlistPersistor.ALLOWLIST_TYPE;
+import org.hyperledger.besu.ethereum.permissioning.account.TransactionPermissioningProvider;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class AccountLocalConfigPermissioningController implements TransactionPermissioningProvider {
+
+<span class="fc" id="L40">  private static final Logger LOG =</span>
+<span class="fc" id="L41">      LoggerFactory.getLogger(AccountLocalConfigPermissioningController.class);</span>
+
+  private static final int ACCOUNT_BYTES_SIZE = 20;
+  private LocalPermissioningConfiguration configuration;
+<span class="fc" id="L45">  private List&lt;String&gt; accountAllowlist = new ArrayList&lt;&gt;();</span>
+  private final AllowlistPersistor allowlistPersistor;
+
+  private final Counter checkCounter;
+  private final Counter checkCounterPermitted;
+  private final Counter checkCounterUnpermitted;
+
+  public AccountLocalConfigPermissioningController(
+      final LocalPermissioningConfiguration configuration, final MetricsSystem metricsSystem) {
+<span class="fc" id="L54">    this(</span>
+        configuration,
+<span class="fc" id="L56">        new AllowlistPersistor(configuration.getAccountPermissioningConfigFilePath()),</span>
+        metricsSystem);
+<span class="fc" id="L58">  }</span>
+
+  public AccountLocalConfigPermissioningController(
+      final LocalPermissioningConfiguration configuration,
+      final AllowlistPersistor allowlistPersistor,
+<span class="fc" id="L63">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L64">    this.configuration = configuration;</span>
+<span class="fc" id="L65">    this.allowlistPersistor = allowlistPersistor;</span>
+<span class="fc" id="L66">    readAccountsFromConfig(configuration);</span>
+<span class="fc" id="L67">    this.checkCounter =</span>
+<span class="fc" id="L68">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;account_local_check_count&quot;,
+            &quot;Number of times the account local permissioning provider has been checked&quot;);
+<span class="fc" id="L72">    this.checkCounterPermitted =</span>
+<span class="fc" id="L73">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;account_local_check_count_permitted&quot;,
+            &quot;Number of times the account local permissioning provider has been checked and returned permitted&quot;);
+<span class="fc" id="L77">    this.checkCounterUnpermitted =</span>
+<span class="fc" id="L78">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.PERMISSIONING,
+            &quot;account_local_check_count_unpermitted&quot;,
+            &quot;Number of times the account local permissioning provider has been checked and returned unpermitted&quot;);
+<span class="fc" id="L82">  }</span>
+
+  private void readAccountsFromConfig(final LocalPermissioningConfiguration configuration) {
+<span class="pc bpc" id="L85" title="1 of 4 branches missed.">    if (configuration != null &amp;&amp; configuration.isAccountAllowlistEnabled()) {</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">      if (!configuration.getAccountAllowlist().isEmpty()) {</span>
+<span class="fc" id="L87">        addAccounts(configuration.getAccountAllowlist());</span>
+      }
+    }
+<span class="fc" id="L90">  }</span>
+
+  public AllowlistOperationResult addAccounts(final List&lt;String&gt; accounts) {
+<span class="fc" id="L93">    final List&lt;String&gt; normalizedAccounts = normalizeAccounts(accounts);</span>
+<span class="fc" id="L94">    final AllowlistOperationResult inputValidationResult = inputValidation(normalizedAccounts);</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    if (inputValidationResult != AllowlistOperationResult.SUCCESS) {</span>
+<span class="fc" id="L96">      return inputValidationResult;</span>
+    }
+
+<span class="fc" id="L99">    boolean inputHasExistingAccount =</span>
+<span class="fc" id="L100">        normalizedAccounts.stream().anyMatch(accountAllowlist::contains);</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    if (inputHasExistingAccount) {</span>
+<span class="fc" id="L102">      return AllowlistOperationResult.ERROR_EXISTING_ENTRY;</span>
+    }
+
+<span class="fc" id="L105">    final List&lt;String&gt; oldAllowlist = new ArrayList&lt;&gt;(this.accountAllowlist);</span>
+<span class="fc" id="L106">    this.accountAllowlist.addAll(normalizedAccounts);</span>
+    try {
+<span class="fc" id="L108">      verifyConfigurationFileState(oldAllowlist);</span>
+<span class="fc" id="L109">      updateConfigurationFile(accountAllowlist);</span>
+<span class="fc" id="L110">      verifyConfigurationFileState(accountAllowlist);</span>
+<span class="fc" id="L111">    } catch (IOException e) {</span>
+<span class="fc" id="L112">      revertState(oldAllowlist);</span>
+<span class="fc" id="L113">      return AllowlistOperationResult.ERROR_ALLOWLIST_PERSIST_FAIL;</span>
+<span class="nc" id="L114">    } catch (AllowlistFileSyncException e) {</span>
+<span class="nc" id="L115">      return AllowlistOperationResult.ERROR_ALLOWLIST_FILE_SYNC;</span>
+<span class="fc" id="L116">    }</span>
+<span class="fc" id="L117">    return AllowlistOperationResult.SUCCESS;</span>
+  }
+
+  public AllowlistOperationResult removeAccounts(final List&lt;String&gt; accounts) {
+<span class="fc" id="L121">    final List&lt;String&gt; normalizedAccounts = normalizeAccounts(accounts);</span>
+<span class="fc" id="L122">    final AllowlistOperationResult inputValidationResult = inputValidation(normalizedAccounts);</span>
+<span class="fc bfc" id="L123" title="All 2 branches covered.">    if (inputValidationResult != AllowlistOperationResult.SUCCESS) {</span>
+<span class="fc" id="L124">      return inputValidationResult;</span>
+    }
+
+<span class="fc bfc" id="L127" title="All 2 branches covered.">    if (!accountAllowlist.containsAll(normalizedAccounts)) {</span>
+<span class="fc" id="L128">      return AllowlistOperationResult.ERROR_ABSENT_ENTRY;</span>
+    }
+
+<span class="fc" id="L131">    final List&lt;String&gt; oldAllowlist = new ArrayList&lt;&gt;(this.accountAllowlist);</span>
+
+<span class="fc" id="L133">    this.accountAllowlist.removeAll(normalizedAccounts);</span>
+    try {
+<span class="fc" id="L135">      verifyConfigurationFileState(oldAllowlist);</span>
+<span class="fc" id="L136">      updateConfigurationFile(accountAllowlist);</span>
+<span class="fc" id="L137">      verifyConfigurationFileState(accountAllowlist);</span>
+<span class="nc" id="L138">    } catch (IOException e) {</span>
+<span class="nc" id="L139">      revertState(oldAllowlist);</span>
+<span class="nc" id="L140">      return AllowlistOperationResult.ERROR_ALLOWLIST_PERSIST_FAIL;</span>
+<span class="nc" id="L141">    } catch (AllowlistFileSyncException e) {</span>
+<span class="nc" id="L142">      return AllowlistOperationResult.ERROR_ALLOWLIST_FILE_SYNC;</span>
+<span class="fc" id="L143">    }</span>
+<span class="fc" id="L144">    return AllowlistOperationResult.SUCCESS;</span>
+  }
+
+  private AllowlistOperationResult inputValidation(final List&lt;String&gt; accounts) {
+<span class="pc bpc" id="L148" title="1 of 4 branches missed.">    if (accounts == null || accounts.isEmpty()) {</span>
+<span class="fc" id="L149">      return AllowlistOperationResult.ERROR_EMPTY_ENTRY;</span>
+    }
+
+<span class="fc bfc" id="L152" title="All 2 branches covered.">    if (containsInvalidAccount(accounts)) {</span>
+<span class="fc" id="L153">      return AllowlistOperationResult.ERROR_INVALID_ENTRY;</span>
+    }
+
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    if (inputHasDuplicates(accounts)) {</span>
+<span class="fc" id="L157">      return AllowlistOperationResult.ERROR_DUPLICATED_ENTRY;</span>
+    }
+
+<span class="fc" id="L160">    return AllowlistOperationResult.SUCCESS;</span>
+  }
+
+  private void verifyConfigurationFileState(final Collection&lt;String&gt; oldAccounts)
+      throws IOException, AllowlistFileSyncException {
+<span class="fc" id="L165">    allowlistPersistor.verifyConfigFileMatchesState(ALLOWLIST_TYPE.ACCOUNTS, oldAccounts);</span>
+<span class="fc" id="L166">  }</span>
+
+  private void updateConfigurationFile(final Collection&lt;String&gt; accounts) throws IOException {
+<span class="fc" id="L169">    allowlistPersistor.updateConfig(ALLOWLIST_TYPE.ACCOUNTS, accounts);</span>
+<span class="fc" id="L170">  }</span>
+
+  private void revertState(final List&lt;String&gt; accountAllowlist) {
+<span class="fc" id="L173">    this.accountAllowlist = accountAllowlist;</span>
+<span class="fc" id="L174">  }</span>
+
+  private boolean inputHasDuplicates(final List&lt;String&gt; accounts) {
+<span class="fc bfc" id="L177" title="All 2 branches covered.">    return !accounts.stream().allMatch(new HashSet&lt;&gt;()::add);</span>
+  }
+
+  public boolean contains(final String account) {
+<span class="fc" id="L181">    return accountAllowlist.stream().anyMatch(a -&gt; a.equalsIgnoreCase(account));</span>
+  }
+
+  public List&lt;String&gt; getAccountAllowlist() {
+<span class="fc" id="L185">    return new ArrayList&lt;&gt;(accountAllowlist);</span>
+  }
+
+  private boolean containsInvalidAccount(final List&lt;String&gt; accounts) {
+<span class="fc" id="L189">    return !accounts.stream()</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">        .allMatch(AccountLocalConfigPermissioningController::isValidAccountString);</span>
+  }
+
+  static boolean isValidAccountString(final String account) {
+    try {
+<span class="pc bpc" id="L195" title="1 of 4 branches missed.">      if (account == null || !account.startsWith(&quot;0x&quot;)) {</span>
+<span class="fc" id="L196">        return false;</span>
+      }
+<span class="fc" id="L198">      Bytes bytes = Bytes.fromHexString(account);</span>
+<span class="pc bpc" id="L199" title="1 of 2 branches missed.">      return bytes.size() == ACCOUNT_BYTES_SIZE;</span>
+<span class="fc" id="L200">    } catch (NullPointerException | IndexOutOfBoundsException | IllegalArgumentException e) {</span>
+<span class="fc" id="L201">      return false;</span>
+    }
+  }
+
+  public synchronized void reload() throws RuntimeException {
+<span class="fc" id="L206">    final ArrayList&lt;String&gt; currentAccountsList = new ArrayList&lt;&gt;(accountAllowlist);</span>
+<span class="fc" id="L207">    accountAllowlist.clear();</span>
+
+    try {
+<span class="fc" id="L210">      final LocalPermissioningConfiguration updatedConfig =</span>
+<span class="fc" id="L211">          PermissioningConfigurationBuilder.permissioningConfiguration(</span>
+<span class="fc" id="L212">              configuration.isNodeAllowlistEnabled(),</span>
+<span class="fc" id="L213">              configuration.getEnodeDnsConfiguration(),</span>
+<span class="fc" id="L214">              configuration.getNodePermissioningConfigFilePath(),</span>
+<span class="fc" id="L215">              configuration.isAccountAllowlistEnabled(),</span>
+<span class="fc" id="L216">              configuration.getAccountPermissioningConfigFilePath());</span>
+<span class="fc" id="L217">      readAccountsFromConfig(updatedConfig);</span>
+<span class="fc" id="L218">      configuration = updatedConfig;</span>
+<span class="fc" id="L219">    } catch (Exception e) {</span>
+<span class="fc" id="L220">      accountAllowlist.clear();</span>
+<span class="fc" id="L221">      accountAllowlist.addAll(currentAccountsList);</span>
+<span class="fc" id="L222">      throw new IllegalStateException(</span>
+          &quot;Error reloading permissions file. In-memory accounts allowlist will be reverted to previous valid configuration&quot;,
+          e);
+<span class="fc" id="L225">    }</span>
+<span class="fc" id="L226">  }</span>
+
+  private List&lt;String&gt; normalizeAccounts(final List&lt;String&gt; accounts) {
+<span class="fc bfc" id="L229" title="All 2 branches covered.">    if (accounts != null) {</span>
+<span class="fc" id="L230">      return accounts.parallelStream().map(String::toLowerCase).collect(Collectors.toList());</span>
+    } else {
+<span class="fc" id="L232">      return Collections.emptyList();</span>
+    }
+  }
+
+  @Override
+  public boolean isPermitted(final Transaction transaction) {
+<span class="fc" id="L238">    final Hash transactionHash = transaction.getHash();</span>
+<span class="fc" id="L239">    final Address sender = transaction.getSender();</span>
+
+<span class="fc" id="L241">    LOG.trace(&quot;Account permissioning - Local Config: Checking transaction {}&quot;, transactionHash);</span>
+
+<span class="fc" id="L243">    this.checkCounter.inc();</span>
+<span class="fc bfc" id="L244" title="All 2 branches covered.">    if (sender == null) {</span>
+<span class="fc" id="L245">      this.checkCounterUnpermitted.inc();</span>
+<span class="fc" id="L246">      LOG.trace(</span>
+          &quot;Account permissioning - Local Config: Rejected transaction {} without sender&quot;,
+          transactionHash);
+<span class="fc" id="L249">      return false;</span>
+    } else {
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      if (contains(sender.toString())) {</span>
+<span class="fc" id="L252">        this.checkCounterPermitted.inc();</span>
+<span class="fc" id="L253">        LOG.trace(</span>
+            &quot;Account permissioning - Local Config: Permitted transaction {} from {}&quot;,
+            transactionHash,
+            sender);
+<span class="fc" id="L257">        return true;</span>
+      } else {
+<span class="nc" id="L259">        this.checkCounterUnpermitted.inc();</span>
+<span class="nc" id="L260">        LOG.trace(</span>
+            &quot;Account permissioning - Local Config: Rejected transaction {} from {}&quot;,
+            transactionHash,
+            sender);
+<span class="nc" id="L264">        return false;</span>
+      }
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

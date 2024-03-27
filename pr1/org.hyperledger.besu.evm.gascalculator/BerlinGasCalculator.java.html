@@ -1,0 +1,311 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BerlinGasCalculator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.gascalculator</a> &gt; <span class="el_source">BerlinGasCalculator.java</span></div><h1>BerlinGasCalculator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.gascalculator;
+
+import static org.hyperledger.besu.datatypes.Address.BLAKE2B_F_COMPRESSION;
+import static org.hyperledger.besu.evm.internal.Words.clampedAdd;
+import static org.hyperledger.besu.evm.internal.Words.clampedMultiply;
+import static org.hyperledger.besu.evm.internal.Words.clampedToInt;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.internal.Words;
+import org.hyperledger.besu.evm.precompile.BigIntegerModularExponentiationPrecompiledContract;
+
+import java.math.BigInteger;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/** The Berlin gas calculator. */
+public class BerlinGasCalculator extends IstanbulGasCalculator {
+
+  // new constants for EIP-2929
+  private static final long COLD_SLOAD_COST = 2100L;
+  private static final long COLD_ACCOUNT_ACCESS_COST = 2600L;
+
+  /** Warm storage read, defined in EIP-2929 */
+  protected static final long WARM_STORAGE_READ_COST = 100L;
+
+  private static final long ACCESS_LIST_ADDRESS_COST = 2400L;
+
+  /** The constant ACCESS_LIST_STORAGE_COST. */
+  protected static final long ACCESS_LIST_STORAGE_COST = 1900L;
+
+  // redefinitions for EIP-2929
+  private static final long SLOAD_GAS = WARM_STORAGE_READ_COST;
+
+  /** The constant SSTORE_RESET_GAS. */
+  protected static final long SSTORE_RESET_GAS = 5000L - COLD_SLOAD_COST;
+
+  // unchanged from Istanbul
+  private static final long SSTORE_SET_GAS = 20_000L;
+  private static final long SSTORE_CLEARS_SCHEDULE = 15_000L;
+
+  /** The constant SSTORE_SET_GAS_LESS_SLOAD_GAS. */
+  protected static final long SSTORE_SET_GAS_LESS_SLOAD_GAS = SSTORE_SET_GAS - SLOAD_GAS;
+
+  /** The constant SSTORE_RESET_GAS_LESS_SLOAD_GAS. */
+  protected static final long SSTORE_RESET_GAS_LESS_SLOAD_GAS = SSTORE_RESET_GAS - SLOAD_GAS;
+
+  private static final long NEGATIVE_SSTORE_CLEARS_SCHEDULE = -SSTORE_CLEARS_SCHEDULE;
+
+  // unchanged from Frontier
+  private static final long COPY_WORD_GAS_COST = 3L;
+
+  private final int maxPrecompile;
+
+  /**
+   * Instantiates a new Berlin gas calculator.
+   *
+   * @param maxPrecompile the max precompile
+   */
+<span class="fc" id="L78">  protected BerlinGasCalculator(final int maxPrecompile) {</span>
+<span class="fc" id="L79">    this.maxPrecompile = maxPrecompile;</span>
+<span class="fc" id="L80">  }</span>
+
+  /** Instantiates a new Berlin gas calculator. */
+  public BerlinGasCalculator() {
+<span class="fc" id="L84">    this(BLAKE2B_F_COMPRESSION.toArrayUnsafe()[19]);</span>
+<span class="fc" id="L85">  }</span>
+
+  @Override
+  public long accessListGasCost(final int addresses, final int storageSlots) {
+<span class="fc" id="L89">    return ACCESS_LIST_ADDRESS_COST * addresses + (ACCESS_LIST_STORAGE_COST * storageSlots);</span>
+  }
+
+  @Override
+  public boolean isPrecompile(final Address address) {
+<span class="fc" id="L94">    final byte[] addressBytes = address.toArrayUnsafe();</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    for (int i = 0; i &lt; 19; i++) {</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">      if (addressBytes[i] != 0) {</span>
+<span class="fc" id="L97">        return false;</span>
+      }
+    }
+<span class="fc" id="L100">    final int lastByte = Byte.toUnsignedInt(addressBytes[19]);</span>
+<span class="fc bfc" id="L101" title="All 4 branches covered.">    return lastByte &lt;= maxPrecompile &amp;&amp; lastByte != 0;</span>
+  }
+
+  // new costs
+  @Override
+  public long getColdSloadCost() {
+<span class="fc" id="L107">    return COLD_SLOAD_COST;</span>
+  }
+
+  @Override
+  public long getColdAccountAccessCost() {
+<span class="fc" id="L112">    return COLD_ACCOUNT_ACCESS_COST;</span>
+  }
+
+  @Override
+  public long getWarmStorageReadCost() {
+<span class="fc" id="L117">    return WARM_STORAGE_READ_COST;</span>
+  }
+
+  // Zeroed out old costs
+  @Override
+  public long getBalanceOperationGasCost() {
+<span class="fc" id="L123">    return 0L;</span>
+  }
+
+  @Override
+  public long callOperationBaseGasCost() {
+<span class="fc" id="L128">    return 0L;</span>
+  }
+
+  @Override
+  public long extCodeHashOperationGasCost() {
+<span class="fc" id="L133">    return 0L;</span>
+  }
+
+  @Override
+  public long getExtCodeSizeOperationGasCost() {
+<span class="fc" id="L138">    return 0L;</span>
+  }
+
+  @Override
+  public long getSloadOperationGasCost() {
+<span class="fc" id="L143">    return 0L;</span>
+  }
+
+  // Redefined costs from EIP-2929
+  @Override
+  @SuppressWarnings(&quot;java:S5738&quot;)
+  public long callOperationGasCost(
+      final MessageFrame frame,
+      final long stipend,
+      final long inputDataOffset,
+      final long inputDataLength,
+      final long outputDataOffset,
+      final long outputDataLength,
+      final Wei transferValue,
+      final Account recipient,
+      final Address to) {
+<span class="nc" id="L159">    return callOperationGasCost(</span>
+        frame,
+        stipend,
+        inputDataOffset,
+        inputDataLength,
+        outputDataOffset,
+        outputDataLength,
+        transferValue,
+        recipient,
+        to,
+<span class="nc bnc" id="L169" title="All 4 branches missed.">        frame.warmUpAddress(to) || isPrecompile(to));</span>
+  }
+
+  // Redefined costs from EIP-2929
+  @Override
+  public long callOperationGasCost(
+      final MessageFrame frame,
+      final long stipend,
+      final long inputDataOffset,
+      final long inputDataLength,
+      final long outputDataOffset,
+      final long outputDataLength,
+      final Wei transferValue,
+      final Account recipient,
+      final Address to,
+      final boolean accountIsWarm) {
+<span class="fc" id="L185">    final long baseCost =</span>
+<span class="fc" id="L186">        super.callOperationGasCost(</span>
+            frame,
+            stipend,
+            inputDataOffset,
+            inputDataLength,
+            outputDataOffset,
+            outputDataLength,
+            transferValue,
+            recipient,
+            to,
+            true); // we want the &quot;warmed price&quot; as we will charge for warming ourselves
+<span class="fc" id="L197">    return clampedAdd(</span>
+<span class="fc bfc" id="L198" title="All 2 branches covered.">        baseCost, accountIsWarm ? getWarmStorageReadCost() : getColdAccountAccessCost());</span>
+  }
+
+  // defined in Frontier, but re-implemented with no base cost.
+  @Override
+  public long extCodeCopyOperationGasCost(
+      final MessageFrame frame, final long offset, final long length) {
+<span class="fc" id="L205">    return copyWordsToMemoryGasCost(frame, 0L, COPY_WORD_GAS_COST, offset, length);</span>
+  }
+
+  // defined in Istanbul, but re-implemented with new constants
+  @Override
+  // As per https://eips.ethereum.org/EIPS/eip-2200
+  public long calculateStorageCost(
+      final UInt256 newValue,
+      final Supplier&lt;UInt256&gt; currentValue,
+      final Supplier&lt;UInt256&gt; originalValue) {
+
+<span class="fc" id="L216">    final UInt256 localCurrentValue = currentValue.get();</span>
+<span class="fc bfc" id="L217" title="All 2 branches covered.">    if (localCurrentValue.equals(newValue)) {</span>
+<span class="fc" id="L218">      return SLOAD_GAS;</span>
+    } else {
+<span class="fc" id="L220">      final UInt256 localOriginalValue = originalValue.get();</span>
+<span class="fc bfc" id="L221" title="All 2 branches covered.">      if (localOriginalValue.equals(localCurrentValue)) {</span>
+<span class="fc bfc" id="L222" title="All 2 branches covered.">        return localOriginalValue.isZero() ? SSTORE_SET_GAS : SSTORE_RESET_GAS;</span>
+      } else {
+<span class="fc" id="L224">        return SLOAD_GAS;</span>
+      }
+    }
+  }
+
+  // defined in Istanbul, but re-implemented with new constants
+  @Override
+  // As per https://eips.ethereum.org/EIPS/eip-2200
+  public long calculateStorageRefundAmount(
+      final UInt256 newValue,
+      final Supplier&lt;UInt256&gt; currentValue,
+      final Supplier&lt;UInt256&gt; originalValue) {
+
+<span class="fc" id="L237">    final UInt256 localCurrentValue = currentValue.get();</span>
+<span class="fc bfc" id="L238" title="All 2 branches covered.">    if (localCurrentValue.equals(newValue)) {</span>
+<span class="fc" id="L239">      return 0L;</span>
+    } else {
+<span class="fc" id="L241">      final UInt256 localOriginalValue = originalValue.get();</span>
+<span class="fc bfc" id="L242" title="All 2 branches covered.">      if (localOriginalValue.equals(localCurrentValue)) {</span>
+<span class="fc bfc" id="L243" title="All 2 branches covered.">        if (localOriginalValue.isZero()) {</span>
+<span class="fc" id="L244">          return 0L;</span>
+<span class="fc bfc" id="L245" title="All 2 branches covered.">        } else if (newValue.isZero()) {</span>
+<span class="fc" id="L246">          return SSTORE_CLEARS_SCHEDULE;</span>
+        } else {
+<span class="fc" id="L248">          return 0L;</span>
+        }
+      } else {
+<span class="fc" id="L251">        long refund = 0L;</span>
+<span class="fc bfc" id="L252" title="All 2 branches covered.">        if (!localOriginalValue.isZero()) {</span>
+<span class="fc bfc" id="L253" title="All 2 branches covered.">          if (localCurrentValue.isZero()) {</span>
+<span class="fc" id="L254">            refund = NEGATIVE_SSTORE_CLEARS_SCHEDULE;</span>
+<span class="fc bfc" id="L255" title="All 2 branches covered.">          } else if (newValue.isZero()) {</span>
+<span class="fc" id="L256">            refund = SSTORE_CLEARS_SCHEDULE;</span>
+          }
+        }
+
+<span class="fc bfc" id="L260" title="All 2 branches covered.">        if (localOriginalValue.equals(newValue)) {</span>
+<span class="fc" id="L261">          refund =</span>
+              refund
+<span class="fc bfc" id="L263" title="All 2 branches covered.">                  + (localOriginalValue.isZero()</span>
+<span class="fc" id="L264">                      ? SSTORE_SET_GAS_LESS_SLOAD_GAS</span>
+<span class="fc" id="L265">                      : SSTORE_RESET_GAS_LESS_SLOAD_GAS);</span>
+        }
+<span class="fc" id="L267">        return refund;</span>
+      }
+    }
+  }
+
+  @Override
+  public long modExpGasCost(final Bytes input) {
+<span class="fc" id="L274">    final long baseLength = BigIntegerModularExponentiationPrecompiledContract.baseLength(input);</span>
+<span class="fc" id="L275">    final long exponentLength =</span>
+<span class="fc" id="L276">        BigIntegerModularExponentiationPrecompiledContract.exponentLength(input);</span>
+<span class="fc" id="L277">    final long modulusLength =</span>
+<span class="fc" id="L278">        BigIntegerModularExponentiationPrecompiledContract.modulusLength(input);</span>
+<span class="fc" id="L279">    final long exponentOffset =</span>
+<span class="fc" id="L280">        clampedAdd(BigIntegerModularExponentiationPrecompiledContract.BASE_OFFSET, baseLength);</span>
+
+<span class="fc" id="L282">    long multiplicationComplexity = (Math.max(modulusLength, baseLength) + 7L) / 8L;</span>
+<span class="fc" id="L283">    multiplicationComplexity =</span>
+<span class="fc" id="L284">        Words.clampedMultiply(multiplicationComplexity, multiplicationComplexity);</span>
+
+<span class="fc bfc" id="L286" title="All 2 branches covered.">    if (multiplicationComplexity == 0) {</span>
+<span class="fc" id="L287">      return 200;</span>
+<span class="pc bpc" id="L288" title="1 of 2 branches missed.">    } else if (multiplicationComplexity &gt; 0) {</span>
+<span class="fc" id="L289">      long maxExponentLength = Long.MAX_VALUE / multiplicationComplexity * 3 / 8;</span>
+<span class="fc bfc" id="L290" title="All 2 branches covered.">      if (exponentLength &gt; maxExponentLength) {</span>
+<span class="fc" id="L291">        return Long.MAX_VALUE;</span>
+      }
+    }
+
+<span class="fc" id="L295">    final long firstExponentBytesCap =</span>
+<span class="fc" id="L296">        Math.min(exponentLength, ByzantiumGasCalculator.MAX_FIRST_EXPONENT_BYTES);</span>
+<span class="fc" id="L297">    final BigInteger firstExpBytes =</span>
+<span class="fc" id="L298">        BigIntegerModularExponentiationPrecompiledContract.extractParameter(</span>
+<span class="fc" id="L299">            input, clampedToInt(exponentOffset), clampedToInt(firstExponentBytesCap));</span>
+<span class="fc" id="L300">    final long adjustedExponentLength = adjustedExponentLength(exponentLength, firstExpBytes);</span>
+
+<span class="fc" id="L302">    long gasRequirement =</span>
+<span class="fc" id="L303">        clampedMultiply(multiplicationComplexity, Math.max(adjustedExponentLength, 1L));</span>
+<span class="fc bfc" id="L304" title="All 2 branches covered.">    if (gasRequirement != Long.MAX_VALUE) {</span>
+<span class="fc" id="L305">      gasRequirement /= 3;</span>
+    }
+
+<span class="fc" id="L308">    return Math.max(gasRequirement, 200L);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

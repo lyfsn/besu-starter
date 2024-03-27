@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapSyncStatePersistenceManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync.context</a> &gt; <span class="el_source">SnapSyncStatePersistenceManager.java</span></div><h1>SnapSyncStatePersistenceManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync.context;
+
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.GenericKeyValueStorageFacade;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.ValueConvertor;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.AccountRangeDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+
+import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * Manages the persistence of the SnapSync state, allowing it to be saved and retrieved from the
+ * database. The SnapSync state includes the current progress, downloaded data, and other relevant
+ * information needed to resume SnapSync from where it left off after a client restart.
+ */
+public class SnapSyncStatePersistenceManager {
+
+<span class="fc" id="L44">  private final byte[] SNAP_ACCOUNT_HEALING_LIST_INDEX =</span>
+<span class="fc" id="L45">      &quot;snapInconsistentAccountsStorageIndex&quot;.getBytes(StandardCharsets.UTF_8);</span>
+
+  private final GenericKeyValueStorageFacade&lt;BigInteger, AccountRangeDataRequest&gt;
+      accountRangeToDownload;
+  private final GenericKeyValueStorageFacade&lt;BigInteger, Bytes&gt; healContext;
+
+<span class="fc" id="L51">  public SnapSyncStatePersistenceManager(final StorageProvider storageProvider) {</span>
+<span class="fc" id="L52">    this.accountRangeToDownload =</span>
+        new GenericKeyValueStorageFacade&lt;&gt;(
+            BigInteger::toByteArray,
+<span class="fc" id="L55">            new ValueConvertor&lt;&gt;() {</span>
+              @Override
+              public AccountRangeDataRequest fromBytes(final byte[] bytes) {
+<span class="nc" id="L58">                return AccountRangeDataRequest.deserialize(</span>
+<span class="nc" id="L59">                    new BytesValueRLPInput(Bytes.of(bytes), false));</span>
+              }
+
+              @Override
+              public byte[] toBytes(final AccountRangeDataRequest value) {
+<span class="nc" id="L64">                return value.serialize().toArrayUnsafe();</span>
+              }
+            },
+<span class="fc" id="L67">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.SNAPSYNC_MISSING_ACCOUNT_RANGE));
+<span class="fc" id="L69">    this.healContext =</span>
+        new GenericKeyValueStorageFacade&lt;&gt;(
+            BigInteger::toByteArray,
+<span class="fc" id="L72">            new ValueConvertor&lt;&gt;() {</span>
+              @Override
+              public Bytes fromBytes(final byte[] bytes) {
+<span class="nc" id="L75">                return Bytes.of(bytes);</span>
+              }
+
+              @Override
+              public byte[] toBytes(final Bytes value) {
+<span class="nc" id="L80">                return value.toArrayUnsafe();</span>
+              }
+            },
+<span class="fc" id="L83">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.SNAPSYNC_ACCOUNT_TO_FIX));
+<span class="fc" id="L85">  }</span>
+
+  /**
+   * Persists the current account range tasks to the database.
+   *
+   * @param accountRangeDataRequests The current account range tasks to persist.
+   */
+  public void updatePersistedTasks(final List&lt;? extends SnapDataRequest&gt; accountRangeDataRequests) {
+<span class="nc" id="L93">    accountRangeToDownload.clear();</span>
+<span class="nc" id="L94">    accountRangeToDownload.putAll(</span>
+        keyValueStorageTransaction -&gt;
+<span class="nc" id="L96">            IntStream.range(0, accountRangeDataRequests.size())</span>
+<span class="nc" id="L97">                .forEach(</span>
+                    index -&gt;
+<span class="nc" id="L99">                        keyValueStorageTransaction.put(</span>
+<span class="nc" id="L100">                            BigInteger.valueOf(index).toByteArray(),</span>
+<span class="nc" id="L101">                            ((AccountRangeDataRequest) accountRangeDataRequests.get(index))</span>
+<span class="nc" id="L102">                                .serialize()</span>
+<span class="nc" id="L103">                                .toArrayUnsafe())));</span>
+<span class="nc" id="L104">  }</span>
+
+  /**
+   * Persists the current accounts to heal in the database.
+   *
+   * @param accountsHealingList The current list of accounts to heal.
+   */
+  public void addAccountToHealingList(final Bytes accountsHealingList) {
+<span class="nc" id="L112">    final BigInteger index =</span>
+        healContext
+<span class="nc" id="L114">            .get(SNAP_ACCOUNT_HEALING_LIST_INDEX)</span>
+<span class="nc" id="L115">            .map(bytes -&gt; new BigInteger(bytes.toArrayUnsafe()).add(BigInteger.ONE))</span>
+<span class="nc" id="L116">            .orElse(BigInteger.ZERO);</span>
+<span class="nc" id="L117">    healContext.putAll(</span>
+        keyValueStorageTransaction -&gt; {
+<span class="nc" id="L119">          keyValueStorageTransaction.put(SNAP_ACCOUNT_HEALING_LIST_INDEX, index.toByteArray());</span>
+<span class="nc" id="L120">          keyValueStorageTransaction.put(index.toByteArray(), accountsHealingList.toArrayUnsafe());</span>
+<span class="nc" id="L121">        });</span>
+<span class="nc" id="L122">  }</span>
+
+  public List&lt;AccountRangeDataRequest&gt; getCurrentAccountRange() {
+<span class="nc" id="L125">    return accountRangeToDownload</span>
+<span class="nc" id="L126">        .streamValuesFromKeysThat(bytes -&gt; true)</span>
+<span class="nc" id="L127">        .collect(Collectors.toList());</span>
+  }
+
+  public HashSet&lt;Bytes&gt; getAccountsHealingList() {
+<span class="nc" id="L131">    return healContext</span>
+<span class="nc" id="L132">        .streamValuesFromKeysThat(notEqualsTo(SNAP_ACCOUNT_HEALING_LIST_INDEX))</span>
+<span class="nc" id="L133">        .collect(Collectors.toCollection(HashSet::new));</span>
+  }
+
+  public void clearAccountRangeTasks() {
+<span class="nc" id="L137">    accountRangeToDownload.clear();</span>
+<span class="nc" id="L138">  }</span>
+
+  public void clear() {
+<span class="nc" id="L141">    accountRangeToDownload.clear();</span>
+<span class="nc" id="L142">    healContext.clear();</span>
+<span class="nc" id="L143">  }</span>
+
+  public void close() throws IOException {
+<span class="nc" id="L146">    accountRangeToDownload.close();</span>
+<span class="nc" id="L147">    healContext.close();</span>
+<span class="nc" id="L148">  }</span>
+
+  private Predicate&lt;byte[]&gt; notEqualsTo(final byte[] name) {
+<span class="nc bnc" id="L151" title="All 2 branches missed.">    return key -&gt; !Arrays.equals(key, name);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

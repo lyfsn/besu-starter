@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GetBlockFromPeerTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">GetBlockFromPeerTask.java</span></div><h1>GetBlockFromPeerTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.IncompleteResultsException;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Downloads a block from a peer. Will complete exceptionally if block cannot be downloaded. */
+public class GetBlockFromPeerTask extends AbstractPeerTask&lt;Block&gt; {
+<span class="fc" id="L35">  private static final Logger LOG = LoggerFactory.getLogger(GetBlockFromPeerTask.class);</span>
+
+  private final ProtocolSchedule protocolSchedule;
+  private final Optional&lt;Hash&gt; hash;
+  private final long blockNumber;
+  private final MetricsSystem metricsSystem;
+
+  protected GetBlockFromPeerTask(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final Optional&lt;Hash&gt; hash,
+      final long blockNumber,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L48">    super(ethContext, metricsSystem);</span>
+<span class="fc" id="L49">    this.blockNumber = blockNumber;</span>
+<span class="fc" id="L50">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L51">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L52">    this.hash = hash;</span>
+<span class="fc" id="L53">  }</span>
+
+  public static GetBlockFromPeerTask create(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final Optional&lt;Hash&gt; hash,
+      final long blockNumber,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L61">    return new GetBlockFromPeerTask(protocolSchedule, ethContext, hash, blockNumber, metricsSystem);</span>
+  }
+
+  @Override
+  protected void executeTask() {
+<span class="fc" id="L66">    final String blockIdentifier = blockNumber + &quot; (&quot; + hash + &quot;)&quot;;</span>
+<span class="fc" id="L67">    LOG.debug(</span>
+        &quot;Downloading block {} from peer {}.&quot;,
+        blockIdentifier,
+<span class="fc" id="L70">        assignedPeer.map(EthPeer::toString).orElse(&quot;&lt;any&gt;&quot;));</span>
+<span class="fc" id="L71">    downloadHeader()</span>
+<span class="fc" id="L72">        .thenCompose(this::completeBlock)</span>
+<span class="fc" id="L73">        .whenComplete(</span>
+            (r, t) -&gt; {
+<span class="fc bfc" id="L75" title="All 2 branches covered.">              if (t != null) {</span>
+<span class="fc" id="L76">                LOG.debug(</span>
+                    &quot;Failed to download block {} from peer {} with message '{}' and cause '{}'&quot;,
+                    blockIdentifier,
+<span class="fc" id="L79">                    assignedPeer.map(EthPeer::toString).orElse(&quot;&lt;any&gt;&quot;),</span>
+<span class="fc" id="L80">                    t.getMessage(),</span>
+<span class="fc" id="L81">                    t.getCause());</span>
+<span class="fc" id="L82">                result.completeExceptionally(t);</span>
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">              } else if (r.getResult().isEmpty()) {</span>
+<span class="nc" id="L84">                r.getPeer().recordUselessResponse(&quot;Download block returned an empty result&quot;);</span>
+<span class="nc" id="L85">                LOG.debug(</span>
+                    &quot;Failed to download block {} from peer {} with empty result.&quot;,
+                    blockIdentifier,
+<span class="nc" id="L88">                    r.getPeer());</span>
+<span class="nc" id="L89">                result.completeExceptionally(new IncompleteResultsException());</span>
+              } else {
+<span class="fc" id="L91">                LOG.debug(</span>
+<span class="fc" id="L92">                    &quot;Successfully downloaded block {} from peer {}.&quot;, blockIdentifier, r.getPeer());</span>
+<span class="fc" id="L93">                result.complete(new PeerTaskResult&lt;&gt;(r.getPeer(), r.getResult().get(0)));</span>
+              }
+<span class="fc" id="L95">            });</span>
+<span class="fc" id="L96">  }</span>
+
+  private CompletableFuture&lt;PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt;&gt; downloadHeader() {
+<span class="fc" id="L99">    return executeSubTask(</span>
+        () -&gt; {
+          final AbstractGetHeadersFromPeerTask task;
+<span class="fc" id="L102">          task =</span>
+<span class="fc" id="L103">              hash.map(</span>
+                      value -&gt;
+<span class="fc" id="L105">                          GetHeadersFromPeerByHashTask.forSingleHash(</span>
+                              protocolSchedule, ethContext, value, blockNumber, metricsSystem))
+<span class="fc" id="L107">                  .orElseGet(</span>
+                      () -&gt;
+<span class="nc" id="L109">                          GetHeadersFromPeerByNumberTask.forSingleNumber(</span>
+                              protocolSchedule, ethContext, blockNumber, metricsSystem));
+<span class="fc" id="L111">          assignedPeer.ifPresent(task::assignPeer);</span>
+<span class="fc" id="L112">          return task.run();</span>
+        });
+  }
+
+  private CompletableFuture&lt;PeerTaskResult&lt;List&lt;Block&gt;&gt;&gt; completeBlock(
+      final PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt; headerResult) {
+<span class="fc bfc" id="L118" title="All 2 branches covered.">    if (headerResult.getResult().isEmpty()) {</span>
+<span class="fc" id="L119">      LOG.debug(&quot;header result is empty.&quot;);</span>
+<span class="fc" id="L120">      return CompletableFuture.failedFuture(new IncompleteResultsException());</span>
+    }
+
+<span class="fc" id="L123">    return executeSubTask(</span>
+        () -&gt; {
+<span class="fc" id="L125">          final GetBodiesFromPeerTask task =</span>
+<span class="fc" id="L126">              GetBodiesFromPeerTask.forHeaders(</span>
+<span class="fc" id="L127">                  protocolSchedule, ethContext, headerResult.getResult(), metricsSystem);</span>
+<span class="fc" id="L128">          task.assignPeer(headerResult.getPeer());</span>
+<span class="fc" id="L129">          return task.run();</span>
+        });
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

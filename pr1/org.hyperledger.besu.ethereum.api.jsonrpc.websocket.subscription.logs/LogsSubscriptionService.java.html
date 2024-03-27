@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LogsSubscriptionService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.logs</a> &gt; <span class="el_source">LogsSubscriptionService.java</span></div><h1>LogsSubscriptionService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.logs;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.FilterParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.LogResult;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.SubscriptionManager;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.request.SubscriptionType;
+import org.hyperledger.besu.ethereum.api.query.LogsQuery;
+import org.hyperledger.besu.ethereum.api.query.PrivacyQueries;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+
+import java.util.Optional;
+import java.util.function.Consumer;
+
+public class LogsSubscriptionService implements Consumer&lt;LogWithMetadata&gt; {
+
+  private final SubscriptionManager subscriptionManager;
+  private final Optional&lt;PrivacyQueries&gt; privacyQueries;
+
+  public LogsSubscriptionService(
+      final SubscriptionManager subscriptionManager,
+<span class="fc" id="L37">      final Optional&lt;PrivacyQueries&gt; privacyQueries) {</span>
+<span class="fc" id="L38">    this.subscriptionManager = subscriptionManager;</span>
+<span class="fc" id="L39">    this.privacyQueries = privacyQueries;</span>
+<span class="fc" id="L40">  }</span>
+
+  @Override
+  public void accept(final LogWithMetadata logWithMetadata) {
+<span class="fc" id="L44">    subscriptionManager.subscriptionsOfType(SubscriptionType.LOGS, LogsSubscription.class).stream()</span>
+<span class="fc" id="L45">        .filter(</span>
+            logsSubscription -&gt; {
+<span class="fc" id="L47">              final FilterParameter filterParameter = logsSubscription.getFilterParameter();</span>
+<span class="fc" id="L48">              final long blockNumber = logWithMetadata.getBlockNumber();</span>
+<span class="fc" id="L49">              return filterParameter</span>
+<span class="fc" id="L50">                          .getFromBlock()</span>
+<span class="fc" id="L51">                          .getNumber()</span>
+<span class="pc bpc" id="L52" title="1 of 2 branches missed.">                          .orElse(BlockHeader.GENESIS_BLOCK_NUMBER)</span>
+                      &lt;= blockNumber
+<span class="pc bpc" id="L54" title="1 of 2 branches missed.">                  &amp;&amp; filterParameter.getToBlock().getNumber().orElse(Long.MAX_VALUE) &gt;= blockNumber</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">                  &amp;&amp; filterParameter.getLogsQuery().matches(logWithMetadata);</span>
+            })
+<span class="fc" id="L57">        .forEach(logsSubscription -&gt; sendLogToSubscription(logWithMetadata, logsSubscription));</span>
+<span class="fc" id="L58">  }</span>
+
+  public void checkPrivateLogs(final BlockAddedEvent event) {
+<span class="fc" id="L61">    privacyQueries.ifPresent(</span>
+        pq -&gt;
+<span class="fc" id="L63">            subscriptionManager</span>
+<span class="fc" id="L64">                .subscriptionsOfType(SubscriptionType.LOGS, LogsSubscription.class)</span>
+<span class="fc" id="L65">                .stream()</span>
+<span class="fc" id="L66">                .filter(PrivateLogsSubscription.class::isInstance)</span>
+<span class="fc" id="L67">                .map(PrivateLogsSubscription.class::cast)</span>
+<span class="fc" id="L68">                .forEach(queryPrivateEventForSubscription(pq, event)));</span>
+<span class="fc" id="L69">  }</span>
+
+  private Consumer&lt;PrivateLogsSubscription&gt; queryPrivateEventForSubscription(
+      final PrivacyQueries privacyQueries, final BlockAddedEvent event) {
+<span class="fc" id="L73">    return subscription -&gt; {</span>
+<span class="fc" id="L74">      final String privacyGroupId = subscription.getPrivacyGroupId();</span>
+<span class="fc" id="L75">      final LogsQuery logsQuery = subscription.getFilterParameter().getLogsQuery();</span>
+
+<span class="fc" id="L77">      privacyQueries</span>
+<span class="fc" id="L78">          .matchingLogs(privacyGroupId, event.getBlock().getHash(), logsQuery)</span>
+<span class="fc" id="L79">          .forEach(logWithMetadata -&gt; sendLogToSubscription(logWithMetadata, subscription));</span>
+<span class="fc" id="L80">    };</span>
+  }
+
+  private void sendLogToSubscription(
+      final LogWithMetadata logWithMetadata, final LogsSubscription subscription) {
+<span class="fc" id="L85">    subscriptionManager.sendMessage(</span>
+<span class="fc" id="L86">        subscription.getSubscriptionId(), new LogResult(logWithMetadata));</span>
+<span class="fc" id="L87">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

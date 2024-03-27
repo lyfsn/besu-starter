@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractSyncTargetManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync</a> &gt; <span class="el_source">AbstractSyncTargetManager.java</span></div><h1>AbstractSyncTargetManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.WaitForPeerTask;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncTarget;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.DetermineCommonAncestorTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractSyncTargetManager {
+
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(AbstractSyncTargetManager.class);</span>
+
+  private final SynchronizerConfiguration config;
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final MetricsSystem metricsSystem;
+
+  protected AbstractSyncTargetManager(
+      final SynchronizerConfiguration config,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+<span class="fc" id="L50">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L51">    this.config = config;</span>
+<span class="fc" id="L52">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L53">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L54">    this.ethContext = ethContext;</span>
+<span class="fc" id="L55">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L56">  }</span>
+
+  public CompletableFuture&lt;SyncTarget&gt; findSyncTarget() {
+<span class="fc" id="L59">    return selectBestAvailableSyncTarget()</span>
+<span class="fc" id="L60">        .thenCompose(</span>
+            maybeBestPeer -&gt; {
+<span class="fc bfc" id="L62" title="All 2 branches covered.">              if (maybeBestPeer.isPresent()) {</span>
+<span class="fc" id="L63">                final EthPeer bestPeer = maybeBestPeer.get();</span>
+<span class="fc" id="L64">                return DetermineCommonAncestorTask.create(</span>
+                        protocolSchedule,
+                        protocolContext,
+                        ethContext,
+                        bestPeer,
+<span class="fc" id="L69">                        config.getDownloaderHeaderRequestSize(),</span>
+                        metricsSystem)
+<span class="fc" id="L71">                    .run()</span>
+<span class="fc" id="L72">                    .handle(</span>
+                        (result, error) -&gt; {
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">                          if (error != null) {</span>
+<span class="nc" id="L75">                            LOG.debug(&quot;Failed to find common ancestor&quot;, error);</span>
+                          }
+<span class="fc" id="L77">                          return result;</span>
+                        })
+<span class="fc" id="L79">                    .thenCompose(</span>
+                        (target) -&gt; {
+<span class="pc bpc" id="L81" title="1 of 2 branches missed.">                          if (target == null) {</span>
+<span class="nc" id="L82">                            return waitForPeerAndThenSetSyncTarget();</span>
+                          }
+<span class="fc" id="L84">                          final SyncTarget syncTarget = new SyncTarget(bestPeer, target);</span>
+<span class="fc" id="L85">                          LOG.debug(</span>
+                              &quot;Found common ancestor with peer {} at block {}&quot;,
+                              bestPeer,
+<span class="fc" id="L88">                              target.getNumber());</span>
+<span class="fc" id="L89">                          return completedFuture(syncTarget);</span>
+                        })
+<span class="fc" id="L91">                    .thenCompose(</span>
+                        syncTarget -&gt;
+<span class="fc" id="L93">                            finalizeSelectedSyncTarget(syncTarget)</span>
+<span class="fc" id="L94">                                .map(CompletableFuture::completedFuture)</span>
+<span class="fc" id="L95">                                .orElseGet(this::waitForPeerAndThenSetSyncTarget));</span>
+              } else {
+<span class="fc" id="L97">                return waitForPeerAndThenSetSyncTarget();</span>
+              }
+            });
+  }
+
+  protected Optional&lt;SyncTarget&gt; finalizeSelectedSyncTarget(final SyncTarget syncTarget) {
+<span class="fc" id="L103">    return Optional.of(syncTarget);</span>
+  }
+
+  protected abstract CompletableFuture&lt;Optional&lt;EthPeer&gt;&gt; selectBestAvailableSyncTarget();
+
+  private CompletableFuture&lt;SyncTarget&gt; waitForPeerAndThenSetSyncTarget() {
+<span class="fc" id="L109">    return waitForNewPeer().handle((r, t) -&gt; r).thenCompose((r) -&gt; findSyncTarget());</span>
+  }
+
+  private CompletableFuture&lt;?&gt; waitForNewPeer() {
+<span class="fc" id="L113">    return ethContext</span>
+<span class="fc" id="L114">        .getScheduler()</span>
+<span class="fc" id="L115">        .timeout(WaitForPeerTask.create(ethContext, metricsSystem), Duration.ofSeconds(5));</span>
+  }
+
+  public abstract boolean shouldContinueDownloading();
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

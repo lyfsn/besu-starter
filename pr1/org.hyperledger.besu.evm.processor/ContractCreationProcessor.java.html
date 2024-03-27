@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ContractCreationProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.processor</a> &gt; <span class="el_source">ContractCreationProcessor.java</span></div><h1>ContractCreationProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.processor;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.evm.EVM;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.contractvalidation.ContractValidationRule;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** A contract creation message processor. */
+public class ContractCreationProcessor extends AbstractMessageProcessor {
+
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(ContractCreationProcessor.class);</span>
+
+  private final boolean requireCodeDepositToSucceed;
+
+  private final GasCalculator gasCalculator;
+
+  private final long initialContractNonce;
+
+  private final List&lt;ContractValidationRule&gt; contractValidationRules;
+
+  /**
+   * Instantiates a new Contract creation processor.
+   *
+   * @param gasCalculator the gas calculator
+   * @param evm the evm
+   * @param requireCodeDepositToSucceed the require code deposit to succeed
+   * @param contractValidationRules the contract validation rules
+   * @param initialContractNonce the initial contract nonce
+   * @param forceCommitAddresses the force commit addresses
+   */
+  public ContractCreationProcessor(
+      final GasCalculator gasCalculator,
+      final EVM evm,
+      final boolean requireCodeDepositToSucceed,
+      final List&lt;ContractValidationRule&gt; contractValidationRules,
+      final long initialContractNonce,
+      final Collection&lt;Address&gt; forceCommitAddresses) {
+<span class="fc" id="L67">    super(evm, forceCommitAddresses);</span>
+<span class="fc" id="L68">    this.gasCalculator = gasCalculator;</span>
+<span class="fc" id="L69">    this.requireCodeDepositToSucceed = requireCodeDepositToSucceed;</span>
+<span class="fc" id="L70">    this.contractValidationRules = contractValidationRules;</span>
+<span class="fc" id="L71">    this.initialContractNonce = initialContractNonce;</span>
+<span class="fc" id="L72">  }</span>
+
+  /**
+   * Instantiates a new Contract creation processor.
+   *
+   * @param gasCalculator the gas calculator
+   * @param evm the evm
+   * @param requireCodeDepositToSucceed the require code deposit to succeed
+   * @param contractValidationRules the contract validation rules
+   * @param initialContractNonce the initial contract nonce
+   */
+  public ContractCreationProcessor(
+      final GasCalculator gasCalculator,
+      final EVM evm,
+      final boolean requireCodeDepositToSucceed,
+      final List&lt;ContractValidationRule&gt; contractValidationRules,
+      final long initialContractNonce) {
+<span class="fc" id="L89">    this(</span>
+        gasCalculator,
+        evm,
+        requireCodeDepositToSucceed,
+        contractValidationRules,
+        initialContractNonce,
+<span class="fc" id="L95">        Set.of());</span>
+<span class="fc" id="L96">  }</span>
+
+  private static boolean accountExists(final Account account) {
+    // The account exists if it has sent a transaction
+    // or already has its code initialized.
+<span class="fc bfc" id="L101" title="All 4 branches covered.">    return account.getNonce() &gt; 0 || !account.getCode().isEmpty();</span>
+  }
+
+  @Override
+  public void start(final MessageFrame frame, final OperationTracer operationTracer) {
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">    if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L107">      LOG.trace(&quot;Executing contract-creation&quot;);</span>
+    }
+    try {
+
+<span class="fc" id="L111">      final MutableAccount sender = frame.getWorldUpdater().getSenderAccount(frame);</span>
+<span class="fc" id="L112">      sender.decrementBalance(frame.getValue());</span>
+
+<span class="fc" id="L114">      Address contractAddress = frame.getContractAddress();</span>
+<span class="fc" id="L115">      final MutableAccount contract = frame.getWorldUpdater().getOrCreate(contractAddress);</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">      if (accountExists(contract)) {</span>
+<span class="fc" id="L117">        LOG.trace(</span>
+            &quot;Contract creation error: account has already been created for address {}&quot;,
+            contractAddress);
+<span class="fc" id="L120">        frame.setExceptionalHaltReason(Optional.of(ExceptionalHaltReason.ILLEGAL_STATE_CHANGE));</span>
+<span class="fc" id="L121">        frame.setState(MessageFrame.State.EXCEPTIONAL_HALT);</span>
+<span class="fc" id="L122">        operationTracer.traceAccountCreationResult(</span>
+<span class="fc" id="L123">            frame, Optional.of(ExceptionalHaltReason.ILLEGAL_STATE_CHANGE));</span>
+      } else {
+<span class="fc" id="L125">        frame.addCreate(contractAddress);</span>
+<span class="fc" id="L126">        contract.incrementBalance(frame.getValue());</span>
+<span class="fc" id="L127">        contract.setNonce(initialContractNonce);</span>
+<span class="fc" id="L128">        contract.clearStorage();</span>
+<span class="fc" id="L129">        frame.setState(MessageFrame.State.CODE_EXECUTING);</span>
+      }
+<span class="nc" id="L131">    } catch (final ModificationNotAllowedException ex) {</span>
+<span class="nc" id="L132">      LOG.trace(&quot;Contract creation error: attempt to mutate an immutable account&quot;);</span>
+<span class="nc" id="L133">      frame.setExceptionalHaltReason(Optional.of(ExceptionalHaltReason.ILLEGAL_STATE_CHANGE));</span>
+<span class="nc" id="L134">      frame.setState(MessageFrame.State.EXCEPTIONAL_HALT);</span>
+<span class="fc" id="L135">    }</span>
+<span class="fc" id="L136">  }</span>
+
+  @Override
+  public void codeSuccess(final MessageFrame frame, final OperationTracer operationTracer) {
+<span class="fc" id="L140">    final Bytes contractCode = frame.getOutputData();</span>
+
+<span class="fc" id="L142">    final long depositFee = gasCalculator.codeDepositGasCost(contractCode.size());</span>
+
+<span class="fc bfc" id="L144" title="All 2 branches covered.">    if (frame.getRemainingGas() &lt; depositFee) {</span>
+<span class="fc" id="L145">      LOG.trace(</span>
+          &quot;Not enough gas to pay the code deposit fee for {}: &quot;
+              + &quot;remaining gas = {} &lt; {} = deposit fee&quot;,
+<span class="fc" id="L148">          frame.getContractAddress(),</span>
+<span class="fc" id="L149">          frame.getRemainingGas(),</span>
+<span class="fc" id="L150">          depositFee);</span>
+<span class="fc bfc" id="L151" title="All 2 branches covered.">      if (requireCodeDepositToSucceed) {</span>
+<span class="fc" id="L152">        LOG.trace(&quot;Contract creation error: insufficient funds for code deposit&quot;);</span>
+<span class="fc" id="L153">        frame.setExceptionalHaltReason(Optional.of(ExceptionalHaltReason.INSUFFICIENT_GAS));</span>
+<span class="fc" id="L154">        frame.setState(MessageFrame.State.EXCEPTIONAL_HALT);</span>
+<span class="fc" id="L155">        operationTracer.traceAccountCreationResult(</span>
+<span class="fc" id="L156">            frame, Optional.of(ExceptionalHaltReason.INSUFFICIENT_GAS));</span>
+      } else {
+<span class="fc" id="L158">        frame.setState(MessageFrame.State.COMPLETED_SUCCESS);</span>
+      }
+    } else {
+<span class="fc" id="L161">      final var invalidReason =</span>
+<span class="fc" id="L162">          contractValidationRules.stream()</span>
+<span class="fc" id="L163">              .map(rule -&gt; rule.validate(contractCode, frame))</span>
+<span class="fc" id="L164">              .filter(Optional::isPresent)</span>
+<span class="fc" id="L165">              .findFirst();</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">      if (invalidReason.isEmpty()) {</span>
+<span class="fc" id="L167">        frame.decrementRemainingGas(depositFee);</span>
+
+        // Finalize contract creation, setting the contract code.
+<span class="fc" id="L170">        final MutableAccount contract =</span>
+<span class="fc" id="L171">            frame.getWorldUpdater().getOrCreate(frame.getContractAddress());</span>
+<span class="fc" id="L172">        contract.setCode(contractCode);</span>
+<span class="fc" id="L173">        LOG.trace(</span>
+            &quot;Successful creation of contract {} with code of size {} (Gas remaining: {})&quot;,
+<span class="fc" id="L175">            frame.getContractAddress(),</span>
+<span class="fc" id="L176">            contractCode.size(),</span>
+<span class="fc" id="L177">            frame.getRemainingGas());</span>
+<span class="fc" id="L178">        frame.setState(MessageFrame.State.COMPLETED_SUCCESS);</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">        if (operationTracer.isExtendedTracing()) {</span>
+<span class="fc" id="L180">          operationTracer.traceAccountCreationResult(frame, Optional.empty());</span>
+        }
+<span class="fc" id="L182">      } else {</span>
+<span class="fc" id="L183">        final Optional&lt;ExceptionalHaltReason&gt; exceptionalHaltReason = invalidReason.get();</span>
+<span class="fc" id="L184">        frame.setExceptionalHaltReason(exceptionalHaltReason);</span>
+<span class="fc" id="L185">        frame.setState(MessageFrame.State.EXCEPTIONAL_HALT);</span>
+<span class="fc" id="L186">        operationTracer.traceAccountCreationResult(frame, exceptionalHaltReason);</span>
+      }
+    }
+<span class="fc" id="L189">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

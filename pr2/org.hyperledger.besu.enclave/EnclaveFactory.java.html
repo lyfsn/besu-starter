@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EnclaveFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.enclave</a> &gt; <span class="el_source">EnclaveFactory.java</span></div><h1>EnclaveFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.enclave;
+
+import org.hyperledger.besu.util.InvalidConfigurationException;
+
+import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.Path;
+
+import com.google.common.io.Files;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.net.PfxOptions;
+import org.apache.tuweni.net.tls.VertxTrustOptions;
+
+/** The Enclave factory. */
+public class EnclaveFactory {
+
+  private final Vertx vertx;
+  private static final int CONNECT_TIMEOUT = 1000;
+  private static final boolean TRUST_CA = false;
+
+  /**
+   * Instantiates a new Enclave factory.
+   *
+   * @param vertx the vertx
+   */
+<span class="fc" id="L44">  public EnclaveFactory(final Vertx vertx) {</span>
+<span class="fc" id="L45">    this.vertx = vertx;</span>
+<span class="fc" id="L46">  }</span>
+
+  /**
+   * Create enclave.
+   *
+   * @param enclaveUri the enclave uri
+   * @return the enclave
+   */
+  public Enclave createVertxEnclave(final URI enclaveUri) {
+<span class="fc" id="L55">    final HttpClientOptions clientOptions = createNonTlsClientOptions(enclaveUri);</span>
+
+<span class="fc" id="L57">    final RequestTransmitter vertxTransmitter =</span>
+<span class="fc" id="L58">        new VertxRequestTransmitter(vertx.createHttpClient(clientOptions));</span>
+
+<span class="fc" id="L60">    return new Enclave(vertxTransmitter);</span>
+  }
+
+  /**
+   * Create enclave.
+   *
+   * @param enclaveUri the enclave uri
+   * @param privacyKeyStoreFile the privacy key store file
+   * @param privacyKeyStorePasswordFile the privacy key store password file
+   * @param privacyAllowlistFile the privacy allowlist file
+   * @return the enclave
+   */
+  public Enclave createVertxEnclave(
+      final URI enclaveUri,
+      final Path privacyKeyStoreFile,
+      final Path privacyKeyStorePasswordFile,
+      final Path privacyAllowlistFile) {
+
+<span class="nc" id="L78">    final HttpClientOptions clientOptions =</span>
+<span class="nc" id="L79">        createTlsClientOptions(</span>
+            enclaveUri, privacyKeyStoreFile, privacyKeyStorePasswordFile, privacyAllowlistFile);
+
+<span class="nc" id="L82">    final RequestTransmitter vertxTransmitter =</span>
+<span class="nc" id="L83">        new VertxRequestTransmitter(vertx.createHttpClient(clientOptions));</span>
+
+<span class="nc" id="L85">    return new Enclave(vertxTransmitter);</span>
+  }
+
+  private HttpClientOptions createNonTlsClientOptions(final URI enclaveUri) {
+
+<span class="pc bpc" id="L90" title="1 of 2 branches missed.">    if (enclaveUri.getPort() == -1) {</span>
+<span class="nc" id="L91">      throw new EnclaveIOException(&quot;Illegal URI - no port specified&quot;);</span>
+    }
+
+<span class="fc" id="L94">    final HttpClientOptions clientOptions = new HttpClientOptions();</span>
+<span class="fc" id="L95">    clientOptions.setDefaultHost(enclaveUri.getHost());</span>
+<span class="fc" id="L96">    clientOptions.setDefaultPort(enclaveUri.getPort());</span>
+<span class="fc" id="L97">    clientOptions.setConnectTimeout(CONNECT_TIMEOUT);</span>
+<span class="fc" id="L98">    return clientOptions;</span>
+  }
+
+  private HttpClientOptions createTlsClientOptions(
+      final URI enclaveUri,
+      final Path privacyKeyStoreFile,
+      final Path privacyKeyStorePasswordFile,
+      final Path privacyAllowlistFile) {
+
+<span class="nc" id="L107">    final HttpClientOptions clientOptions = createNonTlsClientOptions(enclaveUri);</span>
+    try {
+<span class="nc bnc" id="L109" title="All 4 branches missed.">      if (privacyKeyStoreFile != null &amp;&amp; privacyKeyStorePasswordFile != null) {</span>
+<span class="nc" id="L110">        clientOptions.setSsl(true);</span>
+<span class="nc" id="L111">        clientOptions.setPfxKeyCertOptions(</span>
+<span class="nc" id="L112">            convertFrom(privacyKeyStoreFile, privacyKeyStorePasswordFile));</span>
+      }
+<span class="nc" id="L114">      clientOptions.setTrustOptions(</span>
+<span class="nc" id="L115">          VertxTrustOptions.allowlistServers(privacyAllowlistFile, TRUST_CA));</span>
+<span class="nc" id="L116">    } catch (final NoSuchFileException e) {</span>
+<span class="nc" id="L117">      throw new InvalidConfigurationException(</span>
+<span class="nc" id="L118">          &quot;Requested file &quot; + e.getMessage() + &quot; does not exist at specified location.&quot;);</span>
+<span class="nc" id="L119">    } catch (final AccessDeniedException e) {</span>
+<span class="nc" id="L120">      throw new InvalidConfigurationException(</span>
+<span class="nc" id="L121">          &quot;Current user does not have permissions to access &quot; + e.getMessage());</span>
+<span class="nc" id="L122">    } catch (final IllegalArgumentException e) {</span>
+<span class="nc" id="L123">      throw new InvalidConfigurationException(&quot;Illegally formatted client fingerprint file.&quot;);</span>
+<span class="nc" id="L124">    } catch (final IOException e) {</span>
+<span class="nc" id="L125">      throw new InvalidConfigurationException(&quot;Failed to load TLS files &quot; + e.getMessage());</span>
+<span class="nc" id="L126">    }</span>
+<span class="nc" id="L127">    return clientOptions;</span>
+  }
+
+  private static PfxOptions convertFrom(final Path keystoreFile, final Path keystorePasswordFile)
+      throws IOException {
+<span class="nc" id="L132">    final String password = readSecretFromFile(keystorePasswordFile);</span>
+<span class="nc" id="L133">    return new PfxOptions().setPassword(password).setPath(keystoreFile.toString());</span>
+  }
+
+  /**
+   * Read secret from file.
+   *
+   * @param path the path
+   * @return the string
+   * @throws IOException the io exception
+   */
+  static String readSecretFromFile(final Path path) throws IOException {
+<span class="fc" id="L144">    final String password =</span>
+<span class="fc" id="L145">        Files.asCharSource(path.toFile(), StandardCharsets.UTF_8).readFirstLine();</span>
+<span class="fc bfc" id="L146" title="All 4 branches covered.">    if (password == null || password.isEmpty()) {</span>
+<span class="fc" id="L147">      throw new InvalidConfigurationException(&quot;Keystore password file is empty: &quot; + path);</span>
+    }
+<span class="fc" id="L149">    return password;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

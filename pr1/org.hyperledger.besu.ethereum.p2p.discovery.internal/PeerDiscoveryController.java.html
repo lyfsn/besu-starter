@@ -1,0 +1,942 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PeerDiscoveryController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">PeerDiscoveryController.java</span></div><h1>PeerDiscoveryController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
+
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.PeerDiscoveryStatus;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.peers.PeerId;
+import org.hyperledger.besu.ethereum.p2p.permissions.PeerPermissions;
+import org.hyperledger.besu.ethereum.p2p.rlpx.RlpxAgent;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import org.apache.tuweni.bytes.Bytes;
+import org.ethereum.beacon.discovery.schema.NodeRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This component is the entrypoint for managing the lifecycle of peers.
+ *
+ * &lt;p&gt;It keeps track of the interactions with each peer, including the expectations of what we
+ * expect to receive next from each peer. In other words, it implements the state machine for
+ * (discovery) peers.
+ *
+ * &lt;p&gt;When necessary, it updates the underlying {@link PeerTable}, particularly with additions which
+ * may succeed or not depending on the contents of the target bucket for the peer.
+ *
+ * &lt;h3&gt;Peer state machine&lt;/h3&gt;
+ *
+ * &lt;pre&gt;{@code
+ *                                                                +--------------------+
+ *                                                                |                    |
+ *                                                    +-----------+  MESSAGE_EXPECTED  +-----------+
+ *                                                    |           |                    |           |
+ *                                                    |           +---+----------------+           |
+ * +------------+         +-----------+         +-----+----+          |                      +-----v-----+
+ * |            |         |           |         |          &lt;----------+                      |           |
+ * |  KNOWN  +---------&gt;  BONDING  +---------&gt;  BONDED     |                                 |  DROPPED  |
+ * |            |         |           |         |          ^                                 |           |
+ * +------------+         +-----------+         +----------+                                 +-----------+
+ *
+ * }&lt;/pre&gt;
+ *
+ * &lt;ul&gt;
+ *   &lt;li&gt;&lt;em&gt;KNOWN:&lt;/em&gt; the peer is known but there is no ongoing interaction with it.
+ *   &lt;li&gt;&lt;em&gt;BONDING:&lt;/em&gt; an attempt to bond is being made (e.g. a PING has been sent).
+ *   &lt;li&gt;&lt;em&gt;BONDED:&lt;/em&gt; the bonding handshake has taken place (e.g. an expected PONG has been
+ *       received after having sent a PING). This is the same as having an &quot;active&quot; channel.
+ *   &lt;li&gt;&lt;em&gt;MESSAGE_EXPECTED (*)&lt;/em&gt;: a message has been sent and a response is expected.
+ *   &lt;li&gt;&lt;em&gt;DROPPED (*):&lt;/em&gt; the peer is no longer in our peer table.
+ * &lt;/ul&gt;
+ *
+ * &lt;p&gt;(*) It is worthy to note that the &lt;code&gt;MESSAGE_EXPECTED&lt;/code&gt; and &lt;code&gt;DROPPED&lt;/code&gt;
+ * states are not modelled explicitly in {@link PeerDiscoveryStatus}, but they have been included in
+ * the diagram for clarity. These two states define the elimination path for a peer from the
+ * underlying table.
+ *
+ * &lt;p&gt;If an expectation to receive a message was unmet, following the evaluation of a failure
+ * condition, the peer will be physically dropped (eliminated) from the table.
+ */
+public class PeerDiscoveryController {
+<span class="fc" id="L105">  private static final Logger LOG = LoggerFactory.getLogger(PeerDiscoveryController.class);</span>
+<span class="fc" id="L106">  private static final long REFRESH_CHECK_INTERVAL_MILLIS = MILLISECONDS.convert(30, SECONDS);</span>
+  private static final int PEER_REFRESH_ROUND_TIMEOUT_IN_SECONDS = 5;
+  protected final TimerUtil timerUtil;
+  private final PeerTable peerTable;
+<span class="fc" id="L110">  private final Cache&lt;Bytes, DiscoveryPeer&gt; bondingPeers =</span>
+<span class="fc" id="L111">      CacheBuilder.newBuilder().maximumSize(50).expireAfterWrite(10, TimeUnit.MINUTES).build();</span>
+  private final Cache&lt;Bytes, Packet&gt; cachedEnrRequests;
+
+  private final Collection&lt;DiscoveryPeer&gt; bootstrapNodes;
+
+  /* A tracker for inflight interactions and the state machine of a peer. */
+<span class="fc" id="L117">  private final Map&lt;Bytes, Map&lt;PacketType, PeerInteractionState&gt;&gt; inflightInteractions =</span>
+      new ConcurrentHashMap&lt;&gt;();
+
+<span class="fc" id="L120">  private final AtomicBoolean started = new AtomicBoolean(false);</span>
+
+  private final NodeKey nodeKey;
+  // The peer representation of this node
+  private final DiscoveryPeer localPeer;
+  private final OutboundMessageHandler outboundMessageHandler;
+  private final PeerDiscoveryPermissions peerPermissions;
+  private final DiscoveryProtocolLogger discoveryProtocolLogger;
+  private final LabelledMetric&lt;Counter&gt; interactionCounter;
+  private final LabelledMetric&lt;Counter&gt; interactionRetryCounter;
+  private final boolean filterOnEnrForkId;
+  private final RlpxAgent rlpxAgent;
+
+<span class="fc" id="L133">  private RetryDelayFunction retryDelayFunction = RetryDelayFunction.linear(1.5, 2000, 60000);</span>
+
+  private final AsyncExecutor workerExecutor;
+
+  private final PeerRequirement peerRequirement;
+  private final long tableRefreshIntervalMs;
+<span class="fc" id="L139">  private OptionalLong tableRefreshTimerId = OptionalLong.empty();</span>
+<span class="fc" id="L140">  private long lastRefreshTime = -1;</span>
+
+  private final long cleanPeerTableIntervalMs;
+<span class="fc" id="L143">  private final AtomicBoolean peerTableIsDirty = new AtomicBoolean(false);</span>
+<span class="fc" id="L144">  private OptionalLong cleanTableTimerId = OptionalLong.empty();</span>
+  private RecursivePeerRefreshState recursivePeerRefreshState;
+
+  private PeerDiscoveryController(
+      final NodeKey nodeKey,
+      final DiscoveryPeer localPeer,
+      final PeerTable peerTable,
+      final Collection&lt;DiscoveryPeer&gt; bootstrapNodes,
+      final OutboundMessageHandler outboundMessageHandler,
+      final TimerUtil timerUtil,
+      final AsyncExecutor workerExecutor,
+      final long tableRefreshIntervalMs,
+      final long cleanPeerTableIntervalMs,
+      final PeerRequirement peerRequirement,
+      final PeerPermissions peerPermissions,
+      final MetricsSystem metricsSystem,
+      final Optional&lt;Cache&lt;Bytes, Packet&gt;&gt; maybeCacheForEnrRequests,
+      final boolean filterOnEnrForkId,
+<span class="fc" id="L162">      final RlpxAgent rlpxAgent) {</span>
+<span class="fc" id="L163">    this.timerUtil = timerUtil;</span>
+<span class="fc" id="L164">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L165">    this.localPeer = localPeer;</span>
+<span class="fc" id="L166">    this.bootstrapNodes = bootstrapNodes;</span>
+<span class="fc" id="L167">    this.peerTable = peerTable;</span>
+<span class="fc" id="L168">    this.workerExecutor = workerExecutor;</span>
+<span class="fc" id="L169">    this.tableRefreshIntervalMs = tableRefreshIntervalMs;</span>
+<span class="fc" id="L170">    this.cleanPeerTableIntervalMs = cleanPeerTableIntervalMs;</span>
+<span class="fc" id="L171">    this.peerRequirement = peerRequirement;</span>
+<span class="fc" id="L172">    this.outboundMessageHandler = outboundMessageHandler;</span>
+<span class="fc" id="L173">    this.discoveryProtocolLogger = new DiscoveryProtocolLogger(metricsSystem);</span>
+<span class="fc" id="L174">    this.peerPermissions = new PeerDiscoveryPermissions(localPeer, peerPermissions);</span>
+<span class="fc" id="L175">    this.rlpxAgent = rlpxAgent;</span>
+
+<span class="fc" id="L177">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.NETWORK,
+        &quot;discovery_inflight_interactions_current&quot;,
+        &quot;Current number of inflight discovery interactions&quot;,
+<span class="fc" id="L181">        inflightInteractions::size);</span>
+
+<span class="fc" id="L183">    this.interactionCounter =</span>
+<span class="fc" id="L184">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.NETWORK,
+            &quot;discovery_interaction_count&quot;,
+            &quot;Total number of discovery interactions initiated&quot;,
+            &quot;type&quot;);
+
+<span class="fc" id="L190">    this.interactionRetryCounter =</span>
+<span class="fc" id="L191">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.NETWORK,
+            &quot;discovery_interaction_retry_count&quot;,
+            &quot;Total number of interaction retries performed&quot;,
+            &quot;type&quot;);
+
+<span class="fc" id="L197">    this.cachedEnrRequests =</span>
+<span class="fc" id="L198">        maybeCacheForEnrRequests.orElse(</span>
+<span class="fc" id="L199">            CacheBuilder.newBuilder().maximumSize(50).expireAfterWrite(10, SECONDS).build());</span>
+
+<span class="fc" id="L201">    this.filterOnEnrForkId = filterOnEnrForkId;</span>
+<span class="fc" id="L202">  }</span>
+
+  public static Builder builder() {
+<span class="fc" id="L205">    return new Builder();</span>
+  }
+
+  public void start() {
+<span class="fc bfc" id="L209" title="All 2 branches covered.">    if (!started.compareAndSet(false, true)) {</span>
+<span class="fc" id="L210">      throw new IllegalStateException(&quot;The peer table had already been started&quot;);</span>
+    }
+
+<span class="fc" id="L213">    LOG.debug(&quot;Starting with filterOnEnrForkId = {}&quot;, filterOnEnrForkId);</span>
+<span class="fc" id="L214">    final List&lt;DiscoveryPeer&gt; initialDiscoveryPeers =</span>
+<span class="fc" id="L215">        bootstrapNodes.stream()</span>
+<span class="fc" id="L216">            .filter(peerPermissions::isAllowedInPeerTable)</span>
+<span class="fc" id="L217">            .collect(Collectors.toList());</span>
+<span class="fc" id="L218">    initialDiscoveryPeers.forEach(peerTable::tryAdd);</span>
+
+<span class="fc" id="L220">    recursivePeerRefreshState =</span>
+        new RecursivePeerRefreshState(
+            this::bond,
+            this::findNodes,
+            timerUtil,
+            localPeer,
+            peerTable,
+            peerPermissions,
+            PEER_REFRESH_ROUND_TIMEOUT_IN_SECONDS,
+            100);
+
+<span class="fc" id="L231">    peerPermissions.subscribeUpdate(this::handlePermissionsUpdate);</span>
+
+<span class="fc" id="L233">    recursivePeerRefreshState.start(initialDiscoveryPeers, localPeer.getId());</span>
+
+<span class="fc" id="L235">    final long refreshTimerId =</span>
+<span class="fc" id="L236">        timerUtil.setPeriodic(</span>
+<span class="fc" id="L237">            Math.min(REFRESH_CHECK_INTERVAL_MILLIS, tableRefreshIntervalMs),</span>
+            this::refreshTableIfRequired);
+<span class="fc" id="L239">    tableRefreshTimerId = OptionalLong.of(refreshTimerId);</span>
+
+<span class="fc" id="L241">    cleanTableTimerId =</span>
+<span class="fc" id="L242">        OptionalLong.of(</span>
+<span class="fc" id="L243">            timerUtil.setPeriodic(cleanPeerTableIntervalMs, this::cleanPeerTableIfRequired));</span>
+<span class="fc" id="L244">  }</span>
+
+  public CompletableFuture&lt;?&gt; stop() {
+<span class="fc bfc" id="L247" title="All 2 branches covered.">    if (!started.compareAndSet(true, false)) {</span>
+<span class="fc" id="L248">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L251">    tableRefreshTimerId.ifPresent(timerUtil::cancelTimer);</span>
+<span class="fc" id="L252">    tableRefreshTimerId = OptionalLong.empty();</span>
+<span class="fc" id="L253">    cleanTableTimerId.ifPresent(timerUtil::cancelTimer);</span>
+<span class="fc" id="L254">    cleanTableTimerId = OptionalLong.empty();</span>
+<span class="fc" id="L255">    inflightInteractions</span>
+<span class="fc" id="L256">        .values()</span>
+<span class="fc" id="L257">        .forEach(</span>
+            l -&gt; {
+<span class="fc" id="L259">              l.values().forEach(s -&gt; s.cancelTimers());</span>
+<span class="fc" id="L260">              l.clear();</span>
+<span class="fc" id="L261">            });</span>
+<span class="fc" id="L262">    inflightInteractions.clear();</span>
+<span class="fc" id="L263">    return CompletableFuture.completedFuture(null);</span>
+  }
+
+  private void handlePermissionsUpdate(
+      final boolean addRestrictions, final Optional&lt;List&lt;Peer&gt;&gt; affectedPeers) {
+<span class="fc bfc" id="L268" title="All 2 branches covered.">    if (!addRestrictions) {</span>
+      // Nothing to do if permissions were relaxed
+<span class="fc" id="L270">      return;</span>
+    }
+
+    // If we have an explicit list of peers, drop each peer from our discovery table
+<span class="fc bfc" id="L274" title="All 2 branches covered.">    if (affectedPeers.isPresent()) {</span>
+<span class="fc" id="L275">      affectedPeers.get().forEach(this::dropPeerIfDisallowed);</span>
+<span class="fc" id="L276">      return;</span>
+    }
+
+    // Otherwise, signal that we need to clean up the peer table
+<span class="fc" id="L280">    peerTableIsDirty.set(true);</span>
+<span class="fc" id="L281">  }</span>
+
+  private void dropPeerIfDisallowed(final Peer peer) {
+<span class="fc bfc" id="L284" title="All 2 branches covered.">    if (!peerPermissions.isAllowedInPeerTable(peer)) {</span>
+<span class="fc" id="L285">      dropPeer(peer);</span>
+    }
+<span class="fc" id="L287">  }</span>
+
+  public void dropPeer(final PeerId peer) {
+<span class="fc" id="L290">    peerTable.tryEvict(peer);</span>
+<span class="fc" id="L291">  }</span>
+
+  /**
+   * Handles an incoming message and processes it based on the state machine for the {@link
+   * DiscoveryPeer}.
+   *
+   * &lt;p&gt;The callback will be called with the canonical representation of the sender Peer as stored
+   * in our table, or with an empty Optional if the message was out of band and we didn't process
+   * it.
+   *
+   * @param packet The incoming message.
+   * @param sender The sender.
+   */
+  public void onMessage(final Packet packet, final DiscoveryPeer sender) {
+<span class="fc" id="L305">    discoveryProtocolLogger.logReceivedPacket(sender, packet);</span>
+
+    // Message from self. This should not happen.
+<span class="fc bfc" id="L308" title="All 2 branches covered.">    if (sender.getId().equals(localPeer.getId())) {</span>
+<span class="fc" id="L309">      return;</span>
+    }
+
+<span class="fc" id="L312">    final DiscoveryPeer peer = resolvePeer(sender);</span>
+<span class="fc" id="L313">    final Bytes peerId = peer.getId();</span>
+<span class="pc bpc" id="L314" title="1 of 7 branches missed.">    switch (packet.getType()) {</span>
+      case PING:
+<span class="fc bfc" id="L316" title="All 2 branches covered.">        if (peerPermissions.allowInboundBonding(peer)) {</span>
+<span class="fc" id="L317">          peer.setLastSeen(System.currentTimeMillis());</span>
+<span class="fc" id="L318">          final PingPacketData ping = packet.getPacketData(PingPacketData.class).get();</span>
+<span class="fc bfc" id="L319" title="All 2 branches covered.">          if (!PeerDiscoveryStatus.BONDED.equals(peer.getStatus())</span>
+<span class="fc bfc" id="L320" title="All 2 branches covered.">              &amp;&amp; (bondingPeers.getIfPresent(sender.getId()) == null)) {</span>
+<span class="fc" id="L321">            bond(peer);</span>
+          }
+<span class="fc" id="L323">          respondToPing(ping, packet.getHash(), peer);</span>
+<span class="fc" id="L324">        }</span>
+        break;
+      case PONG:
+<span class="fc" id="L327">        matchInteraction(packet)</span>
+<span class="fc" id="L328">            .ifPresent(</span>
+                interaction -&gt; {
+<span class="fc bfc" id="L330" title="All 2 branches covered.">                  if (filterOnEnrForkId) {</span>
+<span class="fc" id="L331">                    requestENR(peer);</span>
+                  }
+<span class="fc" id="L333">                  bondingPeers.invalidate(peerId);</span>
+<span class="fc" id="L334">                  addToPeerTable(peer);</span>
+<span class="fc" id="L335">                  recursivePeerRefreshState.onBondingComplete(peer);</span>
+<span class="fc" id="L336">                  Optional.ofNullable(cachedEnrRequests.getIfPresent(peerId))</span>
+<span class="fc" id="L337">                      .ifPresent(cachedEnrRequest -&gt; processEnrRequest(peer, cachedEnrRequest));</span>
+<span class="fc" id="L338">                });</span>
+<span class="fc" id="L339">        break;</span>
+      case NEIGHBORS:
+<span class="fc" id="L341">        matchInteraction(packet)</span>
+<span class="fc" id="L342">            .ifPresent(</span>
+                interaction -&gt;
+<span class="fc" id="L344">                    recursivePeerRefreshState.onNeighboursReceived(</span>
+<span class="fc" id="L345">                        peer, getPeersFromNeighborsPacket(packet)));</span>
+<span class="fc" id="L346">        break;</span>
+      case FIND_NEIGHBORS:
+<span class="fc bfc" id="L348" title="All 2 branches covered.">        if (PeerDiscoveryStatus.BONDED.equals(peer.getStatus())</span>
+<span class="fc bfc" id="L349" title="All 2 branches covered.">            &amp;&amp; peerPermissions.allowInboundNeighborsRequest(peer)) {</span>
+<span class="fc" id="L350">          final FindNeighborsPacketData fn =</span>
+<span class="fc" id="L351">              packet.getPacketData(FindNeighborsPacketData.class).get();</span>
+<span class="fc" id="L352">          respondToFindNeighbors(fn, peer);</span>
+<span class="fc" id="L353">        }</span>
+
+        break;
+      case ENR_REQUEST:
+<span class="fc bfc" id="L357" title="All 2 branches covered.">        if (PeerDiscoveryStatus.BONDED.equals(peer.getStatus())) {</span>
+<span class="fc" id="L358">          processEnrRequest(peer, packet);</span>
+<span class="fc bfc" id="L359" title="All 2 branches covered.">        } else if (PeerDiscoveryStatus.BONDING.equals(peer.getStatus())) {</span>
+<span class="fc" id="L360">          LOG.trace(&quot;ENR_REQUEST cached for bonding peer Id: {}&quot;, peerId);</span>
+          // Due to UDP, it may happen that we receive the ENR_REQUEST just before the PONG.
+          // Because peers want to send the ENR_REQUEST directly after the pong.
+          // If this happens we don't want to ignore the request but process when bonded.
+          // this cache allows to keep the request and to respond after having processed the PONG
+<span class="fc" id="L365">          cachedEnrRequests.put(peerId, packet);</span>
+        }
+        break;
+      case ENR_RESPONSE:
+<span class="fc" id="L369">        matchInteraction(packet)</span>
+<span class="fc" id="L370">            .ifPresent(</span>
+                interaction -&gt; {
+<span class="fc" id="L372">                  final Optional&lt;ENRResponsePacketData&gt; packetData =</span>
+<span class="fc" id="L373">                      packet.getPacketData(ENRResponsePacketData.class);</span>
+<span class="fc" id="L374">                  final NodeRecord enr = packetData.get().getEnr();</span>
+<span class="fc" id="L375">                  peer.setNodeRecord(enr);</span>
+<span class="fc" id="L376">                });</span>
+        break;
+    }
+<span class="fc" id="L379">  }</span>
+
+  private void processEnrRequest(final DiscoveryPeer peer, final Packet packet) {
+<span class="fc" id="L382">    LOG.trace(&quot;ENR_REQUEST received from bonded peer Id: {}&quot;, peer.getId());</span>
+<span class="fc" id="L383">    packet</span>
+<span class="fc" id="L384">        .getPacketData(ENRRequestPacketData.class)</span>
+<span class="fc" id="L385">        .ifPresent(p -&gt; respondToENRRequest(p, packet.getHash(), peer));</span>
+<span class="fc" id="L386">  }</span>
+
+  private List&lt;DiscoveryPeer&gt; getPeersFromNeighborsPacket(final Packet packet) {
+<span class="fc" id="L389">    final Optional&lt;NeighborsPacketData&gt; maybeNeighborsData =</span>
+<span class="fc" id="L390">        packet.getPacketData(NeighborsPacketData.class);</span>
+<span class="pc bpc" id="L391" title="1 of 2 branches missed.">    if (maybeNeighborsData.isEmpty()) {</span>
+<span class="nc" id="L392">      return Collections.emptyList();</span>
+    }
+<span class="fc" id="L394">    final NeighborsPacketData neighborsData = maybeNeighborsData.get();</span>
+
+<span class="fc" id="L396">    return neighborsData.getNodes().stream()</span>
+<span class="fc" id="L397">        .map(p -&gt; peerTable.get(p).orElse(p))</span>
+<span class="fc" id="L398">        .collect(Collectors.toList());</span>
+  }
+
+  private boolean addToPeerTable(final DiscoveryPeer peer) {
+    // Reset the last seen timestamp.
+<span class="fc" id="L403">    final long now = System.currentTimeMillis();</span>
+<span class="pc bpc" id="L404" title="1 of 2 branches missed.">    if (peer.getFirstDiscovered() == 0) {</span>
+<span class="nc" id="L405">      peer.setFirstDiscovered(now);</span>
+    }
+<span class="fc" id="L407">    peer.setLastSeen(now);</span>
+
+<span class="pc bpc" id="L409" title="1 of 2 branches missed.">    if (peer.getStatus() != PeerDiscoveryStatus.BONDED) {</span>
+<span class="fc" id="L410">      peer.setStatus(PeerDiscoveryStatus.BONDED);</span>
+<span class="fc" id="L411">      connectOnRlpxLayer(peer);</span>
+    }
+
+<span class="fc" id="L414">    final PeerTable.AddResult result = peerTable.tryAdd(peer);</span>
+
+<span class="fc bfc" id="L416" title="All 2 branches covered.">    if (result.getOutcome() == PeerTable.AddResult.AddOutcome.ALREADY_EXISTED) {</span>
+      // Bump peer.
+<span class="fc" id="L418">      peerTable.tryEvict(peer);</span>
+<span class="fc" id="L419">      peerTable.tryAdd(peer);</span>
+<span class="fc bfc" id="L420" title="All 2 branches covered.">    } else if (result.getOutcome() == PeerTable.AddResult.AddOutcome.BUCKET_FULL) {</span>
+<span class="fc" id="L421">      peerTable.tryEvict(result.getEvictionCandidate());</span>
+<span class="fc" id="L422">      peerTable.tryAdd(peer);</span>
+    }
+
+<span class="fc" id="L425">    return true;</span>
+  }
+
+  void connectOnRlpxLayer(final DiscoveryPeer peer) {
+<span class="fc" id="L429">    rlpxAgent.connect(peer);</span>
+<span class="fc" id="L430">  }</span>
+
+  private Optional&lt;PeerInteractionState&gt; matchInteraction(final Packet packet) {
+<span class="fc" id="L433">    final Bytes nodeId = packet.getNodeId();</span>
+<span class="fc" id="L434">    final Map&lt;PacketType, PeerInteractionState&gt; stateMap = inflightInteractions.get(nodeId);</span>
+<span class="fc bfc" id="L435" title="All 2 branches covered.">    if (stateMap == null) {</span>
+<span class="fc" id="L436">      return Optional.empty();</span>
+    }
+<span class="fc" id="L438">    final PacketType packetType = packet.getType();</span>
+<span class="fc" id="L439">    final PeerInteractionState interaction = stateMap.get(packetType);</span>
+<span class="fc bfc" id="L440" title="All 4 branches covered.">    if (interaction == null || !interaction.test(packet)) {</span>
+<span class="fc" id="L441">      return Optional.empty();</span>
+    }
+<span class="fc" id="L443">    interaction.cancelTimers();</span>
+<span class="fc" id="L444">    stateMap.remove(packetType);</span>
+<span class="fc bfc" id="L445" title="All 2 branches covered.">    if (stateMap.isEmpty()) {</span>
+<span class="fc" id="L446">      inflightInteractions.remove(nodeId);</span>
+    }
+<span class="fc" id="L448">    return Optional.of(interaction);</span>
+  }
+
+  private void refreshTableIfRequired() {
+<span class="fc" id="L452">    final long now = System.currentTimeMillis();</span>
+<span class="fc bfc" id="L453" title="All 2 branches covered.">    if (lastRefreshTime + tableRefreshIntervalMs &lt;= now) {</span>
+<span class="fc" id="L454">      LOG.debug(&quot;Refreshing peer table after {} ms&quot;, tableRefreshIntervalMs);</span>
+<span class="fc" id="L455">      refreshTable();</span>
+<span class="fc bfc" id="L456" title="All 2 branches covered.">    } else if (!peerRequirement.hasSufficientPeers()) {</span>
+<span class="fc" id="L457">      LOG.debug(&quot;Refreshing peer table: seeking more peers. peer count &lt; max&quot;);</span>
+<span class="fc" id="L458">      refreshTable();</span>
+    }
+<span class="fc" id="L460">  }</span>
+
+  private void cleanPeerTableIfRequired() {
+<span class="fc bfc" id="L463" title="All 2 branches covered.">    if (peerTableIsDirty.compareAndSet(true, false)) {</span>
+<span class="fc" id="L464">      peerTable.streamAllPeers().forEach(this::dropPeerIfDisallowed);</span>
+    }
+<span class="fc" id="L466">  }</span>
+
+  @VisibleForTesting
+  RecursivePeerRefreshState getRecursivePeerRefreshState() {
+<span class="fc" id="L470">    return recursivePeerRefreshState;</span>
+  }
+
+  /**
+   * Refreshes the peer table by generating a random ID and interrogating the closest nodes for it.
+   * Currently the refresh process is NOT recursive.
+   */
+  private void refreshTable() {
+<span class="fc" id="L478">    final Bytes target = Peer.randomId();</span>
+<span class="fc" id="L479">    final List&lt;DiscoveryPeer&gt; initialPeers = peerTable.nearestBondedPeers(Peer.randomId(), 16);</span>
+<span class="fc" id="L480">    recursivePeerRefreshState.start(initialPeers, target);</span>
+<span class="fc" id="L481">    lastRefreshTime = System.currentTimeMillis();</span>
+<span class="fc" id="L482">  }</span>
+
+  /**
+   * Initiates a bonding PING-PONG cycle with a peer.
+   *
+   * @param peer The targeted peer.
+   */
+  @VisibleForTesting
+  void bond(final DiscoveryPeer peer) {
+<span class="pc bpc" id="L491" title="1 of 2 branches missed.">    if (!peerPermissions.isAllowedInPeerTable(peer)) {</span>
+<span class="nc" id="L492">      return;</span>
+    }
+
+<span class="fc" id="L495">    peer.setFirstDiscovered(System.currentTimeMillis());</span>
+<span class="fc" id="L496">    peer.setStatus(PeerDiscoveryStatus.BONDING);</span>
+<span class="fc" id="L497">    bondingPeers.put(peer.getId(), peer);</span>
+
+<span class="fc" id="L499">    final Consumer&lt;PeerInteractionState&gt; action =</span>
+        interaction -&gt; {
+<span class="fc" id="L501">          final PingPacketData data =</span>
+<span class="fc" id="L502">              PingPacketData.create(</span>
+<span class="fc" id="L503">                  Optional.of(localPeer.getEndpoint()),</span>
+<span class="fc" id="L504">                  peer.getEndpoint(),</span>
+<span class="fc" id="L505">                  localPeer.getNodeRecord().map(NodeRecord::getSeq).orElse(null));</span>
+<span class="fc" id="L506">          createPacket(</span>
+              PacketType.PING,
+              data,
+              pingPacket -&gt; {
+<span class="fc" id="L510">                final Bytes pingHash = pingPacket.getHash();</span>
+                // Update the matching filter to only accept the PONG if it echoes the hash of our
+                // PING.
+<span class="fc" id="L513">                final Predicate&lt;Packet&gt; newFilter =</span>
+                    packet -&gt;
+                        packet
+<span class="fc" id="L516">                            .getPacketData(PongPacketData.class)</span>
+<span class="fc" id="L517">                            .map(pong -&gt; pong.getPingHash().equals(pingHash))</span>
+<span class="fc" id="L518">                            .orElse(false);</span>
+<span class="fc" id="L519">                interaction.updateFilter(newFilter);</span>
+
+<span class="fc" id="L521">                sendPacket(peer, pingPacket);</span>
+<span class="fc" id="L522">              });</span>
+<span class="fc" id="L523">        };</span>
+
+    // The filter condition will be updated as soon as the action is performed.
+<span class="fc" id="L526">    final PeerInteractionState peerInteractionState =</span>
+<span class="pc" id="L527">        new PeerInteractionState(action, peer.getId(), PacketType.PONG, packet -&gt; false);</span>
+<span class="fc" id="L528">    dispatchInteraction(peer, peerInteractionState);</span>
+<span class="fc" id="L529">  }</span>
+
+  /**
+   * Initiates an enr request cycle with a peer.
+   *
+   * @param peer The targeted peer.
+   */
+  @VisibleForTesting
+  void requestENR(final DiscoveryPeer peer) {
+<span class="fc" id="L538">    final Consumer&lt;PeerInteractionState&gt; action =</span>
+        interaction -&gt; {
+<span class="fc" id="L540">          final ENRRequestPacketData data = ENRRequestPacketData.create();</span>
+<span class="fc" id="L541">          createPacket(</span>
+              PacketType.ENR_REQUEST,
+              data,
+              enrPacket -&gt; {
+<span class="fc" id="L545">                final Bytes enrHash = enrPacket.getHash();</span>
+                // Update the matching filter to only accept the ENRResponse if it echoes the hash
+                // of our request.
+<span class="fc" id="L548">                final Predicate&lt;Packet&gt; newFilter =</span>
+                    packet -&gt;
+                        packet
+<span class="fc" id="L551">                            .getPacketData(ENRResponsePacketData.class)</span>
+<span class="fc" id="L552">                            .map(enr -&gt; enr.getRequestHash().equals(enrHash))</span>
+<span class="fc" id="L553">                            .orElse(false);</span>
+<span class="fc" id="L554">                interaction.updateFilter(newFilter);</span>
+
+<span class="fc" id="L556">                sendPacket(peer, enrPacket);</span>
+<span class="fc" id="L557">              });</span>
+<span class="fc" id="L558">        };</span>
+
+    // The filter condition will be updated as soon as the action is performed.
+<span class="fc" id="L561">    final PeerInteractionState peerInteractionState =</span>
+<span class="pc" id="L562">        new PeerInteractionState(action, peer.getId(), PacketType.ENR_RESPONSE, packet -&gt; false);</span>
+<span class="fc" id="L563">    dispatchInteraction(peer, peerInteractionState);</span>
+<span class="fc" id="L564">  }</span>
+
+  private void sendPacket(final DiscoveryPeer peer, final PacketType type, final PacketData data) {
+<span class="fc" id="L567">    createPacket(</span>
+        type,
+        data,
+        packet -&gt; {
+<span class="fc" id="L571">          discoveryProtocolLogger.logSendingPacket(peer, packet);</span>
+<span class="fc" id="L572">          outboundMessageHandler.send(peer, packet);</span>
+<span class="fc" id="L573">        });</span>
+<span class="fc" id="L574">  }</span>
+
+  private void sendPacket(final DiscoveryPeer peer, final Packet packet) {
+<span class="fc" id="L577">    discoveryProtocolLogger.logSendingPacket(peer, packet);</span>
+<span class="fc" id="L578">    outboundMessageHandler.send(peer, packet);</span>
+<span class="fc" id="L579">  }</span>
+
+  @VisibleForTesting
+  void createPacket(final PacketType type, final PacketData data, final Consumer&lt;Packet&gt; handler) {
+    // Creating packets is quite expensive because they have to be cryptographically signed
+    // So ensure the work is done on a worker thread to avoid blocking the vertx event thread.
+<span class="fc" id="L585">    workerExecutor</span>
+<span class="fc" id="L586">        .execute(() -&gt; Packet.create(type, data, nodeKey))</span>
+<span class="fc" id="L587">        .thenAccept(handler)</span>
+<span class="fc" id="L588">        .exceptionally(</span>
+            error -&gt; {
+<span class="nc" id="L590">              LOG.error(&quot;Error while creating packet&quot;, error);</span>
+<span class="nc" id="L591">              return null;</span>
+            });
+<span class="fc" id="L593">  }</span>
+
+  /**
+   * Sends a FIND_NEIGHBORS message to a {@link DiscoveryPeer}, in search of a target value.
+   *
+   * @param peer the peer to interrogate
+   * @param target the target node ID to find
+   */
+  private void findNodes(final DiscoveryPeer peer, final Bytes target) {
+<span class="fc" id="L602">    final Consumer&lt;PeerInteractionState&gt; action =</span>
+        interaction -&gt; {
+<span class="fc" id="L604">          final FindNeighborsPacketData data = FindNeighborsPacketData.create(target);</span>
+<span class="fc" id="L605">          sendPacket(peer, PacketType.FIND_NEIGHBORS, data);</span>
+<span class="fc" id="L606">        };</span>
+<span class="fc" id="L607">    final PeerInteractionState interaction =</span>
+<span class="fc" id="L608">        new PeerInteractionState(action, peer.getId(), PacketType.NEIGHBORS, packet -&gt; true);</span>
+<span class="fc" id="L609">    dispatchInteraction(peer, interaction);</span>
+<span class="fc" id="L610">  }</span>
+
+  /**
+   * Dispatches a new tracked interaction with a peer, adding it to the {@link
+   * #inflightInteractions} map and executing the action for the first time.
+   *
+   * &lt;p&gt;If a previous inflightInteractions interaction existed, we cancel any associated timers.
+   *
+   * @param peer The peer.
+   * @param state The state.
+   */
+  private void dispatchInteraction(final Peer peer, final PeerInteractionState state) {
+<span class="fc" id="L622">    final Bytes id = peer.getId();</span>
+<span class="fc" id="L623">    final PeerInteractionState previous =</span>
+        inflightInteractions
+<span class="fc" id="L625">            .computeIfAbsent(id, k -&gt; new ConcurrentHashMap&lt;&gt;())</span>
+<span class="fc" id="L626">            .put(state.expectedType, state);</span>
+<span class="fc bfc" id="L627" title="All 2 branches covered.">    if (previous != null) {</span>
+<span class="fc" id="L628">      previous.cancelTimers();</span>
+    }
+<span class="fc" id="L630">    state.execute();</span>
+<span class="fc" id="L631">  }</span>
+
+  private void respondToPing(
+      final PingPacketData packetData, final Bytes pingHash, final DiscoveryPeer sender) {
+<span class="fc bfc" id="L635" title="All 2 branches covered.">    if (packetData.getExpiration() &lt; Instant.now().getEpochSecond()) {</span>
+<span class="fc" id="L636">      LOG.debug(&quot;ignoring expired PING&quot;);</span>
+<span class="fc" id="L637">      return;</span>
+    }
+    // We don't care about the `from` field of the ping, we pong to the `sender`
+<span class="fc" id="L640">    final PongPacketData data =</span>
+<span class="fc" id="L641">        PongPacketData.create(</span>
+<span class="fc" id="L642">            sender.getEndpoint(),</span>
+            pingHash,
+<span class="fc" id="L644">            localPeer.getNodeRecord().map(NodeRecord::getSeq).orElse(null));</span>
+
+<span class="fc" id="L646">    sendPacket(sender, PacketType.PONG, data);</span>
+<span class="fc" id="L647">  }</span>
+
+  private void respondToFindNeighbors(
+      final FindNeighborsPacketData packetData, final DiscoveryPeer sender) {
+<span class="fc bfc" id="L651" title="All 2 branches covered.">    if (packetData.getExpiration() &lt; Instant.now().getEpochSecond()) {</span>
+<span class="fc" id="L652">      return;</span>
+    }
+    // Each peer is encoded as 16 bytes for address, 4 bytes for port, 4 bytes for tcp port
+    // and 64 bytes for id. This is prepended by 97 bytes of hash, signature and type.
+    // 16 + 4 + 4 + 64 = 88 bytes
+    // 88 * 13 = 1144 bytes
+    // To fit under 1280 bytes, we must return just 13 peers maximum.
+<span class="fc" id="L659">    final List&lt;DiscoveryPeer&gt; peers = peerTable.nearestBondedPeers(packetData.getTarget(), 13);</span>
+<span class="fc" id="L660">    final PacketData data = NeighborsPacketData.create(peers);</span>
+<span class="fc" id="L661">    sendPacket(sender, PacketType.NEIGHBORS, data);</span>
+<span class="fc" id="L662">  }</span>
+
+  private void respondToENRRequest(
+      final ENRRequestPacketData enrRequestPacketData,
+      final Bytes requestHash,
+      final DiscoveryPeer sender) {
+<span class="pc bpc" id="L668" title="1 of 2 branches missed.">    if (enrRequestPacketData.getExpiration() &gt;= Instant.now().getEpochSecond()) {</span>
+<span class="fc" id="L669">      final ENRResponsePacketData data =</span>
+<span class="fc" id="L670">          ENRResponsePacketData.create(requestHash, localPeer.getNodeRecord().orElse(null));</span>
+<span class="fc" id="L671">      sendPacket(sender, PacketType.ENR_RESPONSE, data);</span>
+    }
+<span class="fc" id="L673">  }</span>
+
+  /**
+   * Returns a copy of the known peers. Modifications to the list will not update the table's state,
+   * but modifications to the Peers themselves will.
+   *
+   * @return List of peers.
+   */
+  public Stream&lt;DiscoveryPeer&gt; streamDiscoveredPeers() {
+<span class="fc" id="L682">    return peerTable.streamAllPeers().filter(peerPermissions::isAllowedInPeerTable);</span>
+  }
+
+  public void setRetryDelayFunction(final RetryDelayFunction retryDelayFunction) {
+<span class="fc" id="L686">    this.retryDelayFunction = retryDelayFunction;</span>
+<span class="fc" id="L687">  }</span>
+
+  public void handleBondingRequest(final DiscoveryPeer peer) {
+<span class="fc" id="L690">    final DiscoveryPeer peerToBond = resolvePeer(peer);</span>
+
+<span class="fc bfc" id="L692" title="All 2 branches covered.">    if (peerPermissions.allowOutboundBonding(peerToBond)</span>
+<span class="pc bpc" id="L693" title="1 of 2 branches missed.">        &amp;&amp; PeerDiscoveryStatus.KNOWN.equals(peerToBond.getStatus())) {</span>
+<span class="fc" id="L694">      bond(peerToBond);</span>
+    }
+<span class="fc" id="L696">  }</span>
+
+  // Load the peer first from the table, then from bonding cache or use the instance that comes in.
+  private DiscoveryPeer resolvePeer(final DiscoveryPeer peer) {
+<span class="fc" id="L700">    final Optional&lt;DiscoveryPeer&gt; maybeKnownPeer =</span>
+<span class="fc" id="L701">        peerTable.get(peer).filter(known -&gt; known.discoveryEndpointMatches(peer));</span>
+<span class="fc" id="L702">    DiscoveryPeer resolvedPeer = maybeKnownPeer.orElse(peer);</span>
+<span class="fc bfc" id="L703" title="All 2 branches covered.">    if (maybeKnownPeer.isEmpty()) {</span>
+<span class="fc" id="L704">      final DiscoveryPeer bondingPeer = bondingPeers.getIfPresent(peer.getId());</span>
+<span class="fc bfc" id="L705" title="All 2 branches covered.">      if (bondingPeer != null) {</span>
+<span class="fc" id="L706">        resolvedPeer = bondingPeer;</span>
+      }
+    }
+
+<span class="fc" id="L710">    return resolvedPeer;</span>
+  }
+
+  /** Holds the state machine data for a peer interaction. */
+  private class PeerInteractionState implements Predicate&lt;Packet&gt; {
+
+    private static final int MAX_RETRIES = 5;
+    /**
+     * The action that led to the peer being in this state (e.g. sending a PING or NEIGHBORS
+     * message), in case it needs to be retried.
+     */
+    private final Consumer&lt;PeerInteractionState&gt; action;
+
+    private final Bytes peerId;
+    /** The expected type of the message that will transition the peer out of this state. */
+    private final PacketType expectedType;
+
+    private final Counter retryCounter;
+    /** A custom filter to accept transitions out of this state. */
+    private Predicate&lt;Packet&gt; filter;
+    /** Timers associated with this entry. */
+<span class="fc" id="L731">    private OptionalLong timerId = OptionalLong.empty();</span>
+
+<span class="fc" id="L733">    private long delay = 0;</span>
+<span class="fc" id="L734">    private int retryCount = 0;</span>
+
+    PeerInteractionState(
+        final Consumer&lt;PeerInteractionState&gt; action,
+        final Bytes peerId,
+        final PacketType expectedType,
+<span class="fc" id="L740">        final Predicate&lt;Packet&gt; filter) {</span>
+<span class="fc" id="L741">      this.action = action;</span>
+<span class="fc" id="L742">      this.peerId = peerId;</span>
+<span class="fc" id="L743">      this.expectedType = expectedType;</span>
+<span class="fc" id="L744">      this.filter = filter;</span>
+<span class="fc" id="L745">      interactionCounter.labels(expectedType.name()).inc();</span>
+<span class="fc" id="L746">      retryCounter = interactionRetryCounter.labels(expectedType.name());</span>
+<span class="fc" id="L747">    }</span>
+
+    @Override
+    public boolean test(final Packet packet) {
+<span class="pc bpc" id="L751" title="2 of 6 branches missed.">      return expectedType == packet.getType() &amp;&amp; (filter == null || filter.test(packet));</span>
+    }
+
+    void updateFilter(final Predicate&lt;Packet&gt; filter) {
+<span class="fc" id="L755">      this.filter = filter;</span>
+<span class="fc" id="L756">    }</span>
+
+    /** Executes the action associated with this state. Sets a &quot;boomerang&quot; timer to itself. */
+    void execute() {
+<span class="fc" id="L760">      action.accept(this);</span>
+<span class="fc bfc" id="L761" title="All 2 branches covered.">      if (retryCount &lt; MAX_RETRIES) {</span>
+<span class="fc" id="L762">        this.delay = retryDelayFunction.apply(this.delay);</span>
+<span class="fc" id="L763">        timerId =</span>
+<span class="fc" id="L764">            OptionalLong.of(</span>
+<span class="fc" id="L765">                timerUtil.setTimer(</span>
+                    this.delay,
+                    () -&gt; {
+<span class="fc" id="L768">                      retryCounter.inc();</span>
+<span class="fc" id="L769">                      retryCount++;</span>
+<span class="fc" id="L770">                      execute();</span>
+<span class="fc" id="L771">                    }));</span>
+      } else {
+<span class="fc" id="L773">        Optional.ofNullable(inflightInteractions.get(peerId))</span>
+<span class="fc" id="L774">            .ifPresent(</span>
+                peerInterationStateMap -&gt; {
+<span class="fc" id="L776">                  peerInterationStateMap.remove(expectedType);</span>
+<span class="pc bpc" id="L777" title="1 of 2 branches missed.">                  if (peerInterationStateMap.isEmpty()) {</span>
+<span class="fc" id="L778">                    inflightInteractions.remove(peerId);</span>
+                  }
+<span class="fc" id="L780">                });</span>
+      }
+<span class="fc" id="L782">    }</span>
+
+    /** Cancels any timers associated with this entry. */
+    void cancelTimers() {
+<span class="fc" id="L786">      timerId.ifPresent(timerUtil::cancelTimer);</span>
+<span class="fc" id="L787">    }</span>
+  }
+
+  public interface AsyncExecutor {
+    &lt;T&gt; CompletableFuture&lt;T&gt; execute(Supplier&lt;T&gt; action);
+  }
+
+  public static class Builder {
+    // Options with default values
+<span class="fc" id="L796">    private OutboundMessageHandler outboundMessageHandler = OutboundMessageHandler.NOOP;</span>
+<span class="fc" id="L797">    private PeerRequirement peerRequirement = PeerRequirement.NOOP;</span>
+<span class="fc" id="L798">    private PeerPermissions peerPermissions = PeerPermissions.noop();</span>
+<span class="fc" id="L799">    private long tableRefreshIntervalMs = MILLISECONDS.convert(30, TimeUnit.MINUTES);</span>
+<span class="fc" id="L800">    private long cleanPeerTableIntervalMs = MILLISECONDS.convert(1, TimeUnit.MINUTES);</span>
+<span class="fc" id="L801">    private final List&lt;DiscoveryPeer&gt; bootstrapNodes = new ArrayList&lt;&gt;();</span>
+    private PeerTable peerTable;
+
+    // Required dependencies
+    private NodeKey nodeKey;
+    private DiscoveryPeer localPeer;
+    private TimerUtil timerUtil;
+    private AsyncExecutor workerExecutor;
+    private MetricsSystem metricsSystem;
+    private boolean filterOnEnrForkId;
+
+<span class="fc" id="L812">    private Cache&lt;Bytes, Packet&gt; cachedEnrRequests =</span>
+<span class="fc" id="L813">        CacheBuilder.newBuilder().maximumSize(50).expireAfterWrite(10, SECONDS).build();</span>
+    private RlpxAgent rlpxAgent;
+
+<span class="fc" id="L816">    private Builder() {}</span>
+
+    public PeerDiscoveryController build() {
+<span class="fc" id="L819">      validate();</span>
+
+<span class="fc" id="L821">      return new PeerDiscoveryController(</span>
+          nodeKey,
+          localPeer,
+          peerTable,
+          bootstrapNodes,
+          outboundMessageHandler,
+          timerUtil,
+          workerExecutor,
+          tableRefreshIntervalMs,
+          cleanPeerTableIntervalMs,
+          peerRequirement,
+          peerPermissions,
+          metricsSystem,
+<span class="fc" id="L834">          Optional.of(cachedEnrRequests),</span>
+          filterOnEnrForkId,
+          rlpxAgent);
+    }
+
+    private void validate() {
+<span class="fc" id="L840">      validateRequiredDependency(nodeKey, &quot;nodeKey&quot;);</span>
+<span class="fc" id="L841">      validateRequiredDependency(localPeer, &quot;LocalPeer&quot;);</span>
+<span class="fc" id="L842">      validateRequiredDependency(timerUtil, &quot;TimerUtil&quot;);</span>
+<span class="fc" id="L843">      validateRequiredDependency(workerExecutor, &quot;AsyncExecutor&quot;);</span>
+<span class="fc" id="L844">      validateRequiredDependency(metricsSystem, &quot;MetricsSystem&quot;);</span>
+<span class="fc" id="L845">      validateRequiredDependency(rlpxAgent, &quot;RlpxAgent&quot;);</span>
+<span class="fc" id="L846">      validateRequiredDependency(peerTable, &quot;PeerTable&quot;);</span>
+<span class="fc" id="L847">    }</span>
+
+    private void validateRequiredDependency(final Object object, final String name) {
+<span class="pc bpc" id="L850" title="1 of 2 branches missed.">      checkState(object != null, name + &quot; must be configured.&quot;);</span>
+<span class="fc" id="L851">    }</span>
+
+    public Builder nodeKey(final NodeKey nodeKey) {
+<span class="fc" id="L854">      checkNotNull(nodeKey);</span>
+<span class="fc" id="L855">      this.nodeKey = nodeKey;</span>
+<span class="fc" id="L856">      return this;</span>
+    }
+
+    public Builder localPeer(final DiscoveryPeer localPeer) {
+<span class="fc" id="L860">      checkNotNull(localPeer);</span>
+<span class="fc" id="L861">      this.localPeer = localPeer;</span>
+<span class="fc" id="L862">      return this;</span>
+    }
+
+    public Builder peerTable(final PeerTable peerTable) {
+<span class="fc" id="L866">      checkNotNull(peerTable);</span>
+<span class="fc" id="L867">      this.peerTable = peerTable;</span>
+<span class="fc" id="L868">      return this;</span>
+    }
+
+    public Builder bootstrapNodes(final Collection&lt;DiscoveryPeer&gt; bootstrapNodes) {
+<span class="fc" id="L872">      this.bootstrapNodes.addAll(bootstrapNodes);</span>
+<span class="fc" id="L873">      return this;</span>
+    }
+
+    public Builder outboundMessageHandler(final OutboundMessageHandler outboundMessageHandler) {
+<span class="fc" id="L877">      checkNotNull(outboundMessageHandler);</span>
+<span class="fc" id="L878">      this.outboundMessageHandler = outboundMessageHandler;</span>
+<span class="fc" id="L879">      return this;</span>
+    }
+
+    public Builder timerUtil(final TimerUtil timerUtil) {
+<span class="fc" id="L883">      checkNotNull(timerUtil);</span>
+<span class="fc" id="L884">      this.timerUtil = timerUtil;</span>
+<span class="fc" id="L885">      return this;</span>
+    }
+
+    public Builder workerExecutor(final AsyncExecutor workerExecutor) {
+<span class="fc" id="L889">      checkNotNull(workerExecutor);</span>
+<span class="fc" id="L890">      this.workerExecutor = workerExecutor;</span>
+<span class="fc" id="L891">      return this;</span>
+    }
+
+    public Builder tableRefreshIntervalMs(final long tableRefreshIntervalMs) {
+<span class="pc bpc" id="L895" title="1 of 2 branches missed.">      checkArgument(tableRefreshIntervalMs &gt;= 0);</span>
+<span class="fc" id="L896">      this.tableRefreshIntervalMs = tableRefreshIntervalMs;</span>
+<span class="fc" id="L897">      return this;</span>
+    }
+
+    public Builder cleanPeerTableIntervalMs(final long cleanPeerTableIntervalMs) {
+<span class="nc bnc" id="L901" title="All 2 branches missed.">      checkArgument(cleanPeerTableIntervalMs &gt;= 0);</span>
+<span class="nc" id="L902">      this.cleanPeerTableIntervalMs = cleanPeerTableIntervalMs;</span>
+<span class="nc" id="L903">      return this;</span>
+    }
+
+    public Builder peerRequirement(final PeerRequirement peerRequirement) {
+<span class="fc" id="L907">      checkNotNull(peerRequirement);</span>
+<span class="fc" id="L908">      this.peerRequirement = peerRequirement;</span>
+<span class="fc" id="L909">      return this;</span>
+    }
+
+    public Builder peerPermissions(final PeerPermissions peerPermissions) {
+<span class="fc" id="L913">      checkNotNull(peerPermissions);</span>
+<span class="fc" id="L914">      this.peerPermissions = peerPermissions;</span>
+<span class="fc" id="L915">      return this;</span>
+    }
+
+    public Builder metricsSystem(final MetricsSystem metricsSystem) {
+<span class="fc" id="L919">      checkNotNull(metricsSystem);</span>
+<span class="fc" id="L920">      this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L921">      return this;</span>
+    }
+
+    public Builder filterOnEnrForkId(final boolean filterOnEnrForkId) {
+<span class="fc" id="L925">      this.filterOnEnrForkId = filterOnEnrForkId;</span>
+<span class="fc" id="L926">      return this;</span>
+    }
+
+    public Builder cacheForEnrRequests(final Cache&lt;Bytes, Packet&gt; cacheToUse) {
+<span class="fc" id="L930">      checkNotNull(cacheToUse);</span>
+<span class="fc" id="L931">      this.cachedEnrRequests = cacheToUse;</span>
+<span class="fc" id="L932">      return this;</span>
+    }
+
+    public Builder rlpxAgent(final RlpxAgent rlpxAgent) {
+<span class="fc" id="L936">      checkNotNull(rlpxAgent);</span>
+<span class="fc" id="L937">      this.rlpxAgent = rlpxAgent;</span>
+<span class="fc" id="L938">      return this;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

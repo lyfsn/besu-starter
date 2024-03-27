@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SubscriptionManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription</a> &gt; <span class="el_source">SubscriptionManager.java</span></div><h1>SubscriptionManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.JsonRpcResult;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.logs.PrivateLogsSubscription;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.request.SubscribeRequest;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.request.SubscriptionType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.request.UnsubscribeRequest;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.response.SubscriptionResponse;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionEvent;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionObserver;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+
+import io.vertx.core.AbstractVerticle;
+import io.vertx.core.eventbus.Message;
+import io.vertx.core.json.Json;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The SubscriptionManager is responsible for managing subscriptions and sending messages to the
+ * clients that have an active subscription.
+ */
+public class SubscriptionManager extends AbstractVerticle implements PrivateTransactionObserver {
+
+<span class="fc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(SubscriptionManager.class);</span>
+
+  public static final String EVENTBUS_REMOVE_SUBSCRIPTIONS_ADDRESS =
+      &quot;SubscriptionManager::removeSubscriptions&quot;;
+
+<span class="fc" id="L56">  private final AtomicLong subscriptionCounter = new AtomicLong(0);</span>
+<span class="fc" id="L57">  private final Map&lt;Long, Subscription&gt; subscriptions = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L58">  private final SubscriptionBuilder subscriptionBuilder = new SubscriptionBuilder();</span>
+  private final LabelledMetric&lt;Counter&gt; subscribeCounter;
+  private final LabelledMetric&lt;Counter&gt; unsubscribeCounter;
+<span class="fc" id="L61">  private final List&lt;PrivateTransactionEvent&gt; privateTransactionEvents = new ArrayList&lt;&gt;();</span>
+
+  public SubscriptionManager(
+      final MetricsSystem metricsSystem, final Blockchain blockchainQueries) {
+<span class="fc" id="L65">    this(metricsSystem);</span>
+<span class="fc" id="L66">    blockchainQueries.observeBlockAdded(event -&gt; onBlockAdded());</span>
+<span class="fc" id="L67">  }</span>
+
+<span class="fc" id="L69">  public SubscriptionManager(final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L70">    subscribeCounter =</span>
+<span class="fc" id="L71">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.RPC,
+            &quot;subscription_subscribe_total&quot;,
+            &quot;Total number of subscriptions&quot;,
+            &quot;type&quot;);
+<span class="fc" id="L76">    unsubscribeCounter =</span>
+<span class="fc" id="L77">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.RPC,
+            &quot;subscription_unsubscribe_total&quot;,
+            &quot;Total number of unsubscriptions&quot;,
+            &quot;type&quot;);
+<span class="fc" id="L82">  }</span>
+
+  @Override
+  public void start() {
+<span class="fc" id="L86">    vertx.eventBus().consumer(EVENTBUS_REMOVE_SUBSCRIPTIONS_ADDRESS, this::removeSubscriptions);</span>
+<span class="fc" id="L87">  }</span>
+
+  public Long subscribe(final SubscribeRequest request) {
+<span class="fc" id="L90">    LOG.debug(&quot;Subscribe request {}&quot;, request);</span>
+<span class="fc" id="L91">    subscribeCounter.labels(request.getSubscriptionType().getCode()).inc();</span>
+
+<span class="fc" id="L93">    final long subscriptionId = subscriptionCounter.incrementAndGet();</span>
+<span class="fc" id="L94">    final Subscription subscription =</span>
+<span class="fc" id="L95">        subscriptionBuilder.build(subscriptionId, request.getConnectionId(), request);</span>
+<span class="fc" id="L96">    subscriptions.put(subscription.getSubscriptionId(), subscription);</span>
+
+<span class="fc" id="L98">    return subscription.getSubscriptionId();</span>
+  }
+
+  public boolean unsubscribe(final UnsubscribeRequest request) {
+<span class="fc" id="L102">    final Long subscriptionId = request.getSubscriptionId();</span>
+<span class="fc" id="L103">    final String connectionId = request.getConnectionId();</span>
+
+<span class="fc" id="L105">    LOG.debug(&quot;Unsubscribe request subscriptionId = {}&quot;, subscriptionId);</span>
+
+<span class="fc" id="L107">    final Subscription subscription = subscriptions.get(subscriptionId);</span>
+<span class="fc bfc" id="L108" title="All 4 branches covered.">    if (subscription == null || !subscription.getConnectionId().equals(connectionId)) {</span>
+<span class="fc" id="L109">      throw new SubscriptionNotFoundException(subscriptionId);</span>
+    }
+
+<span class="fc" id="L112">    destroySubscription(subscriptionId);</span>
+
+<span class="fc" id="L114">    return true;</span>
+  }
+
+  private void destroySubscription(final long subscriptionId) {
+<span class="fc" id="L118">    final Subscription removed = subscriptions.remove(subscriptionId);</span>
+<span class="pc bpc" id="L119" title="1 of 2 branches missed.">    if (removed != null) {</span>
+<span class="fc" id="L120">      unsubscribeCounter.labels(removed.getSubscriptionType().getCode()).inc();</span>
+    }
+<span class="fc" id="L122">  }</span>
+
+  private void removeSubscriptions(final Message&lt;String&gt; message) {
+<span class="fc" id="L125">    final String connectionId = message.body();</span>
+<span class="pc bpc" id="L126" title="2 of 4 branches missed.">    if (connectionId == null || &quot;&quot;.equals(connectionId)) {</span>
+<span class="nc" id="L127">      LOG.warn(&quot;Received invalid connectionId ({}). No subscriptions removed.&quot;, connectionId);</span>
+    }
+
+<span class="fc" id="L130">    LOG.debug(&quot;Removing subscription for connectionId {}&quot;, connectionId);</span>
+
+<span class="fc" id="L132">    subscriptions.values().stream()</span>
+<span class="fc" id="L133">        .filter(subscription -&gt; subscription.getConnectionId().equals(connectionId))</span>
+<span class="fc" id="L134">        .forEach(subscription -&gt; destroySubscription(subscription.getSubscriptionId()));</span>
+<span class="fc" id="L135">  }</span>
+
+  public Subscription getSubscriptionById(final Long subscriptionId) {
+<span class="fc" id="L138">    return subscriptions.get(subscriptionId);</span>
+  }
+
+  public &lt;T&gt; List&lt;T&gt; subscriptionsOfType(final SubscriptionType type, final Class&lt;T&gt; clazz) {
+<span class="fc" id="L142">    return subscriptions.values().stream()</span>
+<span class="fc" id="L143">        .filter(subscription -&gt; subscription.isType(type))</span>
+<span class="fc" id="L144">        .map(subscriptionBuilder.mapToSubscriptionClass(clazz))</span>
+<span class="fc" id="L145">        .collect(Collectors.toList());</span>
+  }
+
+  public void sendMessage(final Long subscriptionId, final JsonRpcResult msg) {
+<span class="fc" id="L149">    final Subscription subscription = subscriptions.get(subscriptionId);</span>
+
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">    if (subscription != null) {</span>
+<span class="nc" id="L152">      final SubscriptionResponse response = new SubscriptionResponse(subscription, msg);</span>
+<span class="nc" id="L153">      vertx.eventBus().send(subscription.getConnectionId(), Json.encode(response));</span>
+    }
+<span class="fc" id="L155">  }</span>
+
+  public &lt;T&gt; void notifySubscribersOnWorkerThread(
+      final SubscriptionType subscriptionType,
+      final Class&lt;T&gt; clazz,
+      final Consumer&lt;List&lt;T&gt;&gt; runnable) {
+<span class="fc" id="L161">    vertx.executeBlocking(</span>
+        future -&gt; {
+<span class="fc" id="L163">          final List&lt;T&gt; syncingSubscriptions = subscriptionsOfType(subscriptionType, clazz);</span>
+<span class="fc" id="L164">          runnable.accept(syncingSubscriptions);</span>
+<span class="fc" id="L165">          future.complete();</span>
+<span class="fc" id="L166">        },</span>
+        result -&gt; {
+<span class="pc bpc" id="L168" title="1 of 2 branches missed.">          if (result.failed()) {</span>
+<span class="nc" id="L169">            LOG.error(&quot;Failed to notify subscribers.&quot;, result.cause());</span>
+          }
+<span class="fc" id="L171">        });</span>
+<span class="fc" id="L172">  }</span>
+
+  @Override
+  public void onPrivateTransactionProcessed(final PrivateTransactionEvent event) {
+<span class="fc" id="L176">    privateTransactionEvents.add(event);</span>
+<span class="fc" id="L177">  }</span>
+
+  void onBlockAdded() {
+<span class="fc" id="L180">    privateTransactionEvents.forEach(this::processPrivateTransactionEvents);</span>
+<span class="fc" id="L181">  }</span>
+
+  private void processPrivateTransactionEvents(final PrivateTransactionEvent event) {
+    // When a user is removed from a privacy group, remove all subscriptions from that user to that
+    // group
+<span class="fc" id="L186">    subscriptionsOfType(SubscriptionType.LOGS, PrivateLogsSubscription.class).stream()</span>
+<span class="fc" id="L187">        .filter(</span>
+            subscription -&gt;
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">                subscription.getPrivacyUserId().equals(event.getPrivacyUserId())</span>
+<span class="pc bpc" id="L190" title="1 of 2 branches missed.">                    &amp;&amp; subscription.getPrivacyGroupId().equals(event.getPrivacyGroupId()))</span>
+<span class="fc" id="L191">        .forEach(</span>
+            subscription -&gt;
+<span class="fc" id="L193">                this.unsubscribe(</span>
+                    new UnsubscribeRequest(
+<span class="fc" id="L195">                        subscription.getSubscriptionId(), subscription.getConnectionId())));</span>
+<span class="fc" id="L196">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

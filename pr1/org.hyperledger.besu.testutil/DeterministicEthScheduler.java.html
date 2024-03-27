@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DeterministicEthScheduler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.testutil</a> &gt; <span class="el_source">DeterministicEthScheduler.java</span></div><h1>DeterministicEthScheduler.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.testutil;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/** Schedules tasks that run immediately and synchronously for testing. */
+public class DeterministicEthScheduler extends EthScheduler {
+
+  private final TimeoutPolicy timeoutPolicy;
+  private final List&lt;MockExecutorService&gt; executors;
+<span class="fc" id="L33">  private final List&lt;PendingTimeout&lt;?&gt;&gt; pendingTimeouts = new ArrayList&lt;&gt;();</span>
+
+  /** Create a new deterministic scheduler that never timeouts */
+  public DeterministicEthScheduler() {
+<span class="fc" id="L37">    this(TimeoutPolicy.NEVER_TIMEOUT);</span>
+<span class="fc" id="L38">  }</span>
+
+  /**
+   * Create a new deterministic scheduler with the provided timeout policy
+   *
+   * @param timeoutPolicy the timeout policy
+   */
+  public DeterministicEthScheduler(final TimeoutPolicy timeoutPolicy) {
+<span class="fc" id="L46">    super(</span>
+        new MockExecutorService(),
+        new MockScheduledExecutor(),
+        new MockExecutorService(),
+        new MockExecutorService(),
+        new MockExecutorService(),
+        new MockExecutorService());
+
+<span class="fc" id="L54">    this.timeoutPolicy = timeoutPolicy;</span>
+<span class="fc" id="L55">    this.executors =</span>
+<span class="fc" id="L56">        Arrays.asList(</span>
+            (MockExecutorService) this.syncWorkerExecutor,
+            (MockExecutorService) this.scheduler,
+            (MockExecutorService) this.txWorkerExecutor,
+            (MockExecutorService) this.servicesExecutor,
+            (MockExecutorService) this.computationExecutor,
+            (MockExecutorService) this.blockCreationExecutor);
+<span class="fc" id="L63">  }</span>
+
+  /** Test utility for manually running pending futures, when autorun is disabled */
+  public void runPendingFutures() {
+<span class="fc" id="L67">    executors.forEach(MockExecutorService::runPendingFutures);</span>
+<span class="fc" id="L68">  }</span>
+
+  /**
+   * Get the count of pending tasks
+   *
+   * @return the count of pending tasks
+   */
+  public long getPendingFuturesCount() {
+<span class="fc" id="L76">    return executors.stream().mapToLong(MockExecutorService::getPendingFuturesCount).sum();</span>
+  }
+
+  /** Expire all pending timeouts */
+  public void expirePendingTimeouts() {
+<span class="fc" id="L81">    final List&lt;PendingTimeout&lt;?&gt;&gt; toExpire = new ArrayList&lt;&gt;(pendingTimeouts);</span>
+<span class="fc" id="L82">    pendingTimeouts.clear();</span>
+<span class="fc" id="L83">    toExpire.forEach(PendingTimeout::expire);</span>
+<span class="fc" id="L84">  }</span>
+
+  /** Do not automatically run submitted tasks. Tasks can be later run using runPendingFutures */
+  public void disableAutoRun() {
+<span class="fc" id="L88">    executors.forEach(e -&gt; e.setAutoRun(false));</span>
+<span class="fc" id="L89">  }</span>
+
+  /**
+   * Get the sync worker mock executor
+   *
+   * @return the mock executor
+   */
+  public MockExecutorService mockSyncWorkerExecutor() {
+<span class="fc" id="L97">    return (MockExecutorService) syncWorkerExecutor;</span>
+  }
+
+  /**
+   * Get the scheduled mock executor
+   *
+   * @return the mock executor
+   */
+  public MockScheduledExecutor mockScheduledExecutor() {
+<span class="fc" id="L106">    return (MockScheduledExecutor) scheduler;</span>
+  }
+
+  /**
+   * Get the service mock executor
+   *
+   * @return the mock executor
+   */
+  public MockExecutorService mockServiceExecutor() {
+<span class="nc" id="L115">    return (MockExecutorService) servicesExecutor;</span>
+  }
+
+  /**
+   * Get the block creation mock executor
+   *
+   * @return the mock executor
+   */
+  public MockExecutorService mockBlockCreationExecutor() {
+<span class="nc" id="L124">    return (MockExecutorService) blockCreationExecutor;</span>
+  }
+
+  @Override
+  public &lt;T&gt; void failAfterTimeout(final CompletableFuture&lt;T&gt; promise, final Duration timeout) {
+<span class="fc" id="L129">    final PendingTimeout&lt;T&gt; pendingTimeout = new PendingTimeout&lt;&gt;(promise, timeout);</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    if (timeoutPolicy.shouldTimeout()) {</span>
+<span class="fc" id="L131">      pendingTimeout.expire();</span>
+    } else {
+<span class="fc" id="L133">      this.pendingTimeouts.add(pendingTimeout);</span>
+    }
+<span class="fc" id="L135">  }</span>
+
+  /** Used to define the timeout behavior of the scheduler */
+  @FunctionalInterface
+  public interface TimeoutPolicy {
+    /** A policy that never timeouts */
+<span class="fc" id="L141">    TimeoutPolicy NEVER_TIMEOUT = () -&gt; false;</span>
+    /** A policy that timeouts on every task */
+<span class="fc" id="L143">    TimeoutPolicy ALWAYS_TIMEOUT = () -&gt; true;</span>
+
+    /**
+     * If it should simulate a timeout when called
+     *
+     * @return true if the scheduler should timeouts
+     */
+    boolean shouldTimeout();
+
+    /**
+     * Create a timeout policy that timeouts x times
+     *
+     * @param times the number of timeouts
+     * @return the timeout policy
+     */
+    static TimeoutPolicy timeoutXTimes(final int times) {
+<span class="nc" id="L159">      final AtomicInteger timeouts = new AtomicInteger(times);</span>
+<span class="nc" id="L160">      return () -&gt; {</span>
+<span class="nc bnc" id="L161" title="All 2 branches missed.">        if (timeouts.get() &lt;= 0) {</span>
+<span class="nc" id="L162">          return false;</span>
+        }
+<span class="nc" id="L164">        timeouts.decrementAndGet();</span>
+<span class="nc" id="L165">        return true;</span>
+      };
+    }
+  }
+
+  private static class PendingTimeout&lt;T&gt; {
+    final CompletableFuture&lt;T&gt; promise;
+    final Duration timeout;
+
+<span class="fc" id="L174">    private PendingTimeout(final CompletableFuture&lt;T&gt; promise, final Duration timeout) {</span>
+<span class="fc" id="L175">      this.promise = promise;</span>
+<span class="fc" id="L176">      this.timeout = timeout;</span>
+<span class="fc" id="L177">    }</span>
+
+    public void expire() {
+<span class="fc" id="L180">      final TimeoutException timeoutException =</span>
+          new TimeoutException(
+<span class="fc" id="L182">              &quot;Mocked timeout after &quot; + timeout.toMillis() + &quot; &quot; + TimeUnit.MILLISECONDS);</span>
+<span class="fc" id="L183">      promise.completeExceptionally(timeoutException);</span>
+<span class="fc" id="L184">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

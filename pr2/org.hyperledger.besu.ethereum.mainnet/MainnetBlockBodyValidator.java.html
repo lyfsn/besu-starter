@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetBlockBodyValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">MainnetBlockBodyValidator.java</span></div><h1>MainnetBlockBodyValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.evm.log.LogsBloomFilter;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MainnetBlockBodyValidator implements BlockBodyValidator {
+
+<span class="fc" id="L35">  private static final Logger LOG = LoggerFactory.getLogger(MainnetBlockBodyValidator.class);</span>
+
+  private static final int MAX_OMMERS = 2;
+
+  private static final int MAX_GENERATION = 6;
+  protected final ProtocolSchedule protocolSchedule;
+
+<span class="fc" id="L42">  public MainnetBlockBodyValidator(final ProtocolSchedule protocolSchedule) {</span>
+<span class="fc" id="L43">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L44">  }</span>
+
+  @Override
+  public boolean validateBody(
+      final ProtocolContext context,
+      final Block block,
+      final List&lt;TransactionReceipt&gt; receipts,
+      final Hash worldStateRootHash,
+      final HeaderValidationMode ommerValidationMode) {
+
+<span class="fc bfc" id="L54" title="All 2 branches covered.">    if (!validateBodyLight(context, block, receipts, ommerValidationMode)) {</span>
+<span class="fc" id="L55">      return false;</span>
+    }
+
+<span class="fc bfc" id="L58" title="All 2 branches covered.">    if (!validateStateRoot(</span>
+<span class="fc" id="L59">        block.getHeader(), block.getHeader().getStateRoot(), worldStateRootHash)) {</span>
+<span class="fc" id="L60">      LOG.warn(&quot;Invalid block RLP : {}&quot;, block.toRlp().toHexString());</span>
+<span class="fc" id="L61">      receipts.forEach(</span>
+          receipt -&gt;
+<span class="fc" id="L63">              LOG.warn(&quot;Transaction receipt found in the invalid block {}&quot;, receipt.toString()));</span>
+<span class="fc" id="L64">      return false;</span>
+    }
+
+<span class="fc" id="L67">    return true;</span>
+  }
+
+  @Override
+  public boolean validateBodyLight(
+      final ProtocolContext context,
+      final Block block,
+      final List&lt;TransactionReceipt&gt; receipts,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc" id="L76">    final BlockHeader header = block.getHeader();</span>
+<span class="fc" id="L77">    final BlockBody body = block.getBody();</span>
+
+<span class="fc" id="L79">    final Bytes32 transactionsRoot = BodyValidation.transactionsRoot(body.getTransactions());</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (!validateTransactionsRoot(header, header.getTransactionsRoot(), transactionsRoot)) {</span>
+<span class="fc" id="L81">      return false;</span>
+    }
+
+<span class="fc" id="L84">    final Bytes32 receiptsRoot = BodyValidation.receiptsRoot(receipts);</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (!validateReceiptsRoot(header, header.getReceiptsRoot(), receiptsRoot)) {</span>
+<span class="fc" id="L86">      return false;</span>
+    }
+
+    final long gasUsed =
+<span class="fc bfc" id="L90" title="All 2 branches covered.">        receipts.isEmpty() ? 0 : receipts.get(receipts.size() - 1).getCumulativeGasUsed();</span>
+<span class="fc bfc" id="L91" title="All 2 branches covered.">    if (!validateGasUsed(header, header.getGasUsed(), gasUsed)) {</span>
+<span class="fc" id="L92">      return false;</span>
+    }
+
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    if (!validateLogsBloom(header, header.getLogsBloom(), BodyValidation.logsBloom(receipts))) {</span>
+<span class="fc" id="L96">      return false;</span>
+    }
+
+<span class="fc bfc" id="L99" title="All 2 branches covered.">    if (!validateEthHash(context, block, ommerValidationMode)) {</span>
+<span class="fc" id="L100">      return false;</span>
+    }
+
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (!validateWithdrawals(block)) {</span>
+<span class="fc" id="L104">      return false;</span>
+    }
+
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">    if (!validateDeposits(block, receipts)) {</span>
+<span class="nc" id="L108">      return false;</span>
+    }
+
+<span class="fc" id="L111">    return true;</span>
+  }
+
+  private static boolean validateTransactionsRoot(
+      final BlockHeader header, final Bytes32 expected, final Bytes32 actual) {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    if (!expected.equals(actual)) {</span>
+<span class="fc" id="L117">      LOG.info(</span>
+          &quot;Invalid block {}: transaction root mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L119">          header.toLogString(),</span>
+          expected,
+          actual);
+<span class="fc" id="L122">      return false;</span>
+    }
+
+<span class="fc" id="L125">    return true;</span>
+  }
+
+  private static boolean validateLogsBloom(
+      final BlockHeader header, final LogsBloomFilter expected, final LogsBloomFilter actual) {
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    if (!expected.equals(actual)) {</span>
+<span class="fc" id="L131">      LOG.warn(</span>
+          &quot;Invalid block {}: logs bloom filter mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L133">          header.toLogString(),</span>
+          expected,
+          actual);
+<span class="fc" id="L136">      return false;</span>
+    }
+
+<span class="fc" id="L139">    return true;</span>
+  }
+
+  private static boolean validateGasUsed(
+      final BlockHeader header, final long expected, final long actual) {
+<span class="fc bfc" id="L144" title="All 2 branches covered.">    if (expected != actual) {</span>
+<span class="fc" id="L145">      LOG.warn(</span>
+          &quot;Invalid block {}: gas used mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L147">          header.toLogString(),</span>
+<span class="fc" id="L148">          expected,</span>
+<span class="fc" id="L149">          actual);</span>
+<span class="fc" id="L150">      return false;</span>
+    }
+
+<span class="fc" id="L153">    return true;</span>
+  }
+
+  private static boolean validateReceiptsRoot(
+      final BlockHeader header, final Bytes32 expected, final Bytes32 actual) {
+<span class="fc bfc" id="L158" title="All 2 branches covered.">    if (!expected.equals(actual)) {</span>
+<span class="fc" id="L159">      LOG.warn(</span>
+          &quot;Invalid block {}: receipts root mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L161">          header.toLogString(),</span>
+          expected,
+          actual);
+<span class="fc" id="L164">      return false;</span>
+    }
+
+<span class="fc" id="L167">    return true;</span>
+  }
+
+  private static boolean validateStateRoot(
+      final BlockHeader header, final Bytes32 expected, final Bytes32 actual) {
+<span class="fc bfc" id="L172" title="All 2 branches covered.">    if (!expected.equals(actual)) {</span>
+<span class="fc" id="L173">      LOG.warn(</span>
+          &quot;Invalid block {}: state root mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L175">          header.toLogString(),</span>
+          expected,
+          actual);
+<span class="fc" id="L178">      return false;</span>
+    }
+
+<span class="fc" id="L181">    return true;</span>
+  }
+
+  private boolean validateEthHash(
+      final ProtocolContext context,
+      final Block block,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc" id="L188">    final BlockHeader header = block.getHeader();</span>
+<span class="fc" id="L189">    final BlockBody body = block.getBody();</span>
+
+<span class="fc" id="L191">    final Bytes32 ommerHash = BodyValidation.ommersHash(body.getOmmers());</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">    if (!validateOmmersHash(header, header.getOmmersHash(), ommerHash)) {</span>
+<span class="fc" id="L193">      return false;</span>
+    }
+
+<span class="fc bfc" id="L196" title="All 2 branches covered.">    if (!validateOmmers(context, header, body.getOmmers(), ommerValidationMode)) {</span>
+<span class="fc" id="L197">      return false;</span>
+    }
+
+<span class="fc" id="L200">    return true;</span>
+  }
+
+  private static boolean validateOmmersHash(
+      final BlockHeader header, final Bytes32 expected, final Bytes32 actual) {
+<span class="fc bfc" id="L205" title="All 2 branches covered.">    if (!expected.equals(actual)) {</span>
+<span class="fc" id="L206">      LOG.warn(</span>
+          &quot;Invalid block {}: ommers hash mismatch (expected={}, actual={})&quot;,
+<span class="fc" id="L208">          header.toLogString(),</span>
+          expected,
+          actual);
+<span class="fc" id="L211">      return false;</span>
+    }
+
+<span class="fc" id="L214">    return true;</span>
+  }
+
+  private boolean validateOmmers(
+      final ProtocolContext context,
+      final BlockHeader header,
+      final List&lt;BlockHeader&gt; ommers,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc bfc" id="L222" title="All 2 branches covered.">    if (ommers.size() &gt; MAX_OMMERS) {</span>
+<span class="fc" id="L223">      LOG.warn(</span>
+          &quot;Invalid block {}: ommer count {} exceeds ommer limit {}&quot;,
+<span class="fc" id="L225">          header.toLogString(),</span>
+<span class="fc" id="L226">          ommers.size(),</span>
+<span class="fc" id="L227">          MAX_OMMERS);</span>
+<span class="fc" id="L228">      return false;</span>
+    }
+
+<span class="fc bfc" id="L231" title="All 2 branches covered.">    if (!areOmmersUnique(ommers)) {</span>
+<span class="fc" id="L232">      LOG.warn(&quot;Invalid block {}: ommers are not unique&quot;, header.toLogString());</span>
+<span class="fc" id="L233">      return false;</span>
+    }
+
+<span class="fc bfc" id="L236" title="All 2 branches covered.">    for (final BlockHeader ommer : ommers) {</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">      if (!isOmmerValid(context, header, ommer, ommerValidationMode)) {</span>
+<span class="fc" id="L238">        LOG.warn(&quot;Invalid block {}: ommer is invalid&quot;, header.toLogString());</span>
+<span class="fc" id="L239">        return false;</span>
+      }
+<span class="fc" id="L241">    }</span>
+
+<span class="fc" id="L243">    return true;</span>
+  }
+
+  private static boolean areOmmersUnique(final List&lt;BlockHeader&gt; ommers) {
+<span class="fc" id="L247">    final Set&lt;BlockHeader&gt; uniqueOmmers = new HashSet&lt;&gt;(ommers);</span>
+
+<span class="fc bfc" id="L249" title="All 2 branches covered.">    return uniqueOmmers.size() == ommers.size();</span>
+  }
+
+  private static boolean areSiblings(final BlockHeader a, final BlockHeader b) {
+    // Siblings cannot be the same.
+<span class="pc bpc" id="L254" title="1 of 2 branches missed.">    if (a.equals(b)) {</span>
+<span class="nc" id="L255">      return false;</span>
+    }
+
+<span class="fc" id="L258">    return a.getParentHash().equals(b.getParentHash());</span>
+  }
+
+  private boolean isOmmerValid(
+      final ProtocolContext context,
+      final BlockHeader current,
+      final BlockHeader ommer,
+      final HeaderValidationMode ommerValidationMode) {
+<span class="fc" id="L266">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(ommer);</span>
+<span class="fc" id="L267">    if (!protocolSpec</span>
+<span class="fc" id="L268">        .getOmmerHeaderValidator()</span>
+<span class="fc bfc" id="L269" title="All 2 branches covered.">        .validateHeader(ommer, context, ommerValidationMode)) {</span>
+<span class="fc" id="L270">      return false;</span>
+    }
+
+<span class="fc bfc" id="L273" title="All 2 branches covered.">    if (!ommerValidationMode.isFormOfLightValidation()) {</span>
+<span class="fc" id="L274">      return isOmmerSiblingOfAncestor(context, current, ommer);</span>
+    } else {
+<span class="fc" id="L276">      return true;</span>
+    }
+  }
+
+  private boolean isOmmerSiblingOfAncestor(
+      final ProtocolContext context, final BlockHeader current, final BlockHeader ommer) {
+    // The current block is guaranteed to have a parent because it's a valid header.
+<span class="fc" id="L283">    final long lastAncestorBlockNumber = Math.max(current.getNumber() - MAX_GENERATION, 0);</span>
+
+<span class="fc" id="L285">    BlockHeader previous = current;</span>
+<span class="pc bpc" id="L286" title="1 of 2 branches missed.">    while (previous.getNumber() &gt; lastAncestorBlockNumber) {</span>
+<span class="fc" id="L287">      final BlockHeader ancestor =</span>
+<span class="fc" id="L288">          context.getBlockchain().getBlockHeader(previous.getParentHash()).get();</span>
+<span class="fc bfc" id="L289" title="All 2 branches covered.">      if (areSiblings(ommer, ancestor)) {</span>
+<span class="fc" id="L290">        return true;</span>
+      }
+<span class="fc" id="L292">      previous = ancestor;</span>
+<span class="fc" id="L293">    }</span>
+<span class="nc" id="L294">    return false;</span>
+  }
+
+  private boolean validateWithdrawals(final Block block) {
+<span class="fc" id="L298">    final WithdrawalsValidator withdrawalsValidator =</span>
+<span class="fc" id="L299">        protocolSchedule.getByBlockHeader(block.getHeader()).getWithdrawalsValidator();</span>
+
+<span class="fc bfc" id="L301" title="All 2 branches covered.">    if (!withdrawalsValidator.validateWithdrawals(block.getBody().getWithdrawals())) {</span>
+<span class="fc" id="L302">      return false;</span>
+    }
+
+<span class="fc bfc" id="L305" title="All 2 branches covered.">    if (!withdrawalsValidator.validateWithdrawalsRoot(block)) {</span>
+<span class="fc" id="L306">      return false;</span>
+    }
+
+<span class="fc" id="L309">    return true;</span>
+  }
+
+  private boolean validateDeposits(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc" id="L313">    final DepositsValidator depositsValidator =</span>
+<span class="fc" id="L314">        protocolSchedule.getByBlockHeader(block.getHeader()).getDepositsValidator();</span>
+
+<span class="pc bpc" id="L316" title="1 of 2 branches missed.">    if (!depositsValidator.validateDeposits(block, receipts)) {</span>
+<span class="nc" id="L317">      return false;</span>
+    }
+
+<span class="pc bpc" id="L320" title="1 of 2 branches missed.">    if (!depositsValidator.validateDepositsRoot(block)) {</span>
+<span class="nc" id="L321">      return false;</span>
+    }
+
+<span class="fc" id="L324">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

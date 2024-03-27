@@ -1,0 +1,342 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrometheusMetricsSystem.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.metrics.prometheus</a> &gt; <span class="el_source">PrometheusMetricsSystem.java</span></div><h1>PrometheusMetricsSystem.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.metrics.prometheus;
+
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.metrics.Observation;
+import org.hyperledger.besu.metrics.StandardMetricCategory;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.LabelledGauge;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.plugin.services.metrics.MetricCategory;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+
+import com.google.common.collect.ImmutableSet;
+import io.prometheus.client.Collector;
+import io.prometheus.client.Collector.MetricFamilySamples;
+import io.prometheus.client.Collector.MetricFamilySamples.Sample;
+import io.prometheus.client.CollectorRegistry;
+import io.prometheus.client.Counter;
+import io.prometheus.client.Summary;
+import io.prometheus.client.hotspot.BufferPoolsExports;
+import io.prometheus.client.hotspot.ClassLoadingExports;
+import io.prometheus.client.hotspot.GarbageCollectorExports;
+import io.prometheus.client.hotspot.MemoryPoolsExports;
+import io.prometheus.client.hotspot.StandardExports;
+import io.prometheus.client.hotspot.ThreadExports;
+import io.vertx.core.impl.ConcurrentHashSet;
+
+/** The Prometheus metrics system. */
+public class PrometheusMetricsSystem implements ObservableMetricsSystem {
+
+<span class="fc" id="L55">  private final Map&lt;MetricCategory, Collection&lt;Collector&gt;&gt; collectors = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L56">  private final CollectorRegistry registry = new CollectorRegistry(true);</span>
+<span class="fc" id="L57">  private final Map&lt;String, LabelledMetric&lt;org.hyperledger.besu.plugin.services.metrics.Counter&gt;&gt;</span>
+      cachedCounters = new ConcurrentHashMap&lt;&gt;();
+<span class="fc" id="L59">  private final Map&lt;String, LabelledMetric&lt;OperationTimer&gt;&gt; cachedTimers =</span>
+      new ConcurrentHashMap&lt;&gt;();
+<span class="fc" id="L61">  private final Set&lt;String&gt; totalSuffixedCounters = new ConcurrentHashSet&lt;&gt;();</span>
+
+  private final Set&lt;MetricCategory&gt; enabledCategories;
+  private final boolean timersEnabled;
+
+  /**
+   * Instantiates a new Prometheus metrics system.
+   *
+   * @param enabledCategories the enabled categories
+   * @param timersEnabled the timers enabled
+   */
+  public PrometheusMetricsSystem(
+<span class="fc" id="L73">      final Set&lt;MetricCategory&gt; enabledCategories, final boolean timersEnabled) {</span>
+<span class="fc" id="L74">    this.enabledCategories = ImmutableSet.copyOf(enabledCategories);</span>
+<span class="fc" id="L75">    this.timersEnabled = timersEnabled;</span>
+<span class="fc" id="L76">  }</span>
+
+  /** Init. */
+  public void init() {
+<span class="fc" id="L80">    addCollector(StandardMetricCategory.PROCESS, StandardExports::new);</span>
+<span class="fc" id="L81">    addCollector(StandardMetricCategory.JVM, MemoryPoolsExports::new);</span>
+<span class="fc" id="L82">    addCollector(StandardMetricCategory.JVM, BufferPoolsExports::new);</span>
+<span class="fc" id="L83">    addCollector(StandardMetricCategory.JVM, GarbageCollectorExports::new);</span>
+<span class="fc" id="L84">    addCollector(StandardMetricCategory.JVM, ThreadExports::new);</span>
+<span class="fc" id="L85">    addCollector(StandardMetricCategory.JVM, ClassLoadingExports::new);</span>
+<span class="fc" id="L86">  }</span>
+
+  @Override
+  public Set&lt;MetricCategory&gt; getEnabledCategories() {
+<span class="fc" id="L90">    return enabledCategories;</span>
+  }
+
+  @Override
+  public LabelledMetric&lt;org.hyperledger.besu.plugin.services.metrics.Counter&gt; createLabelledCounter(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L99">    final String metricName = convertToPrometheusCounterName(category, name);</span>
+<span class="fc" id="L100">    return cachedCounters.computeIfAbsent(</span>
+        metricName,
+        (k) -&gt; {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">          if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L104">            final Counter counter = Counter.build(metricName, help).labelNames(labelNames).create();</span>
+<span class="fc" id="L105">            addCollectorUnchecked(category, counter);</span>
+<span class="fc" id="L106">            return new PrometheusCounter(counter);</span>
+          } else {
+<span class="fc" id="L108">            return NoOpMetricsSystem.getCounterLabelledMetric(labelNames.length);</span>
+          }
+        });
+  }
+
+  @Override
+  public LabelledMetric&lt;OperationTimer&gt; createLabelledTimer(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L119">    final String metricName = convertToPrometheusName(category, name);</span>
+<span class="fc" id="L120">    return cachedTimers.computeIfAbsent(</span>
+        metricName,
+        (k) -&gt; {
+<span class="pc bpc" id="L123" title="1 of 4 branches missed.">          if (timersEnabled &amp;&amp; isCategoryEnabled(category)) {</span>
+<span class="fc" id="L124">            final Summary summary =</span>
+<span class="fc" id="L125">                Summary.build(metricName, help)</span>
+<span class="fc" id="L126">                    .quantile(0.2, 0.02)</span>
+<span class="fc" id="L127">                    .quantile(0.5, 0.05)</span>
+<span class="fc" id="L128">                    .quantile(0.8, 0.02)</span>
+<span class="fc" id="L129">                    .quantile(0.95, 0.005)</span>
+<span class="fc" id="L130">                    .quantile(0.99, 0.001)</span>
+<span class="fc" id="L131">                    .quantile(1.0, 0)</span>
+<span class="fc" id="L132">                    .labelNames(labelNames)</span>
+<span class="fc" id="L133">                    .create();</span>
+<span class="fc" id="L134">            addCollectorUnchecked(category, summary);</span>
+<span class="fc" id="L135">            return new PrometheusTimer(summary);</span>
+          } else {
+<span class="fc" id="L137">            return NoOpMetricsSystem.getOperationTimerLabelledMetric(labelNames.length);</span>
+          }
+        });
+  }
+
+  @Override
+  public void createGauge(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final DoubleSupplier valueSupplier) {
+<span class="fc" id="L148">    final String metricName = convertToPrometheusName(category, name);</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">    if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L150">      final Collector collector = new CurrentValueCollector(metricName, help, valueSupplier);</span>
+<span class="fc" id="L151">      addCollectorUnchecked(category, collector);</span>
+    }
+<span class="fc" id="L153">  }</span>
+
+  @Override
+  public LabelledGauge createLabelledGauge(
+      final MetricCategory category,
+      final String name,
+      final String help,
+      final String... labelNames) {
+<span class="fc" id="L161">    final String metricName = convertToPrometheusName(category, name);</span>
+<span class="fc bfc" id="L162" title="All 2 branches covered.">    if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L163">      final PrometheusGauge gauge = new PrometheusGauge(metricName, help, List.of(labelNames));</span>
+<span class="fc" id="L164">      addCollectorUnchecked(category, gauge);</span>
+<span class="fc" id="L165">      return gauge;</span>
+    }
+<span class="fc" id="L167">    return NoOpMetricsSystem.getLabelledGauge(labelNames.length);</span>
+  }
+
+  /**
+   * Add collector.
+   *
+   * @param category the category
+   * @param metricSupplier the metric supplier
+   */
+  public void addCollector(
+      final MetricCategory category, final Supplier&lt;Collector&gt; metricSupplier) {
+<span class="fc bfc" id="L178" title="All 2 branches covered.">    if (isCategoryEnabled(category)) {</span>
+<span class="fc" id="L179">      addCollectorUnchecked(category, metricSupplier.get());</span>
+    }
+<span class="fc" id="L181">  }</span>
+
+  private void addCollectorUnchecked(final MetricCategory category, final Collector metric) {
+<span class="fc" id="L184">    final Collection&lt;Collector&gt; metrics =</span>
+<span class="fc" id="L185">        this.collectors.computeIfAbsent(</span>
+<span class="fc" id="L186">            category, key -&gt; Collections.newSetFromMap(new ConcurrentHashMap&lt;&gt;()));</span>
+
+<span class="fc" id="L188">    final List&lt;String&gt; newSamples =</span>
+<span class="fc" id="L189">        metric.collect().stream().map(metricFamilySamples -&gt; metricFamilySamples.name).toList();</span>
+
+<span class="fc" id="L191">    metrics.stream()</span>
+<span class="fc" id="L192">        .filter(</span>
+            collector -&gt;
+<span class="fc" id="L194">                collector.collect().stream()</span>
+<span class="fc" id="L195">                    .anyMatch(metricFamilySamples -&gt; newSamples.contains(metricFamilySamples.name)))</span>
+<span class="fc" id="L196">        .findFirst()</span>
+<span class="fc" id="L197">        .ifPresent(</span>
+            collector -&gt; {
+<span class="fc" id="L199">              metrics.remove(collector);</span>
+<span class="fc" id="L200">              registry.unregister(collector);</span>
+<span class="fc" id="L201">            });</span>
+
+<span class="fc" id="L203">    metrics.add(metric.register(registry));</span>
+<span class="fc" id="L204">  }</span>
+
+  @Override
+  public Stream&lt;Observation&gt; streamObservations(final MetricCategory category) {
+<span class="fc" id="L208">    return collectors.getOrDefault(category, Collections.emptySet()).stream()</span>
+<span class="fc" id="L209">        .flatMap(collector -&gt; collector.collect().stream())</span>
+<span class="fc" id="L210">        .flatMap(familySamples -&gt; convertSamplesToObservations(category, familySamples));</span>
+  }
+
+  @Override
+  public Stream&lt;Observation&gt; streamObservations() {
+<span class="fc" id="L215">    return collectors.keySet().stream().flatMap(this::streamObservations);</span>
+  }
+
+  private Stream&lt;Observation&gt; convertSamplesToObservations(
+      final MetricCategory category, final MetricFamilySamples familySamples) {
+<span class="fc" id="L220">    return familySamples.samples.stream()</span>
+<span class="fc" id="L221">        .map(sample -&gt; createObservationFromSample(category, sample, familySamples));</span>
+  }
+
+  private Observation createObservationFromSample(
+      final MetricCategory category, final Sample sample, final MetricFamilySamples familySamples) {
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">    if (familySamples.type == Collector.Type.HISTOGRAM) {</span>
+<span class="nc" id="L227">      return convertHistogramSampleNamesToLabels(category, sample, familySamples);</span>
+    }
+<span class="fc bfc" id="L229" title="All 2 branches covered.">    if (familySamples.type == Collector.Type.SUMMARY) {</span>
+<span class="fc" id="L230">      return convertSummarySampleNamesToLabels(category, sample, familySamples);</span>
+    }
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (familySamples.type == Collector.Type.COUNTER) {</span>
+<span class="fc" id="L233">      return convertCounterNamesToLabels(category, sample, familySamples);</span>
+    }
+<span class="fc" id="L235">    return new Observation(</span>
+        category,
+<span class="fc" id="L237">        convertFromPrometheusName(category, sample.name),</span>
+<span class="fc" id="L238">        sample.value,</span>
+        sample.labelValues);
+  }
+
+  private Observation convertCounterNamesToLabels(
+      final MetricCategory category, final Sample sample, final MetricFamilySamples familySamples) {
+<span class="fc" id="L244">    final List&lt;String&gt; labelValues = new ArrayList&lt;&gt;(sample.labelValues);</span>
+<span class="fc bfc" id="L245" title="All 2 branches covered.">    if (sample.name.endsWith(&quot;_created&quot;)) {</span>
+<span class="fc" id="L246">      labelValues.add(&quot;created&quot;);</span>
+    }
+
+<span class="fc" id="L249">    return new Observation(</span>
+        category,
+<span class="fc" id="L251">        convertFromPrometheusCounterName(category, familySamples.name),</span>
+<span class="fc" id="L252">        sample.value,</span>
+        labelValues);
+  }
+
+  private Observation convertHistogramSampleNamesToLabels(
+      final MetricCategory category, final Sample sample, final MetricFamilySamples familySamples) {
+<span class="nc" id="L258">    final List&lt;String&gt; labelValues = new ArrayList&lt;&gt;(sample.labelValues);</span>
+<span class="nc bnc" id="L259" title="All 2 branches missed.">    if (sample.name.endsWith(&quot;_bucket&quot;)) {</span>
+<span class="nc" id="L260">      labelValues.add(labelValues.size() - 1, &quot;bucket&quot;);</span>
+    } else {
+<span class="nc" id="L262">      labelValues.add(sample.name.substring(sample.name.lastIndexOf(&quot;_&quot;) + 1));</span>
+    }
+<span class="nc" id="L264">    return new Observation(</span>
+        category,
+<span class="nc" id="L266">        convertFromPrometheusName(category, familySamples.name),</span>
+<span class="nc" id="L267">        sample.value,</span>
+        labelValues);
+  }
+
+  private Observation convertSummarySampleNamesToLabels(
+      final MetricCategory category, final Sample sample, final MetricFamilySamples familySamples) {
+<span class="fc" id="L273">    final List&lt;String&gt; labelValues = new ArrayList&lt;&gt;(sample.labelValues);</span>
+<span class="fc bfc" id="L274" title="All 2 branches covered.">    if (sample.name.endsWith(&quot;_sum&quot;)) {</span>
+<span class="fc" id="L275">      labelValues.add(&quot;sum&quot;);</span>
+<span class="fc bfc" id="L276" title="All 2 branches covered.">    } else if (sample.name.endsWith(&quot;_count&quot;)) {</span>
+<span class="fc" id="L277">      labelValues.add(&quot;count&quot;);</span>
+<span class="fc bfc" id="L278" title="All 2 branches covered.">    } else if (sample.name.endsWith(&quot;_created&quot;)) {</span>
+<span class="fc" id="L279">      labelValues.add(&quot;created&quot;);</span>
+    } else {
+<span class="fc" id="L281">      labelValues.add(labelValues.size() - 1, &quot;quantile&quot;);</span>
+    }
+<span class="fc" id="L283">    return new Observation(</span>
+        category,
+<span class="fc" id="L285">        convertFromPrometheusName(category, familySamples.name),</span>
+<span class="fc" id="L286">        sample.value,</span>
+        labelValues);
+  }
+
+  /**
+   * Convert to prometheus name.
+   *
+   * @param category the category
+   * @param name the name
+   * @return the name as string
+   */
+  public String convertToPrometheusName(final MetricCategory category, final String name) {
+<span class="fc" id="L298">    return prometheusPrefix(category) + name;</span>
+  }
+
+  /**
+   * Convert to prometheus counter name. Prometheus adds a _total suffix to the name if not present,
+   * so we remember if the original name already has it, to be able to covert back correctly
+   *
+   * @param category the category
+   * @param name the name
+   * @return the name as string
+   */
+  public String convertToPrometheusCounterName(final MetricCategory category, final String name) {
+<span class="fc bfc" id="L310" title="All 2 branches covered.">    if (name.endsWith(&quot;_total&quot;)) {</span>
+<span class="fc" id="L311">      totalSuffixedCounters.add(name);</span>
+    }
+<span class="fc" id="L313">    return convertToPrometheusName(category, name);</span>
+  }
+
+  private String convertFromPrometheusName(final MetricCategory category, final String metricName) {
+<span class="fc" id="L317">    final String prefix = prometheusPrefix(category);</span>
+<span class="pc bpc" id="L318" title="1 of 2 branches missed.">    return metricName.startsWith(prefix) ? metricName.substring(prefix.length()) : metricName;</span>
+  }
+
+  private String convertFromPrometheusCounterName(
+      final MetricCategory category, final String metricName) {
+<span class="fc" id="L323">    final String unPrefixedName = convertFromPrometheusName(category, metricName);</span>
+<span class="fc bfc" id="L324" title="All 2 branches covered.">    return totalSuffixedCounters.contains(unPrefixedName + &quot;_total&quot;)</span>
+<span class="fc" id="L325">        ? unPrefixedName + &quot;_total&quot;</span>
+<span class="fc" id="L326">        : unPrefixedName;</span>
+  }
+
+  private String prometheusPrefix(final MetricCategory category) {
+<span class="fc" id="L330">    return category.getApplicationPrefix().orElse(&quot;&quot;) + category.getName() + &quot;_&quot;;</span>
+  }
+
+  /**
+   * Gets registry.
+   *
+   * @return the registry
+   */
+  CollectorRegistry getRegistry() {
+<span class="fc" id="L339">    return registry;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

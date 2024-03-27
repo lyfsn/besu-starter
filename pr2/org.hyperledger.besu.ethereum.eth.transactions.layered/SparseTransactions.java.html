@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SparseTransactions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.layered</a> &gt; <span class="el_source">SparseTransactions.java</span></div><h1>SparseTransactions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.layered;
+
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.INVALIDATED;
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.PROMOTED;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionAddedResult;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.NavigableSet;
+import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+import com.google.common.collect.Iterables;
+
+<span class="fc" id="L51">public class SparseTransactions extends AbstractTransactionsLayer {</span>
+<span class="fc" id="L52">  private final NavigableSet&lt;PendingTransaction&gt; sparseEvictionOrder =</span>
+      new TreeSet&lt;&gt;(
+<span class="fc" id="L54">          Comparator.comparing(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L55">              .thenComparing(PendingTransaction::getSequence));</span>
+<span class="fc" id="L56">  private final Map&lt;Address, Integer&gt; gapBySender = new HashMap&lt;&gt;();</span>
+  private final List&lt;SendersByPriority&gt; orderByGap;
+
+  public SparseTransactions(
+      final TransactionPoolConfiguration poolConfig,
+      final TransactionsLayer nextLayer,
+      final TransactionPoolMetrics metrics,
+      final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
+          transactionReplacementTester,
+      final BlobCache blobCache) {
+<span class="fc" id="L66">    super(poolConfig, nextLayer, transactionReplacementTester, metrics, blobCache);</span>
+<span class="fc" id="L67">    orderByGap = new ArrayList&lt;&gt;(poolConfig.getMaxFutureBySender());</span>
+<span class="fc" id="L68">    IntStream.range(0, poolConfig.getMaxFutureBySender())</span>
+<span class="fc" id="L69">        .forEach(i -&gt; orderByGap.add(new SendersByPriority()));</span>
+<span class="fc" id="L70">  }</span>
+
+  @Override
+  public String name() {
+<span class="fc" id="L74">    return &quot;sparse&quot;;</span>
+  }
+
+  @Override
+  protected long cacheFreeSpace() {
+<span class="fc" id="L79">    return poolConfig.getPendingTransactionsLayerMaxCapacityBytes() - getLayerSpaceUsed();</span>
+  }
+
+  @Override
+  protected boolean gapsAllowed() {
+<span class="fc" id="L84">    return true;</span>
+  }
+
+  @Override
+  public void reset() {
+<span class="fc" id="L89">    super.reset();</span>
+<span class="fc" id="L90">    sparseEvictionOrder.clear();</span>
+<span class="fc" id="L91">    gapBySender.clear();</span>
+<span class="fc" id="L92">    orderByGap.forEach(SendersByPriority::clear);</span>
+<span class="fc" id="L93">  }</span>
+
+  @Override
+  protected TransactionAddedResult canAdd(
+      final PendingTransaction pendingTransaction, final int gap) {
+<span class="fc" id="L98">    gapBySender.compute(</span>
+<span class="fc" id="L99">        pendingTransaction.getSender(),</span>
+        (sender, currGap) -&gt; {
+<span class="fc bfc" id="L101" title="All 2 branches covered.">          if (currGap == null) {</span>
+<span class="fc" id="L102">            orderByGap.get(gap).add(pendingTransaction);</span>
+<span class="fc" id="L103">            return gap;</span>
+          }
+<span class="fc bfc" id="L105" title="All 2 branches covered.">          if (pendingTransaction.getNonce() &lt; txsBySender.get(sender).firstKey()) {</span>
+<span class="fc" id="L106">            orderByGap.get(currGap).remove(sender);</span>
+<span class="fc" id="L107">            orderByGap.get(gap).add(pendingTransaction);</span>
+<span class="fc" id="L108">            return gap;</span>
+          }
+<span class="fc" id="L110">          return currGap;</span>
+        });
+
+<span class="fc" id="L113">    return TransactionAddedResult.ADDED;</span>
+  }
+
+  @Override
+  protected void internalAdd(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs, final PendingTransaction addedTx) {
+<span class="fc" id="L119">    sparseEvictionOrder.add(addedTx);</span>
+<span class="fc" id="L120">  }</span>
+
+  @Override
+  protected int maxTransactionsNumber() {
+<span class="fc" id="L124">    return Integer.MAX_VALUE;</span>
+  }
+
+  @Override
+  protected void internalReplaced(final PendingTransaction replacedTx) {
+<span class="nc" id="L129">    sparseEvictionOrder.remove(replacedTx);</span>
+<span class="nc" id="L130">  }</span>
+
+  @Override
+<span class="fc" id="L133">  protected void internalBlockAdded(final BlockHeader blockHeader, final FeeMarket feeMarket) {}</span>
+
+  /**
+   * We only want to promote transactions that have gap == 0, so there will be no gap in the prev
+   * layers. A promoted transaction is removed from this layer, and the gap data is updated for its
+   * sender.
+   *
+   * @param promotionFilter the prev layer's promotion filter
+   * @param freeSpace max amount of memory promoted txs can occupy
+   * @param freeSlots max number of promoted txs
+   * @return a list of transactions promoted to the prev layer
+   */
+  @Override
+  public List&lt;PendingTransaction&gt; promote(
+      final Predicate&lt;PendingTransaction&gt; promotionFilter,
+      final long freeSpace,
+      final int freeSlots) {
+<span class="fc" id="L150">    long accumulatedSpace = 0;</span>
+<span class="fc" id="L151">    final List&lt;PendingTransaction&gt; promotedTxs = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L153">    final var zeroGapSenders = orderByGap.get(0);</span>
+
+    search:
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    for (final var sender : zeroGapSenders) {</span>
+<span class="fc" id="L157">      final var senderSeqTxs = getSequentialSubset(txsBySender.get(sender));</span>
+
+<span class="fc bfc" id="L159" title="All 2 branches covered.">      for (final var candidateTx : senderSeqTxs.values()) {</span>
+
+<span class="pc bpc" id="L161" title="1 of 2 branches missed.">        if (promotionFilter.test(candidateTx)) {</span>
+<span class="fc" id="L162">          accumulatedSpace += candidateTx.memorySize();</span>
+<span class="pc bpc" id="L163" title="1 of 4 branches missed.">          if (promotedTxs.size() &lt; freeSlots &amp;&amp; accumulatedSpace &lt;= freeSpace) {</span>
+<span class="fc" id="L164">            promotedTxs.add(candidateTx);</span>
+          } else {
+            // no room for more txs the search is over exit the loops
+            break search;
+          }
+        } else {
+          // skip remaining txs for this sender
+          break;
+        }
+<span class="fc" id="L173">      }</span>
+<span class="fc" id="L174">    }</span>
+
+    // remove promoted txs from this layer
+<span class="fc" id="L177">    promotedTxs.forEach(</span>
+        promotedTx -&gt; {
+<span class="fc" id="L179">          final var sender = promotedTx.getSender();</span>
+<span class="fc" id="L180">          final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc" id="L181">          senderTxs.remove(promotedTx.getNonce());</span>
+<span class="fc" id="L182">          processRemove(senderTxs, promotedTx.getTransaction(), PROMOTED);</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">          if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L184">            txsBySender.remove(sender);</span>
+<span class="fc" id="L185">            orderByGap.get(0).remove(sender);</span>
+<span class="fc" id="L186">            gapBySender.remove(sender);</span>
+          } else {
+<span class="fc" id="L188">            final long firstNonce = senderTxs.firstKey();</span>
+<span class="fc" id="L189">            final int newGap = (int) (firstNonce - (promotedTx.getNonce() + 1));</span>
+<span class="pc bpc" id="L190" title="1 of 2 branches missed.">            if (newGap != 0) {</span>
+<span class="nc" id="L191">              updateGap(sender, 0, newGap);</span>
+            }
+          }
+<span class="fc" id="L194">        });</span>
+
+<span class="fc bfc" id="L196" title="All 2 branches covered.">    if (!promotedTxs.isEmpty()) {</span>
+      // since we removed some txs we can try to promote from next layer
+<span class="fc" id="L198">      promoteTransactions();</span>
+    }
+
+<span class="fc" id="L201">    return promotedTxs;</span>
+  }
+
+  private NavigableMap&lt;Long, PendingTransaction&gt; getSequentialSubset(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs) {
+<span class="fc" id="L206">    long lastSequentialNonce = senderTxs.firstKey();</span>
+<span class="fc bfc" id="L207" title="All 2 branches covered.">    for (final long nonce : senderTxs.tailMap(lastSequentialNonce, false).keySet()) {</span>
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">      if (nonce == lastSequentialNonce + 1) {</span>
+<span class="fc" id="L209">        ++lastSequentialNonce;</span>
+      } else {
+        break;
+      }
+<span class="fc" id="L213">    }</span>
+<span class="fc" id="L214">    return senderTxs.headMap(lastSequentialNonce, true);</span>
+  }
+
+  @Override
+  public void remove(final PendingTransaction invalidatedTx, final RemovalReason reason) {
+
+<span class="fc" id="L220">    final var senderTxs = txsBySender.get(invalidatedTx.getSender());</span>
+<span class="fc bfc" id="L221" title="All 4 branches covered.">    if (senderTxs != null &amp;&amp; senderTxs.containsKey(invalidatedTx.getNonce())) {</span>
+      // gaps are allowed here then just remove
+<span class="fc" id="L223">      senderTxs.remove(invalidatedTx.getNonce());</span>
+<span class="fc" id="L224">      processRemove(senderTxs, invalidatedTx.getTransaction(), reason);</span>
+<span class="fc bfc" id="L225" title="All 2 branches covered.">      if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L226">        txsBySender.remove(invalidatedTx.getSender());</span>
+      }
+    } else {
+<span class="fc" id="L229">      nextLayer.remove(invalidatedTx, reason);</span>
+    }
+<span class="fc" id="L231">  }</span>
+
+  @Override
+  protected void internalConfirmed(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final Address sender,
+      final long maxConfirmedNonce,
+      final PendingTransaction highestNonceRemovedTx) {
+
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">    if (highestNonceRemovedTx != null) {</span>
+<span class="nc" id="L241">      final int currGap = gapBySender.get(sender);</span>
+<span class="nc" id="L242">      final int newGap = (int) (senderTxs.firstKey() - (highestNonceRemovedTx.getNonce() + 1));</span>
+<span class="nc bnc" id="L243" title="All 2 branches missed.">      if (currGap != newGap) {</span>
+<span class="nc" id="L244">        updateGap(sender, currGap, newGap);</span>
+      }
+<span class="nc" id="L246">    } else {</span>
+<span class="fc" id="L247">      final int currGap = gapBySender.get(sender);</span>
+<span class="fc" id="L248">      final int newGap = (int) (senderTxs.firstKey() - (maxConfirmedNonce + 1));</span>
+<span class="fc bfc" id="L249" title="All 2 branches covered.">      if (newGap &lt; currGap) {</span>
+<span class="fc" id="L250">        updateGap(sender, currGap, newGap);</span>
+      }
+    }
+<span class="fc" id="L253">  }</span>
+
+  @Override
+  protected void internalEvict(
+      final NavigableMap&lt;Long, PendingTransaction&gt; lessReadySenderTxs,
+      final PendingTransaction evictedTx) {
+<span class="fc" id="L259">    sparseEvictionOrder.remove(evictedTx);</span>
+
+<span class="fc bfc" id="L261" title="All 2 branches covered.">    if (lessReadySenderTxs.isEmpty()) {</span>
+<span class="fc" id="L262">      deleteGap(evictedTx.getSender());</span>
+    }
+<span class="fc" id="L264">  }</span>
+
+  @Override
+  protected void internalRemove(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction removedTx,
+      final RemovalReason removalReason) {
+
+<span class="fc" id="L272">    sparseEvictionOrder.remove(removedTx);</span>
+
+<span class="fc" id="L274">    final Address sender = removedTx.getSender();</span>
+
+<span class="pc bpc" id="L276" title="1 of 4 branches missed.">    if (senderTxs != null &amp;&amp; !senderTxs.isEmpty()) {</span>
+<span class="fc" id="L277">      final int deltaGap = (int) (senderTxs.firstKey() - removedTx.getNonce());</span>
+<span class="fc bfc" id="L278" title="All 2 branches covered.">      if (deltaGap &gt; 0) {</span>
+<span class="fc" id="L279">        final int currGap = gapBySender.get(sender);</span>
+        final int newGap;
+<span class="fc bfc" id="L281" title="All 2 branches covered.">        if (removalReason.equals(INVALIDATED)) {</span>
+<span class="fc" id="L282">          newGap = currGap + deltaGap;</span>
+        } else {
+<span class="fc" id="L284">          newGap = deltaGap - 1;</span>
+        }
+<span class="fc bfc" id="L286" title="All 2 branches covered.">        if (currGap != newGap) {</span>
+<span class="fc" id="L287">          updateGap(sender, currGap, newGap);</span>
+        }
+      }
+
+<span class="fc" id="L291">    } else {</span>
+<span class="fc" id="L292">      deleteGap(sender);</span>
+    }
+<span class="fc" id="L294">  }</span>
+
+  private void deleteGap(final Address sender) {
+<span class="fc" id="L297">    orderByGap.get(gapBySender.remove(sender)).remove(sender);</span>
+<span class="fc" id="L298">  }</span>
+
+  @Override
+  protected PendingTransaction getEvictable() {
+<span class="fc" id="L302">    return sparseEvictionOrder.first();</span>
+  }
+
+  @Override
+  protected boolean promotionFilter(final PendingTransaction pendingTransaction) {
+<span class="nc" id="L307">    return false;</span>
+  }
+
+  @Override
+  public Stream&lt;PendingTransaction&gt; stream() {
+<span class="fc" id="L312">    return sparseEvictionOrder.descendingSet().stream();</span>
+  }
+
+  @Override
+  public OptionalLong getNextNonceFor(final Address sender) {
+<span class="fc" id="L317">    final Integer gap = gapBySender.get(sender);</span>
+<span class="fc bfc" id="L318" title="All 4 branches covered.">    if (gap != null &amp;&amp; gap == 0) {</span>
+<span class="fc" id="L319">      final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc" id="L320">      var currNonce = senderTxs.firstKey();</span>
+<span class="fc bfc" id="L321" title="All 2 branches covered.">      for (final var nextNonce : senderTxs.keySet()) {</span>
+<span class="fc bfc" id="L322" title="All 2 branches covered.">        if (nextNonce &gt; currNonce + 1) {</span>
+<span class="fc" id="L323">          break;</span>
+        }
+<span class="fc" id="L325">        currNonce = nextNonce;</span>
+<span class="fc" id="L326">      }</span>
+<span class="fc" id="L327">      return OptionalLong.of(currNonce + 1);</span>
+    }
+<span class="fc" id="L329">    return OptionalLong.empty();</span>
+  }
+
+  @Override
+  public OptionalLong getCurrentNonceFor(final Address sender) {
+<span class="fc" id="L334">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc bfc" id="L335" title="All 2 branches covered.">    if (senderTxs != null) {</span>
+<span class="fc" id="L336">      final var gap = gapBySender.get(sender);</span>
+<span class="fc" id="L337">      return OptionalLong.of(senderTxs.firstKey() - gap);</span>
+    }
+<span class="fc" id="L339">    return nextLayer.getCurrentNonceFor(sender);</span>
+  }
+
+  @Override
+  protected void internalNotifyAdded(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction pendingTransaction) {
+<span class="fc" id="L346">    final Address sender = pendingTransaction.getSender();</span>
+<span class="fc" id="L347">    final Integer currGap = gapBySender.get(sender);</span>
+<span class="pc bpc" id="L348" title="1 of 2 branches missed.">    if (currGap != null) {</span>
+<span class="fc" id="L349">      final int newGap = (int) (senderTxs.firstKey() - (pendingTransaction.getNonce() + 1));</span>
+<span class="fc bfc" id="L350" title="All 2 branches covered.">      if (newGap &lt; currGap) {</span>
+<span class="fc" id="L351">        updateGap(sender, currGap, newGap);</span>
+      }
+    }
+<span class="fc" id="L354">  }</span>
+
+  @Override
+  public String logSender(final Address sender) {
+<span class="nc" id="L358">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="nc" id="L359">    return name()</span>
+        + &quot;[&quot;
+<span class="nc bnc" id="L361" title="All 2 branches missed.">        + (Objects.isNull(senderTxs)</span>
+<span class="nc" id="L362">            ? &quot;Empty&quot;</span>
+<span class="nc" id="L363">            : &quot;gap(&quot; + gapBySender.get(sender) + &quot;) &quot; + senderTxs.keySet())</span>
+        + &quot;] &quot;
+<span class="nc" id="L365">        + nextLayer.logSender(sender);</span>
+  }
+
+  @Override
+  public String internalLogStats() {
+<span class="pc bpc" id="L370" title="1 of 2 branches missed.">    if (sparseEvictionOrder.isEmpty()) {</span>
+<span class="fc" id="L371">      return &quot;Sparse: Empty&quot;;</span>
+    }
+
+<span class="nc" id="L374">    final Transaction newest = sparseEvictionOrder.last().getTransaction();</span>
+<span class="nc" id="L375">    final Transaction oldest = sparseEvictionOrder.first().getTransaction();</span>
+
+<span class="nc" id="L377">    return &quot;Sparse: &quot;</span>
+        + &quot;count=&quot;
+<span class="nc" id="L379">        + pendingTransactions.size()</span>
+        + &quot;, space used: &quot;
+        + spaceUsed
+        + &quot;, unique senders: &quot;
+<span class="nc" id="L383">        + txsBySender.size()</span>
+        + &quot;, oldest [gap: &quot;
+<span class="nc" id="L385">        + gapBySender.get(oldest.getSender())</span>
+        + &quot;, max fee:&quot;
+<span class="nc" id="L387">        + oldest.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L389">        + oldest.getHash()</span>
+        + &quot;], newest [gap: &quot;
+<span class="nc" id="L391">        + gapBySender.get(newest.getSender())</span>
+        + &quot;, max fee: &quot;
+<span class="nc" id="L393">        + newest.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L395">        + newest.getHash()</span>
+        + &quot;]&quot;;
+  }
+
+  private void updateGap(final Address sender, final int currGap, final int newGap) {
+<span class="fc" id="L400">    final boolean hasPriority = orderByGap.get(currGap).remove(sender);</span>
+<span class="fc" id="L401">    orderByGap.get(newGap).add(sender, hasPriority);</span>
+<span class="fc" id="L402">    gapBySender.put(sender, newGap);</span>
+<span class="fc" id="L403">  }</span>
+
+  @Override
+  protected void internalConsistencyCheck(
+      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
+<span class="nc" id="L408">    txsBySender.values().stream()</span>
+<span class="nc bnc" id="L409" title="All 2 branches missed.">        .filter(senderTxs -&gt; senderTxs.size() &gt; 1)</span>
+<span class="nc" id="L410">        .map(NavigableMap::entrySet)</span>
+<span class="nc" id="L411">        .map(Set::iterator)</span>
+<span class="nc" id="L412">        .forEach(</span>
+            itNonce -&gt; {
+<span class="nc" id="L414">              PendingTransaction firstTx = itNonce.next().getValue();</span>
+
+<span class="nc" id="L416">              prevLayerTxsBySender.computeIfPresent(</span>
+<span class="nc" id="L417">                  firstTx.getSender(),</span>
+                  (sender, txsByNonce) -&gt; {
+<span class="nc" id="L419">                    final long prevLayerMaxNonce = txsByNonce.lastKey();</span>
+<span class="nc bnc" id="L420" title="All 2 branches missed.">                    assert prevLayerMaxNonce &lt; firstTx.getNonce()</span>
+                        : &quot;first nonce is not greater than previous layer last nonce&quot;;
+
+<span class="nc" id="L423">                    final int gap = (int) (firstTx.getNonce() - (prevLayerMaxNonce + 1));</span>
+<span class="nc bnc" id="L424" title="All 2 branches missed.">                    assert gapBySender.get(firstTx.getSender()).equals(gap) : &quot;gap mismatch&quot;;</span>
+<span class="nc bnc" id="L425" title="All 2 branches missed.">                    assert orderByGap.get(gap).contains(firstTx.getSender())</span>
+                        : &quot;orderByGap sender not found&quot;;
+
+<span class="nc" id="L428">                    return txsByNonce;</span>
+                  });
+
+<span class="nc" id="L431">              long prevNonce = firstTx.getNonce();</span>
+
+<span class="nc bnc" id="L433" title="All 2 branches missed.">              while (itNonce.hasNext()) {</span>
+<span class="nc" id="L434">                final long currNonce = itNonce.next().getKey();</span>
+<span class="nc bnc" id="L435" title="All 2 branches missed.">                assert prevNonce &lt; currNonce : &quot;non incremental nonce&quot;;</span>
+<span class="nc" id="L436">                prevNonce = currNonce;</span>
+<span class="nc" id="L437">              }</span>
+<span class="nc" id="L438">            });</span>
+<span class="nc" id="L439">  }</span>
+
+<span class="fc" id="L441">  private static class SendersByPriority implements Iterable&lt;Address&gt; {</span>
+<span class="fc" id="L442">    final Set&lt;Address&gt; prioritySenders = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L443">    final Set&lt;Address&gt; standardSenders = new HashSet&lt;&gt;();</span>
+
+    void clear() {
+<span class="fc" id="L446">      prioritySenders.clear();</span>
+<span class="fc" id="L447">      standardSenders.clear();</span>
+<span class="fc" id="L448">    }</span>
+
+    public void add(final Address sender, final boolean hasPriority) {
+<span class="fc bfc" id="L451" title="All 2 branches covered.">      if (hasPriority) {</span>
+<span class="pc bpc" id="L452" title="1 of 2 branches missed.">        if (standardSenders.contains(sender)) {</span>
+<span class="nc" id="L453">          throw new IllegalStateException(</span>
+              &quot;Sender &quot; + sender + &quot; cannot simultaneously have and not have priority&quot;);
+        }
+<span class="fc" id="L456">        prioritySenders.add(sender);</span>
+      } else {
+<span class="pc bpc" id="L458" title="1 of 2 branches missed.">        if (prioritySenders.contains(sender)) {</span>
+<span class="nc" id="L459">          throw new IllegalStateException(</span>
+              &quot;Sender &quot; + sender + &quot; cannot simultaneously have and not have priority&quot;);
+        }
+<span class="fc" id="L462">        standardSenders.add(sender);</span>
+      }
+<span class="fc" id="L464">    }</span>
+
+    void add(final PendingTransaction pendingTransaction) {
+<span class="fc" id="L467">      add(pendingTransaction.getSender(), pendingTransaction.hasPriority());</span>
+<span class="fc" id="L468">    }</span>
+
+    boolean remove(final Address sender) {
+<span class="fc bfc" id="L471" title="All 2 branches covered.">      if (standardSenders.remove(sender)) {</span>
+<span class="fc" id="L472">        return false;</span>
+      }
+<span class="fc" id="L474">      return prioritySenders.remove(sender);</span>
+    }
+
+    public boolean contains(final Address sender) {
+<span class="nc bnc" id="L478" title="All 4 branches missed.">      return standardSenders.contains(sender) || prioritySenders.contains(sender);</span>
+    }
+
+    @Override
+    public Iterator&lt;Address&gt; iterator() {
+<span class="fc" id="L483">      return Iterables.concat(prioritySenders, standardSenders).iterator();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

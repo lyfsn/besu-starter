@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlatDbStrategy.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai.storage.flat</a> &gt; <span class="el_source">FlatDbStrategy.java</span></div><h1>FlatDbStrategy.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.bonsai.storage.flat;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_INFO_STATE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_STORAGE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.CODE_STORAGE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import kotlin.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.rlp.RLP;
+
+/**
+ * This class represents a FlatDbReaderStrategy, which is responsible for reading and writing data
+ * from flat databases. It implements various methods for storing and retrieving account data, code
+ * data, and storage data from the corresponding KeyValueStorage.
+ */
+public abstract class FlatDbStrategy {
+
+  protected final MetricsSystem metricsSystem;
+  protected final Counter getAccountCounter;
+  protected final Counter getAccountFoundInFlatDatabaseCounter;
+
+  protected final Counter getStorageValueCounter;
+  protected final Counter getStorageValueFlatDatabaseCounter;
+  protected final CodeStorageStrategy codeStorageStrategy;
+
+  public FlatDbStrategy(
+<span class="fc" id="L59">      final MetricsSystem metricsSystem, final CodeStorageStrategy codeStorageStrategy) {</span>
+<span class="fc" id="L60">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L61">    this.codeStorageStrategy = codeStorageStrategy;</span>
+
+<span class="fc" id="L63">    getAccountCounter =</span>
+<span class="fc" id="L64">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_account_total&quot;,
+            &quot;Total number of calls to getAccount&quot;);
+
+<span class="fc" id="L69">    getAccountFoundInFlatDatabaseCounter =</span>
+<span class="fc" id="L70">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_account_flat_database&quot;,
+            &quot;Number of accounts found in the flat database&quot;);
+
+<span class="fc" id="L75">    getStorageValueCounter =</span>
+<span class="fc" id="L76">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_storagevalue_total&quot;,
+            &quot;Total number of calls to getStorageValueBySlotHash&quot;);
+
+<span class="fc" id="L81">    getStorageValueFlatDatabaseCounter =</span>
+<span class="fc" id="L82">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_storagevalue_flat_database&quot;,
+            &quot;Number of storage slots found in the flat database&quot;);
+<span class="fc" id="L86">  }</span>
+
+  /*
+   * Retrieves the account data for the given account hash, using the world state root hash supplier and node loader.
+   */
+  public abstract Optional&lt;Bytes&gt; getFlatAccount(
+      Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      NodeLoader nodeLoader,
+      Hash accountHash,
+      SegmentedKeyValueStorage storage);
+
+  /*
+   * Retrieves the storage value for the given account hash and storage slot key, using the world state root hash supplier, storage root supplier, and node loader.
+   */
+
+  public abstract Optional&lt;Bytes&gt; getFlatStorageValueByStorageSlotKey(
+      Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      Supplier&lt;Optional&lt;Hash&gt;&gt; storageRootSupplier,
+      NodeLoader nodeLoader,
+      Hash accountHash,
+      StorageSlotKey storageSlotKey,
+      SegmentedKeyValueStorage storageStorage);
+
+  /*
+   * Retrieves the code data for the given code hash and account hash.
+   */
+  public Optional&lt;Bytes&gt; getFlatCode(
+      final Hash codeHash, final Hash accountHash, final SegmentedKeyValueStorage storage) {
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">    if (codeHash.equals(Hash.EMPTY)) {</span>
+<span class="nc" id="L115">      return Optional.of(Bytes.EMPTY);</span>
+    } else {
+<span class="fc" id="L117">      return codeStorageStrategy.getFlatCode(codeHash, accountHash, storage);</span>
+    }
+  }
+
+  /*
+   * Puts the account data for the given account hash, using the world state root hash supplier and node loader.
+   */
+  public void putFlatAccount(
+      final SegmentedKeyValueStorageTransaction transaction,
+      final Hash accountHash,
+      final Bytes accountValue) {
+<span class="fc" id="L128">    transaction.put(ACCOUNT_INFO_STATE, accountHash.toArrayUnsafe(), accountValue.toArrayUnsafe());</span>
+<span class="fc" id="L129">  }</span>
+
+  public void removeFlatAccount(
+      final SegmentedKeyValueStorageTransaction transaction, final Hash accountHash) {
+<span class="fc" id="L133">    transaction.remove(ACCOUNT_INFO_STATE, accountHash.toArrayUnsafe());</span>
+<span class="fc" id="L134">  }</span>
+
+  /*
+   * Puts the storage value for the given account hash and storage slot key, using the world state root hash supplier, storage root supplier, and node loader.
+   */
+  public void putFlatAccountStorageValueByStorageSlotHash(
+      final SegmentedKeyValueStorageTransaction transaction,
+      final Hash accountHash,
+      final Hash slotHash,
+      final Bytes storage) {
+<span class="fc" id="L144">    transaction.put(</span>
+        ACCOUNT_STORAGE_STORAGE,
+<span class="fc" id="L146">        Bytes.concatenate(accountHash, slotHash).toArrayUnsafe(),</span>
+<span class="fc" id="L147">        storage.toArrayUnsafe());</span>
+<span class="fc" id="L148">  }</span>
+
+  /*
+   * Removes the storage value for the given account hash and storage slot key, using the world state root hash supplier, storage root supplier, and node loader.
+   */
+  public void removeFlatAccountStorageValueByStorageSlotHash(
+      final SegmentedKeyValueStorageTransaction transaction,
+      final Hash accountHash,
+      final Hash slotHash) {
+<span class="fc" id="L157">    transaction.remove(</span>
+<span class="fc" id="L158">        ACCOUNT_STORAGE_STORAGE, Bytes.concatenate(accountHash, slotHash).toArrayUnsafe());</span>
+<span class="fc" id="L159">  }</span>
+
+  /*
+   * Removes code for the given account hash.
+   */
+  public void removeFlatCode(
+      final SegmentedKeyValueStorageTransaction transaction,
+      final Hash accountHash,
+      final Hash codeHash) {
+<span class="fc" id="L168">    codeStorageStrategy.removeFlatCode(transaction, accountHash, codeHash);</span>
+<span class="fc" id="L169">  }</span>
+
+  /*
+   * Puts the code data for the given code hash and account hash.
+   */
+  public void putFlatCode(
+      final SegmentedKeyValueStorageTransaction transaction,
+      final Hash accountHash,
+      final Hash codeHash,
+      final Bytes code) {
+<span class="fc" id="L179">    codeStorageStrategy.putFlatCode(transaction, accountHash, codeHash, code);</span>
+<span class="fc" id="L180">  }</span>
+
+  public void clearAll(final SegmentedKeyValueStorage storage) {
+<span class="fc" id="L183">    storage.clear(ACCOUNT_INFO_STATE);</span>
+<span class="fc" id="L184">    storage.clear(ACCOUNT_STORAGE_STORAGE);</span>
+<span class="fc" id="L185">    storage.clear(CODE_STORAGE);</span>
+<span class="fc" id="L186">  }</span>
+
+  public void resetOnResync(final SegmentedKeyValueStorage storage) {
+<span class="fc" id="L189">    storage.clear(ACCOUNT_INFO_STATE);</span>
+<span class="fc" id="L190">    storage.clear(ACCOUNT_STORAGE_STORAGE);</span>
+<span class="fc" id="L191">  }</span>
+
+  public Map&lt;Bytes32, Bytes&gt; streamAccountFlatDatabase(
+      final SegmentedKeyValueStorage storage,
+      final Bytes startKeyHash,
+      final Bytes32 endKeyHash,
+      final long max) {
+<span class="fc" id="L198">    final Stream&lt;Pair&lt;Bytes32, Bytes&gt;&gt; pairStream =</span>
+        storage
+<span class="fc" id="L200">            .streamFromKey(</span>
+<span class="fc" id="L201">                ACCOUNT_INFO_STATE, startKeyHash.toArrayUnsafe(), endKeyHash.toArrayUnsafe())</span>
+<span class="fc" id="L202">            .limit(max)</span>
+<span class="fc" id="L203">            .map(pair -&gt; new Pair&lt;&gt;(Bytes32.wrap(pair.getKey()), Bytes.wrap(pair.getValue())));</span>
+
+<span class="fc" id="L205">    final TreeMap&lt;Bytes32, Bytes&gt; collected =</span>
+<span class="fc" id="L206">        pairStream.collect(</span>
+<span class="pc" id="L207">            Collectors.toMap(Pair::getFirst, Pair::getSecond, (v1, v2) -&gt; v1, TreeMap::new));</span>
+<span class="fc" id="L208">    pairStream.close();</span>
+<span class="fc" id="L209">    return collected;</span>
+  }
+
+  public Map&lt;Bytes32, Bytes&gt; streamStorageFlatDatabase(
+      final SegmentedKeyValueStorage storage,
+      final Hash accountHash,
+      final Bytes startKeyHash,
+      final Bytes32 endKeyHash,
+      final long max) {
+<span class="fc" id="L218">    final Stream&lt;Pair&lt;Bytes32, Bytes&gt;&gt; pairStream =</span>
+        storage
+<span class="fc" id="L220">            .streamFromKey(</span>
+                ACCOUNT_STORAGE_STORAGE,
+<span class="fc" id="L222">                Bytes.concatenate(accountHash, startKeyHash).toArrayUnsafe(),</span>
+<span class="fc" id="L223">                Bytes.concatenate(accountHash, endKeyHash).toArrayUnsafe())</span>
+<span class="fc" id="L224">            .limit(max)</span>
+<span class="fc" id="L225">            .map(</span>
+                pair -&gt;
+<span class="fc" id="L227">                    new Pair&lt;&gt;(</span>
+<span class="fc" id="L228">                        Bytes32.wrap(Bytes.wrap(pair.getKey()).slice(Hash.SIZE)),</span>
+<span class="fc" id="L229">                        RLP.encodeValue(Bytes.wrap(pair.getValue()).trimLeadingZeros())));</span>
+
+<span class="fc" id="L231">    final TreeMap&lt;Bytes32, Bytes&gt; collected =</span>
+<span class="fc" id="L232">        pairStream.collect(</span>
+<span class="pc" id="L233">            Collectors.toMap(Pair::getFirst, Pair::getSecond, (v1, v2) -&gt; v1, TreeMap::new));</span>
+<span class="fc" id="L234">    pairStream.close();</span>
+<span class="fc" id="L235">    return collected;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

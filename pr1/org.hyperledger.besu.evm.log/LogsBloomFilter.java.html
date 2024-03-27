@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LogsBloomFilter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.log</a> &gt; <span class="el_source">LogsBloomFilter.java</span></div><h1>LogsBloomFilter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.log;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+
+import java.util.Collection;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.DelegatingBytes;
+import org.apache.tuweni.bytes.MutableBytes;
+
+/**
+ * Bloom filter implementation for storing persistent logs, describes a 2048-bit representation of
+ * all log entries of a transaction, except data. Sets the bits of the 2048 byte array, where
+ * indices are given by: The lower order 11-bits, of the first three double-bytes, of the KECCAK256,
+ * of each value. For instance the address &quot;0x0F572E5295C57F15886F9B263E2F6D2D6C7B5EC6&quot; results in
+ * the KECCAK256 hash &quot;bd2b01afcd27800b54d2179edc49e2bffde5078bb6d0b204694169b1643fb108&quot;, of which
+ * the corresponding double-bytes are: bd2b, 01af, cd27, corresponding to the following bits in the
+ * bloom filter: 1323, 431, 1319
+ */
+public class LogsBloomFilter extends DelegatingBytes {
+
+  /** The constant BYTE_SIZE. */
+  public static final int BYTE_SIZE = 256;
+
+  private static final int LEAST_SIGNIFICANT_BYTE = 0xFF;
+  private static final int LEAST_SIGNIFICANT_THREE_BITS = 0x7;
+  private static final int BITS_IN_BYTE = 8;
+
+  /** Instantiates a new Logs bloom filter. */
+  public LogsBloomFilter() {
+<span class="fc" id="L49">    super(Bytes.wrap(new byte[BYTE_SIZE]));</span>
+<span class="fc" id="L50">  }</span>
+
+  /**
+   * Instantiates a new Logs bloom filter.
+   *
+   * @param data the data
+   */
+  public LogsBloomFilter(final MutableBytes data) {
+<span class="fc" id="L58">    this(data.copy());</span>
+<span class="fc" id="L59">  }</span>
+
+  /**
+   * Instantiates a new Logs bloom filter.
+   *
+   * @param data the data
+   */
+  public LogsBloomFilter(final Bytes data) {
+<span class="fc" id="L67">    super(data);</span>
+<span class="fc" id="L68">    checkArgument(</span>
+<span class="pc bpc" id="L69" title="1 of 2 branches missed.">        data.size() == BYTE_SIZE,</span>
+        &quot;Invalid size for bloom filter backing array: expected %s but got %s&quot;,
+        BYTE_SIZE,
+<span class="fc" id="L72">        data.size());</span>
+<span class="fc" id="L73">  }</span>
+
+  /**
+   * Instantiates a new Logs bloom filter.
+   *
+   * @param logsBloomHexString the logs bloom hex string
+   */
+  public LogsBloomFilter(final String logsBloomHexString) {
+<span class="nc" id="L81">    this(Bytes.fromHexString(logsBloomHexString));</span>
+<span class="nc" id="L82">  }</span>
+
+  /**
+   * Instantiate logs bloom filter From hex string.
+   *
+   * @param hexString the hex string
+   * @return the logs bloom filter
+   */
+  public static LogsBloomFilter fromHexString(final String hexString) {
+<span class="fc" id="L91">    return new LogsBloomFilter(Bytes.fromHexString(hexString));</span>
+  }
+
+  /**
+   * Instantiates an empty logs bloom filter.
+   *
+   * @return the logs bloom filter
+   */
+  public static LogsBloomFilter empty() {
+<span class="fc" id="L100">    return new LogsBloomFilter(Bytes.wrap(new byte[LogsBloomFilter.BYTE_SIZE]));</span>
+  }
+
+  /**
+   * Creates a bloom filter from the given RLP-encoded input.
+   *
+   * @param input The input to read from
+   * @return the input's corresponding bloom filter
+   */
+  public static LogsBloomFilter readFrom(final RLPInput input) {
+<span class="fc" id="L110">    final Bytes bytes = input.readBytes();</span>
+<span class="pc bpc" id="L111" title="1 of 2 branches missed.">    if (bytes.size() != BYTE_SIZE) {</span>
+<span class="nc" id="L112">      throw new RLPException(</span>
+<span class="nc" id="L113">          String.format(</span>
+<span class="nc" id="L114">              &quot;LogsBloomFilter unexpected size of %s (needs %s)&quot;, bytes.size(), BYTE_SIZE));</span>
+    }
+<span class="fc" id="L116">    return new LogsBloomFilter(bytes);</span>
+  }
+
+  /**
+   * Checks of subset log bloom filter can be contained.
+   *
+   * @param subset the subset
+   * @return the boolean
+   */
+  public boolean couldContain(final LogsBloomFilter subset) {
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">    if (subset == null) {</span>
+<span class="nc" id="L127">      return true;</span>
+    }
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">    if (subset.size() != size()) {</span>
+<span class="nc" id="L130">      return false;</span>
+    }
+<span class="fc bfc" id="L132" title="All 2 branches covered.">    for (int i = 0; i &lt; size(); i++) {</span>
+<span class="fc" id="L133">      final byte subsetValue = subset.get(i);</span>
+<span class="fc bfc" id="L134" title="All 2 branches covered.">      if ((get(i) &amp; subsetValue) != subsetValue) {</span>
+<span class="fc" id="L135">        return false;</span>
+      }
+    }
+<span class="fc" id="L138">    return true;</span>
+  }
+
+  /**
+   * Instantiate Builder.
+   *
+   * @return the builder
+   */
+  public static Builder builder() {
+<span class="fc" id="L147">    return new Builder();</span>
+  }
+
+  /** The Builder. */
+  public static final class Builder {
+    /** The Data. */
+    final MutableBytes data;
+
+<span class="fc" id="L155">    private Builder() {</span>
+<span class="fc" id="L156">      data = MutableBytes.create(LogsBloomFilter.BYTE_SIZE);</span>
+<span class="fc" id="L157">    }</span>
+
+    /**
+     * Insert filter.
+     *
+     * @param other the other
+     * @return the builder
+     */
+    public Builder insertFilter(final LogsBloomFilter other) {
+<span class="fc bfc" id="L166" title="All 2 branches covered.">      for (int i = 0; i &lt; data.size(); ++i) {</span>
+<span class="fc" id="L167">        data.set(i, (byte) ((data.get(i) | other.get(i)) &amp; 0xff));</span>
+      }
+<span class="fc" id="L169">      return this;</span>
+    }
+
+    /**
+     * Insert log.
+     *
+     * @param log the log
+     * @return the builder
+     */
+    public Builder insertLog(final Log log) {
+<span class="fc" id="L179">      insertBytes((Bytes) log.getLogger());</span>
+
+<span class="fc bfc" id="L181" title="All 2 branches covered.">      for (final LogTopic topic : log.getTopics()) {</span>
+<span class="fc" id="L182">        insertBytes(topic);</span>
+<span class="fc" id="L183">      }</span>
+<span class="fc" id="L184">      return this;</span>
+    }
+
+    /**
+     * Insert logs.
+     *
+     * @param logs the logs
+     * @return the builder
+     */
+    public Builder insertLogs(final Collection&lt;Log&gt; logs) {
+<span class="fc" id="L194">      logs.forEach(this::insertLog);</span>
+<span class="fc" id="L195">      return this;</span>
+    }
+
+    /**
+     * Insert bytes.
+     *
+     * @param value the value
+     * @return the builder
+     */
+    public Builder insertBytes(final Bytes value) {
+<span class="fc" id="L205">      setBits(keccak256(value));</span>
+<span class="fc" id="L206">      return this;</span>
+    }
+
+    /**
+     * Build logs bloom filter.
+     *
+     * @return the logs bloom filter
+     */
+    public LogsBloomFilter build() {
+<span class="fc" id="L215">      return new LogsBloomFilter(data);</span>
+    }
+
+    /**
+     * Discover the low order 11-bits, of the first three double-bytes, of the KECCAK256 hash, of
+     * each value and update the bloom filter accordingly.
+     *
+     * @param hashValue The hash of the log item.
+     */
+    private void setBits(final Bytes hashValue) {
+<span class="fc bfc" id="L225" title="All 2 branches covered.">      for (int counter = 0; counter &lt; 6; counter += 2) {</span>
+<span class="fc" id="L226">        final int setBloomBit =</span>
+<span class="fc" id="L227">            ((hashValue.get(counter) &amp; LEAST_SIGNIFICANT_THREE_BITS) &lt;&lt; BITS_IN_BYTE)</span>
+<span class="fc" id="L228">                + (hashValue.get(counter + 1) &amp; LEAST_SIGNIFICANT_BYTE);</span>
+<span class="fc" id="L229">        setBit(setBloomBit);</span>
+      }
+<span class="fc" id="L231">    }</span>
+
+    private void setBit(final int index) {
+<span class="fc" id="L234">      final int byteIndex = BYTE_SIZE - 1 - index / 8;</span>
+<span class="fc" id="L235">      final int bitIndex = index % 8;</span>
+<span class="fc" id="L236">      data.set(byteIndex, (byte) (data.get(byteIndex) | (1 &lt;&lt; bitIndex)));</span>
+<span class="fc" id="L237">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

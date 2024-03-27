@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InitiatorHandshakeMessageV1.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies</a> &gt; <span class="el_source">InitiatorHandshakeMessageV1.java</span></div><h1>InitiatorHandshakeMessageV1.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.MutableBytes;
+
+/**
+ * The initiator's handshake message.
+ *
+ * &lt;p&gt;This message must be sent by the party that initiates the RLPX connection, as the first
+ * message in the handshake protocol.
+ *
+ * &lt;h3&gt;Message structure&lt;/h3&gt;
+ *
+ * The following describes the message structure:
+ *
+ * &lt;pre&gt;
+ *   authInitiator -&amp;gt; E(remote-pubk,
+ *                      S(ephemeral-privk, static-shared-secret ^ nonce)
+ *                       || H(ephemeral-pubk)
+ *                      || pubk
+ *                      || nonce
+ *                      || 0x0)
+ * &lt;/pre&gt;
+ *
+ * @see &lt;a href=
+ *     &quot;https://github.com/ethereum/devp2p/blob/master/rlpx.md#encrypted-handshake&quot;&gt;Structure of the
+ *     initiator request&lt;/a&gt;
+ */
+public final class InitiatorHandshakeMessageV1 implements InitiatorHandshakeMessage {
+  public static final int MESSAGE_LENGTH =
+      ECIESHandshaker.SIGNATURE_LENGTH
+          + ECIESHandshaker.HASH_EPH_PUBKEY_LENGTH
+          + ECIESHandshaker.PUBKEY_LENGTH
+          + ECIESHandshaker.NONCE_LENGTH
+          + ECIESHandshaker.TOKEN_FLAG_LENGTH;
+
+  private final SECPPublicKey pubKey;
+  private final SECPSignature signature;
+  private final SECPPublicKey ephPubKey;
+  private final Bytes32 ephPubKeyHash;
+  private final Bytes32 nonce;
+  private final boolean token;
+
+<span class="fc" id="L71">  private static final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L72">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+  InitiatorHandshakeMessageV1(
+      final SECPPublicKey pubKey,
+      final SECPSignature signature,
+      final SECPPublicKey ephPubKey,
+      final Bytes32 ephPubKeyHash,
+      final Bytes32 nonce,
+<span class="fc" id="L80">      final boolean token) {</span>
+<span class="fc" id="L81">    this.pubKey = pubKey;</span>
+<span class="fc" id="L82">    this.signature = signature;</span>
+<span class="fc" id="L83">    this.ephPubKey = ephPubKey;</span>
+<span class="fc" id="L84">    this.ephPubKeyHash = ephPubKeyHash;</span>
+<span class="fc" id="L85">    this.nonce = nonce;</span>
+<span class="fc" id="L86">    this.token = token;</span>
+<span class="fc" id="L87">  }</span>
+
+  public static InitiatorHandshakeMessageV1 create(
+      final SECPPublicKey ourPubKey,
+      final KeyPair ephKeyPair,
+      final Bytes32 staticSharedSecret,
+      final Bytes32 nonce,
+      final boolean token) {
+<span class="nc" id="L95">    final Bytes32 ephPubKeyHash = Hash.keccak256(ephKeyPair.getPublicKey().getEncodedBytes());</span>
+
+    // XOR of the static shared secret and the generated nonce.
+<span class="nc" id="L98">    final SECPSignature signature =</span>
+<span class="nc" id="L99">        SIGNATURE_ALGORITHM.get().sign(staticSharedSecret.xor(nonce), ephKeyPair);</span>
+<span class="nc" id="L100">    return new InitiatorHandshakeMessageV1(</span>
+<span class="nc" id="L101">        ourPubKey, signature, ephKeyPair.getPublicKey(), ephPubKeyHash, nonce, token);</span>
+  }
+
+  /**
+   * Decodes this message.
+   *
+   * @param bytes The raw bytes.
+   * @param nodeKey The nodeKey used to calculate ECDH key agreements.
+   * @return The decoded message.
+   */
+  public static InitiatorHandshakeMessageV1 decode(final Bytes bytes, final NodeKey nodeKey) {
+<span class="pc bpc" id="L112" title="1 of 2 branches missed.">    checkState(bytes.size() == MESSAGE_LENGTH);</span>
+
+<span class="fc" id="L114">    int offset = 0;</span>
+<span class="fc" id="L115">    final SECPSignature signature =</span>
+        SIGNATURE_ALGORITHM
+<span class="fc" id="L117">            .get()</span>
+<span class="fc" id="L118">            .decodeSignature(bytes.slice(offset, ECIESHandshaker.SIGNATURE_LENGTH));</span>
+<span class="fc" id="L119">    final Bytes32 ephPubKeyHash =</span>
+<span class="fc" id="L120">        Bytes32.wrap(</span>
+<span class="fc" id="L121">            bytes.slice(</span>
+                offset += ECIESHandshaker.SIGNATURE_LENGTH, ECIESHandshaker.HASH_EPH_PUBKEY_LENGTH),
+            0);
+<span class="fc" id="L124">    final SECPPublicKey pubKey =</span>
+        SIGNATURE_ALGORITHM
+<span class="fc" id="L126">            .get()</span>
+<span class="fc" id="L127">            .createPublicKey(</span>
+<span class="fc" id="L128">                bytes.slice(</span>
+                    offset += ECIESHandshaker.HASH_EPH_PUBKEY_LENGTH,
+                    ECIESHandshaker.PUBKEY_LENGTH));
+<span class="fc" id="L131">    final Bytes32 nonce =</span>
+<span class="fc" id="L132">        Bytes32.wrap(</span>
+<span class="fc" id="L133">            bytes.slice(offset += ECIESHandshaker.PUBKEY_LENGTH, ECIESHandshaker.NONCE_LENGTH), 0);</span>
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">    final boolean token = bytes.get(offset) == 0x01;</span>
+
+<span class="fc" id="L136">    final Bytes32 staticSharedSecret = nodeKey.calculateECDHKeyAgreement(pubKey);</span>
+<span class="fc" id="L137">    final SECPPublicKey ephPubKey =</span>
+        SIGNATURE_ALGORITHM
+<span class="fc" id="L139">            .get()</span>
+<span class="fc" id="L140">            .recoverPublicKeyFromSignature(staticSharedSecret.xor(nonce), signature)</span>
+<span class="pc" id="L141">            .orElseThrow(() -&gt; new RuntimeException(&quot;Could not recover public key from signature&quot;));</span>
+
+<span class="fc" id="L143">    return new InitiatorHandshakeMessageV1(</span>
+        pubKey, signature, ephPubKey, ephPubKeyHash, nonce, token);
+  }
+
+  @Override
+  public Bytes encode() {
+<span class="nc" id="L149">    final MutableBytes bytes = MutableBytes.create(MESSAGE_LENGTH);</span>
+<span class="nc" id="L150">    signature.encodedBytes().copyTo(bytes, 0);</span>
+<span class="nc" id="L151">    ephPubKeyHash.copyTo(bytes, ECIESHandshaker.SIGNATURE_LENGTH);</span>
+<span class="nc" id="L152">    pubKey</span>
+<span class="nc" id="L153">        .getEncodedBytes()</span>
+<span class="nc" id="L154">        .copyTo(bytes, ECIESHandshaker.SIGNATURE_LENGTH + ECIESHandshaker.HASH_EPH_PUBKEY_LENGTH);</span>
+<span class="nc" id="L155">    nonce.copyTo(</span>
+        bytes,
+        ECIESHandshaker.SIGNATURE_LENGTH
+            + ECIESHandshaker.HASH_EPH_PUBKEY_LENGTH
+            + ECIESHandshaker.PUBKEY_LENGTH);
+<span class="nc bnc" id="L160" title="All 2 branches missed.">    bytes.set(MESSAGE_LENGTH - 1, (byte) (token ? 0x01 : 0x00));</span>
+<span class="nc" id="L161">    return bytes;</span>
+  }
+
+  @Override
+  public SECPPublicKey getPubKey() {
+<span class="fc" id="L166">    return pubKey;</span>
+  }
+
+  @Override
+  public Bytes32 getEphPubKeyHash() {
+<span class="fc" id="L171">    return ephPubKeyHash;</span>
+  }
+
+  @Override
+  public Bytes32 getNonce() {
+<span class="fc" id="L176">    return nonce;</span>
+  }
+
+  @Override
+  public SECPPublicKey getEphPubKey() {
+<span class="fc" id="L181">    return ephPubKey;</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L186">    return &quot;InitiatorHandshakeMessage{&quot;</span>
+        + &quot;pubKey=&quot;
+        + pubKey
+        + &quot;, signature=&quot;
+        + signature
+        + &quot;, ephPubKey=&quot;
+        + ephPubKey
+        + &quot;, ephPubKeyHash=&quot;
+        + ephPubKeyHash
+        + &quot;, nonce=&quot;
+        + nonce
+        + &quot;, token=&quot;
+        + token
+        + '}';
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

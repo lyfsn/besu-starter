@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LoadLocalDataStep.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">LoadLocalDataStep.java</span></div><h1>LoadLocalDataStep.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import static org.hyperledger.besu.ethereum.eth.sync.StorageExceptionManager.canRetryOnError;
+import static org.hyperledger.besu.ethereum.eth.sync.StorageExceptionManager.errorCountAtThreshold;
+import static org.hyperledger.besu.ethereum.eth.sync.StorageExceptionManager.getRetryableErrorCounter;
+
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.TrieNodeHealingRequest;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.services.pipeline.Pipe;
+import org.hyperledger.besu.services.tasks.Task;
+
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class LoadLocalDataStep {
+
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(LoadLocalDataStep.class);</span>
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  private final SnapWorldDownloadState downloadState;
+  private final SnapSyncProcessState snapSyncState;
+
+  private final SnapSyncConfiguration snapSyncConfiguration;
+  private final Counter existingNodeCounter;
+
+  public LoadLocalDataStep(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncConfiguration snapSyncConfiguration,
+      final MetricsSystem metricsSystem,
+<span class="fc" id="L54">      final SnapSyncProcessState snapSyncState) {</span>
+<span class="fc" id="L55">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L56">    this.downloadState = downloadState;</span>
+<span class="fc" id="L57">    this.snapSyncConfiguration = snapSyncConfiguration;</span>
+<span class="fc" id="L58">    existingNodeCounter =</span>
+<span class="fc" id="L59">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.SYNCHRONIZER,
+            &quot;snap_world_state_existing_trie_nodes_total&quot;,
+            &quot;Total number of node data requests completed using existing data&quot;);
+<span class="fc" id="L63">    this.snapSyncState = snapSyncState;</span>
+<span class="fc" id="L64">  }</span>
+
+  public Stream&lt;Task&lt;SnapDataRequest&gt;&gt; loadLocalDataTrieNode(
+      final Task&lt;SnapDataRequest&gt; task, final Pipe&lt;Task&lt;SnapDataRequest&gt;&gt; completedTasks) {
+<span class="fc" id="L68">    final TrieNodeHealingRequest request = (TrieNodeHealingRequest) task.getData();</span>
+    // check if node is already stored in the worldstate
+    try {
+<span class="pc bpc" id="L71" title="1 of 2 branches missed.">      if (snapSyncState.hasPivotBlockHeader()) {</span>
+<span class="fc" id="L72">        Optional&lt;Bytes&gt; existingData = request.getExistingData(worldStateStorageCoordinator);</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">        if (existingData.isPresent()) {</span>
+<span class="fc" id="L74">          existingNodeCounter.inc();</span>
+<span class="fc" id="L75">          request.setData(existingData.get());</span>
+<span class="fc" id="L76">          request.setRequiresPersisting(false);</span>
+<span class="fc" id="L77">          final WorldStateKeyValueStorage.Updater updater = worldStateStorageCoordinator.updater();</span>
+<span class="fc" id="L78">          request.persist(</span>
+              worldStateStorageCoordinator,
+              updater,
+              downloadState,
+              snapSyncState,
+              snapSyncConfiguration);
+<span class="fc" id="L84">          updater.commit();</span>
+<span class="fc" id="L85">          downloadState.enqueueRequests(</span>
+<span class="fc" id="L86">              request.getRootStorageRequests(worldStateStorageCoordinator));</span>
+<span class="fc" id="L87">          completedTasks.put(task);</span>
+<span class="fc" id="L88">          return Stream.empty();</span>
+        }
+      }
+<span class="nc" id="L91">    } catch (StorageException storageException) {</span>
+<span class="nc bnc" id="L92" title="All 2 branches missed.">      if (canRetryOnError(storageException)) {</span>
+        // We reset the task by setting it to null. This way, it is considered as failed by the
+        // pipeline, and it will attempt to execute it again later.
+<span class="nc bnc" id="L95" title="All 2 branches missed.">        if (errorCountAtThreshold()) {</span>
+<span class="nc" id="L96">          LOG.info(</span>
+              &quot;Encountered {} retryable RocksDB errors, latest error message {}&quot;,
+<span class="nc" id="L98">              getRetryableErrorCounter(),</span>
+<span class="nc" id="L99">              storageException.getMessage());</span>
+        }
+<span class="nc" id="L101">        task.getData().clear();</span>
+      } else {
+<span class="nc" id="L103">        throw storageException;</span>
+      }
+<span class="fc" id="L105">    }</span>
+<span class="fc" id="L106">    return Stream.of(task);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

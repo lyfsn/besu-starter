@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DeFramer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty</a> &gt; <span class="el_source">DeFramer.java</span></div><h1>DeFramer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.network.exceptions.BreachOfProtocolException;
+import org.hyperledger.besu.ethereum.p2p.network.exceptions.IncompatiblePeerException;
+import org.hyperledger.besu.ethereum.p2p.network.exceptions.PeerChannelClosedException;
+import org.hyperledger.besu.ethereum.p2p.network.exceptions.PeerDisconnectedException;
+import org.hyperledger.besu.ethereum.p2p.network.exceptions.UnexpectedPeerConnectionException;
+import org.hyperledger.besu.ethereum.p2p.peers.DefaultPeer;
+import org.hyperledger.besu.ethereum.p2p.peers.EnodeURLImpl;
+import org.hyperledger.besu.ethereum.p2p.peers.LocalNode;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnectionEventDispatcher;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.Framer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.FramingException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.CapabilityMultiplexer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.PeerInfo;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.SubProtocol;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.HelloMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.WireMessageCodes;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.handler.codec.DecoderException;
+import io.netty.handler.timeout.IdleStateHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+final class DeFramer extends ByteToMessageDecoder {
+
+<span class="fc" id="L63">  private static final Logger LOG = LoggerFactory.getLogger(DeFramer.class);</span>
+
+  private final CompletableFuture&lt;PeerConnection&gt; connectFuture;
+
+  private final PeerConnectionEventDispatcher connectionEventDispatcher;
+
+  private final Framer framer;
+  private final LocalNode localNode;
+  // The peer we are expecting to connect to, if such a peer is known
+  private final Optional&lt;Peer&gt; expectedPeer;
+  private final List&lt;SubProtocol&gt; subProtocols;
+  private final boolean inboundInitiated;
+  private final PeerTable peerTable;
+  private boolean hellosExchanged;
+  private final LabelledMetric&lt;Counter&gt; outboundMessagesCounter;
+
+  DeFramer(
+      final Framer framer,
+      final List&lt;SubProtocol&gt; subProtocols,
+      final LocalNode localNode,
+      final Optional&lt;Peer&gt; expectedPeer,
+      final PeerConnectionEventDispatcher connectionEventDispatcher,
+      final CompletableFuture&lt;PeerConnection&gt; connectFuture,
+      final MetricsSystem metricsSystem,
+      final boolean inboundInitiated,
+<span class="fc" id="L88">      final PeerTable peerTable) {</span>
+<span class="fc" id="L89">    this.framer = framer;</span>
+<span class="fc" id="L90">    this.subProtocols = subProtocols;</span>
+<span class="fc" id="L91">    this.localNode = localNode;</span>
+<span class="fc" id="L92">    this.expectedPeer = expectedPeer;</span>
+<span class="fc" id="L93">    this.connectFuture = connectFuture;</span>
+<span class="fc" id="L94">    this.connectionEventDispatcher = connectionEventDispatcher;</span>
+<span class="fc" id="L95">    this.inboundInitiated = inboundInitiated;</span>
+<span class="fc" id="L96">    this.peerTable = peerTable;</span>
+<span class="fc" id="L97">    this.outboundMessagesCounter =</span>
+<span class="fc" id="L98">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.NETWORK,
+            &quot;p2p_messages_outbound&quot;,
+            &quot;Count of each P2P message sent outbound.&quot;,
+            &quot;protocol&quot;,
+            &quot;name&quot;,
+            &quot;code&quot;);
+<span class="fc" id="L105">  }</span>
+
+  @Override
+  protected void decode(final ChannelHandlerContext ctx, final ByteBuf in, final List&lt;Object&gt; out) {
+    MessageData message;
+<span class="fc bfc" id="L110" title="All 2 branches covered.">    while ((message = framer.deframe(in)) != null) {</span>
+
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      if (hellosExchanged) {</span>
+
+<span class="fc" id="L114">        out.add(message);</span>
+
+<span class="fc bfc" id="L116" title="All 2 branches covered.">      } else if (message.getCode() == WireMessageCodes.HELLO) {</span>
+
+<span class="fc" id="L118">        hellosExchanged = true;</span>
+        // Decode first hello and use the payload to modify pipeline
+        final PeerInfo peerInfo;
+        try {
+<span class="fc" id="L122">          peerInfo = HelloMessage.readFrom(message).getPeerInfo();</span>
+<span class="nc" id="L123">        } catch (final RLPException e) {</span>
+<span class="nc" id="L124">          LOG.debug(&quot;Received invalid HELLO message, set log level to TRACE for message body&quot;, e);</span>
+<span class="nc" id="L125">          connectFuture.completeExceptionally(e);</span>
+<span class="nc" id="L126">          ctx.close();</span>
+<span class="nc" id="L127">          return;</span>
+<span class="fc" id="L128">        }</span>
+<span class="fc" id="L129">        LOG.trace(&quot;Received HELLO message: {}&quot;, peerInfo);</span>
+<span class="pc bpc" id="L130" title="1 of 2 branches missed.">        if (peerInfo.getVersion() &gt;= 5) {</span>
+<span class="fc" id="L131">          LOG.trace(&quot;Enable compression for p2pVersion: {}&quot;, peerInfo.getVersion());</span>
+<span class="fc" id="L132">          framer.enableCompression();</span>
+        }
+
+<span class="fc" id="L135">        final CapabilityMultiplexer capabilityMultiplexer =</span>
+            new CapabilityMultiplexer(
+                subProtocols,
+<span class="fc" id="L138">                localNode.getPeerInfo().getCapabilities(),</span>
+<span class="fc" id="L139">                peerInfo.getCapabilities());</span>
+
+        Optional&lt;Peer&gt; peer;
+<span class="fc bfc" id="L142" title="All 2 branches covered.">        if (expectedPeer.isPresent()) {</span>
+<span class="fc" id="L143">          peer = expectedPeer;</span>
+        } else {
+          // This is an inbound &quot;Hello&quot; message. Create peer from information from the Hello message
+<span class="fc" id="L146">          peer = createPeer(peerInfo, ctx);</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">          if (peer.isEmpty()) {</span>
+<span class="fc" id="L148">            LOG.debug(&quot;Failed to create connection for peer {}&quot;, peerInfo);</span>
+<span class="fc" id="L149">            connectFuture.completeExceptionally(new PeerChannelClosedException(peerInfo));</span>
+<span class="fc" id="L150">            ctx.close();</span>
+<span class="fc" id="L151">            return;</span>
+          }
+          // If we can find the DiscoveryPeer for the peer in the PeerTable we use it, because
+          // it could contains additional information, like the fork id.
+<span class="fc" id="L155">          final Optional&lt;DiscoveryPeer&gt; discoveryPeer = peerTable.get(peer.get());</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">          if (discoveryPeer.isPresent()) {</span>
+<span class="fc" id="L157">            peer = Optional.of(discoveryPeer.get());</span>
+          }
+        }
+
+<span class="fc" id="L161">        final PeerConnection connection =</span>
+            new NettyPeerConnection(
+                ctx,
+<span class="fc" id="L164">                peer.get(),</span>
+                peerInfo,
+                capabilityMultiplexer,
+                connectionEventDispatcher,
+                outboundMessagesCounter,
+                inboundInitiated);
+
+        // Check peer is who we expected
+<span class="fc bfc" id="L172" title="All 2 branches covered.">        if (expectedPeer.isPresent()</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">            &amp;&amp; !Objects.equals(expectedPeer.get().getId(), peerInfo.getNodeId())) {</span>
+<span class="fc" id="L174">          final String unexpectedMsg =</span>
+<span class="fc" id="L175">              String.format(</span>
+<span class="fc" id="L176">                  &quot;Expected id %s, but got %s&quot;, expectedPeer.get().getId(), peerInfo.getNodeId());</span>
+<span class="fc" id="L177">          connectFuture.completeExceptionally(new UnexpectedPeerConnectionException(unexpectedMsg));</span>
+<span class="fc" id="L178">          LOG.debug(&quot;{}. Disconnecting.&quot;, unexpectedMsg);</span>
+<span class="fc" id="L179">          connection.disconnect(DisconnectMessage.DisconnectReason.UNEXPECTED_ID);</span>
+        }
+
+        // Check that we have shared caps
+<span class="fc bfc" id="L183" title="All 2 branches covered.">        if (capabilityMultiplexer.getAgreedCapabilities().size() == 0) {</span>
+<span class="fc" id="L184">          LOG.debug(&quot;Disconnecting because no capabilities are shared: {}&quot;, peerInfo);</span>
+<span class="fc" id="L185">          connectFuture.completeExceptionally(</span>
+              new IncompatiblePeerException(&quot;No shared capabilities&quot;));
+<span class="fc" id="L187">          connection.disconnect(DisconnectMessage.DisconnectReason.USELESS_PEER);</span>
+        }
+
+        // Setup next stage
+<span class="fc" id="L191">        final AtomicBoolean waitingForPong = new AtomicBoolean(false);</span>
+<span class="fc" id="L192">        ctx.channel()</span>
+<span class="fc" id="L193">            .pipeline()</span>
+<span class="fc" id="L194">            .addLast(</span>
+                new IdleStateHandler(15, 0, 0),
+                new WireKeepAlive(connection, waitingForPong),
+                new ApiHandler(
+                    capabilityMultiplexer, connection, connectionEventDispatcher, waitingForPong),
+                new MessageFramer(capabilityMultiplexer, framer));
+<span class="fc" id="L200">        connectFuture.complete(connection);</span>
+
+<span class="fc bfc" id="L202" title="All 2 branches covered.">      } else if (message.getCode() == WireMessageCodes.DISCONNECT) {</span>
+
+<span class="fc" id="L204">        final DisconnectMessage disconnectMessage = DisconnectMessage.readFrom(message);</span>
+<span class="fc" id="L205">        LOG.debug(</span>
+            &quot;Peer {} disconnected before sending HELLO.  Reason: {}&quot;,
+<span class="fc" id="L207">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
+<span class="fc" id="L208">            disconnectMessage.getReason());</span>
+<span class="fc" id="L209">        ctx.close();</span>
+<span class="fc" id="L210">        connectFuture.completeExceptionally(</span>
+<span class="fc" id="L211">            new PeerDisconnectedException(disconnectMessage.getReason()));</span>
+
+<span class="fc" id="L213">      } else {</span>
+        // Unexpected message - disconnect
+
+<span class="fc" id="L216">        LOG.debug(</span>
+            &quot;Message received before HELLO's exchanged (BREACH_OF_PROTOCOL), disconnecting.  Peer: {}, Code: {}, Data: {}&quot;,
+<span class="fc" id="L218">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
+<span class="fc" id="L219">            message.getCode(),</span>
+<span class="fc" id="L220">            message.getData().toString());</span>
+<span class="fc" id="L221">        ctx.writeAndFlush(</span>
+                new OutboundMessage(
+                    null,
+<span class="fc" id="L224">                    DisconnectMessage.create(</span>
+                        DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL)))
+<span class="fc" id="L226">            .addListener((f) -&gt; ctx.close());</span>
+<span class="fc" id="L227">        connectFuture.completeExceptionally(</span>
+            new BreachOfProtocolException(&quot;Message received before HELLO's exchanged&quot;));
+      }
+    }
+<span class="fc" id="L231">  }</span>
+
+  private Optional&lt;Peer&gt; createPeer(final PeerInfo peerInfo, final ChannelHandlerContext ctx) {
+<span class="fc" id="L234">    final InetSocketAddress remoteAddress = ((InetSocketAddress) ctx.channel().remoteAddress());</span>
+<span class="fc bfc" id="L235" title="All 2 branches covered.">    if (remoteAddress == null) {</span>
+<span class="fc" id="L236">      return Optional.empty();</span>
+    }
+<span class="fc" id="L238">    final int port = peerInfo.getPort();</span>
+<span class="fc" id="L239">    return Optional.of(</span>
+<span class="fc" id="L240">        DefaultPeer.fromEnodeURL(</span>
+<span class="fc" id="L241">            EnodeURLImpl.builder()</span>
+<span class="fc" id="L242">                .nodeId(peerInfo.getNodeId())</span>
+<span class="fc" id="L243">                .ipAddress(remoteAddress.getAddress())</span>
+<span class="fc" id="L244">                .listeningPort(port)</span>
+                // Discovery information is unknown, so disable it
+<span class="fc" id="L246">                .disableDiscovery()</span>
+<span class="fc" id="L247">                .build()));</span>
+  }
+
+  @Override
+  public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable throwable)
+      throws Exception {
+    final Throwable cause =
+<span class="pc bpc" id="L254" title="2 of 4 branches missed.">        throwable instanceof DecoderException &amp;&amp; throwable.getCause() != null</span>
+<span class="fc" id="L255">            ? throwable.getCause()</span>
+<span class="pc" id="L256">            : throwable;</span>
+<span class="pc bpc" id="L257" title="1 of 6 branches missed.">    if (cause instanceof FramingException</span>
+        || cause instanceof RLPException
+        || cause instanceof IllegalArgumentException) {
+<span class="fc" id="L260">      LOG.debug(&quot;Invalid incoming message (BREACH_OF_PROTOCOL)&quot;, throwable);</span>
+<span class="pc bpc" id="L261" title="1 of 4 branches missed.">      if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
+<span class="fc" id="L262">        connectFuture.get().disconnect(DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="fc" id="L263">        return;</span>
+      }
+<span class="pc bpc" id="L265" title="1 of 2 branches missed.">    } else if (cause instanceof IOException) {</span>
+      // IO failures are routine when communicating with random peers across the network.
+<span class="nc" id="L267">      LOG.debug(&quot;IO error while processing incoming message&quot;, throwable);</span>
+    } else {
+<span class="fc" id="L269">      LOG.error(&quot;Exception while processing incoming message&quot;, throwable);</span>
+    }
+<span class="pc bpc" id="L271" title="2 of 4 branches missed.">    if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
+<span class="nc" id="L272">      connectFuture</span>
+<span class="nc" id="L273">          .get()</span>
+<span class="nc" id="L274">          .terminateConnection(DisconnectMessage.DisconnectReason.TCP_SUBSYSTEM_ERROR, false);</span>
+    } else {
+<span class="fc" id="L276">      connectFuture.completeExceptionally(throwable);</span>
+<span class="fc" id="L277">      ctx.close();</span>
+    }
+<span class="fc" id="L279">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RetestethContext.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.retesteth</a> &gt; <span class="el_source">RetestethContext.java</span></div><h1>RetestethContext.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.retesteth;
+
+import static org.hyperledger.besu.config.JsonUtil.normalizeKeys;
+
+import org.hyperledger.besu.config.JsonGenesisConfigOptions;
+import org.hyperledger.besu.config.JsonUtil;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.BlockReplay;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.chain.DefaultBlockchain;
+import org.hyperledger.besu.ethereum.chain.GenesisState;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.chain.VariablesStorage;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters.MutableInitValues;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters.Unstable;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.ImmutableTransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolFactory;
+import org.hyperledger.besu.ethereum.mainnet.EpochCalculator;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.mainnet.MainnetProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.PoWHasher;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolution;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolver;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueStoragePrefixedKeyBlockchainStorage;
+import org.hyperledger.besu.ethereum.storage.keyvalue.VariablesKeyValueStorage;
+import org.hyperledger.besu.ethereum.storage.keyvalue.WorldStatePreimageKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.forest.ForestWorldStateArchive;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.services.kvstore.InMemoryKeyValueStorage;
+import org.hyperledger.besu.util.Subscribers;
+import org.hyperledger.besu.util.number.Fraction;
+
+import java.util.Collections;
+import java.util.Optional;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="fc" id="L88">public class RetestethContext {</span>
+
+<span class="fc" id="L90">  private static final Logger LOG = LoggerFactory.getLogger(RetestethContext.class);</span>
+<span class="fc" id="L91">  private static final PoWHasher NO_WORK_HASHER =</span>
+      (final long nonce, final long number, EpochCalculator epochCalc, final Bytes headerHash) -&gt;
+<span class="nc" id="L93">          new PoWSolution(nonce, Hash.ZERO, UInt256.ZERO, Hash.ZERO);</span>
+  public static final int MAX_PEERS = 25;
+
+<span class="fc" id="L96">  private final ReentrantLock contextLock = new ReentrantLock();</span>
+<span class="fc" id="L97">  private final BadBlockManager badBlockManager = new BadBlockManager();</span>
+  private Address coinbase;
+  private Bytes extraData;
+  private MutableBlockchain blockchain;
+  private ProtocolContext protocolContext;
+  private BlockchainQueries blockchainQueries;
+  private ProtocolSchedule protocolSchedule;
+  private BlockHeaderFunctions blockHeaderFunctions;
+  private HeaderValidationMode headerValidationMode;
+  private BlockReplay blockReplay;
+  private RetestethClock retestethClock;
+  private MiningParameters miningParameters;
+  private TransactionPool transactionPool;
+  private EthScheduler ethScheduler;
+  private PoWSolver poWSolver;
+
+  private Optional&lt;Bytes&gt; terminalTotalDifficulty;
+  private Optional&lt;Bytes32&gt; mixHash;
+
+  public boolean resetContext(
+      final String genesisConfigString, final String sealEngine, final Optional&lt;Long&gt; clockTime) {
+<span class="fc" id="L118">    contextLock.lock();</span>
+    try {
+<span class="fc" id="L120">      tearDownContext();</span>
+<span class="fc" id="L121">      return buildContext(genesisConfigString, sealEngine, clockTime);</span>
+<span class="nc" id="L122">    } catch (final Exception e) {</span>
+<span class="nc" id="L123">      LOG.error(&quot;Error shutting down existing runner&quot;, e);</span>
+<span class="nc" id="L124">      return false;</span>
+    } finally {
+<span class="fc" id="L126">      contextLock.unlock();</span>
+    }
+  }
+
+  private void tearDownContext() {
+    try {
+<span class="fc bfc" id="L132" title="All 2 branches covered.">      if (ethScheduler != null) {</span>
+<span class="fc" id="L133">        ethScheduler.stop();</span>
+<span class="fc" id="L134">        ethScheduler.awaitStop();</span>
+      }
+<span class="nc" id="L136">    } catch (final InterruptedException e) {</span>
+<span class="nc" id="L137">      throw new RuntimeException(e);</span>
+<span class="fc" id="L138">    }</span>
+<span class="fc" id="L139">  }</span>
+
+  private boolean buildContext(
+      final String genesisConfigString, final String sealEngine, final Optional&lt;Long&gt; clockTime) {
+<span class="fc" id="L143">    final ObjectNode genesisConfig =</span>
+<span class="fc" id="L144">        normalizeKeys(JsonUtil.objectNodeFromString(genesisConfigString));</span>
+
+<span class="fc" id="L146">    retestethClock = new RetestethClock();</span>
+<span class="fc" id="L147">    clockTime.ifPresent(retestethClock::resetTime);</span>
+<span class="fc" id="L148">    final MetricsSystem metricsSystem = new NoOpMetricsSystem();</span>
+
+<span class="fc" id="L150">    terminalTotalDifficulty =</span>
+<span class="fc" id="L151">        Optional.ofNullable(genesisConfig.get(&quot;params&quot;))</span>
+<span class="fc" id="L152">            .map(n -&gt; n.get(&quot;terminaltotaldifficulty&quot;))</span>
+<span class="fc" id="L153">            .map(JsonNode::asText)</span>
+<span class="fc" id="L154">            .map(Bytes::fromHexString);</span>
+
+<span class="fc" id="L156">    final JsonGenesisConfigOptions jsonGenesisConfigOptions =</span>
+<span class="fc" id="L157">        JsonGenesisConfigOptions.fromJsonObject(</span>
+<span class="fc" id="L158">            JsonUtil.getObjectNode(genesisConfig, &quot;config&quot;).get());</span>
+<span class="fc" id="L159">    protocolSchedule =</span>
+<span class="fc" id="L160">        MainnetProtocolSchedule.fromConfig(</span>
+            jsonGenesisConfigOptions, EvmConfiguration.DEFAULT, miningParameters, badBlockManager);
+<span class="pc bpc" id="L162" title="1 of 2 branches missed.">    if (&quot;NoReward&quot;.equalsIgnoreCase(sealEngine)) {</span>
+<span class="nc" id="L163">      protocolSchedule = new NoRewardProtocolScheduleWrapper(protocolSchedule, badBlockManager);</span>
+    }
+<span class="fc" id="L165">    blockHeaderFunctions = ScheduleBasedBlockHeaderFunctions.create(protocolSchedule);</span>
+
+<span class="fc" id="L167">    final GenesisState genesisState = GenesisState.fromJson(genesisConfigString, protocolSchedule);</span>
+<span class="fc" id="L168">    coinbase = genesisState.getBlock().getHeader().getCoinbase();</span>
+<span class="fc" id="L169">    extraData = genesisState.getBlock().getHeader().getExtraData();</span>
+<span class="fc" id="L170">    mixHash = Optional.ofNullable(genesisState.getBlock().getHeader().getMixHashOrPrevRandao());</span>
+
+<span class="fc" id="L172">    final WorldStateArchive worldStateArchive =</span>
+        new ForestWorldStateArchive(
+            new WorldStateStorageCoordinator(
+                new ForestWorldStateKeyValueStorage(new InMemoryKeyValueStorage())),
+            new WorldStatePreimageKeyValueStorage(new InMemoryKeyValueStorage()),
+            EvmConfiguration.DEFAULT);
+<span class="fc" id="L178">    final MutableWorldState worldState = worldStateArchive.getMutable();</span>
+<span class="fc" id="L179">    genesisState.writeStateTo(worldState);</span>
+
+<span class="fc" id="L181">    blockchain = createInMemoryBlockchain(genesisState.getBlock());</span>
+<span class="fc" id="L182">    protocolContext = new ProtocolContext(blockchain, worldStateArchive, null, badBlockManager);</span>
+
+<span class="fc" id="L184">    blockchainQueries = new BlockchainQueries(blockchain, worldStateArchive, ethScheduler);</span>
+
+<span class="fc" id="L186">    final String sealengine = JsonUtil.getString(genesisConfig, &quot;sealengine&quot;, &quot;&quot;);</span>
+<span class="fc" id="L187">    headerValidationMode =</span>
+<span class="pc bpc" id="L188" title="3 of 4 branches missed.">        &quot;NoProof&quot;.equals(sealengine) || &quot;NoReward&quot;.equals(sealEngine)</span>
+<span class="fc" id="L189">            ? HeaderValidationMode.LIGHT</span>
+<span class="pc" id="L190">            : HeaderValidationMode.FULL;</span>
+
+<span class="fc" id="L192">    miningParameters =</span>
+<span class="fc" id="L193">        ImmutableMiningParameters.builder()</span>
+<span class="fc" id="L194">            .mutableInitValues(</span>
+<span class="fc" id="L195">                MutableInitValues.builder()</span>
+<span class="fc" id="L196">                    .coinbase(coinbase)</span>
+<span class="fc" id="L197">                    .extraData(extraData)</span>
+<span class="fc" id="L198">                    .targetGasLimit(blockchain.getChainHeadHeader().getGasLimit())</span>
+<span class="fc" id="L199">                    .minBlockOccupancyRatio(0.0)</span>
+<span class="fc" id="L200">                    .minTransactionGasPrice(Wei.ZERO)</span>
+<span class="fc" id="L201">                    .build())</span>
+<span class="fc" id="L202">            .unstable(Unstable.builder().powJobTimeToLive(1000).maxOmmerDepth(8).build())</span>
+<span class="fc" id="L203">            .build();</span>
+<span class="fc" id="L204">    miningParameters.setMinTransactionGasPrice(Wei.ZERO);</span>
+<span class="fc" id="L205">    poWSolver =</span>
+<span class="pc bpc" id="L206" title="3 of 4 branches missed.">        (&quot;NoProof&quot;.equals(sealengine) || &quot;NoReward&quot;.equals(sealEngine))</span>
+<span class="fc" id="L207">            ? new PoWSolver(</span>
+                miningParameters,
+                NO_WORK_HASHER,
+<span class="fc" id="L210">                false,</span>
+<span class="fc" id="L211">                Subscribers.none(),</span>
+                new EpochCalculator.DefaultEpochCalculator())
+<span class="nc" id="L213">            : new PoWSolver(</span>
+                miningParameters,
+                PoWHasher.ETHASH_LIGHT,
+<span class="nc" id="L216">                false,</span>
+<span class="pc" id="L217">                Subscribers.none(),</span>
+                new EpochCalculator.DefaultEpochCalculator());
+
+<span class="fc" id="L220">    blockReplay =</span>
+<span class="fc" id="L221">        new BlockReplay(protocolSchedule, protocolContext, blockchainQueries.getBlockchain());</span>
+
+<span class="fc" id="L223">    final Bytes localNodeKey = Bytes.wrap(new byte[64]);</span>
+
+    // mining support
+
+<span class="fc" id="L227">    final Supplier&lt;ProtocolSpec&gt; currentProtocolSpecSupplier =</span>
+<span class="nc" id="L228">        () -&gt; protocolSchedule.getByBlockHeader(blockchain.getChainHeadHeader());</span>
+<span class="fc" id="L229">    final EthPeers ethPeers =</span>
+        new EthPeers(
+            &quot;reteseth&quot;,
+            currentProtocolSpecSupplier,
+            retestethClock,
+            metricsSystem,
+            EthProtocolConfiguration.DEFAULT_MAX_MESSAGE_SIZE,
+<span class="fc" id="L236">            Collections.emptyList(),</span>
+            localNodeKey,
+            MAX_PEERS,
+            MAX_PEERS,
+<span class="fc" id="L240">            false);</span>
+<span class="fc" id="L241">    final SyncState syncState = new SyncState(blockchain, ethPeers);</span>
+
+<span class="fc" id="L243">    ethScheduler = new EthScheduler(1, 1, 1, 1, metricsSystem);</span>
+<span class="fc" id="L244">    final EthContext ethContext = new EthContext(ethPeers, new EthMessages(), ethScheduler);</span>
+
+    final TransactionPoolConfiguration transactionPoolConfiguration =
+<span class="fc" id="L247">        ImmutableTransactionPoolConfiguration.builder()</span>
+<span class="fc" id="L248">            .txPoolLimitByAccountPercentage(Fraction.fromFloat(0.004f))</span>
+<span class="fc" id="L249">            .build();</span>
+
+<span class="fc" id="L251">    transactionPool =</span>
+<span class="fc" id="L252">        TransactionPoolFactory.createTransactionPool(</span>
+            protocolSchedule,
+            protocolContext,
+            ethContext,
+            retestethClock,
+            metricsSystem,
+            syncState,
+            transactionPoolConfiguration,
+            new BlobCache(),
+<span class="fc" id="L261">            MiningParameters.newDefault());</span>
+
+<span class="pc bpc" id="L263" title="1 of 2 branches missed.">    if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L264">      LOG.trace(&quot;Genesis Block {} &quot;, genesisState.getBlock());</span>
+    }
+
+<span class="fc" id="L267">    return true;</span>
+  }
+
+  private static MutableBlockchain createInMemoryBlockchain(final Block genesisBlock) {
+<span class="fc" id="L271">    return createInMemoryBlockchain(genesisBlock, new MainnetBlockHeaderFunctions());</span>
+  }
+
+  private static MutableBlockchain createInMemoryBlockchain(
+      final Block genesisBlock, final BlockHeaderFunctions blockHeaderFunctions) {
+<span class="fc" id="L276">    final InMemoryKeyValueStorage keyValueStorage = new InMemoryKeyValueStorage();</span>
+<span class="fc" id="L277">    final VariablesStorage variablesStorage =</span>
+        new VariablesKeyValueStorage(new InMemoryKeyValueStorage());
+<span class="fc" id="L279">    return DefaultBlockchain.createMutable(</span>
+        genesisBlock,
+        new KeyValueStoragePrefixedKeyBlockchainStorage(
+            keyValueStorage, variablesStorage, blockHeaderFunctions),
+        new NoOpMetricsSystem(),
+        100);
+  }
+
+  public ProtocolSchedule getProtocolSchedule() {
+<span class="fc" id="L288">    return protocolSchedule;</span>
+  }
+
+  public BlockHeaderFunctions getBlockHeaderFunctions() {
+<span class="fc" id="L292">    return blockHeaderFunctions;</span>
+  }
+
+  public ProtocolContext getProtocolContext() {
+<span class="fc" id="L296">    return protocolContext;</span>
+  }
+
+  public EthScheduler getEthScheduler() {
+<span class="nc" id="L300">    return ethScheduler;</span>
+  }
+
+  public void setEthScheduler(final EthScheduler ethScheduler) {
+<span class="nc" id="L304">    this.ethScheduler = ethScheduler;</span>
+<span class="nc" id="L305">  }</span>
+
+  public long getBlockHeight() {
+<span class="nc" id="L308">    return blockchain.getChainHeadBlockNumber();</span>
+  }
+
+  public ProtocolSpec getProtocolSpec(final BlockHeader blockHeader) {
+<span class="fc" id="L312">    return getProtocolSchedule().getByBlockHeader(blockHeader);</span>
+  }
+
+  public BlockHeader getBlockHeader(final long blockNumber) {
+<span class="fc" id="L316">    return blockchain.getBlockHeader(blockNumber).get();</span>
+  }
+
+  public BlockchainQueries getBlockchainQueries() {
+<span class="nc" id="L320">    return blockchainQueries;</span>
+  }
+
+  public HeaderValidationMode getHeaderValidationMode() {
+<span class="fc" id="L324">    return headerValidationMode;</span>
+  }
+
+  BlockReplay getBlockReplay() {
+<span class="nc" id="L328">    return blockReplay;</span>
+  }
+
+  public TransactionPool getTransactionPool() {
+<span class="nc" id="L332">    return transactionPool;</span>
+  }
+
+  public MiningParameters getMiningParameters() {
+<span class="nc" id="L336">    return miningParameters;</span>
+  }
+
+  public MutableBlockchain getBlockchain() {
+<span class="fc" id="L340">    return blockchain;</span>
+  }
+
+  public RetestethClock getRetestethClock() {
+<span class="nc" id="L344">    return retestethClock;</span>
+  }
+
+  public Optional&lt;Bytes&gt; getTerminalTotalDifficulty() {
+<span class="nc" id="L348">    return terminalTotalDifficulty;</span>
+  }
+
+  public Optional&lt;Bytes32&gt; getMixHash() {
+<span class="nc" id="L352">    return mixHash;</span>
+  }
+
+  public PoWSolver getEthHashSolver() {
+<span class="nc" id="L356">    return poWSolver;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

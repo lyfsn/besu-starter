@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">EthServer.java</span></div><h1>EthServer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.core.encoding.EncodingContext;
+import org.hyperledger.besu.ethereum.core.encoding.TransactionEncoder;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.messages.BlockBodiesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.BlockHeadersMessage;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV62;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV63;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV65;
+import org.hyperledger.besu.ethereum.eth.messages.GetBlockBodiesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetBlockHeadersMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetNodeDataMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetPooledTransactionsMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetReceiptsMessage;
+import org.hyperledger.besu.ethereum.eth.messages.NodeDataMessage;
+import org.hyperledger.besu.ethereum.eth.messages.PooledTransactionsMessage;
+import org.hyperledger.besu.ethereum.eth.messages.ReceiptsMessage;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+
+class EthServer {
+  private final Blockchain blockchain;
+  private final WorldStateArchive worldStateArchive;
+  private final TransactionPool transactionPool;
+  private final EthMessages ethMessages;
+  private final EthProtocolConfiguration ethereumWireProtocolConfiguration;
+
+  EthServer(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final TransactionPool transactionPool,
+      final EthMessages ethMessages,
+<span class="fc" id="L63">      final EthProtocolConfiguration ethereumWireProtocolConfiguration) {</span>
+<span class="fc" id="L64">    this.blockchain = blockchain;</span>
+<span class="fc" id="L65">    this.worldStateArchive = worldStateArchive;</span>
+<span class="fc" id="L66">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L67">    this.ethMessages = ethMessages;</span>
+<span class="fc" id="L68">    this.ethereumWireProtocolConfiguration = ethereumWireProtocolConfiguration;</span>
+<span class="fc" id="L69">    this.registerResponseConstructors();</span>
+<span class="fc" id="L70">  }</span>
+
+  private void registerResponseConstructors() {
+<span class="fc" id="L73">    final int maxMessageSize = ethereumWireProtocolConfiguration.getMaxMessageSize();</span>
+
+<span class="fc" id="L75">    ethMessages.registerResponseConstructor(</span>
+        EthPV62.GET_BLOCK_HEADERS,
+        messageData -&gt;
+<span class="fc" id="L78">            constructGetHeadersResponse(</span>
+                blockchain,
+                messageData,
+<span class="fc" id="L81">                ethereumWireProtocolConfiguration.getMaxGetBlockHeaders(),</span>
+                maxMessageSize));
+<span class="fc" id="L83">    ethMessages.registerResponseConstructor(</span>
+        EthPV62.GET_BLOCK_BODIES,
+        messageData -&gt;
+<span class="fc" id="L86">            constructGetBodiesResponse(</span>
+                blockchain,
+                messageData,
+<span class="fc" id="L89">                ethereumWireProtocolConfiguration.getMaxGetBlockBodies(),</span>
+                maxMessageSize));
+<span class="fc" id="L91">    ethMessages.registerResponseConstructor(</span>
+        EthPV63.GET_RECEIPTS,
+        messageData -&gt;
+<span class="fc" id="L94">            constructGetReceiptsResponse(</span>
+                blockchain,
+                messageData,
+<span class="fc" id="L97">                ethereumWireProtocolConfiguration.getMaxGetReceipts(),</span>
+                maxMessageSize));
+<span class="fc" id="L99">    ethMessages.registerResponseConstructor(</span>
+        EthPV63.GET_NODE_DATA,
+        messageData -&gt;
+<span class="fc" id="L102">            constructGetNodeDataResponse(</span>
+                worldStateArchive,
+                messageData,
+<span class="fc" id="L105">                ethereumWireProtocolConfiguration.getMaxGetNodeData(),</span>
+                maxMessageSize));
+<span class="fc" id="L107">    ethMessages.registerResponseConstructor(</span>
+        EthPV65.GET_POOLED_TRANSACTIONS,
+        messageData -&gt;
+<span class="fc" id="L110">            constructGetPooledTransactionsResponse(</span>
+                transactionPool,
+                messageData,
+<span class="fc" id="L113">                ethereumWireProtocolConfiguration.getMaxGetPooledTransactions(),</span>
+                maxMessageSize));
+<span class="fc" id="L115">  }</span>
+
+  static MessageData constructGetHeadersResponse(
+      final Blockchain blockchain,
+      final MessageData message,
+      final int requestLimit,
+      final int maxMessageSize) {
+    // Extract parameters from request
+<span class="fc" id="L123">    final GetBlockHeadersMessage getHeaders = GetBlockHeadersMessage.readFrom(message);</span>
+<span class="fc" id="L124">    final Optional&lt;Hash&gt; hash = getHeaders.hash();</span>
+<span class="fc" id="L125">    final int skip = getHeaders.skip();</span>
+<span class="fc" id="L126">    final int maxHeaders = Math.min(requestLimit, getHeaders.maxHeaders());</span>
+<span class="fc" id="L127">    final boolean reversed = getHeaders.reverse();</span>
+    final BlockHeader firstHeader;
+    // Query first header by hash or number depending on request arguments
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    if (hash.isPresent()) {</span>
+<span class="fc" id="L131">      final Hash startHash = hash.get();</span>
+<span class="fc" id="L132">      firstHeader = blockchain.getBlockHeader(startHash).orElse(null);</span>
+<span class="fc" id="L133">    } else {</span>
+<span class="fc" id="L134">      final long firstNumber = getHeaders.blockNumber().getAsLong();</span>
+<span class="fc" id="L135">      firstHeader = blockchain.getBlockHeader(firstNumber).orElse(null);</span>
+    }
+
+    // The initial header was not found, nothing to return
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    if (firstHeader == null) {</span>
+<span class="fc" id="L140">      return BlockHeadersMessage.create(Collections.emptyList());</span>
+    }
+
+    // Encode the first header
+<span class="fc" id="L144">    int responseSizeEstimate = RLP.MAX_PREFIX_SIZE;</span>
+<span class="fc" id="L145">    final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L146">    rlp.startList();</span>
+<span class="fc" id="L147">    final Bytes firstEncodedHeader = RLP.encode(firstHeader::writeTo);</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">    if (responseSizeEstimate + firstEncodedHeader.size() &gt; maxMessageSize) {</span>
+<span class="nc" id="L149">      return BlockHeadersMessage.create(Collections.emptyList());</span>
+    }
+<span class="fc" id="L151">    responseSizeEstimate += firstEncodedHeader.size();</span>
+<span class="fc" id="L152">    rlp.writeRaw(firstEncodedHeader);</span>
+    // Collect and encode the remaining headers
+<span class="fc bfc" id="L154" title="All 2 branches covered.">    final long numberDelta = reversed ? -(skip + 1) : (skip + 1);</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">    for (int i = 1; i &lt; maxHeaders; i++) {</span>
+<span class="fc" id="L156">      final long blockNumber = firstHeader.getNumber() + i * numberDelta;</span>
+<span class="fc bfc" id="L157" title="All 2 branches covered.">      if (blockNumber &lt; BlockHeader.GENESIS_BLOCK_NUMBER) {</span>
+<span class="fc" id="L158">        break;</span>
+      }
+<span class="fc" id="L160">      final Optional&lt;BlockHeader&gt; maybeHeader = blockchain.getBlockHeader(blockNumber);</span>
+<span class="fc bfc" id="L161" title="All 2 branches covered.">      if (maybeHeader.isEmpty()) {</span>
+<span class="fc" id="L162">        break;</span>
+      }
+<span class="fc" id="L164">      final BytesValueRLPOutput headerRlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L165">      maybeHeader.get().writeTo(headerRlp);</span>
+<span class="fc" id="L166">      final int encodedSize = headerRlp.encodedSize();</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">      if (responseSizeEstimate + encodedSize &gt; maxMessageSize) {</span>
+<span class="fc" id="L168">        break;</span>
+      }
+<span class="fc" id="L170">      responseSizeEstimate += encodedSize;</span>
+<span class="fc" id="L171">      rlp.writeRaw(headerRlp.encoded());</span>
+    }
+<span class="fc" id="L173">    rlp.endList();</span>
+
+<span class="fc" id="L175">    return BlockHeadersMessage.createUnsafe(rlp.encoded());</span>
+  }
+
+  static MessageData constructGetBodiesResponse(
+      final Blockchain blockchain,
+      final MessageData message,
+      final int requestLimit,
+      final int maxMessageSize) {
+<span class="fc" id="L183">    final GetBlockBodiesMessage getBlockBodiesMessage = GetBlockBodiesMessage.readFrom(message);</span>
+<span class="fc" id="L184">    final Iterable&lt;Hash&gt; hashes = getBlockBodiesMessage.hashes();</span>
+
+<span class="fc" id="L186">    int responseSizeEstimate = RLP.MAX_PREFIX_SIZE;</span>
+<span class="fc" id="L187">    final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L188">    rlp.startList();</span>
+<span class="fc" id="L189">    int count = 0;</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">    for (final Hash hash : hashes) {</span>
+<span class="fc bfc" id="L191" title="All 2 branches covered.">      if (count &gt;= requestLimit) {</span>
+<span class="fc" id="L192">        break;</span>
+      }
+<span class="fc" id="L194">      count++;</span>
+<span class="fc" id="L195">      final Optional&lt;BlockBody&gt; maybeBody = blockchain.getBlockBody(hash);</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">      if (maybeBody.isEmpty()) {</span>
+<span class="fc" id="L197">        continue;</span>
+      }
+
+<span class="fc" id="L200">      final BlockBody body = maybeBody.get();</span>
+<span class="fc" id="L201">      final BytesValueRLPOutput bodyOutput = new BytesValueRLPOutput();</span>
+<span class="fc" id="L202">      body.writeWrappedBodyTo(bodyOutput);</span>
+<span class="fc" id="L203">      final int encodedSize = bodyOutput.encodedSize();</span>
+<span class="fc bfc" id="L204" title="All 2 branches covered.">      if (responseSizeEstimate + encodedSize &gt; maxMessageSize) {</span>
+<span class="fc" id="L205">        break;</span>
+      }
+<span class="fc" id="L207">      responseSizeEstimate += encodedSize;</span>
+<span class="fc" id="L208">      rlp.writeRaw(bodyOutput.encoded());</span>
+<span class="fc" id="L209">    }</span>
+<span class="fc" id="L210">    rlp.endList();</span>
+<span class="fc" id="L211">    return BlockBodiesMessage.createUnsafe(rlp.encoded());</span>
+  }
+
+  static MessageData constructGetReceiptsResponse(
+      final Blockchain blockchain,
+      final MessageData message,
+      final int requestLimit,
+      final int maxMessageSize) {
+<span class="fc" id="L219">    final GetReceiptsMessage getReceipts = GetReceiptsMessage.readFrom(message);</span>
+<span class="fc" id="L220">    final Iterable&lt;Hash&gt; hashes = getReceipts.hashes();</span>
+
+<span class="fc" id="L222">    int responseSizeEstimate = RLP.MAX_PREFIX_SIZE;</span>
+<span class="fc" id="L223">    final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L224">    rlp.startList();</span>
+<span class="fc" id="L225">    int count = 0;</span>
+<span class="fc bfc" id="L226" title="All 2 branches covered.">    for (final Hash hash : hashes) {</span>
+<span class="fc bfc" id="L227" title="All 2 branches covered.">      if (count &gt;= requestLimit) {</span>
+<span class="fc" id="L228">        break;</span>
+      }
+<span class="fc" id="L230">      count++;</span>
+<span class="fc" id="L231">      final Optional&lt;List&lt;TransactionReceipt&gt;&gt; maybeReceipts = blockchain.getTxReceipts(hash);</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">      if (maybeReceipts.isEmpty()) {</span>
+<span class="fc" id="L233">        continue;</span>
+      }
+<span class="fc" id="L235">      final BytesValueRLPOutput encodedReceipts = new BytesValueRLPOutput();</span>
+<span class="fc" id="L236">      encodedReceipts.startList();</span>
+<span class="fc" id="L237">      maybeReceipts.get().forEach(r -&gt; r.writeTo(encodedReceipts));</span>
+<span class="fc" id="L238">      encodedReceipts.endList();</span>
+<span class="fc" id="L239">      final int encodedSize = encodedReceipts.encodedSize();</span>
+<span class="fc bfc" id="L240" title="All 2 branches covered.">      if (responseSizeEstimate + encodedSize &gt; maxMessageSize) {</span>
+<span class="fc" id="L241">        break;</span>
+      }
+
+<span class="fc" id="L244">      responseSizeEstimate += encodedSize;</span>
+<span class="fc" id="L245">      rlp.writeRaw(encodedReceipts.encoded());</span>
+<span class="fc" id="L246">    }</span>
+<span class="fc" id="L247">    rlp.endList();</span>
+
+<span class="fc" id="L249">    return ReceiptsMessage.createUnsafe(rlp.encoded());</span>
+  }
+
+  static MessageData constructGetPooledTransactionsResponse(
+      final TransactionPool transactionPool,
+      final MessageData message,
+      final int requestLimit,
+      final int maxMessageSize) {
+<span class="fc" id="L257">    final GetPooledTransactionsMessage getPooledTransactions =</span>
+<span class="fc" id="L258">        GetPooledTransactionsMessage.readFrom(message);</span>
+<span class="fc" id="L259">    final Iterable&lt;Hash&gt; hashes = getPooledTransactions.pooledTransactions();</span>
+
+<span class="fc" id="L261">    int responseSizeEstimate = RLP.MAX_PREFIX_SIZE;</span>
+<span class="fc" id="L262">    final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L263">    rlp.startList();</span>
+<span class="fc" id="L264">    int count = 0;</span>
+<span class="fc bfc" id="L265" title="All 2 branches covered.">    for (final Hash hash : hashes) {</span>
+<span class="fc bfc" id="L266" title="All 2 branches covered.">      if (count &gt;= requestLimit) {</span>
+<span class="fc" id="L267">        break;</span>
+      }
+<span class="fc" id="L269">      count++;</span>
+<span class="fc" id="L270">      final Optional&lt;Transaction&gt; maybeTx = transactionPool.getTransactionByHash(hash);</span>
+<span class="pc bpc" id="L271" title="1 of 2 branches missed.">      if (maybeTx.isEmpty()) {</span>
+<span class="nc" id="L272">        continue;</span>
+      }
+
+<span class="fc" id="L275">      final BytesValueRLPOutput txRlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L276">      TransactionEncoder.encodeRLP(maybeTx.get(), txRlp, EncodingContext.POOLED_TRANSACTION);</span>
+<span class="fc" id="L277">      final int encodedSize = txRlp.encodedSize();</span>
+<span class="fc bfc" id="L278" title="All 2 branches covered.">      if (responseSizeEstimate + encodedSize &gt; maxMessageSize) {</span>
+<span class="fc" id="L279">        break;</span>
+      }
+
+<span class="fc" id="L282">      responseSizeEstimate += encodedSize;</span>
+<span class="fc" id="L283">      rlp.writeRaw(txRlp.encoded());</span>
+<span class="fc" id="L284">    }</span>
+<span class="fc" id="L285">    rlp.endList();</span>
+
+<span class="fc" id="L287">    return PooledTransactionsMessage.createUnsafe(rlp.encoded());</span>
+  }
+
+  static MessageData constructGetNodeDataResponse(
+      final WorldStateArchive worldStateArchive,
+      final MessageData message,
+      final int requestLimit,
+      final int maxMessageSize) {
+<span class="fc" id="L295">    final GetNodeDataMessage getNodeDataMessage = GetNodeDataMessage.readFrom(message);</span>
+<span class="fc" id="L296">    final Iterable&lt;Hash&gt; hashes = getNodeDataMessage.hashes();</span>
+
+<span class="fc" id="L298">    int responseSizeEstimate = RLP.MAX_PREFIX_SIZE;</span>
+<span class="fc" id="L299">    final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L300">    rlp.startList();</span>
+<span class="fc" id="L301">    int count = 0;</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">    for (final Hash hash : hashes) {</span>
+<span class="fc bfc" id="L303" title="All 2 branches covered.">      if (count &gt;= requestLimit) {</span>
+<span class="fc" id="L304">        break;</span>
+      }
+<span class="fc" id="L306">      count++;</span>
+
+<span class="fc" id="L308">      final Optional&lt;Bytes&gt; maybeNodeData = worldStateArchive.getNodeData(hash);</span>
+<span class="fc bfc" id="L309" title="All 2 branches covered.">      if (maybeNodeData.isEmpty()) {</span>
+<span class="fc" id="L310">        continue;</span>
+      }
+
+<span class="fc" id="L313">      final BytesValueRLPOutput rlpNodeData = new BytesValueRLPOutput();</span>
+<span class="fc" id="L314">      rlpNodeData.writeBytes(maybeNodeData.get());</span>
+<span class="fc" id="L315">      final int encodedSize = rlpNodeData.encodedSize();</span>
+<span class="fc bfc" id="L316" title="All 2 branches covered.">      if (responseSizeEstimate + encodedSize &gt; maxMessageSize) {</span>
+<span class="fc" id="L317">        break;</span>
+      }
+
+<span class="fc" id="L320">      responseSizeEstimate += encodedSize;</span>
+<span class="fc" id="L321">      rlp.writeRaw(rlpNodeData.encoded());</span>
+<span class="fc" id="L322">    }</span>
+<span class="fc" id="L323">    rlp.endList();</span>
+
+<span class="fc" id="L325">    return NodeDataMessage.createUnsafe(rlp.encoded());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

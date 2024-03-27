@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RetryingGetHeadersEndingAtFromPeerByHashTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">RetryingGetHeadersEndingAtFromPeerByHashTask.java</span></div><h1>RetryingGetHeadersEndingAtFromPeerByHashTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.IncompleteResultsException;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RetryingGetHeadersEndingAtFromPeerByHashTask
+    extends AbstractRetryingSwitchingPeerTask&lt;List&lt;BlockHeader&gt;&gt; {
+<span class="fc" id="L37">  private static final Logger LOG =</span>
+<span class="fc" id="L38">      LoggerFactory.getLogger(RetryingGetHeadersEndingAtFromPeerByHashTask.class);</span>
+
+  private final Hash referenceHash;
+  private final ProtocolSchedule protocolSchedule;
+  private final long minimumRequiredBlockNumber;
+  private final int count;
+
+  @VisibleForTesting
+  RetryingGetHeadersEndingAtFromPeerByHashTask(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final Hash referenceHash,
+      final long minimumRequiredBlockNumber,
+      final int count,
+      final MetricsSystem metricsSystem,
+      final int maxRetries) {
+<span class="fc" id="L54">    super(ethContext, metricsSystem, List::isEmpty, maxRetries);</span>
+<span class="fc" id="L55">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L56">    this.minimumRequiredBlockNumber = minimumRequiredBlockNumber;</span>
+<span class="fc" id="L57">    this.count = count;</span>
+<span class="fc" id="L58">    checkNotNull(referenceHash);</span>
+<span class="fc" id="L59">    this.referenceHash = referenceHash;</span>
+<span class="fc" id="L60">  }</span>
+
+  public static RetryingGetHeadersEndingAtFromPeerByHashTask endingAtHash(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final Hash referenceHash,
+      final long minimumRequiredBlockNumber,
+      final int count,
+      final MetricsSystem metricsSystem,
+      final int maxRetries) {
+<span class="fc" id="L70">    return new RetryingGetHeadersEndingAtFromPeerByHashTask(</span>
+        protocolSchedule,
+        ethContext,
+        referenceHash,
+        minimumRequiredBlockNumber,
+        count,
+        metricsSystem,
+        maxRetries);
+  }
+
+  @Override
+  protected CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; executeTaskOnCurrentPeer(
+      final EthPeer currentPeer) {
+<span class="fc" id="L83">    final AbstractGetHeadersFromPeerTask task =</span>
+<span class="fc" id="L84">        GetHeadersFromPeerByHashTask.endingAtHash(</span>
+            protocolSchedule,
+<span class="fc" id="L86">            getEthContext(),</span>
+            referenceHash,
+            minimumRequiredBlockNumber,
+            count,
+<span class="fc" id="L90">            getMetricsSystem());</span>
+<span class="fc" id="L91">    task.assignPeer(currentPeer);</span>
+<span class="fc" id="L92">    return executeSubTask(task::run)</span>
+<span class="fc" id="L93">        .thenApply(</span>
+            peerResult -&gt; {
+<span class="fc" id="L95">              LOG.trace(</span>
+                  &quot;Got {} block headers by hash {} from peer {} has result {}&quot;,
+<span class="fc" id="L97">                  count,</span>
+                  referenceHash,
+                  currentPeer,
+<span class="fc" id="L100">                  peerResult.getResult());</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">              if (peerResult.getResult().isEmpty()) {</span>
+<span class="fc" id="L102">                currentPeer.recordUselessResponse(&quot;GetHeadersFromPeerByHashTask&quot;);</span>
+<span class="fc" id="L103">                throw new IncompleteResultsException(</span>
+                    &quot;No block headers for hash &quot;
+                        + referenceHash
+                        + &quot; returned by peer &quot;
+<span class="fc" id="L107">                        + currentPeer.getLoggableId());</span>
+              }
+<span class="fc" id="L109">              result.complete(peerResult.getResult());</span>
+<span class="fc" id="L110">              return peerResult.getResult();</span>
+            });
+  }
+
+  @Override
+  protected boolean isRetryableError(final Throwable error) {
+<span class="pc bpc" id="L116" title="2 of 4 branches missed.">    return super.isRetryableError(error) || error instanceof IncompleteResultsException;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

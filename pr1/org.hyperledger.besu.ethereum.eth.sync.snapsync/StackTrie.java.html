@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StackTrie.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">StackTrie.java</span></div><h1>StackTrie.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.trie.CommitVisitor;
+import org.hyperledger.besu.ethereum.trie.InnerNodeDiscoveryManager;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.NodeUpdater;
+import org.hyperledger.besu.ethereum.trie.SnapPutVisitor;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.immutables.value.Value;
+
+/**
+ * StackTrie represents a stack-based Merkle Patricia Trie used in the context of snapsync
+ * synchronization. It allows adding elements, retrieving elements, and committing the trie changes
+ * to a node updater and flat database updater. The trie operates on a stack of segments and commits
+ * the changes once the number of segments reaches a threshold. It utilizes proofs and keys to build
+ * and update the trie structure.
+ */
+public class StackTrie {
+
+  private final Bytes32 rootHash;
+  private final AtomicInteger nbSegments;
+  private final int maxSegments;
+  private final Bytes32 startKeyHash;
+  private Map&lt;Bytes32, TaskElement&gt; elements;
+  private AtomicLong elementsCount;
+
+  public StackTrie(final Hash rootHash, final Bytes32 startKeyHash) {
+<span class="fc" id="L58">    this(rootHash, 1, 1, startKeyHash);</span>
+<span class="fc" id="L59">  }</span>
+
+  public StackTrie(
+      final Hash rootHash,
+      final int nbSegments,
+      final int maxSegments,
+<span class="fc" id="L65">      final Bytes32 startKeyHash) {</span>
+<span class="fc" id="L66">    this.rootHash = rootHash;</span>
+<span class="fc" id="L67">    this.nbSegments = new AtomicInteger(nbSegments);</span>
+<span class="fc" id="L68">    this.maxSegments = maxSegments;</span>
+<span class="fc" id="L69">    this.startKeyHash = startKeyHash;</span>
+<span class="fc" id="L70">    this.elements = new LinkedHashMap&lt;&gt;();</span>
+<span class="fc" id="L71">    this.elementsCount = new AtomicLong();</span>
+<span class="fc" id="L72">  }</span>
+
+  public void addElement(
+      final Bytes32 taskIdentifier, final List&lt;Bytes&gt; proofs, final TreeMap&lt;Bytes32, Bytes&gt; keys) {
+<span class="fc" id="L76">    this.elementsCount.addAndGet(keys.size());</span>
+<span class="fc" id="L77">    this.elements.put(</span>
+<span class="fc" id="L78">        taskIdentifier, ImmutableTaskElement.builder().proofs(proofs).keys(keys).build());</span>
+<span class="fc" id="L79">  }</span>
+
+  public void removeElement(final Bytes32 taskIdentifier) {
+<span class="nc bnc" id="L82" title="All 2 branches missed.">    if (this.elements.containsKey(taskIdentifier)) {</span>
+<span class="nc" id="L83">      this.elementsCount.addAndGet(-this.elements.remove(taskIdentifier).keys().size());</span>
+    }
+<span class="nc" id="L85">  }</span>
+
+  public TaskElement getElement(final Bytes32 taskIdentifier) {
+<span class="fc" id="L88">    return this.elements.get(taskIdentifier);</span>
+  }
+
+  public AtomicLong getElementsCount() {
+<span class="fc" id="L92">    return elementsCount;</span>
+  }
+
+  public void commit(final NodeUpdater nodeUpdater) {
+<span class="fc" id="L96">    commit((key, value) -&gt; {}, nodeUpdater);</span>
+<span class="fc" id="L97">  }</span>
+
+  public void commit(final FlatDatabaseUpdater flatDatabaseUpdater, final NodeUpdater nodeUpdater) {
+
+<span class="pc bpc" id="L101" title="2 of 4 branches missed.">    if (nbSegments.decrementAndGet() &lt;= 0 &amp;&amp; !elements.isEmpty()) {</span>
+
+<span class="fc" id="L103">      final List&lt;Bytes&gt; proofs = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L104">      final TreeMap&lt;Bytes32, Bytes&gt; keys = new TreeMap&lt;&gt;();</span>
+
+<span class="fc" id="L106">      elements</span>
+<span class="fc" id="L107">          .values()</span>
+<span class="fc" id="L108">          .forEach(</span>
+              taskElement -&gt; {
+<span class="fc" id="L110">                proofs.addAll(taskElement.proofs());</span>
+<span class="fc" id="L111">                keys.putAll(taskElement.keys());</span>
+<span class="fc" id="L112">              });</span>
+
+<span class="fc" id="L114">      final Map&lt;Bytes32, Bytes&gt; proofsEntries = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">      for (Bytes proof : proofs) {</span>
+<span class="fc" id="L116">        proofsEntries.put(Hash.hash(proof), proof);</span>
+<span class="fc" id="L117">      }</span>
+
+<span class="fc" id="L119">      final InnerNodeDiscoveryManager&lt;Bytes&gt; snapStoredNodeFactory =</span>
+          new InnerNodeDiscoveryManager&lt;&gt;(
+<span class="fc" id="L121">              (location, hash) -&gt; Optional.ofNullable(proofsEntries.get(hash)),</span>
+<span class="fc" id="L122">              Function.identity(),</span>
+<span class="fc" id="L123">              Function.identity(),</span>
+              startKeyHash,
+<span class="fc" id="L125">              keys.lastKey(),</span>
+              true);
+
+<span class="fc" id="L128">      final MerkleTrie&lt;Bytes, Bytes&gt; trie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="fc bfc" id="L130" title="All 2 branches covered.">              snapStoredNodeFactory, proofs.isEmpty() ? MerkleTrie.EMPTY_TRIE_NODE_HASH : rootHash);</span>
+
+<span class="fc bfc" id="L132" title="All 2 branches covered.">      for (Map.Entry&lt;Bytes32, Bytes&gt; entry : keys.entrySet()) {</span>
+<span class="fc" id="L133">        trie.put(entry.getKey(), new SnapPutVisitor&lt;&gt;(snapStoredNodeFactory, entry.getValue()));</span>
+<span class="fc" id="L134">      }</span>
+
+<span class="fc" id="L136">      keys.forEach(flatDatabaseUpdater::update);</span>
+
+<span class="fc" id="L138">      trie.commit(</span>
+          nodeUpdater,
+<span class="fc" id="L140">          (new CommitVisitor&lt;&gt;(nodeUpdater) {</span>
+            @Override
+            public void maybeStoreNode(final Bytes location, final Node&lt;Bytes&gt; node) {
+<span class="fc bfc" id="L143" title="All 2 branches covered.">              if (!node.isHealNeeded()) {</span>
+<span class="fc" id="L144">                super.maybeStoreNode(location, node);</span>
+              }
+<span class="fc" id="L146">            }</span>
+          }));
+    }
+<span class="fc" id="L149">  }</span>
+
+  public void clear() {
+<span class="nc" id="L152">    this.elements = new LinkedHashMap&lt;&gt;();</span>
+<span class="nc" id="L153">    this.elementsCount = new AtomicLong();</span>
+<span class="nc" id="L154">  }</span>
+
+  public boolean addSegment() {
+<span class="pc bpc" id="L157" title="1 of 2 branches missed.">    if (nbSegments.get() &gt; maxSegments) {</span>
+<span class="nc" id="L158">      return false;</span>
+    } else {
+<span class="fc" id="L160">      nbSegments.incrementAndGet();</span>
+<span class="fc" id="L161">      return true;</span>
+    }
+  }
+
+  public interface FlatDatabaseUpdater {
+
+    static FlatDatabaseUpdater noop() {
+<span class="fc" id="L168">      return (key, value) -&gt; {};</span>
+    }
+
+    void update(final Bytes32 key, final Bytes value);
+  }
+
+  @Value.Immutable
+<span class="fc" id="L175">  public abstract static class TaskElement {</span>
+
+    @Value.Default
+    public List&lt;Bytes&gt; proofs() {
+<span class="nc" id="L179">      return new ArrayList&lt;&gt;();</span>
+    }
+
+    @Value.Default
+    public TreeMap&lt;Bytes32, Bytes&gt; keys() {
+<span class="nc" id="L184">      return new TreeMap&lt;&gt;();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

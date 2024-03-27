@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivacyBlockProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">PrivacyBlockProcessor.java</span></div><h1>PrivacyBlockProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.FLEXIBLE_PRIVACY;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.EnclaveClientException;
+import org.hyperledger.besu.enclave.types.ReceiveResponse;
+import org.hyperledger.besu.ethereum.BlockProcessingResult;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Deposit;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateGenesisAllocator;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateRehydration;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateRootResolver;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionWithMetadata;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivacyGroupHeadBlockMap;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateBlockMetadata;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateTransactionMetadata;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivacyBlockProcessor implements BlockProcessor {
+
+<span class="fc" id="L53">  private static final Logger LOG = LoggerFactory.getLogger(PrivacyBlockProcessor.class);</span>
+
+  private final BlockProcessor blockProcessor;
+  private final ProtocolSchedule protocolSchedule;
+  private final Enclave enclave;
+  private final PrivateStateStorage privateStateStorage;
+  private final WorldStateArchive privateWorldStateArchive;
+  private final PrivateStateRootResolver privateStateRootResolver;
+  private final PrivateStateGenesisAllocator privateStateGenesisAllocator;
+  private WorldStateArchive publicWorldStateArchive;
+
+  public PrivacyBlockProcessor(
+      final BlockProcessor blockProcessor,
+      final ProtocolSchedule protocolSchedule,
+      final Enclave enclave,
+      final PrivateStateStorage privateStateStorage,
+      final WorldStateArchive privateWorldStateArchive,
+      final PrivateStateRootResolver privateStateRootResolver,
+<span class="fc" id="L71">      final PrivateStateGenesisAllocator privateStateGenesisAllocator) {</span>
+<span class="fc" id="L72">    this.blockProcessor = blockProcessor;</span>
+<span class="fc" id="L73">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L74">    this.enclave = enclave;</span>
+<span class="fc" id="L75">    this.privateStateStorage = privateStateStorage;</span>
+<span class="fc" id="L76">    this.privateWorldStateArchive = privateWorldStateArchive;</span>
+<span class="fc" id="L77">    this.privateStateRootResolver = privateStateRootResolver;</span>
+<span class="fc" id="L78">    this.privateStateGenesisAllocator = privateStateGenesisAllocator;</span>
+<span class="fc" id="L79">  }</span>
+
+  public void setPublicWorldStateArchive(final WorldStateArchive publicWorldStateArchive) {
+<span class="fc" id="L82">    this.publicWorldStateArchive = publicWorldStateArchive;</span>
+<span class="fc" id="L83">  }</span>
+
+  @Override
+  public BlockProcessingResult processBlock(
+      final Blockchain blockchain,
+      final MutableWorldState worldState,
+      final BlockHeader blockHeader,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;BlockHeader&gt; ommers,
+      final Optional&lt;List&lt;Withdrawal&gt;&gt; withdrawals,
+      final Optional&lt;List&lt;Deposit&gt;&gt; deposits,
+      final PrivateMetadataUpdater privateMetadataUpdater) {
+
+<span class="pc bpc" id="L96" title="1 of 2 branches missed.">    if (privateMetadataUpdater != null) {</span>
+<span class="nc" id="L97">      throw new IllegalArgumentException(&quot;PrivateMetadataUpdater passed in is not null.&quot;);</span>
+    }
+
+<span class="fc" id="L100">    maybeRehydrate(blockchain, blockHeader, transactions);</span>
+
+<span class="fc" id="L102">    final PrivateMetadataUpdater metadataUpdater =</span>
+        new PrivateMetadataUpdater(blockHeader, privateStateStorage);
+
+<span class="fc" id="L105">    final BlockProcessingResult result =</span>
+<span class="fc" id="L106">        blockProcessor.processBlock(</span>
+            blockchain,
+            worldState,
+            blockHeader,
+            transactions,
+            ommers,
+            withdrawals,
+            deposits,
+            metadataUpdater);
+<span class="fc" id="L115">    metadataUpdater.commit();</span>
+<span class="fc" id="L116">    return result;</span>
+  }
+
+  void maybeRehydrate(
+      final Blockchain blockchain,
+      final BlockHeader blockHeader,
+      final List&lt;Transaction&gt; transactions) {
+<span class="fc" id="L123">    transactions.stream()</span>
+<span class="fc" id="L124">        .filter(this::onchainAddToGroupPrivateMarkerTransactions)</span>
+<span class="fc" id="L125">        .forEach(</span>
+            pmt -&gt; {
+<span class="fc" id="L127">              final Bytes32 privateTransactionsLookupId =</span>
+<span class="fc" id="L128">                  Bytes32.wrap(pmt.getPayload().slice(32, 32));</span>
+              try {
+<span class="fc" id="L130">                final ReceiveResponse receiveResponse =</span>
+<span class="fc" id="L131">                    enclave.receive(privateTransactionsLookupId.toBase64String());</span>
+                final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList =
+<span class="fc" id="L133">                    PrivateTransactionWithMetadata.readListFromPayload(</span>
+<span class="fc" id="L134">                        Bytes.wrap(Base64.getDecoder().decode(receiveResponse.getPayload())));</span>
+<span class="fc" id="L135">                final Bytes32 privacyGroupId =</span>
+<span class="fc" id="L136">                    Bytes32.wrap(</span>
+                        privateTransactionWithMetadataList
+<span class="fc" id="L138">                            .get(0)</span>
+<span class="fc" id="L139">                            .getPrivateTransaction()</span>
+<span class="fc" id="L140">                            .getPrivacyGroupId()</span>
+<span class="fc" id="L141">                            .get());</span>
+
+<span class="fc" id="L143">                final List&lt;PrivateTransactionWithMetadata&gt; actualListToRehydrate =</span>
+<span class="fc" id="L144">                    transactionsInGroupThatNeedToBeApplied(</span>
+                        blockHeader, privateTransactionWithMetadataList, privacyGroupId);
+
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">                if (actualListToRehydrate.size() &gt; 0) {</span>
+<span class="fc" id="L148">                  LOG.debug(</span>
+                      &quot;Rehydrating privacy group {}, number of transactions to be rehydrated is {} out of a total number of {} transactions.&quot;,
+<span class="fc" id="L150">                      privacyGroupId.toString(),</span>
+<span class="fc" id="L151">                      actualListToRehydrate.size(),</span>
+<span class="fc" id="L152">                      privateTransactionWithMetadataList.size());</span>
+<span class="fc" id="L153">                  final PrivateStateRehydration privateStateRehydration =</span>
+                      new PrivateStateRehydration(
+                          privateStateStorage,
+                          blockchain,
+                          protocolSchedule,
+                          publicWorldStateArchive,
+                          privateWorldStateArchive,
+                          privateStateRootResolver,
+                          privateStateGenesisAllocator);
+<span class="fc" id="L162">                  privateStateRehydration.rehydrate(actualListToRehydrate);</span>
+<span class="fc" id="L163">                  privateStateStorage</span>
+<span class="fc" id="L164">                      .updater()</span>
+<span class="fc" id="L165">                      .putAddDataKey(privacyGroupId, privateTransactionsLookupId)</span>
+<span class="fc" id="L166">                      .commit();</span>
+                }
+<span class="nc" id="L168">              } catch (final EnclaveClientException e) {</span>
+                // we were not being added because we have not found the add blob
+<span class="fc" id="L170">              }</span>
+<span class="fc" id="L171">            });</span>
+<span class="fc" id="L172">  }</span>
+
+  private boolean onchainAddToGroupPrivateMarkerTransactions(final Transaction t) {
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">    return t.getTo().isPresent()</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">        &amp;&amp; t.getTo().equals(Optional.of(FLEXIBLE_PRIVACY))</span>
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">        &amp;&amp; t.getPayload().size() == 64;</span>
+  }
+
+  private List&lt;PrivateTransactionWithMetadata&gt; transactionsInGroupThatNeedToBeApplied(
+      final BlockHeader blockHeader,
+      final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList,
+      final Bytes32 privacyGroupId) {
+    // if we are the member adding another member we do not have to rehydrate
+    // if we have been removed from the group at some point we only need to rehydrate from where we
+    // were removed
+    // if we are a new member we need to rehydrate the complete state
+
+<span class="fc" id="L189">    List&lt;PrivateTransactionWithMetadata&gt; actualList = privateTransactionWithMetadataList;</span>
+
+<span class="fc" id="L191">    final Optional&lt;PrivacyGroupHeadBlockMap&gt; maybePrivacyGroupHeadBlockMap =</span>
+<span class="fc" id="L192">        privateStateStorage.getPrivacyGroupHeadBlockMap(blockHeader.getParentHash());</span>
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">    if (maybePrivacyGroupHeadBlockMap.isPresent()) {</span>
+<span class="nc" id="L194">      final PrivacyGroupHeadBlockMap privacyGroupHeadBlockMap = maybePrivacyGroupHeadBlockMap.get();</span>
+<span class="nc" id="L195">      final Hash lastBlockWithTx = privacyGroupHeadBlockMap.get(privacyGroupId);</span>
+<span class="nc bnc" id="L196" title="All 2 branches missed.">      if (lastBlockWithTx != null) {</span>
+        // we are or have been a member of the privacy group
+<span class="nc" id="L198">        final PrivateBlockMetadata nodeLatestBlockMetadata =</span>
+            privateStateStorage
+<span class="nc" id="L200">                .getPrivateBlockMetadata(lastBlockWithTx, privacyGroupId)</span>
+<span class="nc" id="L201">                .orElseThrow();</span>
+<span class="nc" id="L202">        final List&lt;PrivateTransactionMetadata&gt; nodeLatestPrivateTxMetadataList =</span>
+<span class="nc" id="L203">            nodeLatestBlockMetadata.getPrivateTransactionMetadataList();</span>
+<span class="nc" id="L204">        final Hash nodeLatestStateRoot =</span>
+            nodeLatestPrivateTxMetadataList
+<span class="nc" id="L206">                .get(nodeLatestPrivateTxMetadataList.size() - 1)</span>
+<span class="nc" id="L207">                .getStateRoot();</span>
+<span class="nc" id="L208">        final Hash latestStateRootFromRehydrationList =</span>
+            privateTransactionWithMetadataList
+<span class="nc" id="L210">                .get(privateTransactionWithMetadataList.size() - 1)</span>
+<span class="nc" id="L211">                .getPrivateTransactionMetadata()</span>
+<span class="nc" id="L212">                .getStateRoot();</span>
+<span class="nc bnc" id="L213" title="All 2 branches missed.">        if (nodeLatestStateRoot.equals(latestStateRootFromRehydrationList)) {</span>
+          // we are already on the latest state root, which means that we are the member adding a
+          // new member
+<span class="nc" id="L216">          actualList = Collections.emptyList();</span>
+        } else {
+          // we are being added, but do not have to rehydrate all private transactions
+<span class="nc" id="L219">          final Hash nodeLatestPrivateMarkerTransactionHash =</span>
+              nodeLatestPrivateTxMetadataList
+<span class="nc" id="L221">                  .get(nodeLatestPrivateTxMetadataList.size() - 1)</span>
+<span class="nc" id="L222">                  .getPrivateMarkerTransactionHash();</span>
+<span class="nc bnc" id="L223" title="All 2 branches missed.">          for (int i = 0; i &lt; privateTransactionWithMetadataList.size(); i++) {</span>
+<span class="nc" id="L224">            if (!privateTransactionWithMetadataList</span>
+<span class="nc" id="L225">                .get(i)</span>
+<span class="nc" id="L226">                .getPrivateTransactionMetadata()</span>
+<span class="nc" id="L227">                .getPrivateMarkerTransactionHash()</span>
+<span class="nc bnc" id="L228" title="All 2 branches missed.">                .equals(nodeLatestPrivateMarkerTransactionHash)) {</span>
+<span class="nc" id="L229">              continue;</span>
+            }
+<span class="nc bnc" id="L231" title="All 2 branches missed.">            if (privateTransactionWithMetadataList.size() - 1 == i) {</span>
+<span class="nc" id="L232">              actualList = Collections.emptyList(); // nothing needs to be re-hydrated</span>
+            } else {
+<span class="nc" id="L234">              actualList =</span>
+<span class="nc" id="L235">                  privateTransactionWithMetadataList.subList(</span>
+<span class="nc" id="L236">                      i + 1, privateTransactionWithMetadataList.size());</span>
+            }
+<span class="nc" id="L238">            break;</span>
+          }
+        }
+      }
+    }
+<span class="fc" id="L243">    return actualList;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

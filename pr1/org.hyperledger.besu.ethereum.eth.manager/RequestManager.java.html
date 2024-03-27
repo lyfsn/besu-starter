@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RequestManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">RequestManager.java</span></div><h1>RequestManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection.PeerNotConnected;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.math.BigInteger;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RequestManager {
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(RequestManager.class);</span>
+<span class="fc" id="L39">  private final AtomicLong requestIdCounter =</span>
+      new AtomicLong(1); // some clients have issues encoding zero
+<span class="fc" id="L41">  private final Map&lt;BigInteger, ResponseStream&gt; responseStreams = new ConcurrentHashMap&lt;&gt;();</span>
+  private final EthPeer peer;
+  private final boolean supportsRequestId;
+  private final String protocolName;
+
+<span class="fc" id="L46">  private final AtomicInteger outstandingRequests = new AtomicInteger(0);</span>
+
+  public RequestManager(
+<span class="fc" id="L49">      final EthPeer peer, final boolean supportsRequestId, final String protocolName) {</span>
+<span class="fc" id="L50">    this.peer = peer;</span>
+<span class="fc" id="L51">    this.supportsRequestId = supportsRequestId;</span>
+<span class="fc" id="L52">    this.protocolName = protocolName;</span>
+<span class="fc" id="L53">  }</span>
+
+  public int outstandingRequests() {
+<span class="fc" id="L56">    return outstandingRequests.get();</span>
+  }
+
+  public String getProtocolName() {
+<span class="fc" id="L60">    return protocolName;</span>
+  }
+
+  public ResponseStream dispatchRequest(final RequestSender sender, final MessageData messageData)
+      throws PeerNotConnected {
+<span class="fc" id="L65">    outstandingRequests.incrementAndGet();</span>
+<span class="fc" id="L66">    final BigInteger requestId = BigInteger.valueOf(requestIdCounter.getAndIncrement());</span>
+<span class="fc" id="L67">    final ResponseStream stream = createStream(requestId);</span>
+<span class="fc bfc" id="L68" title="All 2 branches covered.">    sender.send(supportsRequestId ? messageData.wrapMessageData(requestId) : messageData);</span>
+<span class="fc" id="L69">    return stream;</span>
+  }
+
+  public void dispatchResponse(final EthMessage ethMessage) {
+<span class="fc" id="L73">    final Collection&lt;ResponseStream&gt; streams = List.copyOf(responseStreams.values());</span>
+<span class="fc" id="L74">    final int count = outstandingRequests.decrementAndGet();</span>
+    try {
+<span class="fc bfc" id="L76" title="All 2 branches covered.">      if (supportsRequestId) {</span>
+        // If there's a requestId, find the specific stream it belongs to
+<span class="fc" id="L78">        final Map.Entry&lt;BigInteger, MessageData&gt; requestIdAndEthMessage =</span>
+<span class="fc" id="L79">            ethMessage.getData().unwrapMessageData();</span>
+<span class="fc" id="L80">        Optional.ofNullable(responseStreams.get(requestIdAndEthMessage.getKey()))</span>
+<span class="fc" id="L81">            .ifPresentOrElse(</span>
+<span class="fc" id="L82">                responseStream -&gt; responseStream.processMessage(requestIdAndEthMessage.getValue()),</span>
+                // Consider incorrect requestIds to be a useless response; too
+                // many of these and we will disconnect.
+<span class="nc" id="L85">                () -&gt; peer.recordUselessResponse(&quot;Request ID incorrect&quot;));</span>
+
+<span class="fc" id="L87">      } else {</span>
+        // otherwise iterate through all of them
+<span class="fc" id="L89">        streams.forEach(stream -&gt; stream.processMessage(ethMessage.getData()));</span>
+      }
+<span class="fc" id="L91">    } catch (final RLPException e) {</span>
+<span class="fc" id="L92">      LOG.debug(</span>
+          &quot;Received malformed message {} (BREACH_OF_PROTOCOL), disconnecting: {}&quot;,
+<span class="fc" id="L94">          ethMessage.getData(),</span>
+          peer,
+          e);
+
+<span class="fc" id="L98">      peer.disconnect(DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="fc" id="L99">    }</span>
+
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    if (count == 0) {</span>
+      // No possibility of any remaining outstanding messages
+<span class="fc" id="L103">      closeOutstandingStreams(streams);</span>
+    }
+<span class="fc" id="L105">  }</span>
+
+  public void close() {
+<span class="fc" id="L108">    closeOutstandingStreams(responseStreams.values());</span>
+<span class="fc" id="L109">  }</span>
+
+  private ResponseStream createStream(final BigInteger requestId) {
+<span class="fc" id="L112">    final ResponseStream stream = new ResponseStream(peer, () -&gt; deregisterStream(requestId));</span>
+<span class="fc" id="L113">    responseStreams.put(requestId, stream);</span>
+<span class="fc" id="L114">    return stream;</span>
+  }
+
+  /** Close all current streams. This will be called when the peer disconnects. */
+  private void closeOutstandingStreams(final Collection&lt;ResponseStream&gt; outstandingStreams) {
+<span class="fc" id="L119">    outstandingStreams.forEach(ResponseStream::close);</span>
+<span class="fc" id="L120">  }</span>
+
+  private void deregisterStream(final BigInteger id) {
+<span class="fc" id="L123">    responseStreams.remove(id);</span>
+<span class="fc" id="L124">  }</span>
+
+  @FunctionalInterface
+  public interface RequestSender {
+    void send(final MessageData messageData) throws PeerNotConnected;
+  }
+
+  @FunctionalInterface
+  public interface ResponseCallback {
+
+    /**
+     * Process a potential message response
+     *
+     * @param streamClosed True if the ResponseStream is being shut down and will no longer deliver
+     *     messages.
+     * @param message the message to be processed
+     * @param peer the peer that owns this response stream
+     */
+    void exec(boolean streamClosed, MessageData message, EthPeer peer);
+  }
+
+  @FunctionalInterface
+  public interface DeregistrationProcessor {
+    void exec();
+  }
+
+  private static class Response {
+    final boolean closed;
+    final MessageData message;
+
+<span class="fc" id="L154">    private Response(final boolean closed, final MessageData message) {</span>
+<span class="fc" id="L155">      this.closed = closed;</span>
+<span class="fc" id="L156">      this.message = message;</span>
+<span class="fc" id="L157">    }</span>
+  }
+
+  public static class ResponseStream {
+    private final EthPeer peer;
+    private final DeregistrationProcessor deregisterCallback;
+<span class="fc" id="L163">    private final Queue&lt;Response&gt; bufferedResponses = new ConcurrentLinkedQueue&lt;&gt;();</span>
+<span class="fc" id="L164">    private volatile boolean closed = false;</span>
+<span class="fc" id="L165">    private volatile ResponseCallback responseCallback = null;</span>
+
+<span class="fc" id="L167">    public ResponseStream(final EthPeer peer, final DeregistrationProcessor deregisterCallback) {</span>
+<span class="fc" id="L168">      this.peer = peer;</span>
+<span class="fc" id="L169">      this.deregisterCallback = deregisterCallback;</span>
+<span class="fc" id="L170">    }</span>
+
+    public ResponseStream then(final ResponseCallback callback) {
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">      if (responseCallback != null) {</span>
+        // For now just manage a single callback for simplicity.  We could expand this to support
+        // multiple listeners in the future.
+<span class="nc" id="L176">        throw new IllegalStateException(&quot;Response streams expect only a single callback&quot;);</span>
+      }
+<span class="fc" id="L178">      responseCallback = callback;</span>
+<span class="fc" id="L179">      dispatchBufferedResponses();</span>
+<span class="fc" id="L180">      return this;</span>
+    }
+
+    public void close() {
+<span class="fc bfc" id="L184" title="All 2 branches covered.">      if (closed) {</span>
+<span class="fc" id="L185">        return;</span>
+      }
+<span class="fc" id="L187">      closed = true;</span>
+<span class="fc" id="L188">      deregisterCallback.exec();</span>
+<span class="fc" id="L189">      bufferedResponses.add(new Response(true, null));</span>
+<span class="fc" id="L190">      dispatchBufferedResponses();</span>
+<span class="fc" id="L191">    }</span>
+
+    public EthPeer getPeer() {
+<span class="fc" id="L194">      return peer;</span>
+    }
+
+    private void processMessage(final MessageData message) {
+<span class="pc bpc" id="L198" title="1 of 2 branches missed.">      if (closed) {</span>
+<span class="nc" id="L199">        return;</span>
+      }
+<span class="fc" id="L201">      bufferedResponses.add(new Response(false, message));</span>
+<span class="fc" id="L202">      dispatchBufferedResponses();</span>
+<span class="fc" id="L203">    }</span>
+
+    private void dispatchBufferedResponses() {
+<span class="fc bfc" id="L206" title="All 2 branches covered.">      if (responseCallback == null) {</span>
+<span class="fc" id="L207">        return;</span>
+      }
+<span class="fc" id="L209">      Response response = bufferedResponses.poll();</span>
+<span class="fc bfc" id="L210" title="All 2 branches covered.">      while (response != null) {</span>
+<span class="fc" id="L211">        responseCallback.exec(response.closed, response.message, peer);</span>
+<span class="fc" id="L212">        response = bufferedResponses.poll();</span>
+      }
+<span class="fc" id="L214">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

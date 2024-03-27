@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractRLPOutput.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.rlp</a> &gt; <span class="el_source">AbstractRLPOutput.java</span></div><h1>AbstractRLPOutput.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.rlp;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.BitSet;
+import java.util.List;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.MutableBytes;
+
+<span class="fc" id="L27">abstract class AbstractRLPOutput implements RLPOutput {</span>
+  /*
+   * The algorithm implemented works as follows:
+   *
+   * Values written to the output are accumulated in the 'values' list. When a list is started, it
+   * is indicated by adding a specific marker in that list (LIST_MARKER).
+   * While this is gathered, we also incrementally compute the size of the payload of every list of
+   * that output. Those sizes are stored in 'payloadSizes': when all the output has been added,
+   * payloadSizes[i] will contain the size of the (encoded) payload of the ith list in 'values'
+   * (that is, the list that starts at the ith LIST_MARKER in 'values').
+   *
+   * With that information gathered, encoded() can write its output in a single walk of 'values':
+   * values can be encoded directly, and every time we read a list marker, we use the corresponding
+   * payload size to write the proper prefix and continue.
+   *
+   * The main remaining aspect is how the values of 'payloadSizes' are computed. Computing the size
+   * of a list without nesting inside is easy: simply add the encoded size of any newly added value
+   * to the running size. The difficulty is with nesting: when we start a new list, we need to
+   * track both the sizes of the previous list and the new one. To deal with that, we use the small
+   * stack 'parentListStack': it stores the index in 'payloadSizes' of every currently &quot;open&quot; lists.
+   * In other words, payloadSizes[parentListStack[stackSize - 1]] corresponds to the size of the
+   * current list, the one to which newly added value are currently written (until the next call
+   * to 'endList()' that is, while payloadSizes[parentListStack[stackSize - 2]] would be the size
+   * of the parent list, ....
+   *
+   * Note that when a new value is added, we add its size only the currently running list. We should
+   * add that size to that of any parent list as well, but we do so indirectly when a list is
+   * finished: when 'endList()' is called, we add the size of the full list we just finished (and
+   * whose size we have now completed) to its parent size.
+   *
+   * Side-note: this class internally and informally use &quot;element&quot; to refer to a non list items.
+   */
+
+<span class="fc" id="L60">  private static final Bytes LIST_MARKER = Bytes.wrap(new byte[0]);</span>
+
+<span class="fc" id="L62">  private final List&lt;Bytes&gt; values = new ArrayList&lt;&gt;();</span>
+  // For every value i in values, rlpEncoded.get(i) will be true only if the value stored is an
+  // already encoded item.
+<span class="fc" id="L65">  private final BitSet rlpEncoded = new BitSet();</span>
+
+  // First element is the total size of everything (the encoding may be a single non-list item, so
+  // this handles that case more easily; we need that value to size out final output). Following
+  // elements holds the size of the payload of the ith list in 'values'.
+<span class="fc" id="L70">  private int[] payloadSizes = new int[8];</span>
+<span class="fc" id="L71">  private int listsCount = 1; // number of lists current in 'values' + 1.</span>
+
+<span class="fc" id="L73">  private int[] parentListStack = new int[4];</span>
+<span class="fc" id="L74">  private int stackSize = 1;</span>
+
+  private int currentList() {
+<span class="fc" id="L77">    return parentListStack[stackSize - 1];</span>
+  }
+
+  @Override
+  public void writeBytes(final Bytes v) {
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    checkState(</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">        stackSize &gt; 1 || values.isEmpty(), &quot;Terminated RLP output, cannot add more elements&quot;);</span>
+<span class="fc" id="L84">    values.add(v);</span>
+<span class="fc" id="L85">    payloadSizes[currentList()] += RLPEncodingHelpers.elementSize(v);</span>
+<span class="fc" id="L86">  }</span>
+
+  @Override
+  public void writeRaw(final Bytes v) {
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    checkState(</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">        stackSize &gt; 1 || values.isEmpty(), &quot;Terminated RLP output, cannot add more elements&quot;);</span>
+<span class="fc" id="L92">    values.add(v);</span>
+    // Mark that last value added as already encoded.
+<span class="fc" id="L94">    rlpEncoded.set(values.size() - 1);</span>
+<span class="fc" id="L95">    payloadSizes[currentList()] += v.size();</span>
+<span class="fc" id="L96">  }</span>
+
+  @Override
+  public void startList() {
+<span class="fc" id="L100">    values.add(LIST_MARKER);</span>
+<span class="fc" id="L101">    ++listsCount; // we'll add a new element to payloadSizes</span>
+<span class="fc" id="L102">    ++stackSize; // and to the list stack.</span>
+
+    // Resize our lists if necessary.
+<span class="fc bfc" id="L105" title="All 2 branches covered.">    if (listsCount &gt; payloadSizes.length) {</span>
+<span class="fc" id="L106">      payloadSizes = Arrays.copyOf(payloadSizes, (payloadSizes.length * 3) / 2);</span>
+    }
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    if (stackSize &gt; parentListStack.length) {</span>
+<span class="fc" id="L109">      parentListStack = Arrays.copyOf(parentListStack, (parentListStack.length * 3) / 2);</span>
+    }
+
+    // The new current list size is store in the slot we just made room for by incrementing
+    // listsCount
+<span class="fc" id="L114">    parentListStack[stackSize - 1] = listsCount - 1;</span>
+<span class="fc" id="L115">  }</span>
+
+  @Override
+  public void endList() {
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    checkState(stackSize &gt; 1, &quot;LeaveList() called with no prior matching startList()&quot;);</span>
+
+<span class="fc" id="L121">    final int current = currentList();</span>
+<span class="fc" id="L122">    final int finishedListSize = RLPEncodingHelpers.listSize(payloadSizes[current]);</span>
+<span class="fc" id="L123">    --stackSize;</span>
+
+    // We just finished an item of our parent list, add it to that parent list size now.
+<span class="fc" id="L126">    final int newCurrent = currentList();</span>
+<span class="fc" id="L127">    payloadSizes[newCurrent] += finishedListSize;</span>
+<span class="fc" id="L128">  }</span>
+
+  /**
+   * Computes the final encoded data size.
+   *
+   * @return The size of the RLP-encoded data written to this output.
+   * @throws IllegalStateException if some opened list haven't been closed (the output is not valid
+   *     as is).
+   */
+  public int encodedSize() {
+<span class="fc bfc" id="L138" title="All 2 branches covered.">    checkState(stackSize == 1, &quot;A list has been entered (startList()) but not left (endList())&quot;);</span>
+<span class="fc" id="L139">    return payloadSizes[0];</span>
+  }
+
+  /**
+   * Write the rlp encoded value to the provided {@link MutableBytes}
+   *
+   * @param mutableBytes the value to which the rlp-data will be written
+   */
+  public void writeEncoded(final MutableBytes mutableBytes) {
+    // Special case where we encode only a single non-list item (note that listsCount is initially
+    // set to 1, so listsCount == 1 really mean no list explicitly added to the output).
+<span class="fc bfc" id="L150" title="All 2 branches covered.">    if (listsCount == 1) {</span>
+      // writeBytes make sure we cannot have more than 1 value without a list
+<span class="pc bpc" id="L152" title="1 of 2 branches missed.">      assert values.size() == 1;</span>
+<span class="fc" id="L153">      final Bytes value = values.get(0);</span>
+
+      final int finalOffset;
+      // Single non-list value.
+<span class="fc bfc" id="L157" title="All 2 branches covered.">      if (rlpEncoded.get(0)) {</span>
+<span class="fc" id="L158">        value.copyTo(mutableBytes, 0);</span>
+<span class="fc" id="L159">        finalOffset = value.size();</span>
+      } else {
+<span class="fc" id="L161">        finalOffset = RLPEncodingHelpers.writeElement(value, mutableBytes, 0);</span>
+      }
+<span class="fc" id="L163">      checkState(</span>
+<span class="pc bpc" id="L164" title="1 of 2 branches missed.">          finalOffset == mutableBytes.size(),</span>
+          &quot;Expected single element RLP encode to be of size %s but was of size %s.&quot;,
+<span class="fc" id="L166">          mutableBytes.size(),</span>
+          finalOffset);
+<span class="fc" id="L168">      return;</span>
+    }
+
+<span class="fc" id="L171">    int offset = 0;</span>
+<span class="fc" id="L172">    int listIdx = 0;</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">    for (int i = 0; i &lt; values.size(); i++) {</span>
+<span class="fc" id="L174">      final Bytes value = values.get(i);</span>
+<span class="fc bfc" id="L175" title="All 2 branches covered.">      if (value == LIST_MARKER) {</span>
+<span class="fc" id="L176">        final int payloadSize = payloadSizes[++listIdx];</span>
+<span class="fc" id="L177">        offset = RLPEncodingHelpers.writeListHeader(payloadSize, mutableBytes, offset);</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">      } else if (rlpEncoded.get(i)) {</span>
+<span class="fc" id="L179">        value.copyTo(mutableBytes, offset);</span>
+<span class="fc" id="L180">        offset += value.size();</span>
+      } else {
+<span class="fc" id="L182">        offset = RLPEncodingHelpers.writeElement(value, mutableBytes, offset);</span>
+      }
+    }
+
+<span class="fc" id="L186">    checkState(</span>
+<span class="pc bpc" id="L187" title="1 of 2 branches missed.">        offset == mutableBytes.size(),</span>
+        &quot;Expected RLP encoding to be of size %s but was of size %s.&quot;,
+<span class="fc" id="L189">        mutableBytes.size(),</span>
+        offset);
+<span class="fc" id="L191">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

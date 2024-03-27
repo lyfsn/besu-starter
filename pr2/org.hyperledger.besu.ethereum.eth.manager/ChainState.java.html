@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ChainState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">ChainState.java</span></div><h1>ChainState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.util.Subscribers;
+
+import com.google.common.base.MoreObjects;
+
+<span class="fc" id="L24">public class ChainState implements ChainHeadEstimate {</span>
+  // The best block by total difficulty that we know about
+<span class="fc" id="L26">  private final BestBlock bestBlock = new BestBlock();</span>
+  // The highest block that we've seen
+<span class="fc" id="L28">  private volatile long estimatedHeight = 0L;</span>
+<span class="fc" id="L29">  private volatile boolean estimatedHeightKnown = false;</span>
+
+<span class="fc" id="L31">  private final Subscribers&lt;EstimatedHeightListener&gt; estimatedHeightListeners =</span>
+<span class="fc" id="L32">      Subscribers.create();</span>
+
+  public long addEstimatedHeightListener(final EstimatedHeightListener listener) {
+<span class="fc" id="L35">    return estimatedHeightListeners.subscribe(listener);</span>
+  }
+
+  public void removeEstimatedHeightListener(final long listenerId) {
+<span class="fc" id="L39">    estimatedHeightListeners.unsubscribe(listenerId);</span>
+<span class="fc" id="L40">  }</span>
+
+  public ChainStateSnapshot getSnapshot() {
+<span class="fc" id="L43">    return new ChainStateSnapshot(getEstimatedTotalDifficulty(), getEstimatedHeight());</span>
+  }
+
+  public boolean hasEstimatedHeight() {
+<span class="fc" id="L47">    return estimatedHeightKnown;</span>
+  }
+
+  @Override
+  public long getEstimatedHeight() {
+<span class="fc" id="L52">    return estimatedHeight;</span>
+  }
+
+  @Override
+  public Difficulty getEstimatedTotalDifficulty() {
+<span class="fc" id="L57">    return bestBlock.getTotalDifficulty();</span>
+  }
+
+  public BestBlock getBestBlock() {
+<span class="fc" id="L61">    return bestBlock;</span>
+  }
+
+  public void statusReceived(final Hash bestBlockHash, final Difficulty bestBlockTotalDifficulty) {
+<span class="fc" id="L65">    synchronized (this) {</span>
+<span class="fc" id="L66">      bestBlock.totalDifficulty = bestBlockTotalDifficulty;</span>
+<span class="fc" id="L67">      bestBlock.hash = bestBlockHash;</span>
+<span class="fc" id="L68">    }</span>
+<span class="fc" id="L69">  }</span>
+
+  public void update(final Hash blockHash, final long blockNumber) {
+<span class="fc" id="L72">    synchronized (this) {</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">      if (bestBlock.hash.equals(blockHash)) {</span>
+<span class="fc" id="L74">        bestBlock.number = blockNumber;</span>
+      }
+<span class="fc" id="L76">      updateHeightEstimate(blockNumber);</span>
+<span class="fc" id="L77">    }</span>
+<span class="fc" id="L78">  }</span>
+
+  public void update(final BlockHeader header) {
+<span class="fc" id="L81">    synchronized (this) {</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">      if (header.getHash().equals(bestBlock.hash)) {</span>
+<span class="fc" id="L83">        bestBlock.number = header.getNumber();</span>
+      }
+<span class="fc" id="L85">      updateHeightEstimate(header.getNumber());</span>
+<span class="fc" id="L86">    }</span>
+<span class="fc" id="L87">  }</span>
+
+  public void updateForAnnouncedBlock(
+      final BlockHeader blockHeader, final Difficulty totalDifficulty) {
+<span class="fc" id="L91">    synchronized (this) {</span>
+      // Blocks are announced before they're imported so their chain head must be the parent
+<span class="fc" id="L93">      final Difficulty parentTotalDifficulty =</span>
+<span class="fc" id="L94">          totalDifficulty.subtract(blockHeader.getDifficulty());</span>
+<span class="fc" id="L95">      final long parentBlockNumber = blockHeader.getNumber() - 1;</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">      if (parentTotalDifficulty.compareTo(bestBlock.totalDifficulty) &gt;= 0) {</span>
+<span class="fc" id="L97">        bestBlock.totalDifficulty = parentTotalDifficulty;</span>
+<span class="fc" id="L98">        bestBlock.hash = blockHeader.getParentHash();</span>
+<span class="fc" id="L99">        bestBlock.number = parentBlockNumber;</span>
+      }
+<span class="fc" id="L101">      updateHeightEstimate(parentBlockNumber);</span>
+<span class="fc" id="L102">    }</span>
+<span class="fc" id="L103">  }</span>
+
+  public void updateHeightEstimate(final long blockNumber) {
+<span class="fc" id="L106">    synchronized (this) {</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">      if (blockNumber &gt; estimatedHeight) {</span>
+<span class="fc" id="L108">        estimatedHeightKnown = true;</span>
+<span class="fc" id="L109">        estimatedHeight = blockNumber;</span>
+<span class="fc" id="L110">        estimatedHeightListeners.forEach(e -&gt; e.onEstimatedHeightChanged(estimatedHeight));</span>
+      }
+<span class="fc" id="L112">    }</span>
+<span class="fc" id="L113">  }</span>
+
+  @Override
+  public String toString() {
+<span class="nc" id="L117">    return MoreObjects.toStringHelper(this)</span>
+<span class="nc" id="L118">        .add(&quot;estimatedHeight&quot;, estimatedHeight)</span>
+<span class="nc" id="L119">        .add(&quot;bestBlock&quot;, bestBlock)</span>
+<span class="nc" id="L120">        .toString();</span>
+  }
+
+  // Represent the best block by totalDifficulty
+<span class="fc" id="L124">  public static class BestBlock {</span>
+<span class="fc" id="L125">    volatile long number = 0L;</span>
+<span class="fc" id="L126">    volatile Hash hash = null;</span>
+<span class="fc" id="L127">    volatile Difficulty totalDifficulty = Difficulty.ZERO;</span>
+
+    public long getNumber() {
+<span class="fc" id="L130">      return number;</span>
+    }
+
+    public Hash getHash() {
+<span class="fc" id="L134">      return hash;</span>
+    }
+
+    public Difficulty getTotalDifficulty() {
+<span class="fc" id="L138">      return totalDifficulty;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L143">      return MoreObjects.toStringHelper(this)</span>
+<span class="nc" id="L144">          .add(&quot;totalDifficulty&quot;, totalDifficulty)</span>
+<span class="nc" id="L145">          .add(&quot;blockHash&quot;, hash)</span>
+<span class="nc" id="L146">          .add(&quot;number&quot;, number)</span>
+<span class="nc" id="L147">          .toString();</span>
+    }
+  }
+
+  @FunctionalInterface
+  public interface EstimatedHeightListener {
+    void onEstimatedHeightChanged(long estimatedHeight);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

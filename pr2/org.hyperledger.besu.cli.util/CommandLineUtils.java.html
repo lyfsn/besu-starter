@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CommandLineUtils.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.util</a> &gt; <span class="el_source">CommandLineUtils.java</span></div><h1>CommandLineUtils.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.util;
+
+import org.hyperledger.besu.cli.converter.TypeFormatter;
+import org.hyperledger.besu.cli.options.OptionParser;
+import org.hyperledger.besu.util.StringUtils;
+
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+import com.google.common.base.Strings;
+import org.slf4j.Logger;
+import picocli.CommandLine;
+
+/** The Command line utils. */
+<span class="nc" id="L35">public class CommandLineUtils {</span>
+  /** The constant DEPENDENCY_WARNING_MSG. */
+  public static final String DEPENDENCY_WARNING_MSG =
+      &quot;{} has been ignored because {} was not defined on the command line.&quot;;
+  /** The constant MULTI_DEPENDENCY_WARNING_MSG. */
+  public static final String MULTI_DEPENDENCY_WARNING_MSG =
+      &quot;{} ignored because none of {} was defined.&quot;;
+  /** The constant DEPRECATION_WARNING_MSG. */
+  public static final String DEPRECATION_WARNING_MSG = &quot;{} has been deprecated, use {} instead.&quot;;
+  /** The constant DEPRECATED_AND_USELESS_WARNING_MSG. */
+  public static final String DEPRECATED_AND_USELESS_WARNING_MSG =
+      &quot;{} has been deprecated and is now useless, remove it.&quot;;
+
+  /**
+   * Check if options are passed that require an option to be true to have any effect and log a
+   * warning with the list of affected options.
+   *
+   * &lt;p&gt;Note that in future version of PicoCLI some options dependency mechanism may be implemented
+   * that could replace this. See https://github.com/remkop/picocli/issues/295
+   *
+   * @param logger the logger instance used to log the warning
+   * @param commandLine the command line containing the options we want to check
+   * @param mainOptionName the name of the main option to test dependency against. Only used for
+   *     display.
+   * @param isMainOptionCondition the condition to test the options dependencies, if true will test
+   *     if not won't
+   * @param dependentOptionsNames a list of option names that can't be used if condition is met.
+   *     Example: if --miner-coinbase is in the list and condition is that --miner-enabled should
+   *     not be false, we log a warning.
+   */
+  public static void checkOptionDependencies(
+      final Logger logger,
+      final CommandLine commandLine,
+      final String mainOptionName,
+      final boolean isMainOptionCondition,
+      final List&lt;String&gt; dependentOptionsNames) {
+<span class="fc bfc" id="L71" title="All 2 branches covered.">    if (isMainOptionCondition) {</span>
+<span class="fc" id="L72">      final String affectedOptions = getAffectedOptions(commandLine, dependentOptionsNames);</span>
+
+<span class="fc bfc" id="L74" title="All 2 branches covered.">      if (!affectedOptions.isEmpty()) {</span>
+<span class="fc" id="L75">        logger.warn(DEPENDENCY_WARNING_MSG, affectedOptions, mainOptionName);</span>
+      }
+    }
+<span class="fc" id="L78">  }</span>
+
+  /**
+   * Check if options are passed that require an option to be true to have any effect and log a
+   * warning with the list of affected options. Multiple main options may be passed to check
+   * dependencies against.
+   *
+   * &lt;p&gt;Note that in future version of PicoCLI some options dependency mechanism may be implemented
+   * that could replace this. See https://github.com/remkop/picocli/issues/295
+   *
+   * @param logger the logger instance used to log the warning
+   * @param commandLine the command line containing the options we want to check display.
+   * @param stringToLog the string that is going to be logged.
+   * @param isMainOptionCondition the conditions to test dependent options against. If all
+   *     conditions are true, dependent options will be checked.
+   * @param dependentOptionsNames a list of option names that can't be used if condition is met.
+   *     Example: if --min-gas-price is in the list and condition is that --miner-enabled should not
+   *     be false, we log a warning.
+   */
+  public static void checkMultiOptionDependencies(
+      final Logger logger,
+      final CommandLine commandLine,
+      final String stringToLog,
+      final List&lt;Boolean&gt; isMainOptionCondition,
+      final List&lt;String&gt; dependentOptionsNames) {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (isMainOptionCondition.stream().allMatch(isTrue -&gt; isTrue)) {</span>
+<span class="fc" id="L104">      final String affectedOptions = getAffectedOptions(commandLine, dependentOptionsNames);</span>
+
+<span class="fc bfc" id="L106" title="All 2 branches covered.">      if (!affectedOptions.isEmpty()) {</span>
+<span class="fc" id="L107">        logger.warn(stringToLog);</span>
+      }
+    }
+<span class="fc" id="L110">  }</span>
+
+  /**
+   * Fail if option doesn't meet requirement.
+   *
+   * @param commandLine the command line
+   * @param errorMessage the error message
+   * @param requirement the requirement
+   * @param dependentOptionsNames the dependent options names
+   */
+  public static void failIfOptionDoesntMeetRequirement(
+      final CommandLine commandLine,
+      final String errorMessage,
+      final boolean requirement,
+      final List&lt;String&gt; dependentOptionsNames) {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    if (!requirement) {</span>
+<span class="fc" id="L126">      final String affectedOptions = getAffectedOptions(commandLine, dependentOptionsNames);</span>
+
+<span class="fc bfc" id="L128" title="All 2 branches covered.">      if (!affectedOptions.isEmpty()) {</span>
+<span class="fc" id="L129">        throw new CommandLine.ParameterException(</span>
+            commandLine, errorMessage + &quot; [&quot; + affectedOptions + &quot;]&quot;);
+      }
+    }
+<span class="fc" id="L133">  }</span>
+
+  /**
+   * Return all the option names declared in a class. Note this will recursively check in any inner
+   * option class if present.
+   *
+   * @param optClass the class to look for options
+   * @return a list of option names found in the class
+   */
+  public static List&lt;String&gt; getCLIOptionNames(final Class&lt;?&gt; optClass) {
+<span class="fc" id="L143">    final List&lt;String&gt; cliOpts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L144">    final Field[] fields = optClass.getDeclaredFields();</span>
+<span class="fc bfc" id="L145" title="All 2 branches covered.">    for (Field field : fields) {</span>
+<span class="fc" id="L146">      field.setAccessible(true);</span>
+<span class="fc" id="L147">      Annotation ann = field.getAnnotation(CommandLine.Option.class);</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">      if (ann != null) {</span>
+<span class="fc" id="L149">        final var optAnn = CommandLine.Option.class.cast(ann);</span>
+<span class="fc" id="L150">        cliOpts.add(optAnn.names()[0]);</span>
+<span class="fc" id="L151">      } else {</span>
+<span class="fc" id="L152">        ann = field.getAnnotation(CommandLine.ArgGroup.class);</span>
+<span class="pc bpc" id="L153" title="1 of 2 branches missed.">        if (ann != null) {</span>
+<span class="nc" id="L154">          cliOpts.addAll(getCLIOptionNames(field.getType()));</span>
+        }
+      }
+    }
+<span class="fc" id="L158">    return cliOpts;</span>
+  }
+
+  /**
+   * Converts the runtime options into their CLI representation. Options with a value equals to its
+   * default are not included in the result since redundant. Note this will recursively check in any
+   * inner option class if present.
+   *
+   * @param currOptions the actual runtime options
+   * @param defaults the default option values
+   * @return a list of CLI arguments
+   */
+  public static List&lt;String&gt; getCLIOptions(final Object currOptions, final Object defaults) {
+<span class="fc" id="L171">    final List&lt;String&gt; cliOpts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L172">    final Field[] fields = currOptions.getClass().getDeclaredFields();</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">    for (Field field : fields) {</span>
+<span class="fc" id="L174">      field.setAccessible(true);</span>
+<span class="fc" id="L175">      Annotation ann = field.getAnnotation(CommandLine.Option.class);</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">      if (ann != null) {</span>
+        try {
+<span class="fc" id="L178">          var optVal = field.get(currOptions);</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">          if (!Objects.equals(optVal, field.get(defaults))) {</span>
+<span class="fc" id="L180">            var optAnn = CommandLine.Option.class.cast(ann);</span>
+<span class="fc" id="L181">            final var optConverter = optAnn.converter();</span>
+<span class="fc" id="L182">            cliOpts.add(optAnn.names()[0] + &quot;=&quot; + formatValue(optConverter, optVal));</span>
+          }
+<span class="nc" id="L184">        } catch (IllegalAccessException e) {</span>
+<span class="nc" id="L185">          throw new RuntimeException(e);</span>
+<span class="fc" id="L186">        }</span>
+      } else {
+<span class="fc" id="L188">        ann = field.getAnnotation(CommandLine.ArgGroup.class);</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">        if (ann != null) {</span>
+          try {
+<span class="fc" id="L191">            cliOpts.addAll(getCLIOptions(field.get(currOptions), field.get(defaults)));</span>
+<span class="nc" id="L192">          } catch (IllegalAccessException e) {</span>
+<span class="nc" id="L193">            throw new RuntimeException(e);</span>
+<span class="fc" id="L194">          }</span>
+        }
+      }
+    }
+<span class="fc" id="L198">    return cliOpts;</span>
+  }
+
+  /**
+   * There are different ways to format an option value back to its CLI form, the first is to use a
+   * {@link TypeFormatter} if present, otherwise the formatting it is delegated to {@link
+   * OptionParser#format(Object)}
+   *
+   * @param optConverter the list of converter types for the option
+   * @param optVal the value of the options
+   * @return a string with the CLI form of the value
+   */
+  @SuppressWarnings(&quot;unchecked&quot;)
+  private static String formatValue(
+      final Class&lt;? extends CommandLine.ITypeConverter&lt;?&gt;&gt;[] optConverter, final Object optVal) {
+<span class="fc" id="L213">    return Arrays.stream(optConverter)</span>
+<span class="pc" id="L214">        .filter(c -&gt; Arrays.stream(c.getInterfaces()).anyMatch(i -&gt; i.equals(TypeFormatter.class)))</span>
+<span class="fc" id="L215">        .findFirst()</span>
+<span class="fc" id="L216">        .map(</span>
+            ctf -&gt; {
+              try {
+<span class="nc" id="L219">                return (TypeFormatter) ctf.getDeclaredConstructor().newInstance();</span>
+<span class="nc" id="L220">              } catch (InstantiationException</span>
+                  | IllegalAccessException
+                  | InvocationTargetException
+                  | NoSuchMethodException e) {
+<span class="nc" id="L224">                throw new RuntimeException(e);</span>
+              }
+            })
+<span class="pc" id="L227">        .map(tf -&gt; tf.format(optVal))</span>
+<span class="fc" id="L228">        .orElseGet(() -&gt; OptionParser.format(optVal));</span>
+  }
+
+  private static String getAffectedOptions(
+      final CommandLine commandLine, final List&lt;String&gt; dependentOptionsNames) {
+<span class="fc" id="L233">    return commandLine.getCommandSpec().options().stream()</span>
+<span class="fc" id="L234">        .filter(option -&gt; Arrays.stream(option.names()).anyMatch(dependentOptionsNames::contains))</span>
+<span class="fc" id="L235">        .filter(CommandLineUtils::isOptionSet)</span>
+<span class="fc" id="L236">        .map(option -&gt; option.names()[0])</span>
+<span class="fc" id="L237">        .collect(</span>
+<span class="fc" id="L238">            Collectors.collectingAndThen(</span>
+<span class="fc" id="L239">                Collectors.toList(), StringUtils.joiningWithLastDelimiter(&quot;, &quot;, &quot; and &quot;)));</span>
+  }
+
+  private static boolean isOptionSet(final CommandLine.Model.OptionSpec option) {
+<span class="fc" id="L243">    final CommandLine commandLine = option.command().commandLine();</span>
+    try {
+<span class="fc bfc" id="L245" title="All 2 branches covered.">      return !option.stringValues().isEmpty()</span>
+<span class="fc bfc" id="L246" title="All 2 branches covered.">          || !Strings.isNullOrEmpty(commandLine.getDefaultValueProvider().defaultValue(option));</span>
+<span class="nc" id="L247">    } catch (final Exception e) {</span>
+<span class="nc" id="L248">      return false;</span>
+    }
+  }
+
+  /**
+   * Is the option with that name set on the command line?
+   *
+   * @param commandLine the command line
+   * @param optionName the option name to check
+   * @return true if set
+   */
+  public static boolean isOptionSet(final CommandLine commandLine, final String optionName) {
+<span class="fc" id="L260">    return commandLine.getCommandSpec().options().stream()</span>
+<span class="fc" id="L261">        .filter(optionSpec -&gt; Arrays.stream(optionSpec.names()).anyMatch(optionName::equals))</span>
+<span class="fc" id="L262">        .anyMatch(CommandLineUtils::isOptionSet);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

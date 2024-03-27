@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DownloadHeaderSequenceTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.tasks</a> &gt; <span class="el_source">DownloadHeaderSequenceTask.java</span></div><h1>DownloadHeaderSequenceTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.tasks;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static java.util.Arrays.asList;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.BadBlockCause;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractGetHeadersFromPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractPeerTask.PeerTaskResult;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractRetryingPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.GetBodiesFromPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.GetHeadersFromPeerByHashTask;
+import org.hyperledger.besu.ethereum.eth.sync.ValidationPolicy;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.exceptions.InvalidBlockException;
+import org.hyperledger.besu.ethereum.mainnet.BlockHeaderValidator;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.primitives.Ints;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Retrieves a sequence of headers, sending out requests repeatedly until all headers are fulfilled.
+ * Validates headers as they are received.
+ */
+public class DownloadHeaderSequenceTask extends AbstractRetryingPeerTask&lt;List&lt;BlockHeader&gt;&gt; {
+<span class="fc" id="L58">  private static final Logger LOG = LoggerFactory.getLogger(DownloadHeaderSequenceTask.class);</span>
+  private static final int DEFAULT_RETRIES = 4;
+
+  private final EthContext ethContext;
+  private final ProtocolContext protocolContext;
+  private final ProtocolSchedule protocolSchedule;
+
+  private final BlockHeader[] headers;
+  private final BlockHeader referenceHeader;
+  private final int segmentLength;
+  private final long startingBlockNumber;
+  private final ValidationPolicy validationPolicy;
+  private final MetricsSystem metricsSystem;
+
+  private int lastFilledHeaderIndex;
+
+  private DownloadHeaderSequenceTask(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final BlockHeader referenceHeader,
+      final int segmentLength,
+      final int maxRetries,
+      final ValidationPolicy validationPolicy,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L83">    super(ethContext, maxRetries, Collection::isEmpty, metricsSystem);</span>
+<span class="fc" id="L84">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L85">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L86">    this.ethContext = ethContext;</span>
+<span class="fc" id="L87">    this.referenceHeader = referenceHeader;</span>
+<span class="fc" id="L88">    this.segmentLength = segmentLength;</span>
+<span class="fc" id="L89">    this.validationPolicy = validationPolicy;</span>
+<span class="fc" id="L90">    this.metricsSystem = metricsSystem;</span>
+
+<span class="pc bpc" id="L92" title="1 of 2 branches missed.">    checkArgument(segmentLength &gt; 0, &quot;Segment length must not be 0&quot;);</span>
+<span class="fc" id="L93">    startingBlockNumber = referenceHeader.getNumber() - segmentLength;</span>
+<span class="fc" id="L94">    headers = new BlockHeader[segmentLength];</span>
+<span class="fc" id="L95">    lastFilledHeaderIndex = segmentLength;</span>
+<span class="fc" id="L96">  }</span>
+
+  public static DownloadHeaderSequenceTask endingAtHeader(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final BlockHeader referenceHeader,
+      final int segmentLength,
+      final int maxRetries,
+      final ValidationPolicy validationPolicy,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L107">    return new DownloadHeaderSequenceTask(</span>
+        protocolSchedule,
+        protocolContext,
+        ethContext,
+        referenceHeader,
+        segmentLength,
+        maxRetries,
+        validationPolicy,
+        metricsSystem);
+  }
+
+  public static DownloadHeaderSequenceTask endingAtHeader(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final BlockHeader referenceHeader,
+      final int segmentLength,
+      final ValidationPolicy validationPolicy,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L126">    return new DownloadHeaderSequenceTask(</span>
+        protocolSchedule,
+        protocolContext,
+        ethContext,
+        referenceHeader,
+        segmentLength,
+        DEFAULT_RETRIES,
+        validationPolicy,
+        metricsSystem);
+  }
+
+  @Override
+  protected CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; executePeerTask(
+      final Optional&lt;EthPeer&gt; assignedPeer) {
+<span class="fc" id="L140">    LOG.debug(</span>
+<span class="fc" id="L141">        &quot;Downloading headers from {} to {}.&quot;, startingBlockNumber, referenceHeader.getNumber());</span>
+<span class="fc" id="L142">    final CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; task =</span>
+<span class="fc" id="L143">        downloadHeaders(assignedPeer).thenCompose(this::processHeaders);</span>
+<span class="fc" id="L144">    return task.whenComplete(</span>
+        (r, t) -&gt; {
+          // We're done if we've filled all requested headers
+<span class="fc bfc" id="L147" title="All 2 branches covered.">          if (lastFilledHeaderIndex == 0) {</span>
+<span class="fc" id="L148">            LOG.debug(</span>
+                &quot;Finished downloading headers from {} to {}.&quot;,
+<span class="fc" id="L150">                headers[0].getNumber(),</span>
+<span class="fc" id="L151">                headers[segmentLength - 1].getNumber());</span>
+<span class="fc" id="L152">            result.complete(Arrays.asList(headers));</span>
+          }
+<span class="fc" id="L154">        });</span>
+  }
+
+  private CompletableFuture&lt;PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt;&gt; downloadHeaders(
+      final Optional&lt;EthPeer&gt; assignedPeer) {
+    // Figure out parameters for our headers request
+<span class="fc bfc" id="L160" title="All 2 branches covered.">    final boolean partiallyFilled = lastFilledHeaderIndex &lt; segmentLength;</span>
+    final BlockHeader referenceHeaderForNextRequest =
+<span class="fc bfc" id="L162" title="All 2 branches covered.">        partiallyFilled ? headers[lastFilledHeaderIndex] : referenceHeader;</span>
+<span class="fc" id="L163">    final Hash referenceHash = referenceHeaderForNextRequest.getHash();</span>
+<span class="fc bfc" id="L164" title="All 2 branches covered.">    final int count = partiallyFilled ? lastFilledHeaderIndex : segmentLength;</span>
+
+<span class="fc" id="L166">    return executeSubTask(</span>
+        () -&gt; {
+          // Ask for count + 1 because we'll retrieve the previous header as well
+<span class="fc" id="L169">          final AbstractGetHeadersFromPeerTask headersTask =</span>
+<span class="fc" id="L170">              GetHeadersFromPeerByHashTask.endingAtHash(</span>
+                  protocolSchedule,
+                  ethContext,
+                  referenceHash,
+<span class="fc" id="L174">                  referenceHeaderForNextRequest.getNumber(),</span>
+                  count + 1,
+                  metricsSystem);
+<span class="fc" id="L177">          assignedPeer.ifPresent(headersTask::assignPeer);</span>
+<span class="fc" id="L178">          return headersTask.run();</span>
+        });
+  }
+
+  @VisibleForTesting
+  CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; processHeaders(
+      final PeerTaskResult&lt;List&lt;BlockHeader&gt;&gt; headersResult) {
+<span class="fc" id="L185">    return executeWorkerSubTask(</span>
+<span class="fc" id="L186">        ethContext.getScheduler(),</span>
+        () -&gt; {
+<span class="fc" id="L188">          final CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; future = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L189">          BlockHeader child = null;</span>
+<span class="fc" id="L190">          boolean firstSkipped = false;</span>
+<span class="fc" id="L191">          final int previousHeaderIndex = lastFilledHeaderIndex;</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">          for (final BlockHeader header : headersResult.getResult()) {</span>
+<span class="fc" id="L193">            final int headerIndex =</span>
+<span class="fc" id="L194">                Ints.checkedCast(</span>
+<span class="fc" id="L195">                    segmentLength - (referenceHeader.getNumber() - header.getNumber()));</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">            if (!firstSkipped) {</span>
+              // Skip over reference header
+<span class="fc" id="L198">              firstSkipped = true;</span>
+<span class="fc" id="L199">              continue;</span>
+            }
+<span class="fc bfc" id="L201" title="All 2 branches covered.">            if (child == null) {</span>
+              child =
+<span class="fc bfc" id="L203" title="All 2 branches covered.">                  (headerIndex == segmentLength - 1) ? referenceHeader : headers[headerIndex + 1];</span>
+            }
+
+<span class="fc bfc" id="L206" title="All 2 branches covered.">            final boolean foundChild = child != null;</span>
+<span class="fc" id="L207">            final boolean headerInRange = checkHeaderInRange(header);</span>
+<span class="fc bfc" id="L208" title="All 4 branches covered.">            final boolean headerInvalid = foundChild &amp;&amp; !validateHeader(child, header);</span>
+<span class="fc bfc" id="L209" title="All 6 branches covered.">            if (!headerInRange || !foundChild || headerInvalid) {</span>
+<span class="fc" id="L210">              final BlockHeader invalidHeader = child;</span>
+              final CompletableFuture&lt;?&gt; badBlockHandled =
+<span class="fc bfc" id="L212" title="All 2 branches covered.">                  headerInvalid</span>
+<span class="fc" id="L213">                      ? markBadBlock(invalidHeader, headersResult.getPeer())</span>
+<span class="fc" id="L214">                      : CompletableFuture.completedFuture(null);</span>
+<span class="fc" id="L215">              badBlockHandled.whenComplete(</span>
+                  (res, err) -&gt; {
+<span class="fc" id="L217">                    LOG.debug(</span>
+                        &quot;Received invalid headers from peer (BREACH_OF_PROTOCOL), disconnecting from: {}&quot;,
+<span class="fc" id="L219">                        headersResult.getPeer());</span>
+<span class="fc" id="L220">                    headersResult.getPeer().disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+                    final InvalidBlockException exception;
+<span class="fc bfc" id="L222" title="All 2 branches covered.">                    if (invalidHeader == null) {</span>
+<span class="fc" id="L223">                      final String msg =</span>
+<span class="fc" id="L224">                          String.format(</span>
+                              &quot;Received misordered blocks. Missing child of %s&quot;,
+<span class="fc" id="L226">                              header.toLogString());</span>
+<span class="fc" id="L227">                      exception = InvalidBlockException.create(msg);</span>
+<span class="fc" id="L228">                    } else {</span>
+                      final String errorMsg =
+<span class="fc bfc" id="L230" title="All 2 branches covered.">                          headerInvalid</span>
+<span class="fc" id="L231">                              ? &quot;Header failed validation&quot;</span>
+<span class="fc" id="L232">                              : &quot;Out-of-range header received from peer&quot;;</span>
+<span class="fc" id="L233">                      exception = InvalidBlockException.fromInvalidBlock(errorMsg, invalidHeader);</span>
+                    }
+<span class="fc" id="L235">                    future.completeExceptionally(exception);</span>
+<span class="fc" id="L236">                  });</span>
+
+<span class="fc" id="L238">              return future;</span>
+            }
+<span class="fc" id="L240">            headers[headerIndex] = header;</span>
+<span class="fc" id="L241">            lastFilledHeaderIndex = headerIndex;</span>
+<span class="fc" id="L242">            child = header;</span>
+<span class="fc" id="L243">          }</span>
+<span class="fc" id="L244">          future.complete(asList(headers).subList(lastFilledHeaderIndex, previousHeaderIndex));</span>
+<span class="fc" id="L245">          return future;</span>
+        });
+  }
+
+  private CompletableFuture&lt;?&gt; markBadBlock(final BlockHeader badHeader, final EthPeer badPeer) {
+    // even though the header is known bad we are downloading the block body for the debug_badBlocks
+    // RPC
+<span class="fc" id="L252">    final BadBlockManager badBlockManager = protocolContext.getBadBlockManager();</span>
+<span class="fc" id="L253">    return GetBodiesFromPeerTask.forHeaders(</span>
+<span class="fc" id="L254">            protocolSchedule, ethContext, List.of(badHeader), metricsSystem)</span>
+<span class="fc" id="L255">        .assignPeer(badPeer)</span>
+<span class="fc" id="L256">        .run()</span>
+<span class="fc" id="L257">        .whenComplete(</span>
+            (blockPeerTaskResult, error) -&gt; {
+<span class="fc" id="L259">              final HeaderValidationMode validationMode =</span>
+<span class="fc" id="L260">                  validationPolicy.getValidationModeForNextBlock();</span>
+<span class="fc" id="L261">              final String description =</span>
+<span class="fc" id="L262">                  String.format(&quot;Failed header validation (%s)&quot;, validationMode);</span>
+<span class="fc" id="L263">              final BadBlockCause cause = BadBlockCause.fromValidationFailure(description);</span>
+<span class="pc bpc" id="L264" title="1 of 2 branches missed.">              if (blockPeerTaskResult != null) {</span>
+<span class="fc" id="L265">                final Optional&lt;Block&gt; block = blockPeerTaskResult.getResult().stream().findFirst();</span>
+<span class="fc" id="L266">                block.ifPresentOrElse(</span>
+<span class="fc" id="L267">                    (b) -&gt; badBlockManager.addBadBlock(b, cause),</span>
+<span class="fc" id="L268">                    () -&gt; badBlockManager.addBadHeader(badHeader, cause));</span>
+<span class="fc" id="L269">              } else {</span>
+<span class="nc" id="L270">                badBlockManager.addBadHeader(badHeader, cause);</span>
+              }
+<span class="fc" id="L272">            });</span>
+  }
+
+  private boolean checkHeaderInRange(final BlockHeader header) {
+<span class="fc" id="L276">    final long finalBlockNumber = startingBlockNumber + segmentLength;</span>
+<span class="pc bpc" id="L277" title="1 of 4 branches missed.">    return header.getNumber() &gt;= startingBlockNumber &amp;&amp; header.getNumber() &lt; finalBlockNumber;</span>
+  }
+
+  private boolean validateHeader(final BlockHeader header, final BlockHeader parent) {
+<span class="fc" id="L281">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+<span class="fc" id="L282">    final BlockHeaderValidator blockHeaderValidator = protocolSpec.getBlockHeaderValidator();</span>
+<span class="fc" id="L283">    return blockHeaderValidator.validateHeader(</span>
+<span class="fc" id="L284">        header, parent, protocolContext, validationPolicy.getValidationModeForNextBlock());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

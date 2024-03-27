@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BranchNode.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.patricia</a> &gt; <span class="el_source">BranchNode.java</span></div><h1>BranchNode.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.patricia;
+
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.LocationNodeVisitor;
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.NodeFactory;
+import org.hyperledger.besu.ethereum.trie.NodeVisitor;
+import org.hyperledger.besu.ethereum.trie.NullNode;
+import org.hyperledger.besu.ethereum.trie.PathNodeVisitor;
+
+import java.lang.ref.SoftReference;
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.MutableBytes;
+
+public class BranchNode&lt;V&gt; implements Node&lt;V&gt; {
+
+  @SuppressWarnings(&quot;rawtypes&quot;)
+<span class="fc" id="L44">  protected static final Node NULL_NODE = NullNode.instance();</span>
+
+  private final Optional&lt;Bytes&gt; location;
+  private final List&lt;Node&lt;V&gt;&gt; children;
+  private final Optional&lt;V&gt; value;
+  protected final NodeFactory&lt;V&gt; nodeFactory;
+  private final Function&lt;V, Bytes&gt; valueSerializer;
+  protected WeakReference&lt;Bytes&gt; encodedBytes;
+  private SoftReference&lt;Bytes32&gt; hash;
+<span class="fc" id="L53">  private boolean dirty = false;</span>
+<span class="fc" id="L54">  private boolean needHeal = false;</span>
+
+  public BranchNode(
+      final Bytes location,
+      final ArrayList&lt;Node&lt;V&gt;&gt; children,
+      final Optional&lt;V&gt; value,
+      final NodeFactory&lt;V&gt; nodeFactory,
+<span class="fc" id="L61">      final Function&lt;V, Bytes&gt; valueSerializer) {</span>
+<span class="pc bpc" id="L62" title="1 of 2 branches missed.">    assert (children.size() == maxChild());</span>
+<span class="fc" id="L63">    this.location = Optional.ofNullable(location);</span>
+<span class="fc" id="L64">    this.children = children;</span>
+<span class="fc" id="L65">    this.value = value;</span>
+<span class="fc" id="L66">    this.nodeFactory = nodeFactory;</span>
+<span class="fc" id="L67">    this.valueSerializer = valueSerializer;</span>
+<span class="fc" id="L68">  }</span>
+
+  public BranchNode(
+      final List&lt;Node&lt;V&gt;&gt; children,
+      final Optional&lt;V&gt; value,
+      final NodeFactory&lt;V&gt; nodeFactory,
+<span class="fc" id="L74">      final Function&lt;V, Bytes&gt; valueSerializer) {</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">    assert (children.size() == maxChild());</span>
+<span class="fc" id="L76">    this.location = Optional.empty();</span>
+<span class="fc" id="L77">    this.children = children;</span>
+<span class="fc" id="L78">    this.value = value;</span>
+<span class="fc" id="L79">    this.nodeFactory = nodeFactory;</span>
+<span class="fc" id="L80">    this.valueSerializer = valueSerializer;</span>
+<span class="fc" id="L81">  }</span>
+
+  @Override
+  public Node&lt;V&gt; accept(final PathNodeVisitor&lt;V&gt; visitor, final Bytes path) {
+<span class="fc" id="L85">    return visitor.visit(this, path);</span>
+  }
+
+  @Override
+  public void accept(final NodeVisitor&lt;V&gt; visitor) {
+<span class="fc" id="L90">    visitor.visit(this);</span>
+<span class="fc" id="L91">  }</span>
+
+  @Override
+  public void accept(final Bytes location, final LocationNodeVisitor&lt;V&gt; visitor) {
+<span class="fc" id="L95">    visitor.visit(location, this);</span>
+<span class="fc" id="L96">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getLocation() {
+<span class="nc" id="L100">    return location;</span>
+  }
+
+  @Override
+  public Bytes getPath() {
+<span class="fc" id="L105">    return Bytes.EMPTY;</span>
+  }
+
+  @Override
+  public Optional&lt;V&gt; getValue() {
+<span class="fc" id="L110">    return value;</span>
+  }
+
+  @Override
+  public List&lt;Node&lt;V&gt;&gt; getChildren() {
+<span class="fc" id="L115">    return Collections.unmodifiableList(children);</span>
+  }
+
+  public Node&lt;V&gt; child(final byte index) {
+<span class="fc" id="L119">    return children.get(index);</span>
+  }
+
+  @Override
+  public Bytes getEncodedBytes() {
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    if (encodedBytes != null) {</span>
+<span class="fc" id="L125">      final Bytes encoded = encodedBytes.get();</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">      if (encoded != null) {</span>
+<span class="fc" id="L127">        return encoded;</span>
+      }
+    }
+<span class="fc" id="L130">    final BytesValueRLPOutput out = new BytesValueRLPOutput();</span>
+<span class="fc" id="L131">    out.startList();</span>
+<span class="fc bfc" id="L132" title="All 2 branches covered.">    for (int i = 0; i &lt; maxChild(); ++i) {</span>
+<span class="fc" id="L133">      out.writeRaw(children.get(i).getEncodedBytesRef());</span>
+    }
+<span class="fc bfc" id="L135" title="All 2 branches covered.">    if (value.isPresent()) {</span>
+<span class="fc" id="L136">      out.writeBytes(valueSerializer.apply(value.get()));</span>
+    } else {
+<span class="fc" id="L138">      out.writeNull();</span>
+    }
+<span class="fc" id="L140">    out.endList();</span>
+<span class="fc" id="L141">    final Bytes encoded = out.encoded();</span>
+<span class="fc" id="L142">    encodedBytes = new WeakReference&lt;&gt;(encoded);</span>
+<span class="fc" id="L143">    return encoded;</span>
+  }
+
+  @Override
+  public Bytes getEncodedBytesRef() {
+<span class="fc bfc" id="L148" title="All 2 branches covered.">    if (isReferencedByHash()) {</span>
+<span class="fc" id="L149">      return RLP.encodeOne(getHash());</span>
+    } else {
+<span class="fc" id="L151">      return getEncodedBytes();</span>
+    }
+  }
+
+  @Override
+  public Bytes32 getHash() {
+<span class="fc bfc" id="L157" title="All 2 branches covered.">    if (hash != null) {</span>
+<span class="fc" id="L158">      final Bytes32 hashed = hash.get();</span>
+<span class="pc bpc" id="L159" title="1 of 2 branches missed.">      if (hashed != null) {</span>
+<span class="fc" id="L160">        return hashed;</span>
+      }
+    }
+<span class="fc" id="L163">    final Bytes32 hashed = keccak256(getEncodedBytes());</span>
+<span class="fc" id="L164">    hash = new SoftReference&lt;&gt;(hashed);</span>
+<span class="fc" id="L165">    return hashed;</span>
+  }
+
+  @Override
+  public Node&lt;V&gt; replacePath(final Bytes newPath) {
+<span class="fc" id="L170">    return nodeFactory.createExtension(newPath, this);</span>
+  }
+
+  public Node&lt;V&gt; replaceChild(final byte index, final Node&lt;V&gt; updatedChild) {
+<span class="fc" id="L174">    return replaceChild(index, updatedChild, true);</span>
+  }
+
+  public Node&lt;V&gt; replaceChild(
+      final byte index, final Node&lt;V&gt; updatedChild, final boolean allowFlatten) {
+<span class="fc" id="L179">    final ArrayList&lt;Node&lt;V&gt;&gt; newChildren = new ArrayList&lt;&gt;(children);</span>
+<span class="fc" id="L180">    newChildren.set(index, updatedChild);</span>
+
+<span class="fc bfc" id="L182" title="All 2 branches covered.">    if (updatedChild == NULL_NODE) {</span>
+<span class="pc bpc" id="L183" title="3 of 4 branches missed.">      if (value.isPresent() &amp;&amp; !hasChildren()) {</span>
+<span class="nc" id="L184">        return nodeFactory.createLeaf(Bytes.of(index), value.get());</span>
+<span class="pc bpc" id="L185" title="1 of 4 branches missed.">      } else if (value.isEmpty() &amp;&amp; allowFlatten) {</span>
+<span class="fc" id="L186">        final Optional&lt;Node&lt;V&gt;&gt; flattened = maybeFlatten(newChildren);</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">        if (flattened.isPresent()) {</span>
+<span class="fc" id="L188">          return flattened.get();</span>
+        }
+      }
+    }
+
+<span class="fc" id="L193">    return nodeFactory.createBranch(newChildren, value);</span>
+  }
+
+  public Node&lt;V&gt; replaceValue(final V value) {
+<span class="fc" id="L197">    return nodeFactory.createBranch(children, Optional.of(value));</span>
+  }
+
+  public Node&lt;V&gt; removeValue() {
+<span class="nc" id="L201">    return maybeFlatten(children).orElse(nodeFactory.createBranch(children, Optional.empty()));</span>
+  }
+
+  protected boolean hasChildren() {
+<span class="nc bnc" id="L205" title="All 2 branches missed.">    for (final Node&lt;V&gt; child : children) {</span>
+<span class="nc bnc" id="L206" title="All 2 branches missed.">      if (child != NULL_NODE) {</span>
+<span class="nc" id="L207">        return true;</span>
+      }
+<span class="nc" id="L209">    }</span>
+<span class="nc" id="L210">    return false;</span>
+  }
+
+  protected Optional&lt;Node&lt;V&gt;&gt; maybeFlatten(final List&lt;Node&lt;V&gt;&gt; children) {
+<span class="fc" id="L214">    final int onlyChildIndex = findOnlyChild(children);</span>
+<span class="fc bfc" id="L215" title="All 2 branches covered.">    if (onlyChildIndex &gt;= 0) {</span>
+      // replace the path of the only child and return it
+<span class="fc" id="L217">      final Node&lt;V&gt; onlyChild = children.get(onlyChildIndex);</span>
+<span class="fc" id="L218">      final Bytes onlyChildPath = onlyChild.getPath();</span>
+<span class="fc" id="L219">      final MutableBytes completePath = MutableBytes.create(1 + onlyChildPath.size());</span>
+<span class="fc" id="L220">      completePath.set(0, (byte) onlyChildIndex);</span>
+<span class="fc" id="L221">      onlyChildPath.copyTo(completePath, 1);</span>
+<span class="fc" id="L222">      return Optional.of(onlyChild.replacePath(completePath));</span>
+    }
+<span class="fc" id="L224">    return Optional.empty();</span>
+  }
+
+  private int findOnlyChild(final List&lt;Node&lt;V&gt;&gt; children) {
+<span class="fc" id="L228">    int onlyChildIndex = -1;</span>
+<span class="pc bpc" id="L229" title="1 of 2 branches missed.">    assert (children.size() == maxChild());</span>
+<span class="fc bfc" id="L230" title="All 2 branches covered.">    for (int i = 0; i &lt; maxChild(); ++i) {</span>
+<span class="fc bfc" id="L231" title="All 2 branches covered.">      if (children.get(i) != NULL_NODE) {</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">        if (onlyChildIndex &gt;= 0) {</span>
+<span class="fc" id="L233">          return -1;</span>
+        }
+<span class="fc" id="L235">        onlyChildIndex = i;</span>
+      }
+    }
+<span class="fc" id="L238">    return onlyChildIndex;</span>
+  }
+
+  @Override
+  public String print() {
+<span class="nc" id="L243">    final StringBuilder builder = new StringBuilder();</span>
+<span class="nc" id="L244">    builder.append(&quot;Branch:&quot;);</span>
+<span class="nc" id="L245">    builder.append(&quot;\n\tRef: &quot;).append(getEncodedBytesRef());</span>
+<span class="nc bnc" id="L246" title="All 2 branches missed.">    for (int i = 0; i &lt; maxChild(); i++) {</span>
+<span class="nc" id="L247">      final Node&lt;V&gt; child = child((byte) i);</span>
+<span class="nc bnc" id="L248" title="All 2 branches missed.">      if (!Objects.equals(child, NullNode.instance())) {</span>
+<span class="nc" id="L249">        final String branchLabel = &quot;[&quot; + Integer.toHexString(i) + &quot;] &quot;;</span>
+<span class="nc" id="L250">        final String childRep = child.print().replaceAll(&quot;\n\t&quot;, &quot;\n\t\t&quot;);</span>
+<span class="nc" id="L251">        builder.append(&quot;\n\t&quot;).append(branchLabel).append(childRep);</span>
+      }
+    }
+<span class="nc" id="L254">    builder.append(&quot;\n\tValue: &quot;).append(getValue().map(Object::toString).orElse(&quot;empty&quot;));</span>
+<span class="nc" id="L255">    return builder.toString();</span>
+  }
+
+  @Override
+  public boolean isDirty() {
+<span class="fc" id="L260">    return dirty;</span>
+  }
+
+  @Override
+  public void markDirty() {
+<span class="fc" id="L265">    dirty = true;</span>
+<span class="fc" id="L266">  }</span>
+
+  @Override
+  public boolean isHealNeeded() {
+<span class="fc" id="L270">    return needHeal;</span>
+  }
+
+  @Override
+  public void markHealNeeded() {
+<span class="fc" id="L275">    this.needHeal = true;</span>
+<span class="fc" id="L276">  }</span>
+
+  public int maxChild() {
+<span class="fc" id="L279">    return 16;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

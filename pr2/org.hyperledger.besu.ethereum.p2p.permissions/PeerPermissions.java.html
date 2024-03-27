@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PeerPermissions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.permissions</a> &gt; <span class="el_source">PeerPermissions.java</span></div><h1>PeerPermissions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.permissions;
+
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import com.google.common.collect.ImmutableList;
+
+<span class="fc" id="L27">public abstract class PeerPermissions implements AutoCloseable {</span>
+<span class="fc" id="L28">  private final Subscribers&lt;PermissionsUpdateCallback&gt; updateSubscribers = Subscribers.create();</span>
+
+<span class="fc" id="L30">  public static final PeerPermissions NOOP = new NoopPeerPermissions();</span>
+
+  public static PeerPermissions noop() {
+<span class="fc" id="L33">    return NOOP;</span>
+  }
+
+  public static PeerPermissions combine(final PeerPermissions... permissions) {
+<span class="fc" id="L37">    return combine(Arrays.asList(permissions));</span>
+  }
+
+  public static PeerPermissions combine(final List&lt;PeerPermissions&gt; permissions) {
+<span class="fc" id="L41">    return CombinedPeerPermissions.create(permissions);</span>
+  }
+
+  // Defines what actions can be queried for permissions checks
+<span class="fc" id="L45">  public enum Action {</span>
+<span class="fc" id="L46">    DISCOVERY_ALLOW_IN_PEER_TABLE,</span>
+<span class="fc" id="L47">    DISCOVERY_ACCEPT_INBOUND_BONDING,</span>
+<span class="fc" id="L48">    DISCOVERY_ALLOW_OUTBOUND_BONDING,</span>
+<span class="fc" id="L49">    DISCOVERY_SERVE_INBOUND_NEIGHBORS_REQUEST,</span>
+<span class="fc" id="L50">    DISCOVERY_ALLOW_OUTBOUND_NEIGHBORS_REQUEST,</span>
+<span class="fc" id="L51">    RLPX_ALLOW_NEW_INBOUND_CONNECTION,</span>
+<span class="fc" id="L52">    RLPX_ALLOW_NEW_OUTBOUND_CONNECTION,</span>
+<span class="fc" id="L53">    RLPX_ALLOW_ONGOING_REMOTELY_INITIATED_CONNECTION,</span>
+<span class="fc" id="L54">    RLPX_ALLOW_ONGOING_LOCALLY_INITIATED_CONNECTION</span>
+  }
+
+  /**
+   * Checks whether the local node is permitted to engage in some action with the given remote peer.
+   *
+   * @param localNode The local node that is querying for permissions.
+   * @param remotePeer The remote peer that the local node is checking for permissions
+   * @param action The action for which the local node is checking permissions
+   * @return {@code true} If the given action is allowed with the given peer
+   */
+  public abstract boolean isPermitted(
+      final Peer localNode, final Peer remotePeer, final Action action);
+
+  @Override
+  public void close() {
+    // Do nothing by default
+<span class="fc" id="L71">  }</span>
+
+  public void subscribeUpdate(final PermissionsUpdateCallback callback) {
+<span class="fc" id="L74">    updateSubscribers.subscribe(callback);</span>
+<span class="fc" id="L75">  }</span>
+
+  protected void dispatchUpdate(
+      final boolean permissionsRestricted, final Optional&lt;List&lt;Peer&gt;&gt; affectedPeers) {
+<span class="fc" id="L79">    updateSubscribers.forEach(s -&gt; s.onUpdate(permissionsRestricted, affectedPeers));</span>
+<span class="fc" id="L80">  }</span>
+
+  private static class NoopPeerPermissions extends PeerPermissions {
+    @Override
+    public boolean isPermitted(final Peer localNode, final Peer remotePeer, final Action action) {
+<span class="fc" id="L85">      return true;</span>
+    }
+  }
+
+  private static class CombinedPeerPermissions extends PeerPermissions {
+    private final ImmutableList&lt;PeerPermissions&gt; permissions;
+
+<span class="fc" id="L92">    private CombinedPeerPermissions(final ImmutableList&lt;PeerPermissions&gt; permissions) {</span>
+<span class="fc" id="L93">      this.permissions = permissions;</span>
+<span class="fc" id="L94">    }</span>
+
+    public static PeerPermissions create(final List&lt;PeerPermissions&gt; permissions) {
+<span class="fc" id="L97">      final ImmutableList&lt;PeerPermissions&gt; filteredPermissions =</span>
+<span class="fc" id="L98">          permissions.stream()</span>
+<span class="fc" id="L99">              .flatMap(</span>
+                  p -&gt; {
+<span class="fc bfc" id="L101" title="All 2 branches covered.">                    if (p instanceof CombinedPeerPermissions) {</span>
+<span class="fc" id="L102">                      return ((CombinedPeerPermissions) p).permissions.stream();</span>
+                    } else {
+<span class="fc" id="L104">                      return Stream.of(p);</span>
+                    }
+                  })
+<span class="fc bfc" id="L107" title="All 2 branches covered.">              .filter(p -&gt; !(p instanceof NoopPeerPermissions))</span>
+<span class="fc" id="L108">              .collect(ImmutableList.toImmutableList());</span>
+
+<span class="fc bfc" id="L110" title="All 2 branches covered.">      if (filteredPermissions.isEmpty()) {</span>
+<span class="fc" id="L111">        return PeerPermissions.NOOP;</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      } else if (filteredPermissions.size() == 1) {</span>
+<span class="fc" id="L113">        return filteredPermissions.get(0);</span>
+      } else {
+<span class="fc" id="L115">        return new CombinedPeerPermissions(filteredPermissions);</span>
+      }
+    }
+
+    @Override
+    public void subscribeUpdate(final PermissionsUpdateCallback callback) {
+<span class="fc bfc" id="L121" title="All 2 branches covered.">      for (final PeerPermissions permission : permissions) {</span>
+<span class="fc" id="L122">        permission.subscribeUpdate(callback);</span>
+<span class="fc" id="L123">      }</span>
+<span class="fc" id="L124">    }</span>
+
+    @Override
+    public boolean isPermitted(final Peer localNode, final Peer remotePeer, final Action action) {
+<span class="fc bfc" id="L128" title="All 2 branches covered.">      for (final PeerPermissions permission : permissions) {</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">        if (!permission.isPermitted(localNode, remotePeer, action)) {</span>
+<span class="fc" id="L130">          return false;</span>
+        }
+<span class="fc" id="L132">      }</span>
+<span class="fc" id="L133">      return true;</span>
+    }
+
+    @Override
+    public void close() {
+<span class="fc bfc" id="L138" title="All 2 branches covered.">      for (final PeerPermissions permission : permissions) {</span>
+<span class="fc" id="L139">        permission.close();</span>
+<span class="fc" id="L140">      }</span>
+<span class="fc" id="L141">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

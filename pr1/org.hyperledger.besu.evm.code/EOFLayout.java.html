@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EOFLayout.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.code</a> &gt; <span class="el_source">EOFLayout.java</span></div><h1>EOFLayout.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evm.code;
+
+import java.io.ByteArrayInputStream;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/** The EOF layout. */
+public class EOFLayout {
+
+  /** The Section Terminator. */
+  static final int SECTION_TERMINATOR = 0x00;
+  /** The Section types. */
+  static final int SECTION_TYPES = 0x01;
+  /** The Section code. */
+  static final int SECTION_CODE = 0x02;
+  /** The Section data. */
+  static final int SECTION_DATA = 0x03;
+
+  /** The Max supported section. */
+  static final int MAX_SUPPORTED_VERSION = 1;
+
+  private final Bytes container;
+  private final int version;
+  private final CodeSection[] codeSections;
+  private final String invalidReason;
+
+<span class="fc" id="L43">  private EOFLayout(final Bytes container, final int version, final CodeSection[] codeSections) {</span>
+<span class="fc" id="L44">    this.container = container;</span>
+<span class="fc" id="L45">    this.version = version;</span>
+<span class="fc" id="L46">    this.codeSections = codeSections;</span>
+<span class="fc" id="L47">    this.invalidReason = null;</span>
+<span class="fc" id="L48">  }</span>
+
+<span class="fc" id="L50">  private EOFLayout(final Bytes container, final int version, final String invalidReason) {</span>
+<span class="fc" id="L51">    this.container = container;</span>
+<span class="fc" id="L52">    this.version = version;</span>
+<span class="fc" id="L53">    this.codeSections = null;</span>
+<span class="fc" id="L54">    this.invalidReason = invalidReason;</span>
+<span class="fc" id="L55">  }</span>
+
+  private static EOFLayout invalidLayout(
+      final Bytes container, final int version, final String invalidReason) {
+<span class="fc" id="L59">    return new EOFLayout(container, version, invalidReason);</span>
+  }
+
+  private static String readKind(final ByteArrayInputStream inputStream, final int expectedKind) {
+<span class="fc" id="L63">    int kind = inputStream.read();</span>
+<span class="fc bfc" id="L64" title="All 2 branches covered.">    if (kind == -1) {</span>
+<span class="fc" id="L65">      return &quot;Improper section headers&quot;;</span>
+    }
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    if (kind != expectedKind) {</span>
+<span class="fc" id="L68">      return &quot;Expected kind &quot; + expectedKind + &quot; but read kind &quot; + kind;</span>
+    }
+<span class="fc" id="L70">    return null;</span>
+  }
+
+  /**
+   * Parse EOF.
+   *
+   * @param container the container
+   * @return the eof layout
+   */
+  public static EOFLayout parseEOF(final Bytes container) {
+<span class="fc" id="L80">    final ByteArrayInputStream inputStream = new ByteArrayInputStream(container.toArrayUnsafe());</span>
+
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (inputStream.available() &lt; 3) {</span>
+<span class="fc" id="L83">      return invalidLayout(container, -1, &quot;EOF Container too small&quot;);</span>
+    }
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (inputStream.read() != 0xEF) {</span>
+<span class="fc" id="L86">      return invalidLayout(container, -1, &quot;EOF header byte 0 incorrect&quot;);</span>
+    }
+<span class="fc bfc" id="L88" title="All 2 branches covered.">    if (inputStream.read() != 0x0) {</span>
+<span class="fc" id="L89">      return invalidLayout(container, -1, &quot;EOF header byte 1 incorrect&quot;);</span>
+    }
+
+<span class="fc" id="L92">    final int version = inputStream.read();</span>
+<span class="fc bfc" id="L93" title="All 4 branches covered.">    if (version &gt; MAX_SUPPORTED_VERSION || version &lt; 1) {</span>
+<span class="fc" id="L94">      return invalidLayout(container, version, &quot;Unsupported EOF Version &quot; + version);</span>
+    }
+
+<span class="fc" id="L97">    String error = readKind(inputStream, SECTION_TYPES);</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L99">      return invalidLayout(container, version, error);</span>
+    }
+<span class="fc" id="L101">    int typesLength = readUnsignedShort(inputStream);</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">    if (typesLength &lt;= 0) {</span>
+<span class="fc" id="L103">      return invalidLayout(container, version, &quot;Invalid Types section size&quot;);</span>
+    }
+
+<span class="fc" id="L106">    error = readKind(inputStream, SECTION_CODE);</span>
+<span class="fc bfc" id="L107" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L108">      return invalidLayout(container, version, error);</span>
+    }
+<span class="fc" id="L110">    int codeSectionCount = readUnsignedShort(inputStream);</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (codeSectionCount &lt;= 0) {</span>
+<span class="fc" id="L112">      return invalidLayout(container, version, &quot;Invalid Code section count&quot;);</span>
+    }
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (codeSectionCount * 4 != typesLength) {</span>
+<span class="fc" id="L115">      return invalidLayout(</span>
+          container,
+          version,
+          &quot;Type section length incompatible with code section count - 0x&quot;
+<span class="fc" id="L119">              + Integer.toHexString(codeSectionCount)</span>
+              + &quot; * 4 != 0x&quot;
+<span class="fc" id="L121">              + Integer.toHexString(typesLength));</span>
+    }
+<span class="fc bfc" id="L123" title="All 2 branches covered.">    if (codeSectionCount &gt; 1024) {</span>
+<span class="fc" id="L124">      return invalidLayout(</span>
+          container,
+          version,
+<span class="fc" id="L127">          &quot;Too many code sections - 0x&quot; + Integer.toHexString(codeSectionCount));</span>
+    }
+<span class="fc" id="L129">    int[] codeSectionSizes = new int[codeSectionCount];</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    for (int i = 0; i &lt; codeSectionCount; i++) {</span>
+<span class="fc" id="L131">      int size = readUnsignedShort(inputStream);</span>
+<span class="fc bfc" id="L132" title="All 2 branches covered.">      if (size &lt;= 0) {</span>
+<span class="fc" id="L133">        return invalidLayout(container, version, &quot;Invalid Code section size for section &quot; + i);</span>
+      }
+<span class="fc" id="L135">      codeSectionSizes[i] = size;</span>
+    }
+
+<span class="fc" id="L138">    error = readKind(inputStream, SECTION_DATA);</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L140">      return invalidLayout(container, version, error);</span>
+    }
+<span class="fc" id="L142">    int dataSize = readUnsignedShort(inputStream);</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">    if (dataSize &lt; 0) {</span>
+<span class="fc" id="L144">      return invalidLayout(container, version, &quot;Invalid Data section size&quot;);</span>
+    }
+
+<span class="fc" id="L147">    error = readKind(inputStream, SECTION_TERMINATOR);</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L149">      return invalidLayout(container, version, error);</span>
+    }
+<span class="fc" id="L151">    int[][] typeData = new int[codeSectionCount][3];</span>
+<span class="fc bfc" id="L152" title="All 2 branches covered.">    for (int i = 0; i &lt; codeSectionCount; i++) {</span>
+      // input stream keeps spitting out -1 if we run out of data, so no exceptions
+<span class="fc" id="L154">      typeData[i][0] = inputStream.read();</span>
+<span class="fc" id="L155">      typeData[i][1] = inputStream.read();</span>
+<span class="fc" id="L156">      typeData[i][2] = readUnsignedShort(inputStream);</span>
+    }
+<span class="fc bfc" id="L158" title="All 2 branches covered.">    if (typeData[codeSectionCount - 1][2] == -1) {</span>
+<span class="fc" id="L159">      return invalidLayout(container, version, &quot;Incomplete type section&quot;);</span>
+    }
+<span class="fc bfc" id="L161" title="All 4 branches covered.">    if (typeData[0][0] != 0 || (typeData[0][1] &amp; 0x7f) != 0) {</span>
+<span class="fc" id="L162">      return invalidLayout(</span>
+          container, version, &quot;Code section does not have zero inputs and outputs&quot;);
+    }
+<span class="fc" id="L165">    CodeSection[] codeSections = new CodeSection[codeSectionCount];</span>
+<span class="fc" id="L166">    int pos = // calculate pos in stream...</span>
+        3 // header and version
+            + 3 // type header
+            + 3
+            + (codeSectionCount * 2) // code section size
+            + 3 // data section header
+            + 1 // padding
+            + (codeSectionCount * 4); // type data
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    for (int i = 0; i &lt; codeSectionCount; i++) {</span>
+<span class="fc" id="L175">      int codeSectionSize = codeSectionSizes[i];</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">      if (inputStream.skip(codeSectionSize) != codeSectionSize) {</span>
+<span class="fc" id="L177">        return invalidLayout(container, version, &quot;Incomplete code section &quot; + i);</span>
+      }
+<span class="fc bfc" id="L179" title="All 2 branches covered.">      if (typeData[i][0] &gt; 0x7f) {</span>
+<span class="fc" id="L180">        return invalidLayout(</span>
+            container,
+            version,
+<span class="fc" id="L183">            &quot;Type data input stack too large - 0x&quot; + Integer.toHexString(typeData[i][0]));</span>
+      }
+<span class="fc bfc" id="L185" title="All 2 branches covered.">      if (typeData[i][1] &gt; 0x80) {</span>
+<span class="fc" id="L186">        return invalidLayout(</span>
+            container,
+            version,
+<span class="fc" id="L189">            &quot;Type data output stack too large - 0x&quot; + Integer.toHexString(typeData[i][1]));</span>
+      }
+<span class="fc bfc" id="L191" title="All 2 branches covered.">      if (typeData[i][2] &gt; 0x3ff) {</span>
+<span class="fc" id="L192">        return invalidLayout(</span>
+            container,
+            version,
+<span class="fc" id="L195">            &quot;Type data max stack too large - 0x&quot; + Integer.toHexString(typeData[i][2]));</span>
+      }
+<span class="fc" id="L197">      codeSections[i] =</span>
+          new CodeSection(codeSectionSize, typeData[i][0], typeData[i][1], typeData[i][2], pos);
+<span class="fc" id="L199">      pos += codeSectionSize;</span>
+    }
+
+<span class="fc bfc" id="L202" title="All 2 branches covered.">    if (inputStream.skip(dataSize) != dataSize) {</span>
+<span class="fc" id="L203">      return invalidLayout(container, version, &quot;Incomplete data section&quot;);</span>
+    }
+<span class="fc bfc" id="L205" title="All 2 branches covered.">    if (inputStream.read() != -1) {</span>
+<span class="fc" id="L206">      return invalidLayout(container, version, &quot;Dangling data after end of all sections&quot;);</span>
+    }
+
+<span class="fc" id="L209">    return new EOFLayout(container, version, codeSections);</span>
+  }
+
+  /**
+   * Read unsigned short int.
+   *
+   * @param inputStream the input stream
+   * @return the int
+   */
+  static int readUnsignedShort(final ByteArrayInputStream inputStream) {
+<span class="fc bfc" id="L219" title="All 2 branches covered.">    if (inputStream.available() &lt; 2) {</span>
+<span class="fc" id="L220">      return -1;</span>
+    } else {
+<span class="fc" id="L222">      return inputStream.read() &lt;&lt; 8 | inputStream.read();</span>
+    }
+  }
+
+  /**
+   * Gets container.
+   *
+   * @return the container
+   */
+  public Bytes getContainer() {
+<span class="fc" id="L232">    return container;</span>
+  }
+
+  /**
+   * Gets version.
+   *
+   * @return the version
+   */
+  public int getVersion() {
+<span class="fc" id="L241">    return version;</span>
+  }
+
+  /**
+   * Get code section count.
+   *
+   * @return the code section count
+   */
+  public int getCodeSectionCount() {
+<span class="fc bfc" id="L250" title="All 2 branches covered.">    return codeSections == null ? 0 : codeSections.length;</span>
+  }
+
+  /**
+   * Get code sections.
+   *
+   * @param i the index
+   * @return the Code section
+   */
+  public CodeSection getCodeSection(final int i) {
+<span class="fc" id="L260">    return codeSections[i];</span>
+  }
+
+  /**
+   * Gets invalid reason.
+   *
+   * @return the invalid reason
+   */
+  public String getInvalidReason() {
+<span class="fc" id="L269">    return invalidReason;</span>
+  }
+
+  /**
+   * Is valid.
+   *
+   * @return the boolean
+   */
+  public boolean isValid() {
+<span class="fc bfc" id="L278" title="All 2 branches covered.">    return invalidReason == null;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

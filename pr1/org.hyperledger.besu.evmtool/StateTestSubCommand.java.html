@@ -1,0 +1,320 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StateTestSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evmtool</a> &gt; <span class="el_source">StateTestSubCommand.java</span></div><h1>StateTestSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.evmtool;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.hyperledger.besu.ethereum.referencetests.ReferenceTestProtocolSchedules.shouldClearEmptyAccounts;
+import static org.hyperledger.besu.evmtool.StateTestSubCommand.COMMAND_NAME;
+
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.referencetests.GeneralStateTestCaseEipSpec;
+import org.hyperledger.besu.ethereum.referencetests.GeneralStateTestCaseSpec;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestBlockchain;
+import org.hyperledger.besu.ethereum.referencetests.ReferenceTestProtocolSchedules;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.log.Log;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.tracing.StandardJsonTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.evmtool.exception.UnsupportedForkException;
+import org.hyperledger.besu.util.LogConfigurator;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.base.Stopwatch;
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
+import picocli.CommandLine.ParentCommand;
+
+@Command(
+    name = COMMAND_NAME,
+    description = &quot;Execute an Ethereum State Test.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+public class StateTestSubCommand implements Runnable {
+  public static final String COMMAND_NAME = &quot;state-test&quot;;
+
+<span class="fc" id="L79">  static final Supplier&lt;ReferenceTestProtocolSchedules&gt; referenceTestProtocolSchedules =</span>
+<span class="fc" id="L80">      Suppliers.memoize(ReferenceTestProtocolSchedules::create);</span>
+
+<span class="fc" id="L82">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;})</span>
+  @Option(
+      names = {&quot;--fork&quot;},
+      description = &quot;Force the state tests to run on a specific fork.&quot;)
+  private String fork = null;
+
+<span class="fc" id="L88">  @Option(</span>
+      names = {&quot;--data-index&quot;},
+      description = &quot;Limit execution to one data variable.&quot;)
+  private Integer dataIndex = null;
+
+<span class="fc" id="L93">  @Option(</span>
+      names = {&quot;--gas-index&quot;},
+      description = &quot;Limit execution to one gas variable.&quot;)
+  private Integer gasIndex = null;
+
+<span class="fc" id="L98">  @Option(</span>
+      names = {&quot;--value-index&quot;},
+      description = &quot;Limit execution to one value variable.&quot;)
+  private Integer valueIndex = null;
+
+<span class="fc" id="L103">  @Option(</span>
+      names = {&quot;--fork-index&quot;},
+      description = &quot;Limit execution to one fork.&quot;)
+  private String forkIndex = null;
+
+  @ParentCommand private final EvmToolCommand parentCommand;
+
+  // picocli does it magically
+<span class="fc" id="L111">  @Parameters private final List&lt;Path&gt; stateTestFiles = new ArrayList&lt;&gt;();</span>
+
+  @SuppressWarnings(&quot;unused&quot;)
+  public StateTestSubCommand() {
+    // PicoCLI requires this
+<span class="fc" id="L116">    this(null);</span>
+<span class="fc" id="L117">  }</span>
+
+<span class="fc" id="L119">  StateTestSubCommand(final EvmToolCommand parentCommand) {</span>
+<span class="fc" id="L120">    this.parentCommand = parentCommand;</span>
+<span class="fc" id="L121">  }</span>
+
+  @Override
+  public void run() {
+<span class="fc" id="L125">    LogConfigurator.setLevel(&quot;&quot;, &quot;OFF&quot;);</span>
+    // presume ethereum mainnet for reference and state tests
+<span class="fc" id="L127">    SignatureAlgorithmFactory.setDefaultInstance();</span>
+<span class="fc" id="L128">    final ObjectMapper stateTestMapper = JsonUtils.createObjectMapper();</span>
+
+<span class="fc" id="L130">    final JavaType javaType =</span>
+        stateTestMapper
+<span class="fc" id="L132">            .getTypeFactory()</span>
+<span class="fc" id="L133">            .constructParametricType(Map.class, String.class, GeneralStateTestCaseSpec.class);</span>
+    try {
+<span class="fc bfc" id="L135" title="All 2 branches covered.">      if (stateTestFiles.isEmpty()) {</span>
+        // if no state tests were specified use standard input to get filenames
+<span class="fc" id="L137">        final BufferedReader in =</span>
+            new BufferedReader(new InputStreamReader(parentCommand.in, UTF_8));
+        while (true) {
+<span class="fc" id="L140">          final String fileName = in.readLine();</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">          if (fileName == null) {</span>
+            // reached end of file.  Stop the loop.
+<span class="fc" id="L143">            break;</span>
+          }
+<span class="fc" id="L145">          final File file = new File(fileName);</span>
+<span class="fc bfc" id="L146" title="All 2 branches covered.">          if (file.isFile()) {</span>
+<span class="fc" id="L147">            final Map&lt;String, GeneralStateTestCaseSpec&gt; generalStateTests =</span>
+<span class="fc" id="L148">                stateTestMapper.readValue(file, javaType);</span>
+<span class="fc" id="L149">            executeStateTest(generalStateTests);</span>
+<span class="fc" id="L150">          } else {</span>
+<span class="fc" id="L151">            parentCommand.out.println(&quot;File not found: &quot; + fileName);</span>
+          }
+<span class="fc" id="L153">        }</span>
+<span class="fc" id="L154">      } else {</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">        for (final Path stateTestFile : stateTestFiles) {</span>
+          final Map&lt;String, GeneralStateTestCaseSpec&gt; generalStateTests;
+<span class="fc bfc" id="L157" title="All 2 branches covered.">          if (&quot;stdin&quot;.equals(stateTestFile.toString())) {</span>
+<span class="fc" id="L158">            generalStateTests = stateTestMapper.readValue(parentCommand.in, javaType);</span>
+          } else {
+<span class="fc" id="L160">            generalStateTests = stateTestMapper.readValue(stateTestFile.toFile(), javaType);</span>
+          }
+<span class="fc" id="L162">          executeStateTest(generalStateTests);</span>
+<span class="fc" id="L163">        }</span>
+      }
+<span class="fc" id="L165">    } catch (final JsonProcessingException jpe) {</span>
+<span class="fc" id="L166">      parentCommand.out.println(&quot;File content error: &quot; + jpe);</span>
+<span class="nc" id="L167">    } catch (final IOException e) {</span>
+<span class="nc" id="L168">      System.err.println(&quot;Unable to read state file&quot;);</span>
+<span class="nc" id="L169">      e.printStackTrace(System.err);</span>
+<span class="fc" id="L170">    }</span>
+<span class="fc" id="L171">  }</span>
+
+  private void executeStateTest(final Map&lt;String, GeneralStateTestCaseSpec&gt; generalStateTests) {
+    for (final Map.Entry&lt;String, GeneralStateTestCaseSpec&gt; generalStateTestEntry :
+<span class="fc bfc" id="L175" title="All 2 branches covered.">        generalStateTests.entrySet()) {</span>
+<span class="fc" id="L176">      generalStateTestEntry</span>
+<span class="fc" id="L177">          .getValue()</span>
+<span class="fc" id="L178">          .finalStateSpecs()</span>
+<span class="fc" id="L179">          .forEach((__, specs) -&gt; traceTestSpecs(generalStateTestEntry.getKey(), specs));</span>
+<span class="fc" id="L180">    }</span>
+<span class="fc" id="L181">  }</span>
+
+  private void traceTestSpecs(final String test, final List&lt;GeneralStateTestCaseEipSpec&gt; specs) {
+    final OperationTracer tracer = // You should have picked Mercy.
+<span class="fc bfc" id="L185" title="All 2 branches covered.">        parentCommand.showJsonResults</span>
+<span class="fc" id="L186">            ? new StandardJsonTracer(</span>
+                parentCommand.out,
+<span class="fc" id="L188">                parentCommand.showMemory,</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">                !parentCommand.hideStack,</span>
+<span class="fc" id="L190">                parentCommand.showReturnData,</span>
+<span class="fc" id="L191">                parentCommand.showStorage)</span>
+<span class="fc" id="L192">            : OperationTracer.NO_TRACING;</span>
+
+<span class="fc" id="L194">    final ObjectMapper objectMapper = JsonUtils.createObjectMapper();</span>
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    for (final GeneralStateTestCaseEipSpec spec : specs) {</span>
+<span class="pc bpc" id="L196" title="3 of 4 branches missed.">      if (dataIndex != null &amp;&amp; spec.getDataIndex() != dataIndex) {</span>
+<span class="nc" id="L197">        continue;</span>
+      }
+<span class="pc bpc" id="L199" title="3 of 4 branches missed.">      if (gasIndex != null &amp;&amp; spec.getGasIndex() != gasIndex) {</span>
+<span class="nc" id="L200">        continue;</span>
+      }
+<span class="pc bpc" id="L202" title="3 of 4 branches missed.">      if (valueIndex != null &amp;&amp; spec.getValueIndex() != valueIndex) {</span>
+<span class="nc" id="L203">        continue;</span>
+      }
+<span class="pc bpc" id="L205" title="3 of 4 branches missed.">      if (forkIndex != null &amp;&amp; !spec.getFork().equalsIgnoreCase(forkIndex)) {</span>
+<span class="nc" id="L206">        continue;</span>
+      }
+
+<span class="fc" id="L209">      final BlockHeader blockHeader = spec.getBlockHeader();</span>
+<span class="fc" id="L210">      final Transaction transaction = spec.getTransaction();</span>
+<span class="fc" id="L211">      final ObjectNode summaryLine = objectMapper.createObjectNode();</span>
+<span class="pc bpc" id="L212" title="1 of 2 branches missed.">      if (transaction == null) {</span>
+<span class="nc bnc" id="L213" title="All 4 branches missed.">        if (parentCommand.showJsonAlloc || parentCommand.showJsonResults) {</span>
+<span class="nc" id="L214">          parentCommand.out.println(</span>
+              &quot;{\&quot;error\&quot;:\&quot;Transaction was invalid, trace and alloc unavailable.\&quot;}&quot;);
+        }
+<span class="nc" id="L217">        summaryLine.put(&quot;test&quot;, test);</span>
+<span class="nc" id="L218">        summaryLine.put(&quot;fork&quot;, spec.getFork());</span>
+<span class="nc" id="L219">        summaryLine.put(&quot;d&quot;, spec.getDataIndex());</span>
+<span class="nc" id="L220">        summaryLine.put(&quot;g&quot;, spec.getGasIndex());</span>
+<span class="nc" id="L221">        summaryLine.put(&quot;v&quot;, spec.getValueIndex());</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">        summaryLine.put(&quot;pass&quot;, spec.getExpectException() != null);</span>
+<span class="nc" id="L223">        summaryLine.put(&quot;validationError&quot;, &quot;Transaction had out-of-bounds parameters&quot;);</span>
+      } else {
+<span class="fc" id="L225">        final MutableWorldState worldState = spec.getInitialWorldState().copy();</span>
+        // Several of the GeneralStateTests check if the transaction could potentially
+        // consume more gas than is left for the block it's attempted to be included in.
+        // This check is performed within the `BlockImporter` rather than inside the
+        // `TransactionProcessor`, so these tests are skipped.
+<span class="pc bpc" id="L230" title="1 of 2 branches missed.">        if (transaction.getGasLimit() &gt; blockHeader.getGasLimit() - blockHeader.getGasUsed()) {</span>
+<span class="nc" id="L231">          return;</span>
+        }
+
+<span class="pc bpc" id="L234" title="1 of 2 branches missed.">        final String forkName = fork == null ? spec.getFork() : fork;</span>
+<span class="fc" id="L235">        final ProtocolSchedule protocolSchedule =</span>
+<span class="fc" id="L236">            referenceTestProtocolSchedules.get().getByName(forkName);</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">        if (protocolSchedule == null) {</span>
+<span class="fc" id="L238">          throw new UnsupportedForkException(forkName);</span>
+        }
+
+<span class="fc" id="L241">        final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+<span class="fc" id="L242">        final MainnetTransactionProcessor processor = protocolSpec.getTransactionProcessor();</span>
+<span class="fc" id="L243">        final WorldUpdater worldStateUpdater = worldState.updater();</span>
+<span class="fc" id="L244">        final ReferenceTestBlockchain blockchain =</span>
+<span class="fc" id="L245">            new ReferenceTestBlockchain(blockHeader.getNumber());</span>
+<span class="fc" id="L246">        final Stopwatch timer = Stopwatch.createStarted();</span>
+        // Todo: EIP-4844 use the excessBlobGas of the parent instead of BlobGas.ZERO
+<span class="fc" id="L248">        final Wei blobGasPrice = protocolSpec.getFeeMarket().blobGasPricePerGas(BlobGas.ZERO);</span>
+<span class="fc" id="L249">        final TransactionProcessingResult result =</span>
+<span class="fc" id="L250">            processor.processTransaction(</span>
+                blockchain,
+                worldStateUpdater,
+                blockHeader,
+                transaction,
+<span class="fc" id="L255">                blockHeader.getCoinbase(),</span>
+<span class="fc" id="L256">                blockNumber -&gt; Hash.hash(Bytes.wrap(Long.toString(blockNumber).getBytes(UTF_8))),</span>
+<span class="fc" id="L257">                false,</span>
+<span class="fc" id="L258">                TransactionValidationParams.processingBlock(),</span>
+                tracer,
+                blobGasPrice);
+<span class="fc" id="L261">        timer.stop();</span>
+<span class="fc bfc" id="L262" title="All 2 branches covered.">        if (shouldClearEmptyAccounts(spec.getFork())) {</span>
+<span class="fc" id="L263">          final Account coinbase =</span>
+<span class="fc" id="L264">              worldStateUpdater.getOrCreate(spec.getBlockHeader().getCoinbase());</span>
+<span class="pc bpc" id="L265" title="1 of 4 branches missed.">          if (coinbase != null &amp;&amp; coinbase.isEmpty()) {</span>
+<span class="fc" id="L266">            worldStateUpdater.deleteAccount(coinbase.getAddress());</span>
+          }
+<span class="fc" id="L268">          final Account sender = worldStateUpdater.getAccount(transaction.getSender());</span>
+<span class="pc bpc" id="L269" title="2 of 4 branches missed.">          if (sender != null &amp;&amp; sender.isEmpty()) {</span>
+<span class="nc" id="L270">            worldStateUpdater.deleteAccount(sender.getAddress());</span>
+          }
+        }
+<span class="fc" id="L273">        worldStateUpdater.commit();</span>
+<span class="fc" id="L274">        worldState.persist(blockHeader);</span>
+
+<span class="fc" id="L276">        summaryLine.put(&quot;output&quot;, result.getOutput().toUnprefixedHexString());</span>
+<span class="fc" id="L277">        final long gasUsed = transaction.getGasLimit() - result.getGasRemaining();</span>
+<span class="fc" id="L278">        final long timeNs = timer.elapsed(TimeUnit.NANOSECONDS);</span>
+<span class="fc" id="L279">        final float mGps = gasUsed * 1000.0f / timeNs;</span>
+
+<span class="fc" id="L281">        summaryLine.put(&quot;gasUsed&quot;, StandardJsonTracer.shortNumber(gasUsed));</span>
+
+<span class="fc bfc" id="L283" title="All 2 branches covered.">        if (!parentCommand.noTime) {</span>
+<span class="fc" id="L284">          summaryLine.put(&quot;time&quot;, timeNs);</span>
+<span class="fc" id="L285">          summaryLine.put(&quot;Mgps&quot;, String.format(&quot;%.3f&quot;, mGps));</span>
+        }
+
+        // Check the world state root hash.
+<span class="fc" id="L289">        summaryLine.put(&quot;test&quot;, test);</span>
+<span class="fc" id="L290">        summaryLine.put(&quot;fork&quot;, spec.getFork());</span>
+<span class="fc" id="L291">        summaryLine.put(&quot;d&quot;, spec.getDataIndex());</span>
+<span class="fc" id="L292">        summaryLine.put(&quot;g&quot;, spec.getGasIndex());</span>
+<span class="fc" id="L293">        summaryLine.put(&quot;v&quot;, spec.getValueIndex());</span>
+<span class="fc" id="L294">        summaryLine.put(&quot;postHash&quot;, worldState.rootHash().toHexString());</span>
+<span class="fc" id="L295">        final List&lt;Log&gt; logs = result.getLogs();</span>
+<span class="fc" id="L296">        final Hash actualLogsHash = Hash.hash(RLP.encode(out -&gt; out.writeList(logs, Log::writeTo)));</span>
+<span class="fc" id="L297">        summaryLine.put(&quot;postLogsHash&quot;, actualLogsHash.toHexString());</span>
+<span class="fc" id="L298">        summaryLine.put(</span>
+            &quot;pass&quot;,
+<span class="fc bfc" id="L300" title="All 2 branches covered.">            spec.getExpectException() == null</span>
+<span class="pc bpc" id="L301" title="1 of 2 branches missed.">                &amp;&amp; worldState.rootHash().equals(spec.getExpectedRootHash())</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">                &amp;&amp; actualLogsHash.equals(spec.getExpectedLogsHash()));</span>
+<span class="fc bfc" id="L303" title="All 2 branches covered.">        if (result.isInvalid()) {</span>
+<span class="fc" id="L304">          summaryLine.put(&quot;validationError&quot;, result.getValidationResult().getErrorMessage());</span>
+<span class="pc bpc" id="L305" title="1 of 2 branches missed.">        } else if (spec.getExpectException() != null) {</span>
+<span class="nc" id="L306">          summaryLine.put(</span>
+              &quot;validationError&quot;,
+<span class="nc" id="L308">              &quot;Exception '&quot; + spec.getExpectException() + &quot;' was expected but did not occur&quot;);</span>
+        }
+
+<span class="pc bpc" id="L311" title="1 of 2 branches missed.">        if (parentCommand.showJsonAlloc) {</span>
+<span class="nc" id="L312">          EvmToolCommand.dumpWorldState(worldState, parentCommand.out);</span>
+        }
+      }
+
+<span class="fc" id="L316">      parentCommand.out.println(summaryLine);</span>
+<span class="fc" id="L317">    }</span>
+<span class="fc" id="L318">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

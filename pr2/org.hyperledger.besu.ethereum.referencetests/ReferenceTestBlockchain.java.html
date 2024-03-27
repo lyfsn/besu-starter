@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ReferenceTestBlockchain.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.referencetests</a> &gt; <span class="el_source">ReferenceTestBlockchain.java</span></div><h1>ReferenceTestBlockchain.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.referencetests;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.BlockAddedObserver;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.ChainHead;
+import org.hyperledger.besu.ethereum.chain.ChainReorgObserver;
+import org.hyperledger.besu.ethereum.chain.TransactionLocation;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderTestFixture;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * A blockchain mock for the Ethereum reference tests.
+ *
+ * &lt;p&gt;Operations which would lead to non-deterministic behaviour if executed while processing
+ * transactions throw {@link NonDeterministicOperationException}. For example all methods that
+ * lookup blocks by number since the block being processed may not be on the canonical chain but
+ * that must not affect the execution of its transactions.
+ *
+ * &lt;p&gt;The Ethereum reference tests for VM execution (VMTests) and transaction processing
+ * (GeneralStateTests) require a block's hash to be to be the hash of the string of it's block
+ * number.
+ */
+public class ReferenceTestBlockchain implements Blockchain {
+
+  // Maximum number of blocks prior to the chain head that can be retrieved by hash.
+  private static final long MAXIMUM_BLOCKS_BEHIND_HEAD = 256;
+  private static final String NUMBER_LOOKUP_ERROR =
+      &quot;Blocks must not be looked up by number in the EVM. The block being processed may not be on the canonical chain.&quot;;
+  private static final String CHAIN_HEAD_ERROR =
+      &quot;Chain head is inherently non-deterministic. The block currently being processed should be treated as the chain head.&quot;;
+  private static final String FINALIZED_ERROR =
+      &quot;Finalized block is inherently non-deterministic. The block currently being processed should be treated as the finalized block.&quot;;
+  private static final String SAFE_BLOCK_ERROR =
+      &quot;Safe block is inherently non-deterministic. The block currently being processed should be treated as the safe block.&quot;;
+<span class="fc" id="L65">  private final Map&lt;Hash, BlockHeader&gt; hashToHeader = new HashMap&lt;&gt;();</span>
+
+  public ReferenceTestBlockchain() {
+<span class="fc" id="L68">    this(0);</span>
+<span class="fc" id="L69">  }</span>
+
+<span class="fc" id="L71">  public ReferenceTestBlockchain(final long chainHeadBlockNumber) {</span>
+<span class="fc" id="L72">    for (long blockNumber = Math.max(0L, chainHeadBlockNumber - MAXIMUM_BLOCKS_BEHIND_HEAD);</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">        blockNumber &lt; chainHeadBlockNumber;</span>
+<span class="fc" id="L74">        blockNumber++) {</span>
+<span class="fc" id="L75">      final Hash hash = generateTestBlockHash(blockNumber);</span>
+<span class="fc" id="L76">      hashToHeader.put(</span>
+          hash,
+          new BlockHeaderTestFixture()
+<span class="fc" id="L79">              .number(blockNumber)</span>
+<span class="fc" id="L80">              .parentHash(generateTestBlockHash(blockNumber - 1))</span>
+<span class="fc" id="L81">              .buildHeader());</span>
+    }
+<span class="fc" id="L83">  }</span>
+
+  public static Hash generateTestBlockHash(final long number) {
+<span class="fc" id="L86">    final byte[] bytes = Long.toString(number).getBytes(UTF_8);</span>
+<span class="fc" id="L87">    return Hash.hash(Bytes.wrap(bytes));</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getBlockHashByNumber(final long number) {
+<span class="nc" id="L92">    throw new NonDeterministicOperationException(NUMBER_LOOKUP_ERROR);</span>
+  }
+
+  @Override
+  public ChainHead getChainHead() {
+<span class="nc" id="L97">    throw new NonDeterministicOperationException(CHAIN_HEAD_ERROR);</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getFinalized() {
+<span class="nc" id="L102">    throw new NonDeterministicOperationException(FINALIZED_ERROR);</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getSafeBlock() {
+<span class="nc" id="L107">    throw new NonDeterministicOperationException(SAFE_BLOCK_ERROR);</span>
+  }
+
+  @Override
+  public long getChainHeadBlockNumber() {
+<span class="nc" id="L112">    throw new NonDeterministicOperationException(CHAIN_HEAD_ERROR);</span>
+  }
+
+  @Override
+  public Hash getChainHeadHash() {
+<span class="nc" id="L117">    throw new NonDeterministicOperationException(CHAIN_HEAD_ERROR);</span>
+  }
+
+  @Override
+  public Optional&lt;TransactionLocation&gt; getTransactionLocation(final Hash transactionHash) {
+<span class="nc" id="L122">    throw new NonDeterministicOperationException(&quot;Transaction location may be different on forks&quot;);</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getBlockHeader(final long blockNumber) {
+<span class="nc" id="L127">    throw new NonDeterministicOperationException(NUMBER_LOOKUP_ERROR);</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getBlockHeader(final Hash blockHeaderHash) {
+<span class="nc" id="L132">    return Optional.ofNullable(hashToHeader.get(blockHeaderHash));</span>
+  }
+
+  @Override
+  public synchronized Optional&lt;BlockHeader&gt; getBlockHeaderSafe(final Hash blockHeaderHash) {
+<span class="nc" id="L137">    return Optional.ofNullable(hashToHeader.get(blockHeaderHash));</span>
+  }
+
+  @Override
+  public Optional&lt;BlockBody&gt; getBlockBody(final Hash blockHeaderHash) {
+    // Deterministic, but just not implemented.
+<span class="nc" id="L143">    throw new UnsupportedOperationException();</span>
+  }
+
+  @Override
+  public Optional&lt;List&lt;TransactionReceipt&gt;&gt; getTxReceipts(final Hash blockHeaderHash) {
+    // Deterministic, but just not implemented.
+<span class="nc" id="L149">    throw new UnsupportedOperationException();</span>
+  }
+
+  @Override
+  public Optional&lt;Difficulty&gt; getTotalDifficultyByHash(final Hash blockHeaderHash) {
+    // Deterministic, but just not implemented.
+<span class="nc" id="L155">    throw new UnsupportedOperationException();</span>
+  }
+
+  @Override
+  public Optional&lt;Transaction&gt; getTransactionByHash(final Hash transactionHash) {
+<span class="nc" id="L160">    throw new NonDeterministicOperationException(</span>
+        &quot;Which transactions are on the chain may vary on different forks&quot;);
+  }
+
+  @Override
+  public long observeBlockAdded(final BlockAddedObserver observer) {
+<span class="nc" id="L166">    throw new NonDeterministicOperationException(&quot;Listening for new blocks is not deterministic&quot;);</span>
+  }
+
+  @Override
+  public boolean removeObserver(final long observerId) {
+<span class="nc" id="L171">    throw new NonDeterministicOperationException(&quot;Listening for new blocks is not deterministic&quot;);</span>
+  }
+
+  @Override
+  public long observeChainReorg(final ChainReorgObserver observer) {
+<span class="nc" id="L176">    throw new NonDeterministicOperationException(&quot;Listening for chain reorg is not deterministic&quot;);</span>
+  }
+
+  @Override
+  public boolean removeChainReorgObserver(final long observerId) {
+<span class="nc" id="L181">    throw new NonDeterministicOperationException(&quot;Listening for chain reorg is not deterministic&quot;);</span>
+  }
+
+  public static class NonDeterministicOperationException extends RuntimeException {
+    NonDeterministicOperationException(final String message) {
+<span class="nc" id="L186">      super(message);</span>
+<span class="nc" id="L187">    }</span>
+  }
+
+  @Override
+  public Comparator&lt;BlockHeader&gt; getBlockChoiceRule() {
+<span class="nc" id="L192">    return (a, b) -&gt; {</span>
+<span class="nc" id="L193">      throw new NonDeterministicOperationException(</span>
+          &quot;ReferenceTestBlockchain for VMTest Chains do not support fork choice rules&quot;);
+    };
+  }
+
+  @Override
+  public void setBlockChoiceRule(final Comparator&lt;BlockHeader&gt; blockChoiceRule) {
+<span class="nc" id="L200">    throw new UnsupportedOperationException(&quot;Not Used for Reference Tests&quot;);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NodeSmartContractPermissioningController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.permissioning</a> &gt; <span class="el_source">NodeSmartContractPermissioningController.java</span></div><h1>NodeSmartContractPermissioningController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.permissioning;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.transaction.CallParameter;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulatorResult;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.net.InetAddress;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * Controller that can read from a smart contract that exposes the permissioning call
+ * connectionAllowed(bytes32,bytes32,bytes16,uint16,bytes32,bytes32,bytes16,uint16)
+ */
+public class NodeSmartContractPermissioningController
+    extends AbstractNodeSmartContractPermissioningController {
+
+  // full function signature for connection allowed call
+  private static final String FUNCTION_SIGNATURE =
+      &quot;connectionAllowed(bytes32,bytes32,bytes16,uint16,bytes32,bytes32,bytes16,uint16)&quot;;
+  // hashed function signature for connection allowed call
+<span class="fc" id="L44">  private static final Bytes FUNCTION_SIGNATURE_HASH = hashSignature(FUNCTION_SIGNATURE);</span>
+
+  // The first 4 bytes of the hash of the full textual signature of the function is used in
+  // contract calls to determine the function being called
+  private static Bytes hashSignature(final String signature) {
+<span class="fc" id="L49">    return Hash.keccak256(Bytes.of(signature.getBytes(UTF_8))).slice(0, 4);</span>
+  }
+
+  // True from a contract is 1 filled to 32 bytes
+<span class="fc" id="L53">  private static final Bytes TRUE_RESPONSE =</span>
+<span class="fc" id="L54">      Bytes.fromHexString(&quot;0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff&quot;);</span>
+<span class="fc" id="L55">  private static final Bytes FALSE_RESPONSE =</span>
+<span class="fc" id="L56">      Bytes.fromHexString(&quot;0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff&quot;);</span>
+
+  public NodeSmartContractPermissioningController(
+      final Address contractAddress,
+      final TransactionSimulator transactionSimulator,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L62">    super(contractAddress, transactionSimulator, metricsSystem);</span>
+<span class="fc" id="L63">  }</span>
+
+  @Override
+  boolean checkSmartContractRules(final EnodeURL sourceEnode, final EnodeURL destinationEnode) {
+<span class="fc" id="L67">    final Bytes payload = createPayload(sourceEnode, destinationEnode);</span>
+<span class="fc" id="L68">    final CallParameter callParams = buildCallParameters(payload);</span>
+
+<span class="fc" id="L70">    final Optional&lt;TransactionSimulatorResult&gt; result =</span>
+<span class="fc" id="L71">        transactionSimulator.processAtHead(callParams);</span>
+
+<span class="fc bfc" id="L73" title="All 2 branches covered.">    if (result.isPresent()) {</span>
+<span class="pc bpc" id="L74" title="1 of 3 branches missed.">      switch (result.get().result().getStatus()) {</span>
+        case INVALID:
+<span class="nc" id="L76">          throw new IllegalStateException(&quot;Permissioning transaction found to be Invalid&quot;);</span>
+        case FAILED:
+<span class="fc" id="L78">          throw new IllegalStateException(&quot;Permissioning transaction failed when processing&quot;);</span>
+        default:
+          break;
+      }
+    }
+
+<span class="fc" id="L84">    return result.map(r -&gt; checkTransactionResult(r.getOutput())).orElse(false);</span>
+  }
+
+  // Checks the returned bytes from the permissioning contract call to see if it's a value we
+  // understand
+  public static Boolean checkTransactionResult(final Bytes result) {
+    // booleans are padded to 32 bytes
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">    if (result.size() != 32) {</span>
+<span class="nc" id="L92">      throw new IllegalArgumentException(&quot;Unexpected result size&quot;);</span>
+    }
+
+    // 0 is false
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    if (result.equals(FALSE_RESPONSE)) {</span>
+<span class="fc" id="L97">      return false;</span>
+      // 1 filled to 32 bytes is true
+<span class="pc bpc" id="L99" title="1 of 2 branches missed.">    } else if (result.equals(TRUE_RESPONSE)) {</span>
+<span class="fc" id="L100">      return true;</span>
+      // Anything else is wrong
+    } else {
+<span class="nc" id="L103">      throw new IllegalStateException(&quot;Unexpected result form&quot;);</span>
+    }
+  }
+
+  // Assemble the bytevalue payload to call the contract
+  private static Bytes createPayload(final EnodeURL sourceEnode, final EnodeURL destinationEnode) {
+<span class="fc" id="L109">    return createPayload(FUNCTION_SIGNATURE_HASH, sourceEnode, destinationEnode);</span>
+  }
+
+  @VisibleForTesting
+  public static Bytes createPayload(
+      final Bytes signature, final EnodeURL sourceEnode, final EnodeURL destinationEnode) {
+<span class="fc" id="L115">    return Bytes.concatenate(</span>
+<span class="fc" id="L116">        signature, encodeEnodeUrl(sourceEnode), encodeEnodeUrl(destinationEnode));</span>
+  }
+
+  @VisibleForTesting
+  public static Bytes createPayload(final Bytes signature, final EnodeURL enodeURL) {
+<span class="fc" id="L121">    return Bytes.concatenate(signature, encodeEnodeUrl(enodeURL));</span>
+  }
+
+  private static Bytes encodeEnodeUrl(final EnodeURL enode) {
+<span class="fc" id="L125">    return Bytes.concatenate(</span>
+<span class="fc" id="L126">        enode.getNodeId(), encodeIp(enode.getIp()), encodePort(enode.getListeningPortOrZero()));</span>
+  }
+
+  // As a function parameter an ip needs to be the appropriate number of bytes, big endian, and
+  // filled to 32 bytes
+  private static Bytes encodeIp(final InetAddress addr) {
+    // InetAddress deals with giving us the right number of bytes
+<span class="fc" id="L133">    final byte[] address = addr.getAddress();</span>
+<span class="fc" id="L134">    final byte[] res = new byte[32];</span>
+<span class="fc bfc" id="L135" title="All 2 branches covered.">    if (address.length == 4) {</span>
+      // lead with 10 bytes of 0's
+      // then 2 bytes of 1's
+<span class="fc" id="L138">      res[10] = (byte) 0xFF;</span>
+<span class="fc" id="L139">      res[11] = (byte) 0xFF;</span>
+      // then the ipv4
+<span class="fc" id="L141">      System.arraycopy(address, 0, res, 12, 4);</span>
+    } else {
+<span class="fc" id="L143">      System.arraycopy(address, 0, res, 0, address.length);</span>
+    }
+<span class="fc" id="L145">    return Bytes.wrap(res);</span>
+  }
+
+  // The port, a uint16, needs to be 2 bytes, little endian, and filled to 32 bytes
+  private static Bytes encodePort(final Integer port) {
+<span class="fc" id="L150">    final byte[] res = new byte[32];</span>
+<span class="fc" id="L151">    res[31] = (byte) ((port) &amp; 0xFF);</span>
+<span class="fc" id="L152">    res[30] = (byte) ((port &gt;&gt; 8) &amp; 0xFF);</span>
+<span class="fc" id="L153">    return Bytes.wrap(res);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

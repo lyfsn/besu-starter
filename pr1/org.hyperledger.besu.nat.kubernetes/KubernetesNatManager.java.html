@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>KubernetesNatManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.nat.kubernetes</a> &gt; <span class="el_source">KubernetesNatManager.java</span></div><h1>KubernetesNatManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.nat.kubernetes;
+
+import org.hyperledger.besu.nat.NatMethod;
+import org.hyperledger.besu.nat.core.AbstractNatManager;
+import org.hyperledger.besu.nat.core.IpDetector;
+import org.hyperledger.besu.nat.core.domain.NatPortMapping;
+import org.hyperledger.besu.nat.core.domain.NatServiceType;
+import org.hyperledger.besu.nat.core.domain.NetworkProtocol;
+import org.hyperledger.besu.nat.core.exception.NatInitializationException;
+import org.hyperledger.besu.nat.kubernetes.service.KubernetesServiceType;
+import org.hyperledger.besu.nat.kubernetes.service.LoadBalancerBasedDetector;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+import com.google.common.annotations.VisibleForTesting;
+import io.kubernetes.client.openapi.ApiClient;
+import io.kubernetes.client.openapi.Configuration;
+import io.kubernetes.client.openapi.apis.CoreV1Api;
+import io.kubernetes.client.openapi.models.V1Service;
+import io.kubernetes.client.util.ClientBuilder;
+import io.kubernetes.client.util.KubeConfig;
+import io.kubernetes.client.util.authenticators.GCPAuthenticator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class describes the behaviour of the Kubernetes NAT manager. Kubernetes Nat manager add
+ * support for Kubernetes’s NAT implementation when Besu is being run from a Kubernetes cluster
+ */
+public class KubernetesNatManager extends AbstractNatManager {
+<span class="fc" id="L50">  private static final Logger LOG = LoggerFactory.getLogger(KubernetesNatManager.class);</span>
+
+  /** The constant DEFAULT_BESU_SERVICE_NAME_FILTER. */
+  public static final String DEFAULT_BESU_SERVICE_NAME_FILTER = &quot;besu&quot;;
+
+  private String internalAdvertisedHost;
+  private final String besuServiceNameFilter;
+<span class="fc" id="L57">  private final List&lt;NatPortMapping&gt; forwardedPorts = new ArrayList&lt;&gt;();</span>
+
+  /**
+   * Instantiates a new Kubernetes nat manager.
+   *
+   * @param besuServiceNameFilter the besu service name filter
+   */
+  public KubernetesNatManager(final String besuServiceNameFilter) {
+<span class="fc" id="L65">    super(NatMethod.KUBERNETES);</span>
+<span class="fc" id="L66">    this.besuServiceNameFilter = besuServiceNameFilter;</span>
+<span class="fc" id="L67">  }</span>
+
+  @Override
+  protected void doStart() throws NatInitializationException {
+<span class="fc" id="L71">    LOG.info(&quot;Starting kubernetes NAT manager.&quot;);</span>
+    try {
+
+<span class="fc" id="L74">      KubeConfig.registerAuthenticator(new GCPAuthenticator());</span>
+
+<span class="fc" id="L76">      LOG.debug(&quot;Trying to update information using Kubernetes client SDK.&quot;);</span>
+<span class="nc" id="L77">      final ApiClient client = ClientBuilder.cluster().build();</span>
+
+      // set the global default api-client to the in-cluster one from above
+<span class="nc" id="L80">      Configuration.setDefaultApiClient(client);</span>
+
+      // the CoreV1Api loads default api-client from global configuration.
+<span class="nc" id="L83">      final CoreV1Api api = new CoreV1Api();</span>
+      // invokes the CoreV1Api client
+<span class="nc" id="L85">      final V1Service service =</span>
+          api
+<span class="nc" id="L87">              .listServiceForAllNamespaces(</span>
+                  null, null, null, null, null, null, null, null, null, null)
+<span class="nc" id="L89">              .getItems()</span>
+<span class="nc" id="L90">              .stream()</span>
+<span class="nc" id="L91">              .filter(</span>
+<span class="nc" id="L92">                  v1Service -&gt; v1Service.getMetadata().getName().contains(besuServiceNameFilter))</span>
+<span class="nc" id="L93">              .findFirst()</span>
+<span class="nc" id="L94">              .orElseThrow(() -&gt; new NatInitializationException(&quot;Service not found&quot;));</span>
+<span class="nc" id="L95">      updateUsingBesuService(service);</span>
+<span class="fc" id="L96">    } catch (Exception e) {</span>
+<span class="fc" id="L97">      throw new NatInitializationException(e.getMessage(), e);</span>
+<span class="nc" id="L98">    }</span>
+<span class="nc" id="L99">  }</span>
+
+  /**
+   * Update using besu service. Visible for testing.
+   *
+   * @param service the service
+   * @throws RuntimeException the runtime exception
+   */
+  @VisibleForTesting
+  void updateUsingBesuService(final V1Service service) throws RuntimeException {
+    try {
+<span class="fc" id="L110">      LOG.info(&quot;Found Besu service: {}&quot;, service.getMetadata().getName());</span>
+
+<span class="fc" id="L112">      internalAdvertisedHost =</span>
+<span class="fc" id="L113">          getIpDetector(service)</span>
+<span class="fc" id="L114">              .detectAdvertisedIp()</span>
+<span class="fc" id="L115">              .orElseThrow(</span>
+<span class="nc" id="L116">                  () -&gt; new NatInitializationException(&quot;Unable to retrieve IP from service&quot;));</span>
+
+<span class="fc" id="L118">      LOG.info(&quot;Setting host IP to: {}.&quot;, internalAdvertisedHost);</span>
+
+<span class="fc" id="L120">      final String internalHost = queryLocalIPAddress().get(TIMEOUT_SECONDS, TimeUnit.SECONDS);</span>
+<span class="fc" id="L121">      service</span>
+<span class="fc" id="L122">          .getSpec()</span>
+<span class="fc" id="L123">          .getPorts()</span>
+<span class="fc" id="L124">          .forEach(</span>
+              v1ServicePort -&gt; {
+                try {
+<span class="fc" id="L127">                  final NatServiceType natServiceType =</span>
+<span class="fc" id="L128">                      NatServiceType.fromString(v1ServicePort.getName());</span>
+<span class="fc" id="L129">                  forwardedPorts.add(</span>
+                      new NatPortMapping(
+                          natServiceType,
+<span class="fc bfc" id="L132" title="All 2 branches covered.">                          natServiceType.equals(NatServiceType.DISCOVERY)</span>
+<span class="fc" id="L133">                              ? NetworkProtocol.UDP</span>
+<span class="fc" id="L134">                              : NetworkProtocol.TCP,</span>
+                          internalHost,
+                          internalAdvertisedHost,
+<span class="fc" id="L137">                          v1ServicePort.getPort(),</span>
+<span class="fc" id="L138">                          v1ServicePort.getTargetPort().getIntValue()));</span>
+<span class="nc" id="L139">                } catch (IllegalStateException e) {</span>
+<span class="nc" id="L140">                  LOG.warn(&quot;Ignored unknown Besu port: {}&quot;, e.getMessage());</span>
+<span class="fc" id="L141">                }</span>
+<span class="fc" id="L142">              });</span>
+<span class="fc" id="L143">    } catch (Exception e) {</span>
+<span class="fc" id="L144">      throw new RuntimeException(</span>
+<span class="fc" id="L145">          &quot;Failed update information using pod metadata : &quot; + e.getMessage(), e);</span>
+<span class="fc" id="L146">    }</span>
+<span class="fc" id="L147">  }</span>
+
+  @Override
+  protected void doStop() {
+<span class="nc" id="L151">    LOG.info(&quot;Stopping kubernetes NAT manager.&quot;);</span>
+<span class="nc" id="L152">  }</span>
+
+  @Override
+  protected CompletableFuture&lt;String&gt; retrieveExternalIPAddress() {
+<span class="fc" id="L156">    return CompletableFuture.completedFuture(internalAdvertisedHost);</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;List&lt;NatPortMapping&gt;&gt; getPortMappings() {
+<span class="fc" id="L161">    return CompletableFuture.completedFuture(forwardedPorts);</span>
+  }
+
+  private IpDetector getIpDetector(final V1Service v1Service) throws NatInitializationException {
+<span class="fc" id="L165">    final String serviceType = v1Service.getSpec().getType();</span>
+<span class="fc bfc" id="L166" title="All 3 branches covered.">    switch (KubernetesServiceType.fromName(serviceType)) {</span>
+      case CLUSTER_IP:
+<span class="fc" id="L168">        return () -&gt; Optional.ofNullable(v1Service.getSpec().getClusterIP());</span>
+      case LOAD_BALANCER:
+<span class="fc" id="L170">        return new LoadBalancerBasedDetector(v1Service);</span>
+      default:
+<span class="fc" id="L172">        throw new NatInitializationException(String.format(&quot;%s is not implemented&quot;, serviceType));</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TraceFilter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">TraceFilter.java</span></div><h1>TraceFilter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import static org.hyperledger.besu.services.pipeline.PipelineBuilder.createPipelineFrom;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.FilterParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.BlockTracer;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.Tracer;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.TransactionTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat.FlatTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat.RewardTraceGenerator;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.util.ArrayNodeWrapper;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.debug.TraceOptions;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.vm.DebugOperationTracer;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+import org.hyperledger.besu.metrics.prometheus.PrometheusMetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+import javax.annotation.Nonnull;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TraceFilter extends TraceBlock {
+
+<span class="fc" id="L70">  private static final Logger LOG = LoggerFactory.getLogger(TraceFilter.class);</span>
+  private final Long maxRange;
+
+  public TraceFilter(
+      final Supplier&lt;BlockTracer&gt; blockTracerSupplier,
+      final ProtocolSchedule protocolSchedule,
+      final BlockchainQueries blockchainQueries,
+      final Long maxRange) {
+<span class="fc" id="L78">    super(protocolSchedule, blockchainQueries);</span>
+<span class="fc" id="L79">    this.maxRange = maxRange;</span>
+<span class="fc" id="L80">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L84">    return RpcMethod.TRACE_FILTER.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L89">    final FilterParameter filterParameter =</span>
+<span class="fc" id="L90">        requestContext.getRequiredParameter(0, FilterParameter.class);</span>
+
+<span class="fc" id="L92">    final long fromBlock = resolveBlockNumber(filterParameter.getFromBlock());</span>
+<span class="fc" id="L93">    final long toBlock = resolveBlockNumber(filterParameter.getToBlock());</span>
+<span class="fc" id="L94">    LOG.trace(&quot;Received RPC rpcName={} fromBlock={} toBlock={}&quot;, getName(), fromBlock, toBlock);</span>
+
+<span class="pc bpc" id="L96" title="1 of 4 branches missed.">    if (maxRange &gt; 0 &amp;&amp; toBlock - fromBlock &gt; maxRange) {</span>
+<span class="fc" id="L97">      LOG.atDebug()</span>
+<span class="fc" id="L98">          .setMessage(&quot;trace_filter request {} failed:&quot;)</span>
+<span class="fc" id="L99">          .addArgument(requestContext.getRequest())</span>
+<span class="fc" id="L100">          .setCause(</span>
+<span class="fc" id="L101">              new IllegalArgumentException(RpcErrorType.EXCEEDS_RPC_MAX_BLOCK_RANGE.getMessage()))</span>
+<span class="fc" id="L102">          .log();</span>
+<span class="fc" id="L103">      return new JsonRpcErrorResponse(</span>
+<span class="fc" id="L104">          requestContext.getRequest().getId(), RpcErrorType.EXCEEDS_RPC_MAX_BLOCK_RANGE);</span>
+    }
+
+<span class="fc" id="L107">    final ObjectMapper mapper = new ObjectMapper();</span>
+<span class="fc" id="L108">    final ArrayNodeWrapper resultArrayNode =</span>
+        new ArrayNodeWrapper(
+<span class="fc" id="L110">            mapper.createArrayNode(), filterParameter.getAfter(), filterParameter.getCount());</span>
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (fromBlock &gt; toBlock)</span>
+<span class="fc" id="L112">      return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L113">          requestContext.getRequest().getId(), resultArrayNode.getArrayNode());</span>
+    else
+<span class="fc" id="L115">      return traceFilterWithPipeline(</span>
+          requestContext, filterParameter, fromBlock, toBlock, resultArrayNode);
+  }
+
+  private JsonRpcResponse traceFilterWithPipeline(
+      final JsonRpcRequestContext requestContext,
+      final FilterParameter filterParameter,
+      final long fromBlock,
+      final long toBlock,
+      final ArrayNodeWrapper resultArrayNode) {
+
+<span class="fc" id="L126">    long currentBlockNumber = fromBlock;</span>
+<span class="fc" id="L127">    Optional&lt;Block&gt; block =</span>
+<span class="fc" id="L128">        blockchainQueriesSupplier.get().getBlockchain().getBlockByNumber(currentBlockNumber);</span>
+<span class="pc bpc" id="L129" title="2 of 6 branches missed.">    while ((block.isEmpty() || block.get().getHeader().getParentHash().equals(Bytes32.ZERO))</span>
+        &amp;&amp; currentBlockNumber &lt; toBlock) {
+<span class="fc" id="L131">      currentBlockNumber++;</span>
+<span class="fc" id="L132">      block = blockchainQueriesSupplier.get().getBlockchain().getBlockByNumber(currentBlockNumber);</span>
+    }
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">    if (block.isEmpty()) {</span>
+<span class="nc" id="L135">      return new JsonRpcSuccessResponse(</span>
+<span class="nc" id="L136">          requestContext.getRequest().getId(), resultArrayNode.getArrayNode());</span>
+    }
+<span class="fc" id="L138">    final BlockHeader header = block.get().getHeader();</span>
+
+<span class="fc" id="L140">    List&lt;Block&gt; blockList = getBlockList(currentBlockNumber, toBlock, block);</span>
+
+<span class="fc" id="L142">    ArrayNodeWrapper result =</span>
+<span class="fc" id="L143">        Tracer.processTracing(</span>
+<span class="fc" id="L144">                getBlockchainQueries(),</span>
+<span class="fc" id="L145">                Optional.of(header),</span>
+                traceableState -&gt; {
+<span class="fc" id="L147">                  TraceFilterSource traceFilterSource =</span>
+                      new TraceFilterSource(blockList, resultArrayNode);
+<span class="fc" id="L149">                  final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+<span class="fc" id="L150">                  final MainnetTransactionProcessor transactionProcessor =</span>
+<span class="fc" id="L151">                      protocolSpec.getTransactionProcessor();</span>
+<span class="fc" id="L152">                  final ChainUpdater chainUpdater = new ChainUpdater(traceableState);</span>
+<span class="fc" id="L153">                  final LabelledMetric&lt;Counter&gt; outputCounter =</span>
+                      new PrometheusMetricsSystem(
+                              BesuMetricCategory.DEFAULT_METRIC_CATEGORIES, false)
+<span class="fc" id="L156">                          .createLabelledCounter(</span>
+                              BesuMetricCategory.BLOCKCHAIN,
+                              &quot;transactions_tracefilter_pipeline_processed_total&quot;,
+                              &quot;Number of transactions processed for trace_filter&quot;,
+                              &quot;step&quot;,
+                              &quot;action&quot;);
+
+<span class="fc" id="L163">                  DebugOperationTracer debugOperationTracer =</span>
+                      new DebugOperationTracer(new TraceOptions(false, false, true), false);
+<span class="fc" id="L165">                  ExecuteTransactionStep executeTransactionStep =</span>
+                      new ExecuteTransactionStep(
+                          chainUpdater,
+                          transactionProcessor,
+<span class="fc" id="L169">                          getBlockchainQueries().getBlockchain(),</span>
+                          debugOperationTracer,
+                          protocolSpec);
+
+                  Function&lt;TransactionTrace, CompletableFuture&lt;Stream&lt;FlatTrace&gt;&gt;&gt;
+<span class="fc" id="L174">                      traceFlatTransactionStep =</span>
+                          new TraceFlatTransactionStep(
+<span class="fc" id="L176">                              protocolSchedule, null, Optional.of(filterParameter));</span>
+
+<span class="fc" id="L178">                  BuildArrayNodeCompleterStep buildArrayNodeStep =</span>
+                      new BuildArrayNodeCompleterStep(resultArrayNode);
+<span class="fc" id="L180">                  Pipeline&lt;TransactionTrace&gt; traceBlockPipeline =</span>
+<span class="fc" id="L181">                      createPipelineFrom(</span>
+                              &quot;getTransactions&quot;,
+                              traceFilterSource,
+                              4,
+                              outputCounter,
+                              false,
+                              &quot;trace_block_transactions&quot;)
+<span class="fc" id="L188">                          .thenProcess(&quot;executeTransaction&quot;, executeTransactionStep)</span>
+<span class="fc" id="L189">                          .thenProcessAsyncOrdered(</span>
+                              &quot;traceFlatTransaction&quot;, traceFlatTransactionStep, 4)
+<span class="fc" id="L191">                          .andFinishWith(</span>
+                              &quot;buildArrayNode&quot;,
+<span class="fc" id="L193">                              traceStream -&gt; traceStream.forEachOrdered(buildArrayNodeStep));</span>
+
+                  try {
+<span class="fc" id="L196">                    Optional&lt;EthScheduler&gt; ethSchedulerOpt =</span>
+<span class="fc" id="L197">                        getBlockchainQueries().getEthScheduler();</span>
+
+<span class="fc" id="L199">                    ethSchedulerOpt</span>
+<span class="fc" id="L200">                        .orElse(new EthScheduler(1, 1, 1, 1, new NoOpMetricsSystem()))</span>
+<span class="fc" id="L201">                        .startPipeline(traceBlockPipeline)</span>
+<span class="fc" id="L202">                        .get();</span>
+
+<span class="nc" id="L204">                  } catch (InterruptedException | ExecutionException e) {</span>
+<span class="nc" id="L205">                    throw new RuntimeException(e);</span>
+<span class="fc" id="L206">                  }</span>
+<span class="fc" id="L207">                  return Optional.of(resultArrayNode);</span>
+                })
+<span class="fc" id="L209">            .orElse(emptyResult());</span>
+
+<span class="fc" id="L211">    return new JsonRpcSuccessResponse(requestContext.getRequest().getId(), result.getArrayNode());</span>
+  }
+
+  @Nonnull
+  private List&lt;Block&gt; getBlockList(
+      final long fromBlock, final long toBlock, final Optional&lt;Block&gt; block) {
+<span class="fc" id="L217">    List&lt;Block&gt; blockList = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L218">    Block currentBlock = block.get();</span>
+<span class="fc" id="L219">    blockList.add(currentBlock);</span>
+<span class="fc" id="L220">    long index = fromBlock + 1; // We already stored current Block</span>
+<span class="fc bfc" id="L221" title="All 2 branches covered.">    while (index &lt;= toBlock) {</span>
+<span class="fc" id="L222">      Optional&lt;Block&gt; blockByNumber =</span>
+<span class="fc" id="L223">          blockchainQueriesSupplier.get().getBlockchain().getBlockByNumber(index);</span>
+<span class="fc" id="L224">      blockByNumber.ifPresent(blockList::add);</span>
+<span class="fc" id="L225">      index++;</span>
+<span class="fc" id="L226">    }</span>
+<span class="fc" id="L227">    return blockList;</span>
+  }
+
+  public Map&lt;Transaction, Block&gt; createTransactionBlockMap(final List&lt;Block&gt; blockList) {
+<span class="nc" id="L231">    Map&lt;Transaction, Block&gt; transactionBlockMap = new HashMap&lt;&gt;();</span>
+<span class="nc bnc" id="L232" title="All 2 branches missed.">    for (Block block : blockList) {</span>
+<span class="nc" id="L233">      List&lt;Transaction&gt; transactionList = block.getBody().getTransactions();</span>
+<span class="nc bnc" id="L234" title="All 2 branches missed.">      for (Transaction transaction : transactionList) {</span>
+<span class="nc" id="L235">        transactionBlockMap.put(transaction, block);</span>
+<span class="nc" id="L236">      }</span>
+<span class="nc" id="L237">    }</span>
+<span class="nc" id="L238">    return transactionBlockMap;</span>
+  }
+
+  @Override
+  protected void generateRewardsFromBlock(
+      final Optional&lt;FilterParameter&gt; maybeFilterParameter,
+      final Block block,
+      final ArrayNodeWrapper resultArrayNode) {
+<span class="nc" id="L246">    maybeFilterParameter.ifPresent(</span>
+        filterParameter -&gt; {
+<span class="nc" id="L248">          final List&lt;Address&gt; fromAddress = filterParameter.getFromAddress();</span>
+<span class="nc bnc" id="L249" title="All 2 branches missed.">          if (fromAddress.isEmpty()) {</span>
+<span class="nc" id="L250">            final List&lt;Address&gt; toAddress = filterParameter.getToAddress();</span>
+<span class="nc" id="L251">            RewardTraceGenerator.generateFromBlock(protocolSchedule, block)</span>
+<span class="nc" id="L252">                .map(FlatTrace.class::cast)</span>
+<span class="nc bnc" id="L253" title="All 2 branches missed.">                .filter(trace -&gt; trace.getBlockNumber() != 0)</span>
+<span class="nc" id="L254">                .filter(</span>
+                    trace -&gt;
+<span class="nc bnc" id="L256" title="All 2 branches missed.">                        toAddress.isEmpty()</span>
+<span class="nc" id="L257">                            || Optional.ofNullable(trace.getAction().getAuthor())</span>
+<span class="nc" id="L258">                                .map(Address::fromHexString)</span>
+<span class="nc" id="L259">                                .map(toAddress::contains)</span>
+<span class="nc bnc" id="L260" title="All 2 branches missed.">                                .orElse(false))</span>
+<span class="nc" id="L261">                .forEachOrdered(resultArrayNode::addPOJO);</span>
+          }
+<span class="nc" id="L263">        });</span>
+<span class="nc" id="L264">  }</span>
+
+  private long resolveBlockNumber(final BlockParameter param) {
+<span class="pc bpc" id="L267" title="1 of 2 branches missed.">    if (param.getNumber().isPresent()) {</span>
+<span class="fc" id="L268">      return param.getNumber().get();</span>
+<span class="nc bnc" id="L269" title="All 2 branches missed.">    } else if (param.isLatest()) {</span>
+<span class="nc" id="L270">      return blockchainQueriesSupplier.get().headBlockNumber();</span>
+    } else {
+<span class="nc" id="L272">      throw new IllegalStateException(&quot;Unknown block parameter type.&quot;);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

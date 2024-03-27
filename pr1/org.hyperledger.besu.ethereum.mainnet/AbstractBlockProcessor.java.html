@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractBlockProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">AbstractBlockProcessor.java</span></div><h1>AbstractBlockProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.BlockProcessingOutputs;
+import org.hyperledger.besu.ethereum.BlockProcessingResult;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Deposit;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.vm.BlockHashLookup;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.evm.gascalculator.CancunGasCalculator;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.text.MessageFormat;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractBlockProcessor implements BlockProcessor {
+
+  @FunctionalInterface
+  public interface TransactionReceiptFactory {
+
+    TransactionReceipt create(
+        TransactionType transactionType,
+        TransactionProcessingResult result,
+        WorldState worldState,
+        long gasUsed);
+  }
+
+<span class="fc" id="L63">  private static final Logger LOG = LoggerFactory.getLogger(AbstractBlockProcessor.class);</span>
+
+  static final int MAX_GENERATION = 6;
+
+  protected final MainnetTransactionProcessor transactionProcessor;
+
+  protected final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory;
+
+  final Wei blockReward;
+
+  protected final boolean skipZeroBlockRewards;
+  private final ProtocolSchedule protocolSchedule;
+
+  protected final MiningBeneficiaryCalculator miningBeneficiaryCalculator;
+
+  protected AbstractBlockProcessor(
+      final MainnetTransactionProcessor transactionProcessor,
+      final TransactionReceiptFactory transactionReceiptFactory,
+      final Wei blockReward,
+      final MiningBeneficiaryCalculator miningBeneficiaryCalculator,
+      final boolean skipZeroBlockRewards,
+<span class="fc" id="L84">      final ProtocolSchedule protocolSchedule) {</span>
+<span class="fc" id="L85">    this.transactionProcessor = transactionProcessor;</span>
+<span class="fc" id="L86">    this.transactionReceiptFactory = transactionReceiptFactory;</span>
+<span class="fc" id="L87">    this.blockReward = blockReward;</span>
+<span class="fc" id="L88">    this.miningBeneficiaryCalculator = miningBeneficiaryCalculator;</span>
+<span class="fc" id="L89">    this.skipZeroBlockRewards = skipZeroBlockRewards;</span>
+<span class="fc" id="L90">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L91">  }</span>
+
+  @Override
+  public BlockProcessingResult processBlock(
+      final Blockchain blockchain,
+      final MutableWorldState worldState,
+      final BlockHeader blockHeader,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;BlockHeader&gt; ommers,
+      final Optional&lt;List&lt;Withdrawal&gt;&gt; maybeWithdrawals,
+      final Optional&lt;List&lt;Deposit&gt;&gt; maybeDeposits,
+      final PrivateMetadataUpdater privateMetadataUpdater) {
+<span class="fc" id="L103">    final List&lt;TransactionReceipt&gt; receipts = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L104">    long currentGasUsed = 0;</span>
+<span class="fc" id="L105">    long currentBlobGasUsed = 0;</span>
+
+<span class="fc" id="L107">    final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+
+<span class="fc bfc" id="L109" title="All 2 branches covered.">    if (blockHeader.getParentBeaconBlockRoot().isPresent()) {</span>
+<span class="fc" id="L110">      final WorldUpdater updater = worldState.updater();</span>
+<span class="fc" id="L111">      ParentBeaconBlockRootHelper.storeParentBeaconBlockRoot(</span>
+<span class="fc" id="L112">          updater, blockHeader.getTimestamp(), blockHeader.getParentBeaconBlockRoot().get());</span>
+    }
+
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    for (final Transaction transaction : transactions) {</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">      if (!hasAvailableBlockBudget(blockHeader, transaction, currentGasUsed)) {</span>
+<span class="fc" id="L117">        return new BlockProcessingResult(Optional.empty(), &quot;provided gas insufficient&quot;);</span>
+      }
+
+<span class="fc" id="L120">      final WorldUpdater worldStateUpdater = worldState.updater();</span>
+
+<span class="fc" id="L122">      final BlockHashLookup blockHashLookup = new CachingBlockHashLookup(blockHeader, blockchain);</span>
+<span class="fc" id="L123">      final Address miningBeneficiary =</span>
+<span class="fc" id="L124">          miningBeneficiaryCalculator.calculateBeneficiary(blockHeader);</span>
+
+<span class="fc" id="L126">      Optional&lt;BlockHeader&gt; maybeParentHeader =</span>
+<span class="fc" id="L127">          blockchain.getBlockHeader(blockHeader.getParentHash());</span>
+
+<span class="fc" id="L129">      Wei blobGasPrice =</span>
+          maybeParentHeader
+<span class="fc" id="L131">              .map(</span>
+                  parentHeader -&gt;
+<span class="fc" id="L133">                      protocolSpec</span>
+<span class="fc" id="L134">                          .getFeeMarket()</span>
+<span class="fc" id="L135">                          .blobGasPricePerGas(</span>
+<span class="fc" id="L136">                              calculateExcessBlobGasForParent(protocolSpec, parentHeader)))</span>
+<span class="fc" id="L137">              .orElse(Wei.ZERO);</span>
+
+<span class="fc" id="L139">      final TransactionProcessingResult result =</span>
+<span class="fc" id="L140">          transactionProcessor.processTransaction(</span>
+              blockchain,
+              worldStateUpdater,
+              blockHeader,
+              transaction,
+              miningBeneficiary,
+              OperationTracer.NO_TRACING,
+              blockHashLookup,
+<span class="fc" id="L148">              true,</span>
+<span class="fc" id="L149">              TransactionValidationParams.processingBlock(),</span>
+              privateMetadataUpdater,
+              blobGasPrice);
+<span class="fc bfc" id="L152" title="All 2 branches covered.">      if (result.isInvalid()) {</span>
+<span class="fc" id="L153">        String errorMessage =</span>
+<span class="fc" id="L154">            MessageFormat.format(</span>
+                &quot;Block processing error: transaction invalid {0}. Block {1} Transaction {2}&quot;,
+<span class="fc" id="L156">                result.getValidationResult().getErrorMessage(),</span>
+<span class="fc" id="L157">                blockHeader.getHash().toHexString(),</span>
+<span class="fc" id="L158">                transaction.getHash().toHexString());</span>
+<span class="fc" id="L159">        LOG.info(errorMessage);</span>
+<span class="pc bpc" id="L160" title="1 of 2 branches missed.">        if (worldState instanceof BonsaiWorldState) {</span>
+<span class="nc" id="L161">          ((BonsaiWorldStateUpdateAccumulator) worldStateUpdater).reset();</span>
+        }
+<span class="fc" id="L163">        return new BlockProcessingResult(Optional.empty(), errorMessage);</span>
+      }
+<span class="fc" id="L165">      worldStateUpdater.commit();</span>
+
+<span class="fc" id="L167">      currentGasUsed += transaction.getGasLimit() - result.getGasRemaining();</span>
+<span class="fc bfc" id="L168" title="All 2 branches covered.">      if (transaction.getVersionedHashes().isPresent()) {</span>
+<span class="fc" id="L169">        currentBlobGasUsed +=</span>
+<span class="fc" id="L170">            (transaction.getVersionedHashes().get().size() * CancunGasCalculator.BLOB_GAS_PER_BLOB);</span>
+      }
+
+<span class="fc" id="L173">      final TransactionReceipt transactionReceipt =</span>
+<span class="fc" id="L174">          transactionReceiptFactory.create(</span>
+<span class="fc" id="L175">              transaction.getType(), result, worldState, currentGasUsed);</span>
+<span class="fc" id="L176">      receipts.add(transactionReceipt);</span>
+<span class="fc" id="L177">    }</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">    if (blockHeader.getBlobGasUsed().isPresent()</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">        &amp;&amp; currentBlobGasUsed != blockHeader.getBlobGasUsed().get()) {</span>
+<span class="fc" id="L180">      String errorMessage =</span>
+<span class="fc" id="L181">          String.format(</span>
+              &quot;block did not consume expected blob gas: header %d, transactions %d&quot;,
+<span class="fc" id="L183">              blockHeader.getBlobGasUsed().get(), currentBlobGasUsed);</span>
+<span class="fc" id="L184">      LOG.error(errorMessage);</span>
+<span class="fc" id="L185">      return new BlockProcessingResult(Optional.empty(), errorMessage);</span>
+    }
+<span class="fc" id="L187">    final Optional&lt;WithdrawalsProcessor&gt; maybeWithdrawalsProcessor =</span>
+<span class="fc" id="L188">        protocolSpec.getWithdrawalsProcessor();</span>
+<span class="fc bfc" id="L189" title="All 4 branches covered.">    if (maybeWithdrawalsProcessor.isPresent() &amp;&amp; maybeWithdrawals.isPresent()) {</span>
+      try {
+<span class="fc" id="L191">        maybeWithdrawalsProcessor</span>
+<span class="fc" id="L192">            .get()</span>
+<span class="fc" id="L193">            .processWithdrawals(maybeWithdrawals.get(), worldState.updater());</span>
+<span class="nc" id="L194">      } catch (final Exception e) {</span>
+<span class="nc" id="L195">        LOG.error(&quot;failed processing withdrawals&quot;, e);</span>
+<span class="nc" id="L196">        return new BlockProcessingResult(Optional.empty(), e);</span>
+<span class="fc" id="L197">      }</span>
+    }
+
+<span class="fc bfc" id="L200" title="All 2 branches covered.">    if (!rewardCoinbase(worldState, blockHeader, ommers, skipZeroBlockRewards)) {</span>
+      // no need to log, rewardCoinbase logs the error.
+<span class="fc bfc" id="L202" title="All 2 branches covered.">      if (worldState instanceof BonsaiWorldState) {</span>
+<span class="fc" id="L203">        ((BonsaiWorldStateUpdateAccumulator) worldState.updater()).reset();</span>
+      }
+<span class="fc" id="L205">      return new BlockProcessingResult(Optional.empty(), &quot;ommer too old&quot;);</span>
+    }
+
+    try {
+<span class="fc" id="L209">      worldState.persist(blockHeader);</span>
+<span class="nc" id="L210">    } catch (MerkleTrieException e) {</span>
+<span class="nc" id="L211">      LOG.trace(&quot;Merkle trie exception during Transaction processing &quot;, e);</span>
+<span class="nc bnc" id="L212" title="All 2 branches missed.">      if (worldState instanceof BonsaiWorldState) {</span>
+<span class="nc" id="L213">        ((BonsaiWorldStateUpdateAccumulator) worldState.updater()).reset();</span>
+      }
+<span class="nc" id="L215">      throw e;</span>
+<span class="fc" id="L216">    } catch (Exception e) {</span>
+<span class="fc" id="L217">      LOG.error(&quot;failed persisting block&quot;, e);</span>
+<span class="fc" id="L218">      return new BlockProcessingResult(Optional.empty(), e);</span>
+<span class="fc" id="L219">    }</span>
+
+<span class="fc" id="L221">    return new BlockProcessingResult(Optional.of(new BlockProcessingOutputs(worldState, receipts)));</span>
+  }
+
+  protected boolean hasAvailableBlockBudget(
+      final BlockHeader blockHeader, final Transaction transaction, final long currentGasUsed) {
+<span class="fc" id="L226">    final long remainingGasBudget = blockHeader.getGasLimit() - currentGasUsed;</span>
+<span class="fc bfc" id="L227" title="All 2 branches covered.">    if (Long.compareUnsigned(transaction.getGasLimit(), remainingGasBudget) &gt; 0) {</span>
+<span class="fc" id="L228">      LOG.info(</span>
+          &quot;Block processing error: transaction gas limit {} exceeds available block budget&quot;
+              + &quot; remaining {}. Block {} Transaction {}&quot;,
+<span class="fc" id="L231">          transaction.getGasLimit(),</span>
+<span class="fc" id="L232">          remainingGasBudget,</span>
+<span class="fc" id="L233">          blockHeader.getHash().toHexString(),</span>
+<span class="fc" id="L234">          transaction.getHash().toHexString());</span>
+<span class="fc" id="L235">      return false;</span>
+    }
+
+<span class="fc" id="L238">    return true;</span>
+  }
+
+  protected MiningBeneficiaryCalculator getMiningBeneficiaryCalculator() {
+<span class="fc" id="L242">    return miningBeneficiaryCalculator;</span>
+  }
+
+  abstract boolean rewardCoinbase(
+      final MutableWorldState worldState,
+      final BlockHeader header,
+      final List&lt;BlockHeader&gt; ommers,
+      final boolean skipZeroBlockRewards);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

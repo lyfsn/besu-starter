@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BaseFeePrioritizedTransactions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.layered</a> &gt; <span class="el_source">BaseFeePrioritizedTransactions.java</span></div><h1>BaseFeePrioritizedTransactions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.layered;
+
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.BELOW_BASE_FEE;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.BaseFeeMarket;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+
+import java.util.Comparator;
+import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BaseFeePrioritizedTransactions extends AbstractPrioritizedTransactions {
+
+<span class="fc" id="L40">  private static final Logger LOG = LoggerFactory.getLogger(BaseFeePrioritizedTransactions.class);</span>
+  private Optional&lt;Wei&gt; nextBlockBaseFee;
+
+  public BaseFeePrioritizedTransactions(
+      final TransactionPoolConfiguration poolConfig,
+      final Supplier&lt;BlockHeader&gt; chainHeadHeaderSupplier,
+      final TransactionsLayer nextLayer,
+      final TransactionPoolMetrics metrics,
+      final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
+          transactionReplacementTester,
+      final FeeMarket feeMarket,
+      final BlobCache blobCache,
+      final MiningParameters miningParameters) {
+<span class="fc" id="L53">    super(</span>
+        poolConfig, nextLayer, metrics, transactionReplacementTester, blobCache, miningParameters);
+<span class="fc" id="L55">    this.nextBlockBaseFee =</span>
+<span class="fc" id="L56">        Optional.of(calculateNextBlockBaseFee(feeMarket, chainHeadHeaderSupplier.get()));</span>
+<span class="fc" id="L57">  }</span>
+
+  @Override
+  protected int compareByFee(final PendingTransaction pt1, final PendingTransaction pt2) {
+<span class="fc" id="L61">    return Comparator.comparing(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L62">        .thenComparing(</span>
+            (PendingTransaction pendingTransaction) -&gt;
+<span class="fc" id="L64">                pendingTransaction.getTransaction().getEffectivePriorityFeePerGas(nextBlockBaseFee))</span>
+<span class="fc" id="L65">        .thenComparing(</span>
+            (PendingTransaction pendingTransaction) -&gt;
+<span class="fc" id="L67">                pendingTransaction.getTransaction().getMaxGasPrice())</span>
+<span class="fc" id="L68">        .thenComparing(Comparator.comparing(PendingTransaction::getNonce).reversed())</span>
+<span class="fc" id="L69">        .thenComparing(PendingTransaction::getSequence)</span>
+<span class="fc" id="L70">        .compare(pt1, pt2);</span>
+  }
+
+  /**
+   * On base fee markets when a new block is added we can calculate the base fee for the next block
+   * and use it to keep only pending transactions willing to pay at least that fee in the
+   * prioritized layer, since only these transactions are executable, while all the other can be
+   * demoted to the next layer.
+   *
+   * @param blockHeader the header of the added block
+   * @param feeMarket the fee market
+   */
+  @Override
+  protected void internalBlockAdded(final BlockHeader blockHeader, final FeeMarket feeMarket) {
+<span class="fc" id="L84">    final Wei newNextBlockBaseFee = calculateNextBlockBaseFee(feeMarket, blockHeader);</span>
+
+<span class="fc" id="L86">    LOG.atTrace()</span>
+<span class="fc" id="L87">        .setMessage(&quot;Updating base fee from {} to {}&quot;)</span>
+<span class="fc" id="L88">        .addArgument(nextBlockBaseFee.get()::toHumanReadableString)</span>
+<span class="fc" id="L89">        .addArgument(newNextBlockBaseFee::toHumanReadableString)</span>
+<span class="fc" id="L90">        .log();</span>
+
+<span class="fc" id="L92">    nextBlockBaseFee = Optional.of(newNextBlockBaseFee);</span>
+<span class="fc" id="L93">    orderByFee.clear();</span>
+
+<span class="fc" id="L95">    final var itTxsBySender = txsBySender.entrySet().iterator();</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    while (itTxsBySender.hasNext()) {</span>
+<span class="fc" id="L97">      final var senderTxs = itTxsBySender.next().getValue();</span>
+
+<span class="fc" id="L99">      Optional&lt;Long&gt; maybeFirstUnderpricedNonce = Optional.empty();</span>
+
+<span class="fc bfc" id="L101" title="All 2 branches covered.">      for (final var e : senderTxs.entrySet()) {</span>
+<span class="fc" id="L102">        final PendingTransaction tx = e.getValue();</span>
+        // it must pass the promotion filter to be prioritized
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        if (promotionFilter(tx)) {</span>
+<span class="fc" id="L105">          orderByFee.add(tx);</span>
+        } else {
+          // otherwise sender txs starting from this nonce need to be demoted to next layer,
+          // and we can go to next sender
+<span class="nc" id="L109">          maybeFirstUnderpricedNonce = Optional.of(e.getKey());</span>
+<span class="nc" id="L110">          break;</span>
+        }
+<span class="fc" id="L112">      }</span>
+
+<span class="fc" id="L114">      maybeFirstUnderpricedNonce.ifPresent(</span>
+          nonce -&gt; {
+            // demote all txs after the first underpriced to the next layer, because none of them is
+            // executable now, and we can avoid sorting them until they are candidate for execution
+            // again
+<span class="nc" id="L119">            final var demoteTxs = senderTxs.tailMap(nonce, true);</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">            while (!demoteTxs.isEmpty()) {</span>
+<span class="nc" id="L121">              final PendingTransaction demoteTx = demoteTxs.pollLastEntry().getValue();</span>
+<span class="nc" id="L122">              LOG.atTrace()</span>
+<span class="nc" id="L123">                  .setMessage(&quot;Demoting tx {} with max gas price below next block base fee {}&quot;)</span>
+<span class="nc" id="L124">                  .addArgument(demoteTx::toTraceLog)</span>
+<span class="nc" id="L125">                  .addArgument(newNextBlockBaseFee::toHumanReadableString)</span>
+<span class="nc" id="L126">                  .log();</span>
+<span class="nc" id="L127">              processEvict(senderTxs, demoteTx, BELOW_BASE_FEE);</span>
+<span class="nc" id="L128">              addToNextLayer(senderTxs, demoteTx, 0);</span>
+<span class="nc" id="L129">            }</span>
+<span class="nc" id="L130">          });</span>
+
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">      if (senderTxs.isEmpty()) {</span>
+<span class="nc" id="L133">        itTxsBySender.remove();</span>
+      }
+<span class="fc" id="L135">    }</span>
+<span class="fc" id="L136">  }</span>
+
+  private Wei calculateNextBlockBaseFee(final FeeMarket feeMarket, final BlockHeader blockHeader) {
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    if (feeMarket.implementsBaseFee()) {</span>
+<span class="fc" id="L140">      final var baseFeeMarket = (BaseFeeMarket) feeMarket;</span>
+<span class="fc" id="L141">      return baseFeeMarket.computeBaseFee(</span>
+<span class="fc" id="L142">          blockHeader.getNumber() + 1,</span>
+<span class="fc" id="L143">          blockHeader.getBaseFee().orElse(Wei.ZERO),</span>
+<span class="fc" id="L144">          blockHeader.getGasUsed(),</span>
+<span class="fc" id="L145">          baseFeeMarket.targetGasUsed(blockHeader));</span>
+    }
+<span class="fc" id="L147">    return Wei.ZERO;</span>
+  }
+
+  @Override
+  protected boolean promotionFilter(final PendingTransaction pendingTransaction) {
+    // check if the tx is willing to pay at least the base fee
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (nextBlockBaseFee</span>
+<span class="fc" id="L154">        .map(pendingTransaction.getTransaction().getMaxGasPrice()::lessThan)</span>
+<span class="fc" id="L155">        .orElse(true)) {</span>
+<span class="fc" id="L156">      return false;</span>
+    }
+
+    // priority txs are promoted even if they pay less
+<span class="fc bfc" id="L160" title="All 2 branches covered.">    if (!pendingTransaction.hasPriority()) {</span>
+      // check if max fee per gas is higher than the min gas price
+<span class="fc" id="L162">      if (pendingTransaction</span>
+<span class="fc" id="L163">          .getTransaction()</span>
+<span class="fc" id="L164">          .getMaxGasPrice()</span>
+<span class="fc bfc" id="L165" title="All 2 branches covered.">          .lessThan(miningParameters.getMinTransactionGasPrice())) {</span>
+<span class="fc" id="L166">        return false;</span>
+      }
+
+      // check if enough priority fee is paid
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">      if (!miningParameters.getMinPriorityFeePerGas().equals(Wei.ZERO)) {</span>
+<span class="nc" id="L171">        final Wei priorityFeePerGas =</span>
+<span class="nc" id="L172">            pendingTransaction.getTransaction().getEffectivePriorityFeePerGas(nextBlockBaseFee);</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">        if (priorityFeePerGas.lessThan(miningParameters.getMinPriorityFeePerGas())) {</span>
+<span class="nc" id="L174">          return false;</span>
+        }
+      }
+    }
+
+<span class="fc" id="L179">    return true;</span>
+  }
+
+  @Override
+  protected String internalLogStats() {
+
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">    if (orderByFee.isEmpty()) {</span>
+<span class="fc" id="L186">      return &quot;Basefee Prioritized: Empty&quot;;</span>
+    }
+
+<span class="nc" id="L189">    final Transaction highest = orderByFee.last().getTransaction();</span>
+<span class="nc" id="L190">    final Transaction lowest = orderByFee.first().getTransaction();</span>
+
+<span class="nc" id="L192">    return &quot;Basefee Prioritized: &quot;</span>
+        + &quot;count: &quot;
+<span class="nc" id="L194">        + pendingTransactions.size()</span>
+        + &quot;, space used: &quot;
+        + spaceUsed
+        + &quot;, unique senders: &quot;
+<span class="nc" id="L198">        + txsBySender.size()</span>
+        + &quot;, highest priority tx: [max fee: &quot;
+<span class="nc" id="L200">        + highest.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, curr prio fee: &quot;
+<span class="nc" id="L202">        + highest.getEffectivePriorityFeePerGas(nextBlockBaseFee).toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L204">        + highest.getHash()</span>
+        + &quot;], lowest priority tx: [max fee: &quot;
+<span class="nc" id="L206">        + lowest.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, curr prio fee: &quot;
+<span class="nc" id="L208">        + lowest.getEffectivePriorityFeePerGas(nextBlockBaseFee).toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L210">        + lowest.getHash()</span>
+        + &quot;], next block base fee: &quot;
+<span class="nc" id="L212">        + nextBlockBaseFee.get().toHumanReadableString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

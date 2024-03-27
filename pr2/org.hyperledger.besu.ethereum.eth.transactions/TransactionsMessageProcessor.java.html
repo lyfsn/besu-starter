@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionsMessageProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">TransactionsMessageProcessor.java</span></div><h1>TransactionsMessageProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import static java.time.Instant.now;
+import static org.hyperledger.besu.ethereum.core.Transaction.toHashList;
+
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.messages.TransactionsMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+class TransactionsMessageProcessor {
+<span class="fc" id="L36">  private static final Logger LOG = LoggerFactory.getLogger(TransactionsMessageProcessor.class);</span>
+  static final String METRIC_LABEL = &quot;transactions&quot;;
+  private final PeerTransactionTracker transactionTracker;
+  private final TransactionPool transactionPool;
+
+  private final TransactionPoolMetrics metrics;
+
+  public TransactionsMessageProcessor(
+      final PeerTransactionTracker transactionTracker,
+      final TransactionPool transactionPool,
+<span class="fc" id="L46">      final TransactionPoolMetrics metrics) {</span>
+<span class="fc" id="L47">    this.transactionTracker = transactionTracker;</span>
+<span class="fc" id="L48">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L49">    this.metrics = metrics;</span>
+<span class="fc" id="L50">    metrics.initExpiredMessagesCounter(METRIC_LABEL);</span>
+<span class="fc" id="L51">  }</span>
+
+  void processTransactionsMessage(
+      final EthPeer peer,
+      final TransactionsMessage transactionsMessage,
+      final Instant startedAt,
+      final Duration keepAlive) {
+    // Check if message is not expired.
+<span class="fc bfc" id="L59" title="All 2 branches covered.">    if (startedAt.plus(keepAlive).isAfter(now())) {</span>
+<span class="fc" id="L60">      this.processTransactionsMessage(peer, transactionsMessage);</span>
+    } else {
+<span class="fc" id="L62">      metrics.incrementExpiredMessages(METRIC_LABEL);</span>
+    }
+<span class="fc" id="L64">  }</span>
+
+  private void processTransactionsMessage(
+      final EthPeer peer, final TransactionsMessage transactionsMessage) {
+    try {
+<span class="fc" id="L69">      final List&lt;Transaction&gt; incomingTransactions = transactionsMessage.transactions();</span>
+<span class="fc" id="L70">      final Collection&lt;Transaction&gt; freshTransactions = skipSeenTransactions(incomingTransactions);</span>
+
+<span class="fc" id="L72">      transactionTracker.markTransactionsAsSeen(peer, incomingTransactions);</span>
+
+<span class="fc" id="L74">      metrics.incrementAlreadySeenTransactions(</span>
+<span class="fc" id="L75">          METRIC_LABEL, incomingTransactions.size() - freshTransactions.size());</span>
+<span class="fc" id="L76">      LOG.atTrace()</span>
+<span class="fc" id="L77">          .setMessage(</span>
+              &quot;Received transactions message from {}, incoming transactions {}, incoming list {}&quot;
+                  + &quot;, fresh transactions {}, fresh list {}&quot;)
+<span class="fc" id="L80">          .addArgument(peer)</span>
+<span class="fc" id="L81">          .addArgument(incomingTransactions::size)</span>
+<span class="pc" id="L82">          .addArgument(() -&gt; toHashList(incomingTransactions))</span>
+<span class="fc" id="L83">          .addArgument(freshTransactions::size)</span>
+<span class="pc" id="L84">          .addArgument(() -&gt; toHashList(freshTransactions))</span>
+<span class="fc" id="L85">          .log();</span>
+
+<span class="fc" id="L87">      transactionPool.addRemoteTransactions(freshTransactions);</span>
+
+<span class="nc" id="L89">    } catch (final RLPException ex) {</span>
+<span class="nc bnc" id="L90" title="All 2 branches missed.">      if (peer != null) {</span>
+<span class="nc" id="L91">        LOG.debug(</span>
+            &quot;Malformed transaction message received (BREACH_OF_PROTOCOL), disconnecting: {}&quot;,
+            peer,
+            ex);
+<span class="nc" id="L95">        peer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+      }
+<span class="fc" id="L97">    }</span>
+<span class="fc" id="L98">  }</span>
+
+  private Collection&lt;Transaction&gt; skipSeenTransactions(final List&lt;Transaction&gt; inTransactions) {
+<span class="fc" id="L101">    return inTransactions.stream()</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">        .filter(tx -&gt; !transactionTracker.hasSeenTransaction(tx.getHash()))</span>
+<span class="fc" id="L103">        .collect(Collectors.toUnmodifiableList());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,248 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ReadyTransactions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.layered</a> &gt; <span class="el_source">ReadyTransactions.java</span></div><h1>ReadyTransactions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.layered;
+
+import static org.hyperledger.besu.ethereum.eth.transactions.layered.TransactionsLayer.RemovalReason.PROMOTED;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionAddedResult;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.NavigableSet;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.function.BiFunction;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+<span class="fc" id="L43">public class ReadyTransactions extends AbstractSequentialTransactionsLayer {</span>
+
+<span class="fc" id="L45">  private final NavigableSet&lt;PendingTransaction&gt; orderByMaxFee =</span>
+      new TreeSet&lt;&gt;(
+<span class="fc" id="L47">          Comparator.comparing(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L48">              .thenComparing((PendingTransaction pt) -&gt; pt.getTransaction().getMaxGasPrice())</span>
+<span class="fc" id="L49">              .thenComparing(PendingTransaction::getSequence));</span>
+
+  public ReadyTransactions(
+      final TransactionPoolConfiguration poolConfig,
+      final TransactionsLayer nextLayer,
+      final TransactionPoolMetrics metrics,
+      final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
+          transactionReplacementTester,
+      final BlobCache blobCache) {
+<span class="fc" id="L58">    super(poolConfig, nextLayer, transactionReplacementTester, metrics, blobCache);</span>
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public String name() {
+<span class="fc" id="L63">    return &quot;ready&quot;;</span>
+  }
+
+  @Override
+  public void reset() {
+<span class="fc" id="L68">    super.reset();</span>
+<span class="fc" id="L69">    orderByMaxFee.clear();</span>
+<span class="fc" id="L70">  }</span>
+
+  @Override
+  protected long cacheFreeSpace() {
+<span class="fc" id="L74">    return poolConfig.getPendingTransactionsLayerMaxCapacityBytes() - getLayerSpaceUsed();</span>
+  }
+
+  @Override
+  protected TransactionAddedResult canAdd(
+      final PendingTransaction pendingTransaction, final int gap) {
+<span class="fc" id="L80">    final var senderTxs = txsBySender.get(pendingTransaction.getSender());</span>
+
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (hasExpectedNonce(senderTxs, pendingTransaction, gap)) {</span>
+<span class="fc" id="L83">      return TransactionAddedResult.ADDED;</span>
+    }
+
+<span class="fc" id="L86">    return TransactionAddedResult.TRY_NEXT_LAYER;</span>
+  }
+
+  @Override
+  protected void internalAdd(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction pendingTransaction) {
+<span class="fc bfc" id="L93" title="All 2 branches covered.">    if (senderTxs.firstKey() == pendingTransaction.getNonce()) {</span>
+      // replace previous if exists
+<span class="fc bfc" id="L95" title="All 2 branches covered.">      if (senderTxs.size() &gt; 1) {</span>
+<span class="fc" id="L96">        final PendingTransaction secondTx = senderTxs.get(pendingTransaction.getNonce() + 1);</span>
+<span class="fc" id="L97">        orderByMaxFee.remove(secondTx);</span>
+      }
+<span class="fc" id="L99">      orderByMaxFee.add(pendingTransaction);</span>
+    }
+<span class="fc" id="L101">  }</span>
+
+  @Override
+  protected int maxTransactionsNumber() {
+<span class="fc" id="L105">    return Integer.MAX_VALUE;</span>
+  }
+
+  @Override
+  protected void internalRemove(
+      final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
+      final PendingTransaction removedTx,
+      final RemovalReason removalReason) {
+<span class="fc" id="L113">    orderByMaxFee.remove(removedTx);</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (!senderTxs.isEmpty()) {</span>
+<span class="fc" id="L115">      orderByMaxFee.add(senderTxs.firstEntry().getValue());</span>
+    }
+<span class="fc" id="L117">  }</span>
+
+  @Override
+  protected void internalReplaced(final PendingTransaction replacedTx) {
+<span class="fc" id="L121">    orderByMaxFee.remove(replacedTx);</span>
+<span class="fc" id="L122">  }</span>
+
+  @Override
+  protected void internalBlockAdded(final BlockHeader blockHeader, final FeeMarket feeMarket) {
+    // no-op
+<span class="fc" id="L127">  }</span>
+
+  @Override
+  protected PendingTransaction getEvictable() {
+<span class="fc" id="L131">    return orderByMaxFee.first();</span>
+  }
+
+  @Override
+  protected boolean promotionFilter(final PendingTransaction pendingTransaction) {
+<span class="fc" id="L136">    return true;</span>
+  }
+
+  @Override
+  public Stream&lt;PendingTransaction&gt; stream() {
+<span class="fc" id="L141">    return orderByMaxFee.descendingSet().stream()</span>
+<span class="fc" id="L142">        .map(PendingTransaction::getSender)</span>
+<span class="fc" id="L143">        .flatMap(sender -&gt; txsBySender.get(sender).values().stream());</span>
+  }
+
+  @Override
+  public List&lt;PendingTransaction&gt; promote(
+      final Predicate&lt;PendingTransaction&gt; promotionFilter,
+      final long freeSpace,
+      final int freeSlots) {
+<span class="fc" id="L151">    long accumulatedSpace = 0;</span>
+<span class="fc" id="L152">    final List&lt;PendingTransaction&gt; promotedTxs = new ArrayList&lt;&gt;();</span>
+
+    // first find all txs that can be promoted
+    search:
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    for (final var senderFirstTx : orderByMaxFee.descendingSet()) {</span>
+<span class="fc" id="L157">      final var senderTxs = txsBySender.get(senderFirstTx.getSender());</span>
+<span class="fc bfc" id="L158" title="All 2 branches covered.">      for (final var candidateTx : senderTxs.values()) {</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">        if (promotionFilter.test(candidateTx)) {</span>
+<span class="fc" id="L160">          accumulatedSpace += candidateTx.memorySize();</span>
+<span class="pc bpc" id="L161" title="1 of 4 branches missed.">          if (promotedTxs.size() &lt; freeSlots &amp;&amp; accumulatedSpace &lt;= freeSpace) {</span>
+<span class="fc" id="L162">            promotedTxs.add(candidateTx);</span>
+          } else {
+            // no room for more txs the search is over exit the loops
+            break search;
+          }
+        } else {
+          // skip remaining txs for this sender to avoid gaps
+          break;
+        }
+<span class="fc" id="L171">      }</span>
+<span class="fc" id="L172">    }</span>
+
+    // then remove promoted txs from this layer
+<span class="fc" id="L175">    promotedTxs.forEach(</span>
+        promotedTx -&gt; {
+<span class="fc" id="L177">          final var sender = promotedTx.getSender();</span>
+<span class="fc" id="L178">          final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc" id="L179">          senderTxs.remove(promotedTx.getNonce());</span>
+<span class="fc" id="L180">          processRemove(senderTxs, promotedTx.getTransaction(), PROMOTED);</span>
+<span class="fc bfc" id="L181" title="All 2 branches covered.">          if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L182">            txsBySender.remove(sender);</span>
+          }
+<span class="fc" id="L184">        });</span>
+
+<span class="fc bfc" id="L186" title="All 2 branches covered.">    if (!promotedTxs.isEmpty()) {</span>
+      // since we removed some txs we can try to promote from next layer
+<span class="fc" id="L188">      promoteTransactions();</span>
+    }
+
+<span class="fc" id="L191">    return promotedTxs;</span>
+  }
+
+  @Override
+  public String internalLogStats() {
+<span class="pc bpc" id="L196" title="1 of 2 branches missed.">    if (orderByMaxFee.isEmpty()) {</span>
+<span class="fc" id="L197">      return &quot;Ready: Empty&quot;;</span>
+    }
+
+<span class="nc" id="L200">    final Transaction top = orderByMaxFee.last().getTransaction();</span>
+<span class="nc" id="L201">    final Transaction last = orderByMaxFee.first().getTransaction();</span>
+
+<span class="nc" id="L203">    return &quot;Ready: &quot;</span>
+        + &quot;count=&quot;
+<span class="nc" id="L205">        + pendingTransactions.size()</span>
+        + &quot;, space used: &quot;
+        + spaceUsed
+        + &quot;, unique senders: &quot;
+<span class="nc" id="L209">        + txsBySender.size()</span>
+        + &quot;, top by max fee[max fee:&quot;
+<span class="nc" id="L211">        + top.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L213">        + top.getHash()</span>
+        + &quot;], last by max fee [max fee: &quot;
+<span class="nc" id="L215">        + last.getMaxGasPrice().toHumanReadableString()</span>
+        + &quot;, hash: &quot;
+<span class="nc" id="L217">        + last.getHash()</span>
+        + &quot;]&quot;;
+  }
+
+  @Override
+  protected void internalConsistencyCheck(
+      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
+<span class="nc" id="L224">    super.internalConsistencyCheck(prevLayerTxsBySender);</span>
+
+<span class="nc" id="L226">    final var minNonceBySender =</span>
+<span class="nc" id="L227">        pendingTransactions.values().stream()</span>
+<span class="nc" id="L228">            .collect(</span>
+<span class="nc" id="L229">                Collectors.groupingBy(</span>
+                    PendingTransaction::getSender,
+<span class="nc" id="L231">                    Collectors.minBy(Comparator.comparingLong(PendingTransaction::getNonce))));</span>
+
+<span class="nc" id="L233">    final var controlOrderByMaxFee = new TreeSet&lt;&gt;(orderByMaxFee.comparator());</span>
+<span class="nc" id="L234">    controlOrderByMaxFee.addAll(minNonceBySender.values().stream().map(Optional::get).toList());</span>
+
+<span class="nc" id="L236">    final var itControl = controlOrderByMaxFee.iterator();</span>
+<span class="nc" id="L237">    final var itCurrent = orderByMaxFee.iterator();</span>
+
+<span class="nc bnc" id="L239" title="All 2 branches missed.">    while (itControl.hasNext()) {</span>
+<span class="nc bnc" id="L240" title="All 2 branches missed.">      assert itControl.next().equals(itCurrent.next())</span>
+          : &quot;orderByMaxFee does not match pendingTransactions&quot;;
+    }
+
+<span class="nc bnc" id="L244" title="All 2 branches missed.">    assert itCurrent.hasNext() == false</span>
+        : &quot;orderByMaxFee has more elements than pendingTransactions&quot;;
+<span class="nc" id="L246">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

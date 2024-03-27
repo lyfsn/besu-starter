@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MockNetwork.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.testing</a> &gt; <span class="el_source">MockNetwork.java</span></div><h1>MockNetwork.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.testing;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.network.P2PNetwork;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.ConnectCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.DisconnectCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.MessageCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.DefaultMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.PeerInfo;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.ShouldConnectCallback;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+
+/**
+ * Mock network implementation that allows passing {@link MessageData} between arbitrary peers. This
+ * completely bypasses the TCP layer by directly passing {@link MessageData} from {@link
+ * MockNetwork.MockPeerConnection#send(Capability, MessageData)} to callbacks registered on {@link
+ * MockNetwork.MockP2PNetwork}s.
+ */
+public final class MockNetwork {
+
+<span class="fc" id="L55">  private final Map&lt;Peer, MockNetwork.MockP2PNetwork&gt; nodes = new HashMap&lt;&gt;();</span>
+  private final List&lt;Capability&gt; capabilities;
+
+<span class="fc" id="L58">  public MockNetwork(final List&lt;Capability&gt; capabilities) {</span>
+<span class="fc" id="L59">    this.capabilities = capabilities;</span>
+<span class="fc" id="L60">  }</span>
+
+  /**
+   * Get the {@link P2PNetwork} that assumes a given {@link Peer} as the local node. This does not
+   * connect {@link Peer} to any other peer. Any connections established by {@link #connect(Peer,
+   * Peer)} require that both participating {@link Peer} have previously been passed to this method.
+   *
+   * @param peer Peer to get {@link P2PNetwork} for
+   * @return P2PNetwork as seen by {@link Peer}
+   */
+  public P2PNetwork setup(final Peer peer) {
+<span class="fc" id="L71">    synchronized (this) {</span>
+<span class="fc" id="L72">      return nodes.computeIfAbsent(peer, p -&gt; new MockNetwork.MockP2PNetwork(peer, this));</span>
+    }
+  }
+
+  private PeerConnection connect(final Peer source, final Peer target) {
+<span class="fc" id="L77">    synchronized (this) {</span>
+<span class="fc" id="L78">      final MockNetwork.MockPeerConnection establishedConnection =</span>
+          new MockNetwork.MockPeerConnection(source, target, this);
+<span class="fc" id="L80">      final MockP2PNetwork sourceNode = nodes.get(source);</span>
+<span class="fc" id="L81">      final MockP2PNetwork targetNode = nodes.get(target);</span>
+<span class="fc" id="L82">      sourceNode.connections.put(target, establishedConnection);</span>
+<span class="fc" id="L83">      final MockNetwork.MockPeerConnection backChannel =</span>
+          new MockNetwork.MockPeerConnection(target, source, this);
+<span class="fc" id="L85">      targetNode.connections.put(source, backChannel);</span>
+<span class="fc" id="L86">      sourceNode.connectCallbacks.forEach(c -&gt; c.onConnect(establishedConnection));</span>
+<span class="fc" id="L87">      targetNode.connectCallbacks.forEach(c -&gt; c.onConnect(backChannel));</span>
+<span class="fc" id="L88">      return establishedConnection;</span>
+    }
+  }
+
+  private void disconnect(
+      final MockNetwork.MockPeerConnection connection, final DisconnectReason reason) {
+<span class="fc" id="L94">    synchronized (this) {</span>
+<span class="fc" id="L95">      final MockP2PNetwork sourceNode = nodes.get(connection.from);</span>
+<span class="fc" id="L96">      final MockP2PNetwork targetNode = nodes.get(connection.to);</span>
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">      if (targetNode.connections.remove(connection.from) == null</span>
+<span class="pc bpc" id="L98" title="1 of 2 branches missed.">          || sourceNode.connections.remove(connection.to) == null) {</span>
+<span class="nc" id="L99">        throw new IllegalStateException(</span>
+<span class="nc" id="L100">            String.format(&quot;No connection between %s and %s&quot;, connection.from, connection.to));</span>
+      }
+<span class="fc" id="L102">      targetNode.disconnectCallbacks.forEach(c -&gt; c.onDisconnect(connection, reason, true));</span>
+<span class="fc" id="L103">      sourceNode.disconnectCallbacks.forEach(</span>
+<span class="fc" id="L104">          c -&gt; c.onDisconnect(connection, DisconnectReason.REQUESTED, false));</span>
+<span class="fc" id="L105">    }</span>
+<span class="fc" id="L106">  }</span>
+
+  private static final class MockP2PNetwork implements P2PNetwork {
+
+    private final MockNetwork network;
+
+<span class="fc" id="L112">    private final Map&lt;Peer, MockNetwork.MockPeerConnection&gt; connections = new HashMap&lt;&gt;();</span>
+
+    private final Peer self;
+
+<span class="fc" id="L116">    private final Map&lt;Capability, Subscribers&lt;MessageCallback&gt;&gt; protocolCallbacks =</span>
+        new ConcurrentHashMap&lt;&gt;();
+
+<span class="fc" id="L119">    private final Subscribers&lt;ConnectCallback&gt; connectCallbacks = Subscribers.create();</span>
+
+<span class="fc" id="L121">    private final Subscribers&lt;DisconnectCallback&gt; disconnectCallbacks = Subscribers.create();</span>
+
+<span class="fc" id="L123">    MockP2PNetwork(final Peer self, final MockNetwork network) {</span>
+<span class="fc" id="L124">      this.self = self;</span>
+<span class="fc" id="L125">      this.network = network;</span>
+<span class="fc" id="L126">    }</span>
+
+    @Override
+    public Collection&lt;PeerConnection&gt; getPeers() {
+<span class="fc" id="L130">      synchronized (network) {</span>
+<span class="fc" id="L131">        return new ArrayList&lt;&gt;(connections.values());</span>
+      }
+    }
+
+    @Override
+    public Stream&lt;DiscoveryPeer&gt; streamDiscoveredPeers() {
+<span class="nc" id="L137">      return Stream.empty();</span>
+    }
+
+    @Override
+    public CompletableFuture&lt;PeerConnection&gt; connect(final Peer peer) {
+<span class="fc" id="L142">      synchronized (network) {</span>
+<span class="pc bpc" id="L143" title="1 of 2 branches missed.">        if (network.nodes.containsKey(peer)) {</span>
+<span class="fc" id="L144">          final PeerConnection connection = connections.get(peer);</span>
+<span class="pc bpc" id="L145" title="1 of 2 branches missed.">          if (connection == null) {</span>
+<span class="fc" id="L146">            return CompletableFuture.completedFuture(network.connect(self, peer));</span>
+          } else {
+<span class="nc" id="L148">            return CompletableFuture.completedFuture(connection);</span>
+          }
+        } else {
+<span class="nc" id="L151">          return CompletableFuture.supplyAsync(</span>
+              () -&gt; {
+<span class="nc" id="L153">                throw new IllegalStateException(</span>
+<span class="nc" id="L154">                    String.format(&quot;Tried to connect to unknown peer %s&quot;, peer));</span>
+              });
+        }
+      }
+    }
+
+    @Override
+    public void subscribe(final Capability capability, final MessageCallback callback) {
+<span class="fc" id="L162">      protocolCallbacks</span>
+<span class="fc" id="L163">          .computeIfAbsent(capability, key -&gt; Subscribers.create())</span>
+<span class="fc" id="L164">          .subscribe(callback);</span>
+<span class="fc" id="L165">    }</span>
+
+    @Override
+    public void subscribeConnect(final ConnectCallback callback) {
+<span class="fc" id="L169">      connectCallbacks.subscribe(callback);</span>
+<span class="fc" id="L170">    }</span>
+
+    @Override
+<span class="nc" id="L173">    public void subscribeConnectRequest(final ShouldConnectCallback callback) {}</span>
+
+    @Override
+    public void subscribeDisconnect(final DisconnectCallback callback) {
+<span class="fc" id="L177">      disconnectCallbacks.subscribe(callback);</span>
+<span class="fc" id="L178">    }</span>
+
+    @Override
+    public boolean addMaintainedConnectionPeer(final Peer peer) {
+<span class="nc" id="L182">      return true;</span>
+    }
+
+    @Override
+    public boolean removeMaintainedConnectionPeer(final Peer peer) {
+<span class="nc" id="L187">      return true;</span>
+    }
+
+    @Override
+<span class="nc" id="L191">    public void stop() {}</span>
+
+    @Override
+<span class="nc" id="L194">    public void awaitStop() {}</span>
+
+    @Override
+<span class="nc" id="L197">    public void start() {}</span>
+
+    @Override
+<span class="fc" id="L200">    public void close() {}</span>
+
+    @Override
+    public boolean isListening() {
+<span class="nc" id="L204">      return true;</span>
+    }
+
+    @Override
+    public boolean isP2pEnabled() {
+<span class="nc" id="L209">      return true;</span>
+    }
+
+    @Override
+    public boolean isDiscoveryEnabled() {
+<span class="nc" id="L214">      return true;</span>
+    }
+
+    @Override
+    public Optional&lt;EnodeURL&gt; getLocalEnode() {
+<span class="nc" id="L219">      return Optional.empty();</span>
+    }
+
+    @Override
+<span class="nc" id="L223">    public void updateNodeRecord() {}</span>
+  }
+
+  /**
+   * A mock connection between two peers that simply invokes the callbacks on the other side's
+   * {@link MockNetwork.MockP2PNetwork}.
+   */
+  private final class MockPeerConnection implements PeerConnection {
+
+    /** {@link Peer} that this connection originates from. */
+    private final Peer from;
+
+<span class="fc" id="L235">    private boolean disconnected = false;</span>
+
+    /**
+     * Peer that this connection targets and that will receive {@link Message}s sent via {@link
+     * #send(Capability, MessageData)}.
+     */
+    private final Peer to;
+
+    private final MockNetwork network;
+    private boolean statusSent;
+    private boolean statusReceived;
+
+<span class="fc" id="L247">    MockPeerConnection(final Peer source, final Peer target, final MockNetwork network) {</span>
+<span class="fc" id="L248">      from = source;</span>
+<span class="fc" id="L249">      to = target;</span>
+<span class="fc" id="L250">      this.network = network;</span>
+<span class="fc" id="L251">    }</span>
+
+    @Override
+    public void send(final Capability capability, final MessageData message)
+        throws PeerNotConnected {
+<span class="fc" id="L256">      synchronized (network) {</span>
+<span class="fc" id="L257">        final MockNetwork.MockP2PNetwork target = network.nodes.get(to);</span>
+<span class="fc" id="L258">        final MockNetwork.MockPeerConnection backChannel = target.connections.get(from);</span>
+<span class="pc bpc" id="L259" title="1 of 2 branches missed.">        if (backChannel != null) {</span>
+<span class="fc" id="L260">          final Message msg = new DefaultMessage(backChannel, message);</span>
+<span class="fc" id="L261">          final Subscribers&lt;MessageCallback&gt; callbacks = target.protocolCallbacks.get(capability);</span>
+<span class="pc bpc" id="L262" title="1 of 2 branches missed.">          if (callbacks != null) {</span>
+<span class="fc" id="L263">            callbacks.forEach(c -&gt; c.onMessage(capability, msg));</span>
+          }
+<span class="fc" id="L265">        } else {</span>
+<span class="nc" id="L266">          throw new PeerNotConnected(String.format(&quot;%s not connected to %s&quot;, to, from));</span>
+        }
+<span class="fc" id="L268">      }</span>
+<span class="fc" id="L269">    }</span>
+
+    @Override
+    public Set&lt;Capability&gt; getAgreedCapabilities() {
+<span class="nc" id="L273">      return new HashSet&lt;&gt;(capabilities);</span>
+    }
+
+    @Override
+    public Peer getPeer() {
+<span class="nc" id="L278">      return to;</span>
+    }
+
+    @Override
+    public PeerInfo getPeerInfo() {
+<span class="fc" id="L283">      return new PeerInfo(</span>
+          5,
+          &quot;mock-network-client&quot;,
+          capabilities,
+<span class="fc" id="L287">          to.getEnodeURL().getListeningPortOrZero(),</span>
+<span class="fc" id="L288">          to.getId());</span>
+    }
+
+    @Override
+    public void terminateConnection(final DisconnectReason reason, final boolean peerInitiated) {
+<span class="nc" id="L293">      disconnected = true;</span>
+<span class="nc" id="L294">      network.disconnect(this, reason);</span>
+<span class="nc" id="L295">    }</span>
+
+    @Override
+    public void disconnect(final DisconnectReason reason) {
+<span class="fc" id="L299">      disconnected = true;</span>
+<span class="fc" id="L300">      network.disconnect(this, reason);</span>
+<span class="fc" id="L301">    }</span>
+
+    @Override
+    public boolean isDisconnected() {
+<span class="nc" id="L305">      return disconnected;</span>
+    }
+
+    @Override
+    public InetSocketAddress getLocalAddress() {
+<span class="nc" id="L310">      throw new UnsupportedOperationException();</span>
+    }
+
+    @Override
+    public InetSocketAddress getRemoteAddress() {
+<span class="nc" id="L315">      throw new UnsupportedOperationException();</span>
+    }
+
+    @Override
+    public long getInitiatedAt() {
+<span class="nc" id="L320">      return 0;</span>
+    }
+
+    @Override
+    public boolean inboundInitiated() {
+<span class="nc" id="L325">      return false;</span>
+    }
+
+    @Override
+    public void setStatusSent() {
+<span class="nc" id="L330">      this.statusSent = true;</span>
+<span class="nc" id="L331">    }</span>
+
+    @Override
+    public void setStatusReceived() {
+<span class="nc" id="L335">      this.statusReceived = true;</span>
+<span class="nc" id="L336">    }</span>
+
+    @Override
+    public boolean getStatusExchanged() {
+<span class="nc bnc" id="L340" title="All 4 branches missed.">      return statusSent &amp;&amp; statusReceived;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

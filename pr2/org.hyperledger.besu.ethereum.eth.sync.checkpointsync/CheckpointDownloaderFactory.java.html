@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CheckpointDownloaderFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.checkpointsync</a> &gt; <span class="el_source">CheckpointDownloaderFactory.java</span></div><h1>CheckpointDownloaderFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.checkpointsync;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.SyncMode;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncActions;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncDownloader;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncState;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncStateStorage;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapDownloaderFactory;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncDownloader;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncProcessState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapWorldStateDownloader;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.context.SnapSyncStatePersistenceManager;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldStateDownloader;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.services.tasks.InMemoryTasksPriorityQueues;
+
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="nc" id="L49">public class CheckpointDownloaderFactory extends SnapDownloaderFactory {</span>
+
+<span class="nc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(CheckpointDownloaderFactory.class);</span>
+
+  @SuppressWarnings(&quot;UnusedVariable&quot;)
+  public static Optional&lt;FastSyncDownloader&lt;?&gt;&gt; createCheckpointDownloader(
+      final SnapSyncStatePersistenceManager snapContext,
+      final PivotBlockSelector pivotBlockSelector,
+      final SynchronizerConfiguration syncConfig,
+      final Path dataDirectory,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final MetricsSystem metricsSystem,
+      final EthContext ethContext,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SyncState syncState,
+      final Clock clock) {
+
+<span class="nc" id="L67">    final Path fastSyncDataDirectory = dataDirectory.resolve(FAST_SYNC_FOLDER);</span>
+<span class="nc" id="L68">    final FastSyncStateStorage fastSyncStateStorage =</span>
+        new FastSyncStateStorage(fastSyncDataDirectory);
+
+<span class="nc bnc" id="L71" title="All 2 branches missed.">    if (SyncMode.isFullSync(syncConfig.getSyncMode())) {</span>
+<span class="nc bnc" id="L72" title="All 2 branches missed.">      if (fastSyncStateStorage.isFastSyncInProgress()) {</span>
+<span class="nc" id="L73">        throw new IllegalStateException(</span>
+            &quot;Unable to change the sync mode when snap sync is incomplete, please restart with checkpoint sync mode&quot;);
+      } else {
+<span class="nc" id="L76">        return Optional.empty();</span>
+      }
+    }
+
+<span class="nc" id="L80">    ensureDirectoryExists(fastSyncDataDirectory.toFile());</span>
+
+<span class="nc" id="L82">    final FastSyncState fastSyncState =</span>
+<span class="nc" id="L83">        fastSyncStateStorage.loadState(ScheduleBasedBlockHeaderFunctions.create(protocolSchedule));</span>
+
+<span class="nc bnc" id="L85" title="All 2 branches missed.">    if (syncState.isResyncNeeded()) {</span>
+<span class="nc" id="L86">      snapContext.clear();</span>
+<span class="nc" id="L87">      syncState</span>
+<span class="nc" id="L88">          .getAccountToRepair()</span>
+<span class="nc" id="L89">          .ifPresent(</span>
+              address -&gt;
+<span class="nc" id="L91">                  snapContext.addAccountToHealingList(</span>
+<span class="nc" id="L92">                      CompactEncoding.bytesToPath(address.addressHash())));</span>
+<span class="nc bnc" id="L93" title="All 2 branches missed.">    } else if (fastSyncState.getPivotBlockHeader().isEmpty()</span>
+<span class="nc bnc" id="L94" title="All 2 branches missed.">        &amp;&amp; protocolContext.getBlockchain().getChainHeadBlockNumber()</span>
+            != BlockHeader.GENESIS_BLOCK_NUMBER) {
+<span class="nc" id="L96">      LOG.info(</span>
+          &quot;Checkpoint sync was requested, but cannot be enabled because the local blockchain is not empty.&quot;);
+<span class="nc" id="L98">      return Optional.empty();</span>
+    }
+
+    final FastSyncActions fastSyncActions;
+<span class="nc bnc" id="L102" title="All 2 branches missed.">    if (syncState.getCheckpoint().isEmpty()) {</span>
+<span class="nc" id="L103">      LOG.warn(&quot;Unable to find a valid checkpoint configuration. The genesis will be used&quot;);</span>
+<span class="nc" id="L104">      fastSyncActions =</span>
+          new FastSyncActions(
+              syncConfig,
+              worldStateStorageCoordinator,
+              protocolSchedule,
+              protocolContext,
+              ethContext,
+              syncState,
+              pivotBlockSelector,
+              metricsSystem);
+    } else {
+<span class="nc bnc" id="L115" title="All 2 branches missed.">      if (!syncState.isResyncNeeded()) {</span>
+<span class="nc" id="L116">        LOG.info(</span>
+            &quot;Checkpoint sync start with block {} and hash {}&quot;,
+<span class="nc" id="L118">            syncState.getCheckpoint().get().blockNumber(),</span>
+<span class="nc" id="L119">            syncState.getCheckpoint().get().blockHash());</span>
+      }
+<span class="nc" id="L121">      fastSyncActions =</span>
+          new CheckpointSyncActions(
+              syncConfig,
+              worldStateStorageCoordinator,
+              protocolSchedule,
+              protocolContext,
+              ethContext,
+              syncState,
+              pivotBlockSelector,
+              metricsSystem);
+    }
+
+<span class="nc" id="L133">    final SnapSyncProcessState snapSyncState =</span>
+        new SnapSyncProcessState(
+<span class="nc" id="L135">            fastSyncStateStorage.loadState(</span>
+<span class="nc" id="L136">                ScheduleBasedBlockHeaderFunctions.create(protocolSchedule)));</span>
+
+    final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt; snapTaskCollection =
+<span class="nc" id="L139">        createSnapWorldStateDownloaderTaskCollection();</span>
+<span class="nc" id="L140">    final WorldStateDownloader snapWorldStateDownloader =</span>
+        new SnapWorldStateDownloader(
+            ethContext,
+            snapContext,
+            protocolContext,
+            worldStateStorageCoordinator,
+            snapTaskCollection,
+<span class="nc" id="L147">            syncConfig.getSnapSyncConfiguration(),</span>
+<span class="nc" id="L148">            syncConfig.getWorldStateRequestParallelism(),</span>
+<span class="nc" id="L149">            syncConfig.getWorldStateMaxRequestsWithoutProgress(),</span>
+<span class="nc" id="L150">            syncConfig.getWorldStateMinMillisBeforeStalling(),</span>
+            clock,
+            metricsSystem);
+<span class="nc" id="L153">    final FastSyncDownloader&lt;SnapDataRequest&gt; fastSyncDownloader =</span>
+        new SnapSyncDownloader(
+            fastSyncActions,
+            worldStateStorageCoordinator,
+            snapWorldStateDownloader,
+            fastSyncStateStorage,
+            snapTaskCollection,
+            fastSyncDataDirectory,
+            snapSyncState);
+<span class="nc" id="L162">    syncState.setWorldStateDownloadStatus(snapWorldStateDownloader);</span>
+<span class="nc" id="L163">    return Optional.of(fastSyncDownloader);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

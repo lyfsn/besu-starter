@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangeManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">RangeManager.java</span></div><h1>RangeManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.trie.InnerNodeDiscoveryManager;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+
+import java.math.BigInteger;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/**
+ * This class helps to generate ranges according to several parameters (the start and the end of the
+ * range, its size)
+ */
+public class RangeManager {
+
+<span class="fc" id="L39">  public static final Hash MIN_RANGE = Hash.wrap(Bytes32.ZERO);</span>
+<span class="fc" id="L40">  public static final Hash MAX_RANGE =</span>
+<span class="fc" id="L41">      Hash.fromHexString(&quot;0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff&quot;);</span>
+
+  private RangeManager() {}
+
+  public static int getRangeCount(
+      final Bytes32 min, final Bytes32 max, final TreeMap&lt;Bytes32, Bytes&gt; items) {
+<span class="pc bpc" id="L47" title="2 of 4 branches missed.">    if (min.equals(MIN_RANGE) &amp;&amp; max.equals(MAX_RANGE)) {</span>
+<span class="fc" id="L48">      return MAX_RANGE</span>
+<span class="fc" id="L49">          .toUnsignedBigInteger()</span>
+<span class="fc" id="L50">          .divide(items.lastKey().toUnsignedBigInteger().subtract(min.toUnsignedBigInteger()))</span>
+<span class="fc" id="L51">          .intValue();</span>
+    }
+<span class="nc" id="L53">    return 1;</span>
+  }
+
+  public static Map&lt;Bytes32, Bytes32&gt; generateAllRanges(final int sizeRange) {
+<span class="fc bfc" id="L57" title="All 2 branches covered.">    if (sizeRange == 1) {</span>
+<span class="fc" id="L58">      return Map.ofEntries(Map.entry(MIN_RANGE, MAX_RANGE));</span>
+    }
+<span class="fc" id="L60">    return generateRanges(</span>
+<span class="fc" id="L61">        MIN_RANGE.toUnsignedBigInteger(), MAX_RANGE.toUnsignedBigInteger(), sizeRange);</span>
+  }
+
+  /**
+   * Generate a range
+   *
+   * @param min start of the range in bytes
+   * @param max the max end of the range in bytes
+   * @param nbRange number of ranges
+   * @return the start and end of the generated range
+   */
+  public static Map&lt;Bytes32, Bytes32&gt; generateRanges(
+      final Bytes32 min, final Bytes32 max, final int nbRange) {
+<span class="fc" id="L74">    return generateRanges(min.toUnsignedBigInteger(), max.toUnsignedBigInteger(), nbRange);</span>
+  }
+
+  /**
+   * Generate a range
+   *
+   * @param min start of the range
+   * @param max the max end of the range
+   * @param nbRange number of ranges
+   * @return the start and end of the generated range
+   */
+  public static Map&lt;Bytes32, Bytes32&gt; generateRanges(
+      final BigInteger min, final BigInteger max, final int nbRange) {
+<span class="fc" id="L87">    final BigInteger rangeSize = max.subtract(min).divide(BigInteger.valueOf(nbRange));</span>
+<span class="fc" id="L88">    final TreeMap&lt;Bytes32, Bytes32&gt; ranges = new TreeMap&lt;&gt;();</span>
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    if (min.compareTo(max) &gt; 0) {</span>
+<span class="nc" id="L90">      return ranges;</span>
+    }
+<span class="pc bpc" id="L92" title="1 of 4 branches missed.">    if (min.equals(max) || nbRange == 1) {</span>
+<span class="fc" id="L93">      ranges.put(format(min), format(max));</span>
+<span class="fc" id="L94">      return ranges;</span>
+    }
+<span class="fc" id="L96">    BigInteger currentStart = min;</span>
+<span class="fc" id="L97">    BigInteger currentEnd = min;</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    while (max.subtract(currentEnd).compareTo(rangeSize) &gt; 0) {</span>
+<span class="fc" id="L99">      currentEnd = currentStart.add(rangeSize);</span>
+<span class="fc" id="L100">      ranges.put(format(currentStart), format(currentEnd));</span>
+<span class="fc" id="L101">      currentStart = currentStart.add(rangeSize).add(BigInteger.ONE);</span>
+    }
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (max.subtract(currentEnd).compareTo(BigInteger.ZERO) &gt; 0) {</span>
+<span class="fc" id="L104">      currentEnd = currentStart.add(max.subtract(currentEnd)).subtract(BigInteger.ONE);</span>
+<span class="fc" id="L105">      ranges.put(format(currentStart), format(currentEnd));</span>
+    }
+<span class="fc" id="L107">    return ranges;</span>
+  }
+
+  /**
+   * Helps to create a new range according to the last data obtained. This happens when a peer
+   * doesn't return all of the data in a range.
+   *
+   * @param worldstateRootHash the root hash
+   * @param proofs proof received
+   * @param endKeyHash the end of the range initially wanted
+   * @param receivedKeys the last key received
+   * @return begin of the new range
+   */
+  public static Optional&lt;Bytes32&gt; findNewBeginElementInRange(
+      final Bytes32 worldstateRootHash,
+      final List&lt;Bytes&gt; proofs,
+      final TreeMap&lt;Bytes32, Bytes&gt; receivedKeys,
+      final Bytes32 endKeyHash) {
+<span class="pc bpc" id="L125" title="2 of 4 branches missed.">    if (receivedKeys.isEmpty() || receivedKeys.lastKey().compareTo(endKeyHash) &gt;= 0) {</span>
+<span class="nc" id="L126">      return Optional.empty();</span>
+    } else {
+<span class="fc" id="L128">      final Map&lt;Bytes32, Bytes&gt; proofsEntries = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">      for (Bytes proof : proofs) {</span>
+<span class="fc" id="L130">        proofsEntries.put(Hash.hash(proof), proof);</span>
+<span class="fc" id="L131">      }</span>
+<span class="fc" id="L132">      final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+              new InnerNodeDiscoveryManager&lt;&gt;(
+<span class="fc" id="L135">                  (location, key) -&gt; Optional.ofNullable(proofsEntries.get(key)),</span>
+<span class="fc" id="L136">                  Function.identity(),</span>
+<span class="fc" id="L137">                  Function.identity(),</span>
+<span class="fc" id="L138">                  receivedKeys.lastKey(),</span>
+                  endKeyHash,
+                  false),
+              worldstateRootHash);
+
+      try {
+<span class="fc" id="L144">        storageTrie.visitAll(bytesNode -&gt; {});</span>
+<span class="fc" id="L145">      } catch (MerkleTrieException e) {</span>
+<span class="fc" id="L146">        return Optional.of(InnerNodeDiscoveryManager.decodePath(e.getLocation()));</span>
+<span class="fc" id="L147">      }</span>
+<span class="fc" id="L148">      return Optional.empty();</span>
+    }
+  }
+
+  private static Bytes32 format(final BigInteger data) {
+<span class="fc" id="L153">    return Bytes32.leftPad(Bytes.of(data.toByteArray()).trimLeadingZeros());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

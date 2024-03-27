@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractTraceCall.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">AbstractTraceCall.java</span></div><h1>AbstractTraceCall.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.BLOCK_NOT_FOUND;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.INTERNAL_ERROR;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.JsonCallParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.debug.TraceOptions;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.transaction.PreCloseStateHandler;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.vm.DebugOperationTracer;
+
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractTraceCall extends AbstractTraceByBlock {
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(AbstractTraceCall.class);</span>
+
+  /**
+   * A flag to indicate if call operations should trace just the operation cost (false, Geth style,
+   * debug_ series RPCs) or the operation cost and all gas granted to the child call (true, Parity
+   * style, trace_ series RPCs)
+   */
+  private final boolean recordChildCallGas;
+
+  protected AbstractTraceCall(
+      final BlockchainQueries blockchainQueries,
+      final ProtocolSchedule protocolSchedule,
+      final TransactionSimulator transactionSimulator,
+      final boolean recordChildCallGas) {
+<span class="fc" id="L51">    super(blockchainQueries, protocolSchedule, transactionSimulator);</span>
+<span class="fc" id="L52">    this.recordChildCallGas = recordChildCallGas;</span>
+<span class="fc" id="L53">  }</span>
+
+  @Override
+  protected Object resultByBlockNumber(
+      final JsonRpcRequestContext requestContext, final long blockNumber) {
+<span class="fc" id="L58">    final JsonCallParameter callParams =</span>
+<span class="fc" id="L59">        JsonCallParameterUtil.validateAndGetCallParams(requestContext);</span>
+<span class="fc" id="L60">    final TraceOptions traceOptions = getTraceOptions(requestContext);</span>
+<span class="fc" id="L61">    final String blockNumberString = String.valueOf(blockNumber);</span>
+<span class="fc" id="L62">    LOG.atTrace()</span>
+<span class="fc" id="L63">        .setMessage(&quot;Received RPC rpcName={} callParams={} block={} traceTypes={}&quot;)</span>
+<span class="fc" id="L64">        .addArgument(this::getName)</span>
+<span class="fc" id="L65">        .addArgument(callParams)</span>
+<span class="fc" id="L66">        .addArgument(blockNumberString)</span>
+<span class="fc" id="L67">        .addArgument(traceOptions)</span>
+<span class="fc" id="L68">        .log();</span>
+
+<span class="fc" id="L70">    final Optional&lt;BlockHeader&gt; maybeBlockHeader =</span>
+<span class="fc" id="L71">        blockchainQueriesSupplier.get().getBlockHeaderByNumber(blockNumber);</span>
+
+<span class="pc bpc" id="L73" title="1 of 2 branches missed.">    if (maybeBlockHeader.isEmpty()) {</span>
+<span class="nc" id="L74">      return new JsonRpcErrorResponse(requestContext.getRequest().getId(), BLOCK_NOT_FOUND);</span>
+    }
+
+<span class="fc" id="L77">    final DebugOperationTracer tracer = new DebugOperationTracer(traceOptions, recordChildCallGas);</span>
+<span class="fc" id="L78">    return transactionSimulator</span>
+<span class="fc" id="L79">        .process(</span>
+            callParams,
+<span class="fc" id="L81">            buildTransactionValidationParams(),</span>
+            tracer,
+<span class="fc" id="L83">            getSimulatorResultHandler(requestContext, tracer),</span>
+<span class="fc" id="L84">            maybeBlockHeader.get())</span>
+<span class="fc" id="L85">        .orElseGet(</span>
+<span class="nc" id="L86">            () -&gt; new JsonRpcErrorResponse(requestContext.getRequest().getId(), INTERNAL_ERROR));</span>
+  }
+
+  protected abstract TraceOptions getTraceOptions(final JsonRpcRequestContext requestContext);
+
+  protected abstract PreCloseStateHandler&lt;Object&gt; getSimulatorResultHandler(
+      final JsonRpcRequestContext requestContext, final DebugOperationTracer tracer);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

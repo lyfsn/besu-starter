@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AsyncOperationProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.pipeline</a> &gt; <span class="el_source">AsyncOperationProcessor.java</span></div><h1>AsyncOperationProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.pipeline;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
+import org.hyperledger.besu.services.pipeline.exception.AsyncOperationException;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Function;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+class AsyncOperationProcessor&lt;I, O&gt; implements Processor&lt;I, O&gt; {
+<span class="fc" id="L34">  private static final Logger LOG = LoggerFactory.getLogger(AsyncOperationProcessor.class);</span>
+  private final Function&lt;I, CompletableFuture&lt;O&gt;&gt; processor;
+  private final List&lt;CompletableFuture&lt;O&gt;&gt; inProgress;
+<span class="fc" id="L37">  private CompletableFuture&lt;?&gt; nextOutputAvailableFuture = completedFuture(null);</span>
+  private final boolean preserveOrder;
+  private final int maxConcurrency;
+
+  public AsyncOperationProcessor(
+      final Function&lt;I, CompletableFuture&lt;O&gt;&gt; processor,
+      final int maxConcurrency,
+<span class="fc" id="L44">      final boolean preserveOrder) {</span>
+<span class="fc" id="L45">    this.processor = processor;</span>
+<span class="fc" id="L46">    this.maxConcurrency = maxConcurrency;</span>
+<span class="fc" id="L47">    this.inProgress = new ArrayList&lt;&gt;(maxConcurrency);</span>
+<span class="fc" id="L48">    this.preserveOrder = preserveOrder;</span>
+<span class="fc" id="L49">  }</span>
+
+  @Override
+  public void processNextInput(final ReadPipe&lt;I&gt; inputPipe, final WritePipe&lt;O&gt; outputPipe) {
+<span class="fc bfc" id="L53" title="All 2 branches covered.">    if (inProgress.size() &lt; maxConcurrency) {</span>
+<span class="fc" id="L54">      final I value = inputPipe.get();</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">      if (value != null) {</span>
+<span class="fc" id="L56">        final CompletableFuture&lt;O&gt; future = processor.apply(value);</span>
+        // When the future completes, interrupt so if we're waiting for new input we wake up and
+        // schedule the output.
+<span class="fc" id="L59">        final Thread stageThread = Thread.currentThread();</span>
+<span class="fc" id="L60">        inProgress.add(future);</span>
+<span class="fc" id="L61">        updateNextOutputAvailableFuture();</span>
+<span class="fc" id="L62">        future.whenComplete((result, error) -&gt; stageThread.interrupt());</span>
+      }
+<span class="fc" id="L64">      outputCompletedTasks(outputPipe);</span>
+<span class="fc" id="L65">    } else {</span>
+<span class="fc" id="L66">      outputNextCompletedTask(outputPipe);</span>
+    }
+<span class="fc" id="L68">  }</span>
+
+  @Override
+  public boolean attemptFinalization(final WritePipe&lt;O&gt; outputPipe) {
+<span class="fc" id="L72">    outputNextCompletedTask(outputPipe);</span>
+<span class="fc" id="L73">    return inProgress.isEmpty();</span>
+  }
+
+  @Override
+  public void abort() {
+<span class="fc" id="L78">    inProgress.forEach(future -&gt; future.cancel(true));</span>
+<span class="fc" id="L79">  }</span>
+
+  private void outputNextCompletedTask(final WritePipe&lt;O&gt; outputPipe) {
+    try {
+<span class="fc" id="L83">      waitForAnyFutureToComplete();</span>
+<span class="fc" id="L84">      outputCompletedTasks(outputPipe);</span>
+<span class="fc" id="L85">    } catch (final InterruptedException e) {</span>
+<span class="fc" id="L86">      LOG.trace(&quot;Interrupted while waiting for processing to complete&quot;, e);</span>
+<span class="nc" id="L87">    } catch (final ExecutionException e) {</span>
+<span class="nc" id="L88">      throw new AsyncOperationException(&quot;Async operation failed. &quot; + e.getMessage(), e);</span>
+<span class="fc" id="L89">    } catch (final TimeoutException e) {</span>
+      // Ignore and go back around the loop.
+<span class="fc" id="L91">    }</span>
+<span class="fc" id="L92">  }</span>
+
+  private void waitForAnyFutureToComplete()
+      throws InterruptedException, ExecutionException, TimeoutException {
+<span class="fc" id="L96">    nextOutputAvailableFuture.get(1, TimeUnit.SECONDS);</span>
+<span class="fc" id="L97">  }</span>
+
+  private void outputCompletedTasks(final WritePipe&lt;O&gt; outputPipe) {
+<span class="fc" id="L100">    boolean inProgressChanged = false;</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    for (final Iterator&lt;CompletableFuture&lt;O&gt;&gt; i = inProgress.iterator(); i.hasNext(); ) {</span>
+<span class="fc" id="L102">      final CompletableFuture&lt;O&gt; process = i.next();</span>
+<span class="fc" id="L103">      final O result = process.getNow(null);</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">      if (result != null) {</span>
+<span class="fc" id="L105">        inProgressChanged = true;</span>
+<span class="fc" id="L106">        outputPipe.put(result);</span>
+<span class="fc" id="L107">        i.remove();</span>
+<span class="fc bfc" id="L108" title="All 2 branches covered.">      } else if (preserveOrder) {</span>
+<span class="fc" id="L109">        break;</span>
+      }
+<span class="fc" id="L111">    }</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">    if (inProgressChanged) {</span>
+<span class="fc" id="L113">      updateNextOutputAvailableFuture();</span>
+    }
+<span class="fc" id="L115">  }</span>
+
+  /**
+   * CompletableFuture.anyOf adds a completion handler to every future its passed so if we call it
+   * too often we can quickly wind up with thousands of completion handlers which take a long time
+   * to iterate through and notify. So only create it when the futures it covers have actually
+   * changed.
+   */
+  @SuppressWarnings(&quot;rawtypes&quot;)
+  private void updateNextOutputAvailableFuture() {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    if (preserveOrder) {</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">      nextOutputAvailableFuture = inProgress.isEmpty() ? completedFuture(null) : inProgress.get(0);</span>
+    } else {
+<span class="fc" id="L128">      nextOutputAvailableFuture =</span>
+<span class="fc" id="L129">          CompletableFuture.anyOf(inProgress.toArray(new CompletableFuture[0]));</span>
+    }
+<span class="fc" id="L131">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

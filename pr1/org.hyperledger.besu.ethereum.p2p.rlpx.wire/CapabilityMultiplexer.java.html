@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CapabilityMultiplexer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.wire</a> &gt; <span class="el_source">CapabilityMultiplexer.java</span></div><h1>CapabilityMultiplexer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.wire;
+
+import static java.util.Comparator.comparing;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableRangeMap;
+import com.google.common.collect.Range;
+import org.apache.tuweni.bytes.Bytes;
+
+public class CapabilityMultiplexer {
+
+  static final int WIRE_PROTOCOL_MESSAGE_SPACE = 16;
+<span class="fc" id="L35">  private static final Comparator&lt;Capability&gt; CAPABILITY_COMPARATOR =</span>
+<span class="fc" id="L36">      comparing(Capability::getName).thenComparing(comparing(Capability::getVersion).reversed());</span>
+
+  private final ImmutableRangeMap&lt;Integer, Capability&gt; agreedCaps;
+  private final ImmutableMap&lt;Capability, Integer&gt; capabilityOffsets;
+<span class="fc" id="L40">  private final Map&lt;String, SubProtocol&gt; subProtocols = new HashMap&lt;&gt;();</span>
+
+  public CapabilityMultiplexer(
+<span class="fc" id="L43">      final List&lt;SubProtocol&gt; subProtocols, final List&lt;Capability&gt; a, final List&lt;Capability&gt; b) {</span>
+<span class="fc bfc" id="L44" title="All 2 branches covered.">    for (final SubProtocol subProtocol : subProtocols) {</span>
+<span class="fc" id="L45">      this.subProtocols.put(subProtocol.getName(), subProtocol);</span>
+<span class="fc" id="L46">    }</span>
+<span class="fc" id="L47">    agreedCaps = calculateAgreedCapabilities(a, b);</span>
+<span class="fc" id="L48">    capabilityOffsets = calculateCapabilityOffsets(agreedCaps);</span>
+<span class="fc" id="L49">  }</span>
+
+  public Set&lt;Capability&gt; getAgreedCapabilities() {
+<span class="fc" id="L52">    return capabilityOffsets.keySet();</span>
+  }
+
+  public SubProtocol subProtocol(final Capability cap) {
+<span class="fc" id="L56">    return subProtocols.get(cap.getName());</span>
+  }
+
+  /**
+   * Prepares a message to send by offsetting its code based on the agreed capabilities.
+   *
+   * @param cap The capability (protocol) associated with this message.
+   * @param messageToSend The message to send.
+   * @return Returns message with the correctly offset code.
+   */
+  public MessageData multiplex(final Capability cap, final MessageData messageToSend) {
+<span class="fc bfc" id="L67" title="All 2 branches covered.">    final int offset = null == cap ? 0 : capabilityOffsets.get(cap);</span>
+<span class="fc" id="L68">    return offsetMessageCode(messageToSend, offset);</span>
+  }
+
+  /**
+   * Given a message from a peer, determine which capability the message corresponds to and maps the
+   * message code to the appropriate value.
+   *
+   * @param receivedMessage The message received from a peer.
+   * @return The interpreted message.
+   */
+  public ProtocolMessage demultiplex(final MessageData receivedMessage) {
+<span class="fc" id="L79">    final Map.Entry&lt;Range&lt;Integer&gt;, Capability&gt; agreedCap =</span>
+<span class="fc" id="L80">        agreedCaps.getEntry(receivedMessage.getCode());</span>
+
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (agreedCap == null) {</span>
+<span class="fc" id="L83">      return new ProtocolMessage(null, receivedMessage);</span>
+    }
+
+<span class="fc" id="L86">    final int offset = -agreedCap.getKey().lowerEndpoint();</span>
+<span class="fc" id="L87">    final Capability cap = agreedCap.getValue();</span>
+
+<span class="fc" id="L89">    final MessageData demultiplexedMessage = offsetMessageCode(receivedMessage, offset);</span>
+<span class="fc" id="L90">    return new ProtocolMessage(cap, demultiplexedMessage);</span>
+  }
+
+  private MessageData offsetMessageCode(final MessageData originalMessage, final int offset) {
+    // Return wrapped message with modified offset
+<span class="fc" id="L95">    return new MessageData() {</span>
+      @Override
+      public int getSize() {
+<span class="fc" id="L98">        return originalMessage.getSize();</span>
+      }
+
+      @Override
+      public int getCode() {
+<span class="fc" id="L103">        return originalMessage.getCode() + offset;</span>
+      }
+
+      @Override
+      public Bytes getData() {
+<span class="fc" id="L108">        return originalMessage.getData();</span>
+      }
+
+      @Override
+      public String toString() {
+<span class="nc" id="L113">        return &quot;Message{ code=&quot; + getCode() + &quot;, size=&quot; + getSize() + &quot;}&quot;;</span>
+      }
+    };
+  }
+
+  private ImmutableRangeMap&lt;Integer, Capability&gt; calculateAgreedCapabilities(
+      final List&lt;Capability&gt; a, final List&lt;Capability&gt; b) {
+<span class="fc" id="L120">    final List&lt;Capability&gt; caps = new ArrayList&lt;&gt;(a);</span>
+<span class="fc" id="L121">    caps.sort(CAPABILITY_COMPARATOR);</span>
+<span class="fc" id="L122">    caps.retainAll(b);</span>
+
+<span class="fc" id="L124">    final ImmutableRangeMap.Builder&lt;Integer, Capability&gt; builder = ImmutableRangeMap.builder();</span>
+    // Reserve some messages for WireProtocol
+<span class="fc" id="L126">    int offset = WIRE_PROTOCOL_MESSAGE_SPACE;</span>
+<span class="fc" id="L127">    String prevProtocol = null;</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">    for (final Iterator&lt;Capability&gt; itr = caps.iterator(); itr.hasNext(); ) {</span>
+<span class="fc" id="L129">      final Capability cap = itr.next();</span>
+<span class="fc" id="L130">      final String curProtocol = cap.getName();</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">      if (curProtocol.equalsIgnoreCase(prevProtocol)) {</span>
+        // A later version of this protocol is already being used, so ignore this version
+<span class="fc" id="L133">        continue;</span>
+      }
+<span class="fc" id="L135">      prevProtocol = curProtocol;</span>
+<span class="fc" id="L136">      final SubProtocol subProtocol = subProtocols.get(cap.getName());</span>
+<span class="pc bpc" id="L137" title="1 of 2 branches missed.">      final int messageSpace = subProtocol == null ? 0 : subProtocol.messageSpace(cap.getVersion());</span>
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">      if (messageSpace &gt; 0) {</span>
+<span class="fc" id="L139">        builder.put(Range.closedOpen(offset, offset + messageSpace), cap);</span>
+      }
+<span class="fc" id="L141">      offset += messageSpace;</span>
+<span class="fc" id="L142">    }</span>
+
+<span class="fc" id="L144">    return builder.build();</span>
+  }
+
+  private static ImmutableMap&lt;Capability, Integer&gt; calculateCapabilityOffsets(
+      final ImmutableRangeMap&lt;Integer, Capability&gt; agreedCaps) {
+<span class="fc" id="L149">    final ImmutableMap.Builder&lt;Capability, Integer&gt; capToOffset = ImmutableMap.builder();</span>
+    for (final Map.Entry&lt;Range&lt;Integer&gt;, Capability&gt; entry :
+<span class="fc bfc" id="L151" title="All 2 branches covered.">        agreedCaps.asMapOfRanges().entrySet()) {</span>
+<span class="fc" id="L152">      capToOffset.put(entry.getValue(), entry.getKey().lowerEndpoint());</span>
+<span class="fc" id="L153">    }</span>
+<span class="fc" id="L154">    return capToOffset.build();</span>
+  }
+
+  public static class ProtocolMessage {
+    private final Capability capability;
+    private final MessageData message;
+
+<span class="fc" id="L161">    ProtocolMessage(final Capability capability, final MessageData message) {</span>
+<span class="fc" id="L162">      this.capability = capability;</span>
+<span class="fc" id="L163">      this.message = message;</span>
+<span class="fc" id="L164">    }</span>
+
+    public Capability getCapability() {
+<span class="fc" id="L167">      return capability;</span>
+    }
+
+    public MessageData getMessage() {
+<span class="fc" id="L171">      return message;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L176">      return &quot;ProtocolMessage{&quot;</span>
+          + &quot;capability=&quot;
+          + capability
+          + &quot;, messageCode=&quot;
+<span class="nc" id="L180">          + message.getCode()</span>
+          + '}';
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

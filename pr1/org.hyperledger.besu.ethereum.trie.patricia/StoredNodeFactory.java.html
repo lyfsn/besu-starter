@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StoredNodeFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.patricia</a> &gt; <span class="el_source">StoredNodeFactory.java</span></div><h1>StoredNodeFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.patricia;
+
+import static java.lang.String.format;
+
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.NodeFactory;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.ethereum.trie.NullNode;
+import org.hyperledger.besu.ethereum.trie.StoredNode;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class StoredNodeFactory&lt;V&gt; implements NodeFactory&lt;V&gt; {
+  @SuppressWarnings(&quot;rawtypes&quot;)
+<span class="fc" id="L42">  private static final NullNode NULL_NODE = NullNode.instance();</span>
+
+  private static final int RADIX = 16;
+
+  private final NodeLoader nodeLoader;
+  private final Function&lt;V, Bytes&gt; valueSerializer;
+  private final Function&lt;Bytes, V&gt; valueDeserializer;
+
+  public StoredNodeFactory(
+      final NodeLoader nodeLoader,
+      final Function&lt;V, Bytes&gt; valueSerializer,
+<span class="fc" id="L53">      final Function&lt;Bytes, V&gt; valueDeserializer) {</span>
+<span class="fc" id="L54">    this.nodeLoader = nodeLoader;</span>
+<span class="fc" id="L55">    this.valueSerializer = valueSerializer;</span>
+<span class="fc" id="L56">    this.valueDeserializer = valueDeserializer;</span>
+<span class="fc" id="L57">  }</span>
+
+  @Override
+  public Node&lt;V&gt; createExtension(final Bytes path, final Node&lt;V&gt; child) {
+<span class="fc" id="L61">    return handleNewNode(new ExtensionNode&lt;&gt;(path, child, this));</span>
+  }
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  @Override
+  public Node&lt;V&gt; createBranch(
+      final byte leftIndex, final Node&lt;V&gt; left, final byte rightIndex, final Node&lt;V&gt; right) {
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">    assert (leftIndex &lt;= RADIX);</span>
+<span class="pc bpc" id="L69" title="1 of 2 branches missed.">    assert (rightIndex &lt;= RADIX);</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">    assert (leftIndex != rightIndex);</span>
+
+<span class="fc" id="L72">    final ArrayList&lt;Node&lt;V&gt;&gt; children =</span>
+<span class="fc" id="L73">        new ArrayList&lt;&gt;(Collections.nCopies(RADIX, (Node&lt;V&gt;) NULL_NODE));</span>
+
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    if (leftIndex == RADIX) {</span>
+<span class="fc" id="L76">      children.set(rightIndex, right);</span>
+<span class="fc" id="L77">      return createBranch(children, left.getValue());</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    } else if (rightIndex == RADIX) {</span>
+<span class="fc" id="L79">      children.set(leftIndex, left);</span>
+<span class="fc" id="L80">      return createBranch(children, right.getValue());</span>
+    } else {
+<span class="fc" id="L82">      children.set(leftIndex, left);</span>
+<span class="fc" id="L83">      children.set(rightIndex, right);</span>
+<span class="fc" id="L84">      return createBranch(children, Optional.empty());</span>
+    }
+  }
+
+  @Override
+  public Node&lt;V&gt; createBranch(final List&lt;Node&lt;V&gt;&gt; children, final Optional&lt;V&gt; value) {
+<span class="fc" id="L90">    return handleNewNode(new BranchNode&lt;&gt;(children, value, this, valueSerializer));</span>
+  }
+
+  @Override
+  public Node&lt;V&gt; createLeaf(final Bytes path, final V value) {
+<span class="fc" id="L95">    return handleNewNode(new LeafNode&lt;&gt;(path, value, this, valueSerializer));</span>
+  }
+
+  private Node&lt;V&gt; handleNewNode(final Node&lt;V&gt; node) {
+<span class="fc" id="L99">    node.markDirty();</span>
+<span class="fc" id="L100">    return node;</span>
+  }
+
+  @Override
+  public Optional&lt;Node&lt;V&gt;&gt; retrieve(final Bytes location, final Bytes32 hash)
+      throws MerkleTrieException {
+<span class="fc" id="L106">    return nodeLoader</span>
+<span class="fc" id="L107">        .getNode(location, hash)</span>
+<span class="fc" id="L108">        .map(</span>
+            rlp -&gt; {
+<span class="fc" id="L110">              final Node&lt;V&gt; node =</span>
+<span class="pc" id="L111">                  decode(location, rlp, () -&gt; format(&quot;Invalid RLP value for hash %s&quot;, hash));</span>
+              // recalculating the node.hash() is expensive, so we only do this as an assertion
+<span class="pc bpc" id="L113" title="1 of 2 branches missed.">              assert (hash.equals(node.getHash()))</span>
+<span class="nc" id="L114">                  : &quot;Node hash &quot; + node.getHash() + &quot; not equal to expected &quot; + hash;</span>
+<span class="fc" id="L115">              return node;</span>
+            });
+  }
+
+  public Node&lt;V&gt; decode(final Bytes location, final Bytes rlp) {
+<span class="pc" id="L120">    return decode(location, rlp, () -&gt; String.format(&quot;Failed to decode value %s&quot;, rlp.toString()));</span>
+  }
+
+  private Node&lt;V&gt; decode(final Bytes location, final Bytes rlp, final Supplier&lt;String&gt; errMessage)
+      throws MerkleTrieException {
+    try {
+<span class="fc" id="L126">      return decode(location, RLP.input(rlp), errMessage);</span>
+<span class="nc" id="L127">    } catch (final RLPException ex) {</span>
+<span class="nc" id="L128">      throw new MerkleTrieException(errMessage.get(), ex);</span>
+    }
+  }
+
+  private Node&lt;V&gt; decode(
+      final Bytes location, final RLPInput nodeRLPs, final Supplier&lt;String&gt; errMessage) {
+<span class="fc" id="L134">    final int nodesCount = nodeRLPs.enterList();</span>
+<span class="pc bpc" id="L135" title="2 of 4 branches missed.">    switch (nodesCount) {</span>
+      case 1:
+<span class="nc" id="L137">        final NullNode&lt;V&gt; nullNode = decodeNull(nodeRLPs, errMessage);</span>
+<span class="nc" id="L138">        nodeRLPs.leaveList();</span>
+<span class="nc" id="L139">        return nullNode;</span>
+
+      case 2:
+<span class="fc" id="L142">        final Bytes encodedPath = nodeRLPs.readBytes();</span>
+        final Bytes path;
+        try {
+<span class="fc" id="L145">          path = CompactEncoding.decode(encodedPath);</span>
+<span class="nc" id="L146">        } catch (final IllegalArgumentException ex) {</span>
+<span class="nc" id="L147">          throw new MerkleTrieException(errMessage.get() + &quot;: invalid path &quot; + encodedPath, ex);</span>
+<span class="fc" id="L148">        }</span>
+
+<span class="fc" id="L150">        final int size = path.size();</span>
+<span class="pc bpc" id="L151" title="1 of 4 branches missed.">        if (size &gt; 0 &amp;&amp; path.get(size - 1) == CompactEncoding.LEAF_TERMINATOR) {</span>
+<span class="fc" id="L152">          final LeafNode&lt;V&gt; leafNode = decodeLeaf(location, path, nodeRLPs, errMessage);</span>
+<span class="fc" id="L153">          nodeRLPs.leaveList();</span>
+<span class="fc" id="L154">          return leafNode;</span>
+        } else {
+<span class="fc" id="L156">          final Node&lt;V&gt; extensionNode = decodeExtension(location, path, nodeRLPs, errMessage);</span>
+<span class="fc" id="L157">          nodeRLPs.leaveList();</span>
+<span class="fc" id="L158">          return extensionNode;</span>
+        }
+
+      case (RADIX + 1):
+<span class="fc" id="L162">        final BranchNode&lt;V&gt; branchNode = decodeBranch(location, nodeRLPs, errMessage);</span>
+<span class="fc" id="L163">        nodeRLPs.leaveList();</span>
+<span class="fc" id="L164">        return branchNode;</span>
+
+      default:
+<span class="nc" id="L167">        throw new MerkleTrieException(</span>
+<span class="nc" id="L168">            errMessage.get() + format(&quot;: invalid list size %s&quot;, nodesCount));</span>
+    }
+  }
+
+  protected Node&lt;V&gt; decodeExtension(
+      final Bytes location,
+      final Bytes path,
+      final RLPInput valueRlp,
+      final Supplier&lt;String&gt; errMessage) {
+<span class="fc" id="L177">    final RLPInput childRlp = valueRlp.readAsRlp();</span>
+<span class="fc bfc" id="L178" title="All 2 branches covered.">    if (childRlp.nextIsList()) {</span>
+<span class="fc" id="L179">      final Node&lt;V&gt; childNode =</span>
+<span class="pc bpc" id="L180" title="1 of 2 branches missed.">          decode(location == null ? null : Bytes.concatenate(location, path), childRlp, errMessage);</span>
+<span class="fc" id="L181">      return new ExtensionNode&lt;&gt;(location, path, childNode, this);</span>
+    } else {
+<span class="fc" id="L183">      final Bytes32 childHash = childRlp.readBytes32();</span>
+<span class="fc" id="L184">      final StoredNode&lt;V&gt; childNode =</span>
+          new StoredNode&lt;&gt;(
+<span class="fc bfc" id="L186" title="All 2 branches covered.">              this, location == null ? null : Bytes.concatenate(location, path), childHash);</span>
+<span class="fc" id="L187">      return new ExtensionNode&lt;&gt;(location, path, childNode, this);</span>
+    }
+  }
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  protected BranchNode&lt;V&gt; decodeBranch(
+      final Bytes location, final RLPInput nodeRLPs, final Supplier&lt;String&gt; errMessage) {
+<span class="fc" id="L194">    final ArrayList&lt;Node&lt;V&gt;&gt; children = new ArrayList&lt;&gt;(RADIX);</span>
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    for (int i = 0; i &lt; RADIX; ++i) {</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">      if (nodeRLPs.nextIsNull()) {</span>
+<span class="fc" id="L197">        nodeRLPs.skipNext();</span>
+<span class="fc" id="L198">        children.add(NULL_NODE);</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">      } else if (nodeRLPs.nextIsList()) {</span>
+<span class="fc" id="L200">        final Node&lt;V&gt; child =</span>
+<span class="fc" id="L201">            decode(</span>
+<span class="fc bfc" id="L202" title="All 2 branches covered.">                location == null ? null : Bytes.concatenate(location, Bytes.of((byte) i)),</span>
+                nodeRLPs,
+                errMessage);
+<span class="fc" id="L205">        children.add(child);</span>
+<span class="fc" id="L206">      } else {</span>
+<span class="fc" id="L207">        final Bytes32 childHash = nodeRLPs.readBytes32();</span>
+<span class="fc" id="L208">        children.add(</span>
+            new StoredNode&lt;&gt;(
+                this,
+<span class="fc bfc" id="L211" title="All 2 branches covered.">                location == null ? null : Bytes.concatenate(location, Bytes.of((byte) i)),</span>
+                childHash));
+      }
+    }
+
+    final Optional&lt;V&gt; value;
+<span class="pc bpc" id="L217" title="1 of 2 branches missed.">    if (nodeRLPs.nextIsNull()) {</span>
+<span class="fc" id="L218">      nodeRLPs.skipNext();</span>
+<span class="fc" id="L219">      value = Optional.empty();</span>
+    } else {
+<span class="nc" id="L221">      value = Optional.of(decodeValue(nodeRLPs, errMessage));</span>
+    }
+
+<span class="fc" id="L224">    return new BranchNode&lt;&gt;(location, children, value, this, valueSerializer);</span>
+  }
+
+  protected LeafNode&lt;V&gt; decodeLeaf(
+      final Bytes location,
+      final Bytes path,
+      final RLPInput valueRlp,
+      final Supplier&lt;String&gt; errMessage) {
+<span class="pc bpc" id="L232" title="1 of 2 branches missed.">    if (valueRlp.nextIsNull()) {</span>
+<span class="nc" id="L233">      throw new MerkleTrieException(errMessage.get() + &quot;: leaf has null value&quot;);</span>
+    }
+<span class="fc" id="L235">    final V value = decodeValue(valueRlp, errMessage);</span>
+<span class="fc" id="L236">    return new LeafNode&lt;&gt;(location, path, value, this, valueSerializer);</span>
+  }
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  private NullNode&lt;V&gt; decodeNull(final RLPInput nodeRLPs, final Supplier&lt;String&gt; errMessage) {
+<span class="nc bnc" id="L241" title="All 2 branches missed.">    if (!nodeRLPs.nextIsNull()) {</span>
+<span class="nc" id="L242">      throw new MerkleTrieException(errMessage.get() + &quot;: list size 1 but not null&quot;);</span>
+    }
+<span class="nc" id="L244">    nodeRLPs.skipNext();</span>
+<span class="nc" id="L245">    return NULL_NODE;</span>
+  }
+
+  private V decodeValue(final RLPInput valueRlp, final Supplier&lt;String&gt; errMessage) {
+    final Bytes bytes;
+    try {
+<span class="fc" id="L251">      bytes = valueRlp.readBytes();</span>
+<span class="nc" id="L252">    } catch (final RLPException ex) {</span>
+<span class="nc" id="L253">      throw new MerkleTrieException(</span>
+<span class="nc" id="L254">          errMessage.get() + &quot;: failed decoding value rlp &quot; + valueRlp, ex);</span>
+<span class="fc" id="L255">    }</span>
+<span class="fc" id="L256">    return deserializeValue(errMessage, bytes);</span>
+  }
+
+  private V deserializeValue(final Supplier&lt;String&gt; errMessage, final Bytes bytes) {
+    final V value;
+    try {
+<span class="fc" id="L262">      value = valueDeserializer.apply(bytes);</span>
+<span class="nc" id="L263">    } catch (final IllegalArgumentException ex) {</span>
+<span class="nc" id="L264">      throw new MerkleTrieException(errMessage.get() + &quot;: failed deserializing value &quot; + bytes, ex);</span>
+<span class="fc" id="L265">    }</span>
+<span class="fc" id="L266">    return value;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateGroupRehydrationBlockProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateGroupRehydrationBlockProcessor.java</span></div><h1>PrivateGroupRehydrationBlockProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static org.hyperledger.besu.ethereum.privacy.PrivateStateRootResolver.EMPTY_ROOT_HASH;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.BlockProcessingOutputs;
+import org.hyperledger.besu.ethereum.BlockProcessingResult;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.mainnet.AbstractBlockProcessor;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.mainnet.MiningBeneficiaryCalculator;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateTransactionMetadata;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.vm.BlockHashLookup;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivateGroupRehydrationBlockProcessor {
+
+<span class="fc" id="L57">  private static final Logger LOG =</span>
+<span class="fc" id="L58">      LoggerFactory.getLogger(PrivateGroupRehydrationBlockProcessor.class);</span>
+
+  static final int MAX_GENERATION = 6;
+
+  private final MainnetTransactionProcessor transactionProcessor;
+  private final PrivateTransactionProcessor privateTransactionProcessor;
+  private final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory;
+  final Wei blockReward;
+  private final boolean skipZeroBlockRewards;
+  private final PrivateStateGenesisAllocator privateStateGenesisAllocator;
+  private final MiningBeneficiaryCalculator miningBeneficiaryCalculator;
+
+  public PrivateGroupRehydrationBlockProcessor(
+      final MainnetTransactionProcessor transactionProcessor,
+      final PrivateTransactionProcessor privateTransactionProcessor,
+      final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory,
+      final Wei blockReward,
+      final MiningBeneficiaryCalculator miningBeneficiaryCalculator,
+      final boolean skipZeroBlockRewards,
+<span class="fc" id="L77">      final PrivateStateGenesisAllocator privateStateGenesisAllocator) {</span>
+<span class="fc" id="L78">    this.transactionProcessor = transactionProcessor;</span>
+<span class="fc" id="L79">    this.privateTransactionProcessor = privateTransactionProcessor;</span>
+<span class="fc" id="L80">    this.transactionReceiptFactory = transactionReceiptFactory;</span>
+<span class="fc" id="L81">    this.blockReward = blockReward;</span>
+<span class="fc" id="L82">    this.miningBeneficiaryCalculator = miningBeneficiaryCalculator;</span>
+<span class="fc" id="L83">    this.skipZeroBlockRewards = skipZeroBlockRewards;</span>
+<span class="fc" id="L84">    this.privateStateGenesisAllocator = privateStateGenesisAllocator;</span>
+<span class="fc" id="L85">  }</span>
+
+  public BlockProcessingResult processBlock(
+      final Blockchain blockchain,
+      final MutableWorldState worldState,
+      final WorldStateArchive privateWorldStateArchive,
+      final PrivateStateStorage privateStateStorage,
+      final PrivateStateRootResolver privateStateRootResolver,
+      final Block block,
+      final Map&lt;Hash, PrivateTransaction&gt; forExecution,
+      final List&lt;BlockHeader&gt; ommers) {
+<span class="fc" id="L96">    long gasUsed = 0;</span>
+<span class="fc" id="L97">    final List&lt;TransactionReceipt&gt; receipts = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L99">    final List&lt;Transaction&gt; transactions = block.getBody().getTransactions();</span>
+<span class="fc" id="L100">    final BlockHeader blockHeader = block.getHeader();</span>
+<span class="fc" id="L101">    final PrivateMetadataUpdater metadataUpdater =</span>
+        new PrivateMetadataUpdater(blockHeader, privateStateStorage);
+
+<span class="fc bfc" id="L104" title="All 2 branches covered.">    for (final Transaction transaction : transactions) {</span>
+
+<span class="fc" id="L106">      final long remainingGasBudget = blockHeader.getGasLimit() - gasUsed;</span>
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">      if (Long.compareUnsigned(transaction.getGasLimit(), remainingGasBudget) &gt; 0) {</span>
+<span class="nc" id="L108">        LOG.warn(</span>
+            &quot;Transaction processing error: transaction gas limit {} exceeds available block budget&quot;
+                + &quot; remaining {}&quot;,
+<span class="nc" id="L111">            transaction.getGasLimit(),</span>
+<span class="nc" id="L112">            remainingGasBudget);</span>
+<span class="nc" id="L113">        return BlockProcessingResult.FAILED;</span>
+      }
+
+<span class="fc" id="L116">      final WorldUpdater worldStateUpdater = worldState.updater();</span>
+<span class="fc" id="L117">      final BlockHashLookup blockHashLookup = new CachingBlockHashLookup(blockHeader, blockchain);</span>
+<span class="fc" id="L118">      final Address miningBeneficiary =</span>
+<span class="fc" id="L119">          miningBeneficiaryCalculator.calculateBeneficiary(blockHeader);</span>
+
+<span class="fc" id="L121">      final Hash transactionHash = transaction.getHash();</span>
+<span class="pc bpc" id="L122" title="1 of 2 branches missed.">      if (forExecution.containsKey(transactionHash)) {</span>
+<span class="fc" id="L123">        final PrivateTransaction privateTransaction = forExecution.get(transactionHash);</span>
+<span class="fc" id="L124">        final Bytes32 privacyGroupId = Bytes32.wrap(privateTransaction.getPrivacyGroupId().get());</span>
+<span class="fc" id="L125">        final Hash lastRootHash =</span>
+<span class="fc" id="L126">            privateStateRootResolver.resolveLastStateRoot(privacyGroupId, metadataUpdater);</span>
+
+<span class="fc" id="L128">        final MutableWorldState disposablePrivateState =</span>
+<span class="fc" id="L129">            privateWorldStateArchive.getMutable(lastRootHash, null).get();</span>
+<span class="fc" id="L130">        final WorldUpdater privateWorldStateUpdater = disposablePrivateState.updater();</span>
+
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">        if (lastRootHash.equals(EMPTY_ROOT_HASH)) {</span>
+<span class="fc" id="L133">          privateStateGenesisAllocator.applyGenesisToPrivateWorldState(</span>
+              disposablePrivateState,
+              privateWorldStateUpdater,
+              privacyGroupId,
+<span class="fc" id="L137">              blockHeader.getNumber());</span>
+        }
+
+<span class="fc" id="L140">        LOG.debug(</span>
+            &quot;Pre-rehydrate root hash: {} for tx {}&quot;,
+<span class="fc" id="L142">            disposablePrivateState.rootHash(),</span>
+            transactionHash);
+
+<span class="fc" id="L145">        final TransactionProcessingResult privateResult =</span>
+<span class="fc" id="L146">            privateTransactionProcessor.processTransaction(</span>
+<span class="fc" id="L147">                worldStateUpdater.updater(),</span>
+                privateWorldStateUpdater,
+                blockHeader,
+                transactionHash,
+                privateTransaction,
+                miningBeneficiary,
+                OperationTracer.NO_TRACING,
+                new CachingBlockHashLookup(blockHeader, blockchain),
+<span class="fc" id="L155">                privateTransaction.getPrivacyGroupId().get());</span>
+
+<span class="fc" id="L157">        privateWorldStateUpdater.commit();</span>
+<span class="fc" id="L158">        disposablePrivateState.persist(null);</span>
+
+<span class="fc" id="L160">        storePrivateMetadata(</span>
+            transactionHash,
+            privacyGroupId,
+            disposablePrivateState,
+            metadataUpdater,
+            privateResult);
+
+<span class="fc" id="L167">        LOG.debug(&quot;Post-rehydrate root hash: {}&quot;, disposablePrivateState.rootHash());</span>
+      }
+
+      // We have to process the public transactions here, because the private transactions can
+      // depend on  public state
+<span class="fc" id="L172">      final TransactionProcessingResult result =</span>
+<span class="fc" id="L173">          transactionProcessor.processTransaction(</span>
+              blockchain,
+              worldStateUpdater,
+              blockHeader,
+              transaction,
+              miningBeneficiary,
+              blockHashLookup,
+<span class="fc" id="L180">              false,</span>
+<span class="fc" id="L181">              TransactionValidationParams.processingBlock(),</span>
+              Wei.ZERO);
+<span class="pc bpc" id="L183" title="1 of 2 branches missed.">      if (result.isInvalid()) {</span>
+<span class="nc" id="L184">        return BlockProcessingResult.FAILED;</span>
+      }
+
+<span class="fc" id="L187">      gasUsed = transaction.getGasLimit() - result.getGasRemaining() + gasUsed;</span>
+<span class="fc" id="L188">      final TransactionReceipt transactionReceipt =</span>
+<span class="fc" id="L189">          transactionReceiptFactory.create(transaction.getType(), result, worldState, gasUsed);</span>
+<span class="fc" id="L190">      receipts.add(transactionReceipt);</span>
+<span class="fc" id="L191">    }</span>
+
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">    if (!rewardCoinbase(worldState, blockHeader, ommers, skipZeroBlockRewards)) {</span>
+<span class="nc" id="L194">      return BlockProcessingResult.FAILED;</span>
+    }
+
+<span class="fc" id="L197">    metadataUpdater.commit();</span>
+<span class="fc" id="L198">    BlockProcessingOutputs blockProcessingOutput = new BlockProcessingOutputs(worldState, receipts);</span>
+<span class="fc" id="L199">    return new BlockProcessingResult(Optional.of(blockProcessingOutput));</span>
+  }
+
+  void storePrivateMetadata(
+      final Hash commitmentHash,
+      final Bytes32 privacyGroupId,
+      final MutableWorldState disposablePrivateState,
+      final PrivateMetadataUpdater privateMetadataUpdater,
+      final TransactionProcessingResult result) {
+
+    final int txStatus =
+<span class="pc bpc" id="L210" title="1 of 2 branches missed.">        result.getStatus() == TransactionProcessingResult.Status.SUCCESSFUL ? 1 : 0;</span>
+
+<span class="fc" id="L212">    final PrivateTransactionReceipt privateTransactionReceipt =</span>
+        new PrivateTransactionReceipt(
+<span class="fc" id="L214">            txStatus, result.getLogs(), result.getOutput(), result.getRevertReason());</span>
+
+<span class="fc" id="L216">    privateMetadataUpdater.putTransactionReceipt(commitmentHash, privateTransactionReceipt);</span>
+<span class="fc" id="L217">    privateMetadataUpdater.updatePrivacyGroupHeadBlockMap(privacyGroupId);</span>
+<span class="fc" id="L218">    privateMetadataUpdater.addPrivateTransactionMetadata(</span>
+        privacyGroupId,
+<span class="fc" id="L220">        new PrivateTransactionMetadata(commitmentHash, disposablePrivateState.rootHash()));</span>
+<span class="fc" id="L221">  }</span>
+
+  private boolean rewardCoinbase(
+      final MutableWorldState worldState,
+      final ProcessableBlockHeader header,
+      final List&lt;BlockHeader&gt; ommers,
+      final boolean skipZeroBlockRewards) {
+<span class="pc bpc" id="L228" title="2 of 4 branches missed.">    if (skipZeroBlockRewards &amp;&amp; blockReward.isZero()) {</span>
+<span class="fc" id="L229">      return true;</span>
+    }
+
+<span class="nc" id="L232">    final Wei coinbaseReward = blockReward.add(blockReward.multiply(ommers.size()).divide(32));</span>
+<span class="nc" id="L233">    final WorldUpdater updater = worldState.updater();</span>
+<span class="nc" id="L234">    final MutableAccount coinbase = updater.getOrCreate(header.getCoinbase());</span>
+
+<span class="nc" id="L236">    coinbase.incrementBalance(coinbaseReward);</span>
+<span class="nc bnc" id="L237" title="All 2 branches missed.">    for (final BlockHeader ommerHeader : ommers) {</span>
+<span class="nc bnc" id="L238" title="All 2 branches missed.">      if (ommerHeader.getNumber() - header.getNumber() &gt; MAX_GENERATION) {</span>
+<span class="nc" id="L239">        LOG.warn(</span>
+            &quot;Block processing error: ommer block number {} more than {} generations current block&quot;
+                + &quot; number {}&quot;,
+<span class="nc" id="L242">            ommerHeader.getNumber(),</span>
+<span class="nc" id="L243">            MAX_GENERATION,</span>
+<span class="nc" id="L244">            header.getNumber());</span>
+<span class="nc" id="L245">        return false;</span>
+      }
+
+<span class="nc" id="L248">      final MutableAccount ommerCoinbase = updater.getOrCreate(ommerHeader.getCoinbase());</span>
+<span class="nc" id="L249">      final long distance = header.getNumber() - ommerHeader.getNumber();</span>
+<span class="nc" id="L250">      final Wei ommerReward = blockReward.subtract(blockReward.multiply(distance).divide(8));</span>
+<span class="nc" id="L251">      ommerCoinbase.incrementBalance(ommerReward);</span>
+<span class="nc" id="L252">    }</span>
+
+<span class="nc" id="L254">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

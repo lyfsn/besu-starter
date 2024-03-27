@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ForkIdManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.forkid</a> &gt; <span class="el_source">ForkIdManager.java</span></div><h1>ForkIdManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.forkid;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.plugin.data.BlockHeader;
+import org.hyperledger.besu.util.EndianUtils;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.zip.CRC32;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class ForkIdManager {
+
+  private final Hash genesisHash;
+  private final List&lt;ForkId&gt; blockNumbersForkIds;
+  private final List&lt;ForkId&gt; timestampsForkIds;
+  private final List&lt;ForkId&gt; allForkIds;
+
+  private final List&lt;Long&gt; blockNumberForks;
+  private final List&lt;Long&gt; timestampForks;
+
+  private final Supplier&lt;BlockHeader&gt; chainHeadSupplier;
+  private final long forkNext;
+  private final boolean noForksAvailable;
+  private final long highestKnownFork;
+  private Bytes genesisHashCrc;
+  private final boolean legacyEth64;
+
+  public ForkIdManager(
+      final Blockchain blockchain,
+      final List&lt;Long&gt; blockNumberForks,
+      final List&lt;Long&gt; timestampForks,
+<span class="fc" id="L57">      final boolean legacyEth64) {</span>
+<span class="fc" id="L58">    checkNotNull(blockchain);</span>
+<span class="fc" id="L59">    checkNotNull(blockNumberForks);</span>
+<span class="fc" id="L60">    this.chainHeadSupplier = blockchain::getChainHeadHeader;</span>
+<span class="fc" id="L61">    this.genesisHash = blockchain.getGenesisBlock().getHash();</span>
+<span class="fc" id="L62">    this.blockNumbersForkIds = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L63">    this.timestampsForkIds = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L64">    this.legacyEth64 = legacyEth64;</span>
+<span class="fc" id="L65">    this.blockNumberForks =</span>
+<span class="fc" id="L66">        blockNumberForks.stream()</span>
+<span class="fc bfc" id="L67" title="All 2 branches covered.">            .filter(fork -&gt; fork &gt; 0L)</span>
+<span class="fc" id="L68">            .distinct()</span>
+<span class="fc" id="L69">            .sorted()</span>
+<span class="fc" id="L70">            .collect(Collectors.toUnmodifiableList());</span>
+<span class="fc" id="L71">    this.timestampForks =</span>
+<span class="fc" id="L72">        timestampForks.stream()</span>
+<span class="fc bfc" id="L73" title="All 2 branches covered.">            .filter(fork -&gt; fork &gt; blockchain.getGenesisBlock().getHeader().getTimestamp())</span>
+<span class="fc" id="L74">            .distinct()</span>
+<span class="fc" id="L75">            .sorted()</span>
+<span class="fc" id="L76">            .collect(Collectors.toUnmodifiableList());</span>
+<span class="fc" id="L77">    final List&lt;Long&gt; allForkNumbers =</span>
+<span class="fc" id="L78">        Stream.concat(blockNumberForks.stream(), timestampForks.stream())</span>
+<span class="fc" id="L79">            .collect(Collectors.toList());</span>
+<span class="fc" id="L80">    this.forkNext = createForkIds();</span>
+<span class="fc" id="L81">    this.allForkIds =</span>
+<span class="fc" id="L82">        Stream.concat(blockNumbersForkIds.stream(), timestampsForkIds.stream())</span>
+<span class="fc" id="L83">            .collect(Collectors.toList());</span>
+<span class="fc" id="L84">    this.noForksAvailable = allForkIds.isEmpty();</span>
+<span class="fc" id="L85">    this.highestKnownFork =</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">        !allForkNumbers.isEmpty() ? allForkNumbers.get(allForkNumbers.size() - 1) : 0L;</span>
+<span class="fc" id="L87">  }</span>
+
+  public ForkId getForkIdForChainHead() {
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (legacyEth64) {</span>
+<span class="fc bfc" id="L91" title="All 2 branches covered.">      return blockNumbersForkIds.isEmpty()</span>
+<span class="fc" id="L92">          ? null</span>
+<span class="fc" id="L93">          : blockNumbersForkIds.get(blockNumbersForkIds.size() - 1);</span>
+    }
+<span class="fc" id="L95">    final BlockHeader header = chainHeadSupplier.get();</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    for (final ForkId forkId : blockNumbersForkIds) {</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">      if (header.getNumber() &lt; forkId.getNext()) {</span>
+<span class="fc" id="L98">        return forkId;</span>
+      }
+<span class="fc" id="L100">    }</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    for (final ForkId forkId : timestampsForkIds) {</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">      if (header.getTimestamp() &lt; forkId.getNext()) {</span>
+<span class="fc" id="L103">        return forkId;</span>
+      }
+<span class="fc" id="L105">    }</span>
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    return allForkIds.isEmpty()</span>
+<span class="fc" id="L107">        ? new ForkId(genesisHashCrc, 0)</span>
+<span class="fc" id="L108">        : allForkIds.get(allForkIds.size() - 1);</span>
+  }
+
+  @VisibleForTesting
+  public List&lt;ForkId&gt; getAllForkIds() {
+<span class="fc" id="L113">    return allForkIds;</span>
+  }
+
+  public static ForkId readFrom(final RLPInput in) {
+<span class="nc" id="L117">    in.enterList();</span>
+<span class="nc" id="L118">    final Bytes hash = in.readBytes();</span>
+<span class="nc" id="L119">    final Bytes next = in.readBytes();</span>
+<span class="nc" id="L120">    in.leaveList();</span>
+<span class="nc" id="L121">    return new ForkId(hash, next);</span>
+  }
+
+  /**
+   * EIP-2124 behaviour
+   *
+   * @param forkId to be validated.
+   * @return boolean (peer valid (true) or invalid (false))
+   */
+  public boolean peerCheck(final ForkId forkId) {
+<span class="fc bfc" id="L131" title="All 4 branches covered.">    if (forkId == null || noForksAvailable) {</span>
+<span class="fc" id="L132">      return true; // Another method must be used to validate (i.e. genesis hash)</span>
+    }
+    // Run the fork checksum validation rule set:
+    //   1. If local and remote FORK_CSUM matches, connect.
+    //        The two nodes are in the same fork state currently. They might know
+    //        of differing future forks, but that's not relevant until the fork
+    //        triggers (might be postponed, nodes might be updated to match).
+    //   2. If the remote FORK_CSUM is a subset of the local past forks and the
+    //      remote FORK_NEXT matches with the locally following fork block number,
+    //      connect.
+    //        Remote node is currently syncing. It might eventually diverge from
+    //        us, but at this current point in time we don't have enough information.
+    //   3. If the remote FORK_CSUM is a superset of the local past forks and can
+    //      be completed with locally known future forks, connect.
+    //        Local node is currently syncing. It might eventually diverge from
+    //        the remote, but at this current point in time we don't have enough
+    //        information.
+    //   4. Reject in all other cases.
+<span class="fc bfc" id="L150" title="All 2 branches covered.">    if (!isHashKnown(forkId.getHash())) {</span>
+<span class="fc" id="L151">      return false;</span>
+    }
+
+<span class="fc" id="L154">    final BlockHeader header = chainHeadSupplier.get();</span>
+    final long forkValue =
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        blockNumberForks.contains(forkNext) ? header.getNumber() : header.getTimestamp();</span>
+
+<span class="fc bfc" id="L158" title="All 2 branches covered.">    return forkValue &lt; forkNext</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">        || (isForkKnown(forkId.getNext())</span>
+<span class="fc bfc" id="L160" title="All 2 branches covered.">            &amp;&amp; isRemoteAwareOfPresent(forkId.getHash(), forkId.getNext()));</span>
+  }
+
+  /**
+   * Non EIP-2124 behaviour
+   *
+   * @param peerGenesisHash Hash to be validated.
+   * @return boolean
+   */
+  public boolean peerCheck(final Bytes32 peerGenesisHash) {
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">    return !peerGenesisHash.equals(genesisHash);</span>
+  }
+
+  private boolean isHashKnown(final Bytes forkHash) {
+<span class="fc" id="L174">    return allForkIds.stream().map(ForkId::getHash).anyMatch(hash -&gt; hash.equals(forkHash));</span>
+  }
+
+  private boolean isForkKnown(final Long nextFork) {
+<span class="fc bfc" id="L178" title="All 2 branches covered.">    return highestKnownFork &lt; nextFork</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">        || allForkIds.stream().map(ForkId::getNext).anyMatch(fork -&gt; fork.equals(nextFork));</span>
+  }
+
+  private boolean isRemoteAwareOfPresent(final Bytes forkHash, final Long nextFork) {
+<span class="pc bpc" id="L183" title="1 of 2 branches missed.">    for (final ForkId j : getAllForkIds()) {</span>
+<span class="fc bfc" id="L184" title="All 2 branches covered.">      if (forkHash.equals(j.getHash())) {</span>
+<span class="fc bfc" id="L185" title="All 2 branches covered.">        if (nextFork.equals(j.getNext())) {</span>
+<span class="fc" id="L186">          return true;</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">        } else if (j.getNext() == 0L) {</span>
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">          return highestKnownFork &lt;= nextFork; // Remote aware of an additional future fork</span>
+        } else {
+<span class="fc" id="L190">          return false;</span>
+        }
+      }
+<span class="fc" id="L193">    }</span>
+<span class="nc" id="L194">    return false;</span>
+  }
+
+  private long createForkIds() {
+<span class="fc" id="L198">    final CRC32 crc = new CRC32();</span>
+<span class="fc" id="L199">    crc.update(genesisHash.toArray());</span>
+<span class="fc" id="L200">    genesisHashCrc = getCurrentCrcHash(crc);</span>
+<span class="fc" id="L201">    final List&lt;Bytes&gt; forkHashes = new ArrayList&lt;&gt;(List.of(genesisHashCrc));</span>
+<span class="fc" id="L202">    blockNumberForks.forEach(</span>
+        fork -&gt; {
+<span class="fc" id="L204">          updateCrc(crc, fork);</span>
+<span class="fc" id="L205">          forkHashes.add(getCurrentCrcHash(crc));</span>
+<span class="fc" id="L206">        });</span>
+
+<span class="fc" id="L208">    timestampForks.forEach(</span>
+        fork -&gt; {
+<span class="fc" id="L210">          updateCrc(crc, fork);</span>
+<span class="fc" id="L211">          forkHashes.add(getCurrentCrcHash(crc));</span>
+<span class="fc" id="L212">        });</span>
+
+    // This loop is for all the fork hashes that have an associated &quot;next fork&quot;
+<span class="fc bfc" id="L215" title="All 2 branches covered.">    for (int i = 0; i &lt; blockNumberForks.size(); i++) {</span>
+<span class="fc" id="L216">      blockNumbersForkIds.add(new ForkId(forkHashes.get(i), blockNumberForks.get(i)));</span>
+    }
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    for (int i = 0; i &lt; timestampForks.size(); i++) {</span>
+<span class="fc" id="L219">      timestampsForkIds.add(</span>
+<span class="fc" id="L220">          new ForkId(forkHashes.get(blockNumberForks.size() + i), timestampForks.get(i)));</span>
+    }
+<span class="fc" id="L222">    long forkNext = 0;</span>
+<span class="fc bfc" id="L223" title="All 2 branches covered.">    if (!timestampForks.isEmpty()) {</span>
+<span class="fc" id="L224">      forkNext = timestampForks.get(timestampForks.size() - 1);</span>
+<span class="fc" id="L225">      timestampsForkIds.add(new ForkId(forkHashes.get(forkHashes.size() - 1), 0));</span>
+<span class="fc bfc" id="L226" title="All 2 branches covered.">    } else if (!blockNumberForks.isEmpty()) {</span>
+<span class="fc" id="L227">      forkNext = blockNumbersForkIds.get(blockNumbersForkIds.size() - 1).getNext();</span>
+<span class="fc" id="L228">      blockNumbersForkIds.add(new ForkId(forkHashes.get(forkHashes.size() - 1), 0));</span>
+    }
+<span class="fc" id="L230">    return forkNext;</span>
+  }
+
+  private static void updateCrc(final CRC32 crc, final Long block) {
+<span class="fc" id="L234">    final byte[] byteRepresentationFork = EndianUtils.longToBigEndian(block);</span>
+<span class="fc" id="L235">    crc.update(byteRepresentationFork, 0, byteRepresentationFork.length);</span>
+<span class="fc" id="L236">  }</span>
+
+  private static Bytes getCurrentCrcHash(final CRC32 crc) {
+<span class="fc" id="L239">    return Bytes.ofUnsignedInt(crc.getValue());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

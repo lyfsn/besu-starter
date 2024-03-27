@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AccountTrieNodeDataRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate</a> &gt; <span class="el_source">AccountTrieNodeDataRequest.java</span></div><h1>AccountTrieNodeDataRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync.worldstate;
+
+import static org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator.applyForStrategy;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+class AccountTrieNodeDataRequest extends TrieNodeDataRequest {
+
+  AccountTrieNodeDataRequest(final Hash hash, final Optional&lt;Bytes&gt; location) {
+<span class="fc" id="L37">    super(RequestType.ACCOUNT_TRIE_NODE, hash, location);</span>
+<span class="fc" id="L38">  }</span>
+
+  @Override
+  protected void doPersist(final WorldStateKeyValueStorage.Updater updater) {
+<span class="fc" id="L42">    applyForStrategy(</span>
+        updater,
+        onBonsai -&gt; {
+<span class="nc" id="L45">          onBonsai.putAccountStateTrieNode(getLocation().orElse(Bytes.EMPTY), getHash(), getData());</span>
+<span class="nc" id="L46">        },</span>
+        onForest -&gt; {
+<span class="fc" id="L48">          onForest.putAccountStateTrieNode(getHash(), getData());</span>
+<span class="fc" id="L49">        });</span>
+<span class="fc" id="L50">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getExistingData(
+      final WorldStateStorageCoordinator worldStateKeyValueStorage) {
+<span class="fc" id="L55">    return getLocation()</span>
+<span class="fc" id="L56">        .flatMap(</span>
+            location -&gt;
+<span class="fc" id="L58">                worldStateKeyValueStorage</span>
+<span class="fc" id="L59">                    .getAccountStateTrieNode(location, getHash())</span>
+<span class="fc" id="L60">                    .filter(data -&gt; Hash.hash(data).equals(getHash())));</span>
+  }
+
+  @Override
+  protected NodeDataRequest createChildNodeDataRequest(
+      final Hash childHash, final Optional&lt;Bytes&gt; location) {
+<span class="fc" id="L66">    return createAccountDataRequest(childHash, location);</span>
+  }
+
+  @Override
+  protected Stream&lt;NodeDataRequest&gt; getRequestsFromTrieNodeValue(
+      final WorldStateStorageCoordinator worldStateKeyValueStorage,
+      final Optional&lt;Bytes&gt; location,
+      final Bytes path,
+      final Bytes value) {
+<span class="fc" id="L75">    final Stream.Builder&lt;NodeDataRequest&gt; builder = Stream.builder();</span>
+<span class="fc" id="L76">    final StateTrieAccountValue accountValue = StateTrieAccountValue.readFrom(RLP.input(value));</span>
+
+<span class="fc" id="L78">    final Optional&lt;Hash&gt; accountHash =</span>
+<span class="fc" id="L79">        Optional.of(</span>
+<span class="fc" id="L80">            Hash.wrap(</span>
+<span class="fc" id="L81">                Bytes32.wrap(</span>
+<span class="fc" id="L82">                    CompactEncoding.pathToBytes(</span>
+<span class="fc" id="L83">                        Bytes.concatenate(getLocation().orElse(Bytes.EMPTY), path)))));</span>
+
+<span class="fc" id="L85">    worldStateKeyValueStorage.applyWhenFlatModeEnabled(</span>
+        onBonsai -&gt; {
+<span class="nc" id="L87">          onBonsai.updater().putAccountInfoState(accountHash.get(), value).commit();</span>
+<span class="nc" id="L88">        });</span>
+
+    // Add code, if appropriate
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">    if (!accountValue.getCodeHash().equals(Hash.EMPTY)) {</span>
+<span class="nc" id="L92">      builder.add(createCodeRequest(accountValue.getCodeHash(), accountHash));</span>
+    }
+    // Add storage, if appropriate
+<span class="pc bpc" id="L95" title="1 of 2 branches missed.">    if (!accountValue.getStorageRoot().equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+      // If storage is non-empty queue download
+
+<span class="nc" id="L98">      final NodeDataRequest storageNode =</span>
+<span class="nc" id="L99">          createStorageDataRequest(accountValue.getStorageRoot(), accountHash, Optional.empty());</span>
+<span class="nc" id="L100">      builder.add(storageNode);</span>
+    }
+<span class="fc" id="L102">    return builder.build();</span>
+  }
+
+  @Override
+  protected void writeTo(final RLPOutput out) {
+<span class="nc" id="L107">    out.startList();</span>
+<span class="nc" id="L108">    out.writeByte(getRequestType().getValue());</span>
+<span class="nc" id="L109">    out.writeBytes(getHash());</span>
+<span class="nc" id="L110">    getLocation().ifPresent(out::writeBytes);</span>
+<span class="nc" id="L111">    out.endList();</span>
+<span class="nc" id="L112">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

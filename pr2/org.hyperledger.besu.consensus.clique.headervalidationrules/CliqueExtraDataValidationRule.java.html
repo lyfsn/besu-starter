@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CliqueExtraDataValidationRule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.clique.headervalidationrules</a> &gt; <span class="el_source">CliqueExtraDataValidationRule.java</span></div><h1>CliqueExtraDataValidationRule.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.clique.headervalidationrules;
+
+import org.hyperledger.besu.consensus.clique.CliqueContext;
+import org.hyperledger.besu.consensus.clique.CliqueExtraData;
+import org.hyperledger.besu.consensus.common.EpochManager;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.AttachedBlockHeaderValidationRule;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.util.Collection;
+
+import com.google.common.collect.Iterables;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Clique extra data validation rule. */
+public class CliqueExtraDataValidationRule implements AttachedBlockHeaderValidationRule {
+
+<span class="fc" id="L35">  private static final Logger LOG = LoggerFactory.getLogger(CliqueExtraDataValidationRule.class);</span>
+
+  private final EpochManager epochManager;
+
+  /**
+   * Instantiates a new Clique extra data validation rule.
+   *
+   * @param epochManager the epoch manager
+   */
+<span class="fc" id="L44">  public CliqueExtraDataValidationRule(final EpochManager epochManager) {</span>
+<span class="fc" id="L45">    this.epochManager = epochManager;</span>
+<span class="fc" id="L46">  }</span>
+
+  /**
+   * Responsible for determining the validity of the extra data field. Ensures:
+   *
+   * &lt;ul&gt;
+   *   &lt;li&gt;Bytes in the extra data field can be decoded as per Clique specification
+   *   &lt;li&gt;Proposer (derived from the proposerSeal) is a member of the validators
+   *   &lt;li&gt;Validators are only validated on epoch blocks.
+   * &lt;/ul&gt;
+   *
+   * @param header the block header containing the extraData to be validated.
+   * @return True if the extraData successfully produces an CliqueExtraData object, false otherwise
+   */
+  @Override
+  public boolean validate(
+      final BlockHeader header, final BlockHeader parent, final ProtocolContext protocolContext) {
+    try {
+<span class="fc" id="L64">      final Collection&lt;Address&gt; storedValidators =</span>
+          protocolContext
+<span class="fc" id="L66">              .getConsensusContext(CliqueContext.class)</span>
+<span class="fc" id="L67">              .getValidatorProvider()</span>
+<span class="fc" id="L68">              .getValidatorsAfterBlock(parent);</span>
+
+<span class="fc" id="L70">      return extraDataIsValid(storedValidators, header);</span>
+
+<span class="nc" id="L72">    } catch (final RLPException ex) {</span>
+<span class="nc" id="L73">      LOG.info(</span>
+          &quot;Invalid block header: ExtraData field was unable to be deserialised into an Clique Struct.&quot;,
+          ex);
+<span class="nc" id="L76">      return false;</span>
+<span class="fc" id="L77">    } catch (final IllegalArgumentException ex) {</span>
+<span class="fc" id="L78">      LOG.info(&quot;Invalid block header: Failed to verify extra data&quot;, ex);</span>
+<span class="fc" id="L79">      return false;</span>
+    }
+  }
+
+  private boolean extraDataIsValid(
+      final Collection&lt;Address&gt; expectedValidators, final BlockHeader header) {
+
+<span class="fc" id="L86">    final CliqueExtraData cliqueExtraData = CliqueExtraData.decode(header);</span>
+<span class="fc" id="L87">    final Address proposer = cliqueExtraData.getProposerAddress();</span>
+
+<span class="fc bfc" id="L89" title="All 2 branches covered.">    if (!expectedValidators.contains(proposer)) {</span>
+<span class="fc" id="L90">      LOG.info(&quot;Invalid block header: Proposer sealing block is not a member of the signers.&quot;);</span>
+<span class="fc" id="L91">      return false;</span>
+    }
+
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    if (epochManager.isEpochBlock(header.getNumber())) {</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">      if (!Iterables.elementsEqual(cliqueExtraData.getValidators(), expectedValidators)) {</span>
+<span class="fc" id="L96">        LOG.info(</span>
+            &quot;Invalid block header: Incorrect signers. Expected {} but got {}.&quot;,
+            expectedValidators,
+<span class="fc" id="L99">            cliqueExtraData.getValidators());</span>
+<span class="fc" id="L100">        return false;</span>
+      }
+    } else {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">      if (!cliqueExtraData.getValidators().isEmpty()) {</span>
+<span class="fc" id="L104">        LOG.info(&quot;Invalid block header: Signer list on non-epoch blocks must be empty.&quot;);</span>
+<span class="fc" id="L105">        return false;</span>
+      }
+    }
+
+<span class="fc" id="L109">    return true;</span>
+  }
+
+  @Override
+  public boolean includeInLightValidation() {
+<span class="fc" id="L114">    return false;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

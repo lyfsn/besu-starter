@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionReceipt.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.core</a> &gt; <span class="el_source">TransactionReceipt.java</span></div><h1>TransactionReceipt.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.core;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.ethereum.mainnet.TransactionReceiptType;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.evm.log.Log;
+import org.hyperledger.besu.evm.log.LogsBloomFilter;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import com.google.common.base.MoreObjects;
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * A transaction receipt, containing information pertaining a transaction execution.
+ *
+ * &lt;p&gt;Transaction receipts have two different formats: state root-encoded and status-encoded. The
+ * difference between these two formats is that the state root-encoded transaction receipt contains
+ * the state root for world state after the transaction has been processed (e.g. not invalid) and
+ * the status-encoded transaction receipt instead has contains the status of the transaction (e.g. 1
+ * for success and 0 for failure). The other transaction receipt fields are the same for both
+ * formats: logs, logs bloom, and cumulative gas used in the block. The TransactionReceiptType
+ * attribute is the best way to check which format has been used.
+ */
+public class TransactionReceipt implements org.hyperledger.besu.plugin.data.TransactionReceipt {
+
+  private static final int NONEXISTENT = -1;
+
+  private final TransactionType transactionType;
+  private final Hash stateRoot;
+  private final long cumulativeGasUsed;
+  private final List&lt;Log&gt; logs;
+  private final LogsBloomFilter bloomFilter;
+  private final int status;
+  private final TransactionReceiptType transactionReceiptType;
+  private final Optional&lt;Bytes&gt; revertReason;
+
+  /**
+   * Creates an instance of a state root-encoded transaction receipt.
+   *
+   * @param stateRoot the state root for the world state after the transaction has been processed
+   * @param cumulativeGasUsed the total amount of gas consumed in the block after this transaction
+   * @param logs the logs generated within the transaction
+   * @param revertReason the revert reason for a failed transaction (if applicable)
+   */
+  public TransactionReceipt(
+      final Hash stateRoot,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final Optional&lt;Bytes&gt; revertReason) {
+<span class="fc" id="L73">    this(</span>
+        TransactionType.FRONTIER,
+        stateRoot,
+        NONEXISTENT,
+        cumulativeGasUsed,
+        logs,
+<span class="fc" id="L79">        LogsBloomFilter.builder().insertLogs(logs).build(),</span>
+        revertReason);
+<span class="fc" id="L81">  }</span>
+
+  private TransactionReceipt(
+      final TransactionType transactionType,
+      final Hash stateRoot,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final LogsBloomFilter bloomFilter,
+      final Optional&lt;Bytes&gt; revertReason) {
+<span class="fc" id="L90">    this(</span>
+        transactionType,
+        stateRoot,
+        NONEXISTENT,
+        cumulativeGasUsed,
+        logs,
+        bloomFilter,
+        revertReason);
+<span class="fc" id="L98">  }</span>
+
+  /**
+   * Creates an instance of a status-encoded transaction receipt.
+   *
+   * @param status the status code for the transaction (1 for success and 0 for failure)
+   * @param cumulativeGasUsed the total amount of gas consumed in the block after this transaction
+   * @param logs the logs generated within the transaction
+   * @param revertReason the revert reason for a failed transaction (if applicable)
+   */
+  public TransactionReceipt(
+      final int status,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final Optional&lt;Bytes&gt; revertReason) {
+<span class="fc" id="L113">    this(</span>
+        TransactionType.FRONTIER,
+        null,
+        status,
+        cumulativeGasUsed,
+        logs,
+<span class="fc" id="L119">        LogsBloomFilter.builder().insertLogs(logs).build(),</span>
+        revertReason);
+<span class="fc" id="L121">  }</span>
+
+  public TransactionReceipt(
+      final TransactionType transactionType,
+      final int status,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final LogsBloomFilter bloomFilter,
+      final Optional&lt;Bytes&gt; revertReason) {
+<span class="fc" id="L130">    this(transactionType, null, status, cumulativeGasUsed, logs, bloomFilter, revertReason);</span>
+<span class="fc" id="L131">  }</span>
+
+  public TransactionReceipt(
+      final TransactionType transactionType,
+      final int status,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final Optional&lt;Bytes&gt; maybeRevertReason) {
+<span class="fc" id="L139">    this(</span>
+        transactionType,
+        status,
+        cumulativeGasUsed,
+        logs,
+<span class="fc" id="L144">        LogsBloomFilter.builder().insertLogs(logs).build(),</span>
+        maybeRevertReason);
+<span class="fc" id="L146">  }</span>
+
+  private TransactionReceipt(
+      final TransactionType transactionType,
+      final Hash stateRoot,
+      final int status,
+      final long cumulativeGasUsed,
+      final List&lt;Log&gt; logs,
+      final LogsBloomFilter bloomFilter,
+<span class="fc" id="L155">      final Optional&lt;Bytes&gt; revertReason) {</span>
+<span class="fc" id="L156">    this.transactionType = transactionType;</span>
+<span class="fc" id="L157">    this.stateRoot = stateRoot;</span>
+<span class="fc" id="L158">    this.cumulativeGasUsed = cumulativeGasUsed;</span>
+<span class="fc" id="L159">    this.status = status;</span>
+<span class="fc" id="L160">    this.logs = logs;</span>
+<span class="fc" id="L161">    this.bloomFilter = bloomFilter;</span>
+<span class="fc" id="L162">    this.transactionReceiptType =</span>
+<span class="fc bfc" id="L163" title="All 2 branches covered.">        stateRoot == null ? TransactionReceiptType.STATUS : TransactionReceiptType.ROOT;</span>
+<span class="fc" id="L164">    this.revertReason = revertReason;</span>
+<span class="fc" id="L165">  }</span>
+
+  /**
+   * Write an RLP representation.
+   *
+   * @param out The RLP output to write to
+   */
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L173">    writeTo(out, false);</span>
+<span class="fc" id="L174">  }</span>
+
+  public void writeToWithRevertReason(final RLPOutput out) {
+<span class="fc" id="L177">    writeTo(out, true);</span>
+<span class="fc" id="L178">  }</span>
+
+  private void writeTo(final RLPOutput rlpOutput, final boolean withRevertReason) {
+<span class="fc bfc" id="L181" title="All 2 branches covered.">    if (transactionType.equals(TransactionType.FRONTIER)) {</span>
+<span class="fc" id="L182">      writeToForReceiptTrie(rlpOutput, withRevertReason);</span>
+    } else {
+<span class="fc" id="L184">      rlpOutput.writeBytes(RLP.encode(out -&gt; writeToForReceiptTrie(out, withRevertReason)));</span>
+    }
+<span class="fc" id="L186">  }</span>
+
+  public void writeToForReceiptTrie(final RLPOutput rlpOutput, final boolean withRevertReason) {
+<span class="fc bfc" id="L189" title="All 2 branches covered.">    if (!transactionType.equals(TransactionType.FRONTIER)) {</span>
+<span class="fc" id="L190">      rlpOutput.writeIntScalar(transactionType.getSerializedType());</span>
+    }
+
+<span class="fc" id="L193">    rlpOutput.startList();</span>
+
+    // Determine whether it's a state root-encoded transaction receipt
+    // or is a status code-encoded transaction receipt.
+<span class="fc bfc" id="L197" title="All 2 branches covered.">    if (stateRoot != null) {</span>
+<span class="fc" id="L198">      rlpOutput.writeBytes(stateRoot);</span>
+    } else {
+<span class="fc" id="L200">      rlpOutput.writeLongScalar(status);</span>
+    }
+<span class="fc" id="L202">    rlpOutput.writeLongScalar(cumulativeGasUsed);</span>
+<span class="fc" id="L203">    rlpOutput.writeBytes(bloomFilter);</span>
+<span class="fc" id="L204">    rlpOutput.writeList(logs, Log::writeTo);</span>
+<span class="fc bfc" id="L205" title="All 4 branches covered.">    if (withRevertReason &amp;&amp; revertReason.isPresent()) {</span>
+<span class="fc" id="L206">      rlpOutput.writeBytes(revertReason.get());</span>
+    }
+<span class="fc" id="L208">    rlpOutput.endList();</span>
+<span class="fc" id="L209">  }</span>
+
+  /**
+   * Creates a transaction receipt for the given RLP
+   *
+   * @param input the RLP-encoded transaction receipt
+   * @return the transaction receipt
+   */
+  public static TransactionReceipt readFrom(final RLPInput input) {
+<span class="fc" id="L218">    return readFrom(input, true);</span>
+  }
+
+  /**
+   * Creates a transaction receipt for the given RLP
+   *
+   * @param rlpInput the RLP-encoded transaction receipt
+   * @param revertReasonAllowed whether the rlp input is allowed to have a revert reason
+   * @return the transaction receipt
+   */
+  public static TransactionReceipt readFrom(
+      final RLPInput rlpInput, final boolean revertReasonAllowed) {
+<span class="fc" id="L230">    RLPInput input = rlpInput;</span>
+<span class="fc" id="L231">    TransactionType transactionType = TransactionType.FRONTIER;</span>
+<span class="fc bfc" id="L232" title="All 2 branches covered.">    if (!rlpInput.nextIsList()) {</span>
+<span class="fc" id="L233">      final Bytes typedTransactionReceiptBytes = input.readBytes();</span>
+<span class="fc" id="L234">      transactionType = TransactionType.of(typedTransactionReceiptBytes.get(0));</span>
+<span class="fc" id="L235">      input = new BytesValueRLPInput(typedTransactionReceiptBytes.slice(1), false);</span>
+    }
+
+<span class="fc" id="L238">    input.enterList();</span>
+    // Get the first element to check later to determine the
+    // correct transaction receipt encoding to use.
+<span class="fc" id="L241">    final RLPInput firstElement = input.readAsRlp();</span>
+<span class="fc" id="L242">    final long cumulativeGas = input.readLongScalar();</span>
+    // The logs below will populate the bloom filter upon construction.
+    // TODO consider validating that the logs and bloom filter match.
+<span class="fc" id="L245">    final LogsBloomFilter bloomFilter = LogsBloomFilter.readFrom(input);</span>
+<span class="fc" id="L246">    final List&lt;Log&gt; logs = input.readList(Log::readFrom);</span>
+    final Optional&lt;Bytes&gt; revertReason;
+<span class="fc bfc" id="L248" title="All 2 branches covered.">    if (input.isEndOfCurrentList()) {</span>
+<span class="fc" id="L249">      revertReason = Optional.empty();</span>
+    } else {
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      if (!revertReasonAllowed) {</span>
+<span class="nc" id="L252">        throw new RLPException(&quot;Unexpected value at end of TransactionReceipt&quot;);</span>
+      }
+<span class="fc" id="L254">      revertReason = Optional.of(input.readBytes());</span>
+    }
+
+    // Status code-encoded transaction receipts have a single
+    // byte for success (0x01) or failure (0x80).
+<span class="fc bfc" id="L259" title="All 2 branches covered.">    if (firstElement.raw().size() == 1) {</span>
+<span class="fc" id="L260">      final int status = firstElement.readIntScalar();</span>
+<span class="fc" id="L261">      input.leaveList();</span>
+<span class="fc" id="L262">      return new TransactionReceipt(</span>
+          transactionType, status, cumulativeGas, logs, bloomFilter, revertReason);
+    } else {
+<span class="fc" id="L265">      final Hash stateRoot = Hash.wrap(firstElement.readBytes32());</span>
+<span class="fc" id="L266">      input.leaveList();</span>
+<span class="fc" id="L267">      return new TransactionReceipt(</span>
+          transactionType, stateRoot, cumulativeGas, logs, bloomFilter, revertReason);
+    }
+  }
+
+  /**
+   * Returns the state root for a state root-encoded transaction receipt
+   *
+   * @return the state root if the transaction receipt is state root-encoded; otherwise {@code null}
+   */
+  public Hash getStateRoot() {
+<span class="fc" id="L278">    return stateRoot;</span>
+  }
+
+  /**
+   * Returns the total amount of gas consumed in the block after the transaction has been processed.
+   *
+   * @return the total amount of gas consumed in the block after the transaction has been processed
+   */
+  @Override
+  public long getCumulativeGasUsed() {
+<span class="fc" id="L288">    return cumulativeGasUsed;</span>
+  }
+
+  /**
+   * Returns the logs generated by the transaction.
+   *
+   * @return the logs generated by the transaction
+   */
+  @Override
+  public List&lt;? extends org.hyperledger.besu.plugin.data.Log&gt; getLogs() {
+<span class="fc" id="L298">    return logs.stream().map(LogsWrapper::new).collect(Collectors.toList());</span>
+  }
+
+  /**
+   * Returns the logs generated by the transaction.
+   *
+   * @return the logs generated by the transaction
+   */
+  public List&lt;Log&gt; getLogsList() {
+<span class="fc" id="L307">    return logs;</span>
+  }
+
+  /**
+   * Returns the logs bloom filter for the logs generated by the transaction
+   *
+   * @return the logs bloom filter for the logs generated by the transaction
+   */
+  @Override
+  public LogsBloomFilter getBloomFilter() {
+<span class="fc" id="L317">    return bloomFilter;</span>
+  }
+
+  /**
+   * Returns the status code for the status-encoded transaction receipt
+   *
+   * @return the status code if the transaction receipt is status-encoded; otherwise {@code -1}
+   */
+  @Override
+  public int getStatus() {
+<span class="fc" id="L327">    return status;</span>
+  }
+
+  public TransactionReceiptType getTransactionReceiptType() {
+<span class="fc" id="L331">    return transactionReceiptType;</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getRevertReason() {
+<span class="fc" id="L336">    return revertReason;</span>
+  }
+
+  @Override
+  public boolean equals(final Object obj) {
+<span class="pc bpc" id="L341" title="1 of 2 branches missed.">    if (obj == this) {</span>
+<span class="nc" id="L342">      return true;</span>
+    }
+<span class="pc bpc" id="L344" title="1 of 2 branches missed.">    if (!(obj instanceof TransactionReceipt)) {</span>
+<span class="nc" id="L345">      return false;</span>
+    }
+<span class="fc" id="L347">    final TransactionReceipt other = (TransactionReceipt) obj;</span>
+<span class="pc bpc" id="L348" title="1 of 2 branches missed.">    return logs.equals(other.getLogsList())</span>
+<span class="pc bpc" id="L349" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(stateRoot, other.stateRoot)</span>
+<span class="pc bpc" id="L350" title="2 of 4 branches missed.">        &amp;&amp; cumulativeGasUsed == other.getCumulativeGasUsed()</span>
+        &amp;&amp; status == other.status;
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L356">    return Objects.hash(logs, stateRoot, cumulativeGasUsed);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L361">    return MoreObjects.toStringHelper(this)</span>
+<span class="fc" id="L362">        .add(&quot;stateRoot&quot;, stateRoot)</span>
+<span class="fc" id="L363">        .add(&quot;cumulativeGasUsed&quot;, cumulativeGasUsed)</span>
+<span class="fc" id="L364">        .add(&quot;logs&quot;, logs)</span>
+<span class="fc" id="L365">        .add(&quot;bloomFilter&quot;, bloomFilter)</span>
+<span class="fc" id="L366">        .add(&quot;status&quot;, status)</span>
+<span class="fc" id="L367">        .add(&quot;transactionReceiptType&quot;, transactionReceiptType)</span>
+<span class="fc" id="L368">        .toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

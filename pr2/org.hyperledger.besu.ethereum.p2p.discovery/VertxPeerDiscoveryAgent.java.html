@@ -1,0 +1,343 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>VertxPeerDiscoveryAgent.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery</a> &gt; <span class="el_source">VertxPeerDiscoveryAgent.java</span></div><h1>VertxPeerDiscoveryAgent.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.apache.tuweni.bytes.Bytes.wrapBuffer;
+
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.forkid.ForkIdManager;
+import org.hyperledger.besu.ethereum.p2p.config.DiscoveryConfiguration;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.Packet;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerDiscoveryController;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerDiscoveryController.AsyncExecutor;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.TimerUtil;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.VertxTimerUtil;
+import org.hyperledger.besu.ethereum.p2p.permissions.PeerPermissions;
+import org.hyperledger.besu.ethereum.p2p.rlpx.RlpxAgent;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.nat.NatService;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.NetworkUtility;
+
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetSocketAddress;
+import java.net.SocketException;
+import java.nio.channels.UnsupportedAddressTypeException;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.IntSupplier;
+import java.util.function.Supplier;
+import java.util.stream.StreamSupport;
+
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.unix.Errors;
+import io.netty.channel.unix.Errors.NativeIoException;
+import io.netty.util.concurrent.SingleThreadEventExecutor;
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Vertx;
+import io.vertx.core.datagram.DatagramPacket;
+import io.vertx.core.datagram.DatagramSocket;
+import io.vertx.core.datagram.DatagramSocketOptions;
+import org.ethereum.beacon.discovery.util.DecodeException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class VertxPeerDiscoveryAgent extends PeerDiscoveryAgent {
+<span class="fc" id="L62">  private static final Logger LOG = LoggerFactory.getLogger(VertxPeerDiscoveryAgent.class);</span>
+
+  private final Vertx vertx;
+  /* The vert.x UDP socket. */
+  private DatagramSocket socket;
+
+  public VertxPeerDiscoveryAgent(
+      final Vertx vertx,
+      final NodeKey nodeKey,
+      final DiscoveryConfiguration config,
+      final PeerPermissions peerPermissions,
+      final NatService natService,
+      final MetricsSystem metricsSystem,
+      final StorageProvider storageProvider,
+      final ForkIdManager forkIdManager,
+      final RlpxAgent rlpxAgent,
+      final PeerTable peerTable) {
+<span class="fc" id="L79">    super(</span>
+        nodeKey,
+        config,
+        peerPermissions,
+        natService,
+        metricsSystem,
+        storageProvider,
+        forkIdManager,
+        rlpxAgent,
+        peerTable);
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    checkArgument(vertx != null, &quot;vertx instance cannot be null&quot;);</span>
+<span class="fc" id="L90">    this.vertx = vertx;</span>
+
+<span class="fc" id="L92">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.NETWORK,
+        &quot;vertx_eventloop_pending_tasks&quot;,
+        &quot;The number of pending tasks in the Vertx event loop&quot;,
+<span class="fc" id="L96">        pendingTaskCounter(vertx.nettyEventLoopGroup()));</span>
+<span class="fc" id="L97">  }</span>
+
+  private IntSupplier pendingTaskCounter(final EventLoopGroup eventLoopGroup) {
+<span class="fc" id="L100">    return () -&gt;</span>
+<span class="nc" id="L101">        StreamSupport.stream(eventLoopGroup.spliterator(), false)</span>
+<span class="nc" id="L102">            .filter(eventExecutor -&gt; eventExecutor instanceof SingleThreadEventExecutor)</span>
+<span class="nc" id="L103">            .mapToInt(eventExecutor -&gt; ((SingleThreadEventExecutor) eventExecutor).pendingTasks())</span>
+<span class="nc" id="L104">            .sum();</span>
+  }
+
+  @Override
+  protected TimerUtil createTimer() {
+<span class="fc" id="L109">    return new VertxTimerUtil(vertx);</span>
+  }
+
+  @Override
+  protected AsyncExecutor createWorkerExecutor() {
+<span class="fc" id="L114">    return new VertxAsyncExecutor();</span>
+  }
+
+  @Override
+  protected CompletableFuture&lt;InetSocketAddress&gt; listenForConnections() {
+<span class="fc" id="L119">    final CompletableFuture&lt;InetSocketAddress&gt; future = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L120">    vertx</span>
+<span class="fc" id="L121">        .createDatagramSocket(new DatagramSocketOptions().setIpV6(NetworkUtility.isIPv6Available()))</span>
+<span class="fc" id="L122">        .listen(</span>
+<span class="fc" id="L123">            config.getBindPort(), config.getBindHost(), res -&gt; handleListenerSetup(res, future));</span>
+<span class="fc" id="L124">    return future;</span>
+  }
+
+  protected void handleListenerSetup(
+      final AsyncResult&lt;DatagramSocket&gt; listenResult,
+      final CompletableFuture&lt;InetSocketAddress&gt; addressFuture) {
+<span class="fc bfc" id="L130" title="All 2 branches covered.">    if (listenResult.failed()) {</span>
+<span class="fc" id="L131">      Throwable cause = listenResult.cause();</span>
+<span class="fc" id="L132">      LOG.error(&quot;An exception occurred when starting the peer discovery agent&quot;, cause);</span>
+
+<span class="pc bpc" id="L134" title="3 of 4 branches missed.">      if (cause instanceof BindException || cause instanceof SocketException) {</span>
+<span class="fc" id="L135">        cause =</span>
+            new PeerDiscoveryServiceException(
+<span class="fc" id="L137">                String.format(</span>
+                    &quot;Failed to bind Ethereum UDP discovery listener to %s:%d: %s&quot;,
+<span class="fc" id="L139">                    config.getBindHost(), config.getBindPort(), cause.getMessage()));</span>
+      }
+<span class="fc" id="L141">      addressFuture.completeExceptionally(cause);</span>
+<span class="fc" id="L142">      return;</span>
+    }
+
+<span class="fc" id="L145">    this.socket = listenResult.result();</span>
+
+    // TODO: when using wildcard hosts (0.0.0.0), we need to handle multiple addresses by
+    // selecting
+    // the correct 'announce' address.
+<span class="fc" id="L150">    final String effectiveHost = socket.localAddress().host();</span>
+<span class="fc" id="L151">    final int effectivePort = socket.localAddress().port();</span>
+
+<span class="fc" id="L153">    LOG.info(</span>
+        &quot;Started peer discovery agent successfully, on effective host={} and port={}&quot;,
+        effectiveHost,
+<span class="fc" id="L156">        effectivePort);</span>
+
+<span class="fc" id="L158">    socket.exceptionHandler(this::handleException);</span>
+<span class="fc" id="L159">    socket.handler(this::handlePacket);</span>
+
+<span class="fc" id="L161">    final InetSocketAddress address =</span>
+<span class="fc" id="L162">        new InetSocketAddress(socket.localAddress().host(), socket.localAddress().port());</span>
+<span class="fc" id="L163">    addressFuture.complete(address);</span>
+<span class="fc" id="L164">  }</span>
+
+  @Override
+  protected CompletableFuture&lt;Void&gt; sendOutgoingPacket(
+      final DiscoveryPeer peer, final Packet packet) {
+<span class="fc" id="L169">    final CompletableFuture&lt;Void&gt; result = new CompletableFuture&lt;&gt;();</span>
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">    if (socket == null) {</span>
+<span class="nc" id="L171">      result.completeExceptionally(</span>
+          new RuntimeException(&quot;Discovery socket already closed, because Besu is closing down&quot;));
+    } else {
+<span class="fc" id="L174">      socket.send(</span>
+<span class="fc" id="L175">          packet.encode(),</span>
+<span class="fc" id="L176">          peer.getEndpoint().getUdpPort(),</span>
+<span class="fc" id="L177">          peer.getEnodeURL().getIpAsString(),</span>
+          ar -&gt; {
+<span class="pc bpc" id="L179" title="1 of 2 branches missed.">            if (ar.failed()) {</span>
+<span class="nc" id="L180">              result.completeExceptionally(ar.cause());</span>
+            } else {
+<span class="fc" id="L182">              result.complete(null);</span>
+            }
+<span class="fc" id="L184">          });</span>
+    }
+<span class="fc" id="L186">    return result;</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;?&gt; stop() {
+<span class="fc bfc" id="L191" title="All 2 branches covered.">    if (socket == null) {</span>
+<span class="fc" id="L192">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L195">    final CompletableFuture&lt;?&gt; completion = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L196">    socket.close(</span>
+        ar -&gt; {
+<span class="pc bpc" id="L198" title="1 of 2 branches missed.">          if (ar.succeeded()) {</span>
+<span class="fc" id="L199">            controller.ifPresent(PeerDiscoveryController::stop);</span>
+<span class="fc" id="L200">            socket = null;</span>
+<span class="fc" id="L201">            completion.complete(null);</span>
+          } else {
+<span class="nc" id="L203">            completion.completeExceptionally(ar.cause());</span>
+          }
+<span class="fc" id="L205">        });</span>
+<span class="fc" id="L206">    return completion;</span>
+  }
+
+  @Override
+  protected void handleOutgoingPacketError(
+      final Throwable err, final DiscoveryPeer peer, final Packet packet) {
+<span class="nc bnc" id="L212" title="All 2 branches missed.">    if (err instanceof NativeIoException) {</span>
+<span class="nc" id="L213">      final var nativeErr = (NativeIoException) err;</span>
+<span class="nc bnc" id="L214" title="All 2 branches missed.">      if (nativeErr.expectedErr() == Errors.ERROR_ENETUNREACH_NEGATIVE) {</span>
+<span class="nc" id="L215">        LOG.atDebug()</span>
+<span class="nc" id="L216">            .setMessage(&quot;Peer {} is unreachable, native error code {}, packet: {}, stacktrace: {}&quot;)</span>
+<span class="nc" id="L217">            .addArgument(peer)</span>
+<span class="nc" id="L218">            .addArgument(nativeErr::expectedErr)</span>
+<span class="nc" id="L219">            .addArgument(() -&gt; wrapBuffer(packet.encode()))</span>
+<span class="nc" id="L220">            .addArgument(err)</span>
+<span class="nc" id="L221">            .log();</span>
+      } else {
+<span class="nc" id="L223">        LOG.atDebug()</span>
+<span class="nc" id="L224">            .setMessage(</span>
+                &quot;Sending to peer {} failed, native error code {}, packet: {}, stacktrace: {}&quot;)
+<span class="nc" id="L226">            .addArgument(peer)</span>
+<span class="nc" id="L227">            .addArgument(nativeErr.expectedErr())</span>
+<span class="nc" id="L228">            .addArgument(wrapBuffer(packet.encode()))</span>
+<span class="nc" id="L229">            .addArgument(err)</span>
+<span class="nc" id="L230">            .log();</span>
+      }
+<span class="nc bnc" id="L232" title="All 4 branches missed.">    } else if (err instanceof SocketException &amp;&amp; err.getMessage().contains(&quot;unreachable&quot;)) {</span>
+<span class="nc" id="L233">      LOG.atDebug()</span>
+<span class="nc" id="L234">          .setMessage(&quot;Peer {} is unreachable, packet: {}&quot;)</span>
+<span class="nc" id="L235">          .addArgument(peer)</span>
+<span class="nc" id="L236">          .addArgument(() -&gt; wrapBuffer(packet.encode()))</span>
+<span class="nc" id="L237">          .addArgument(err)</span>
+<span class="nc" id="L238">          .log();</span>
+<span class="nc bnc" id="L239" title="All 2 branches missed.">    } else if (err instanceof SocketException</span>
+<span class="nc bnc" id="L240" title="All 2 branches missed.">        &amp;&amp; err.getMessage().contentEquals(&quot;Operation not permitted&quot;)) {</span>
+<span class="nc" id="L241">      LOG.debug(</span>
+          &quot;Operation not permitted sending to peer {}, this might be caused by firewall rules blocking traffic to a specific route.&quot;,
+          peer,
+          err);
+<span class="nc bnc" id="L245" title="All 2 branches missed.">    } else if (err instanceof UnsupportedAddressTypeException) {</span>
+<span class="nc" id="L246">      LOG.warn(</span>
+          &quot;Unsupported address type exception when connecting to peer {}, this is likely due to ipv6 not being enabled at runtime. &quot;
+              + &quot;Set logging level to TRACE to see full stacktrace&quot;,
+          peer);
+<span class="nc" id="L250">      LOG.atTrace()</span>
+<span class="nc" id="L251">          .setMessage(&quot;Sending to peer {} failed, packet: {}, stacktrace: {}&quot;)</span>
+<span class="nc" id="L252">          .addArgument(peer)</span>
+<span class="nc" id="L253">          .addArgument(() -&gt; wrapBuffer(packet.encode()))</span>
+<span class="nc" id="L254">          .addArgument(err)</span>
+<span class="nc" id="L255">          .log();</span>
+    } else {
+<span class="nc" id="L257">      LOG.warn(</span>
+          &quot;Sending to peer {} failed, packet: {}, stacktrace: {}&quot;,
+          peer,
+<span class="nc" id="L260">          wrapBuffer(packet.encode()),</span>
+          err);
+    }
+<span class="nc" id="L263">  }</span>
+
+  /**
+   * For uncontrolled exceptions occurring in the packet handlers.
+   *
+   * @param exception the exception that was raised
+   */
+  private void handleException(final Throwable exception) {
+<span class="nc bnc" id="L271" title="All 4 branches missed.">    if (exception instanceof IOException || exception instanceof DecodeException) {</span>
+<span class="nc" id="L272">      LOG.debug(&quot;Packet handler exception&quot;, exception);</span>
+    } else {
+<span class="nc" id="L274">      LOG.error(&quot;Packet handler exception&quot;, exception);</span>
+    }
+<span class="nc" id="L276">  }</span>
+
+  /**
+   * The UDP packet handler. This is the entrypoint for all received datagrams.
+   *
+   * @param datagram the received datagram.
+   */
+  private void handlePacket(final DatagramPacket datagram) {
+<span class="fc" id="L284">    final int length = datagram.data().length();</span>
+<span class="pc bpc" id="L285" title="1 of 2 branches missed.">    if (!validatePacketSize(length)) {</span>
+<span class="nc" id="L286">      LOG.debug(&quot;Discarding over-sized packet. Actual size (bytes): {}&quot;, length);</span>
+<span class="nc" id="L287">      return;</span>
+    }
+<span class="fc" id="L289">    vertx.&lt;Packet&gt;executeBlocking(</span>
+        future -&gt; {
+          try {
+<span class="fc" id="L292">            future.complete(Packet.decode(datagram.data()));</span>
+<span class="nc" id="L293">          } catch (final Throwable t) {</span>
+<span class="nc" id="L294">            future.fail(t);</span>
+<span class="fc" id="L295">          }</span>
+<span class="fc" id="L296">        },</span>
+        event -&gt; {
+<span class="pc bpc" id="L298" title="1 of 2 branches missed.">          if (event.succeeded()) {</span>
+            // Acquire the senders coordinates to build a Peer representation from them.
+<span class="fc" id="L300">            final String host = datagram.sender().host();</span>
+<span class="fc" id="L301">            final int port = datagram.sender().port();</span>
+<span class="fc" id="L302">            final Endpoint endpoint = new Endpoint(host, port, Optional.empty());</span>
+<span class="fc" id="L303">            handleIncomingPacket(endpoint, event.result());</span>
+<span class="fc" id="L304">          } else {</span>
+<span class="nc bnc" id="L305" title="All 2 branches missed.">            if (event.cause() instanceof PeerDiscoveryPacketDecodingException</span>
+<span class="nc bnc" id="L306" title="All 2 branches missed.">                || event.cause() instanceof DecodeException) {</span>
+<span class="nc" id="L307">              LOG.debug(</span>
+                  &quot;Discarding invalid peer discovery packet: {}, {}&quot;,
+<span class="nc" id="L309">                  event.cause().getMessage(),</span>
+<span class="nc" id="L310">                  event.cause());</span>
+            } else {
+<span class="nc" id="L312">              LOG.error(&quot;Encountered error while handling packet&quot;, event.cause());</span>
+            }
+          }
+<span class="fc" id="L315">        });</span>
+<span class="fc" id="L316">  }</span>
+
+<span class="fc" id="L318">  private class VertxAsyncExecutor implements AsyncExecutor {</span>
+
+    @Override
+    public &lt;T&gt; CompletableFuture&lt;T&gt; execute(final Supplier&lt;T&gt; action) {
+<span class="fc" id="L322">      final CompletableFuture&lt;T&gt; result = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L323">      vertx.&lt;T&gt;executeBlocking(</span>
+          future -&gt; {
+            try {
+<span class="fc" id="L326">              future.complete(action.get());</span>
+<span class="nc" id="L327">            } catch (final Throwable t) {</span>
+<span class="nc" id="L328">              future.fail(t);</span>
+<span class="fc" id="L329">            }</span>
+<span class="fc" id="L330">          },</span>
+          false,
+          event -&gt; {
+<span class="pc bpc" id="L333" title="1 of 2 branches missed.">            if (event.succeeded()) {</span>
+<span class="fc" id="L334">              result.complete(event.result());</span>
+            } else {
+<span class="nc" id="L336">              result.completeExceptionally(event.cause());</span>
+            }
+<span class="fc" id="L338">          });</span>
+<span class="fc" id="L339">      return result;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

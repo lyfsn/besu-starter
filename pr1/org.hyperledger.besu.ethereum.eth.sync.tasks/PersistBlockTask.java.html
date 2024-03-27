@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PersistBlockTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.tasks</a> &gt; <span class="el_source">PersistBlockTask.java</span></div><h1>PersistBlockTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.tasks;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractEthTask;
+import org.hyperledger.besu.ethereum.eth.sync.tasks.exceptions.InvalidBlockException;
+import org.hyperledger.besu.ethereum.mainnet.BlockImportResult;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PersistBlockTask extends AbstractEthTask&lt;Block&gt; {
+
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(PersistBlockTask.class);</span>
+
+  private final ProtocolSchedule protocolSchedule;
+  private final ProtocolContext protocolContext;
+  private final EthContext ethContext;
+  private final Block block;
+  private final HeaderValidationMode validateHeaders;
+  private BlockImportResult blockImportResult;
+
+  private PersistBlockTask(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final Block block,
+      final HeaderValidationMode headerValidationMode,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L58">    super(metricsSystem);</span>
+<span class="fc" id="L59">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L60">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L61">    this.ethContext = ethContext;</span>
+<span class="fc" id="L62">    this.block = block;</span>
+<span class="fc" id="L63">    this.validateHeaders = headerValidationMode;</span>
+<span class="fc" id="L64">    blockImportResult = new BlockImportResult(false);</span>
+<span class="fc" id="L65">  }</span>
+
+  public static PersistBlockTask create(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final Block block,
+      final HeaderValidationMode headerValidationMode,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L74">    return new PersistBlockTask(</span>
+        protocolSchedule, protocolContext, ethContext, block, headerValidationMode, metricsSystem);
+  }
+
+  public static Supplier&lt;CompletableFuture&lt;List&lt;Block&gt;&gt;&gt; forSequentialBlocks(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final List&lt;Block&gt; blocks,
+      final HeaderValidationMode headerValidationMode,
+      final MetricsSystem metricsSystem) {
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    checkArgument(!blocks.isEmpty(), &quot;No blocks to import provided&quot;);</span>
+<span class="fc" id="L86">    return () -&gt; {</span>
+<span class="fc" id="L87">      final List&lt;Block&gt; successfulImports = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L88">      final Iterator&lt;Block&gt; blockIterator = blocks.iterator();</span>
+<span class="fc" id="L89">      CompletableFuture&lt;Block&gt; future =</span>
+<span class="fc" id="L90">          importBlockAndAddToList(</span>
+              protocolSchedule,
+              protocolContext,
+              ethContext,
+<span class="fc" id="L94">              blockIterator.next(),</span>
+              successfulImports,
+              headerValidationMode,
+              metricsSystem);
+<span class="fc bfc" id="L98" title="All 2 branches covered.">      while (blockIterator.hasNext()) {</span>
+<span class="fc" id="L99">        final Block block = blockIterator.next();</span>
+<span class="fc" id="L100">        future =</span>
+<span class="fc" id="L101">            future.thenCompose(</span>
+                b -&gt;
+<span class="fc" id="L103">                    importBlockAndAddToList(</span>
+                        protocolSchedule,
+                        protocolContext,
+                        ethContext,
+                        block,
+                        successfulImports,
+                        headerValidationMode,
+                        metricsSystem));
+<span class="fc" id="L111">      }</span>
+<span class="fc" id="L112">      return future.thenApply(r -&gt; successfulImports);</span>
+    };
+  }
+
+  private static CompletableFuture&lt;Block&gt; importBlockAndAddToList(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final Block block,
+      final List&lt;Block&gt; list,
+      final HeaderValidationMode headerValidationMode,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L124">    return PersistBlockTask.create(</span>
+            protocolSchedule,
+            protocolContext,
+            ethContext,
+            block,
+            headerValidationMode,
+            metricsSystem)
+<span class="fc" id="L131">        .run()</span>
+<span class="fc" id="L132">        .whenComplete(</span>
+            (r, t) -&gt; {
+<span class="fc bfc" id="L134" title="All 2 branches covered.">              if (r != null) {</span>
+<span class="fc" id="L135">                list.add(r);</span>
+              }
+<span class="fc" id="L137">            });</span>
+  }
+
+  public static Supplier&lt;CompletableFuture&lt;List&lt;Block&gt;&gt;&gt; forUnorderedBlocks(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final List&lt;Block&gt; blocks,
+      final HeaderValidationMode headerValidationMode,
+      final MetricsSystem metricsSystem) {
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">    checkArgument(!blocks.isEmpty(), &quot;No blocks to import provided&quot;);</span>
+<span class="fc" id="L148">    return () -&gt; {</span>
+<span class="fc" id="L149">      final CompletableFuture&lt;List&lt;Block&gt;&gt; finalResult = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L150">      final List&lt;Block&gt; successfulImports = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L151">      final Iterator&lt;PersistBlockTask&gt; tasks =</span>
+<span class="fc" id="L152">          blocks.stream()</span>
+<span class="fc" id="L153">              .map(</span>
+                  block -&gt;
+<span class="fc" id="L155">                      PersistBlockTask.create(</span>
+                          protocolSchedule,
+                          protocolContext,
+                          ethContext,
+                          block,
+                          headerValidationMode,
+                          metricsSystem))
+<span class="fc" id="L162">              .iterator();</span>
+
+<span class="fc" id="L164">      CompletableFuture&lt;Block&gt; future = tasks.next().run();</span>
+<span class="fc bfc" id="L165" title="All 2 branches covered.">      while (tasks.hasNext()) {</span>
+<span class="fc" id="L166">        final PersistBlockTask task = tasks.next();</span>
+<span class="fc" id="L167">        future =</span>
+            future
+<span class="fc" id="L169">                .handle((r, t) -&gt; r)</span>
+<span class="fc" id="L170">                .thenCompose(</span>
+                    r -&gt; {
+<span class="pc bpc" id="L172" title="1 of 2 branches missed.">                      if (r != null) {</span>
+<span class="nc" id="L173">                        successfulImports.add(r);</span>
+                      }
+<span class="fc" id="L175">                      return task.run();</span>
+                    });
+<span class="fc" id="L177">      }</span>
+<span class="fc" id="L178">      future.whenComplete(</span>
+          (r, t) -&gt; {
+<span class="fc bfc" id="L180" title="All 2 branches covered.">            if (r != null) {</span>
+<span class="fc" id="L181">              successfulImports.add(r);</span>
+            }
+<span class="fc bfc" id="L183" title="All 2 branches covered.">            if (successfulImports.size() &gt; 0) {</span>
+<span class="fc" id="L184">              finalResult.complete(successfulImports);</span>
+            } else {
+<span class="fc" id="L186">              finalResult.completeExceptionally(t);</span>
+            }
+<span class="fc" id="L188">          });</span>
+
+<span class="fc" id="L190">      return finalResult;</span>
+    };
+  }
+
+  @Override
+  protected void executeTask() {
+    try {
+<span class="fc" id="L197">      final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(block.getHeader());</span>
+<span class="fc" id="L198">      final BlockImporter blockImporter = protocolSpec.getBlockImporter();</span>
+<span class="fc" id="L199">      LOG.atDebug()</span>
+<span class="fc" id="L200">          .setMessage(&quot;Running import task for block {}&quot;)</span>
+<span class="fc" id="L201">          .addArgument(block::toLogString)</span>
+<span class="fc" id="L202">          .log();</span>
+<span class="fc" id="L203">      blockImportResult = blockImporter.importBlock(protocolContext, block, validateHeaders);</span>
+<span class="fc bfc" id="L204" title="All 2 branches covered.">      if (!blockImportResult.isImported()) {</span>
+<span class="fc" id="L205">        result.completeExceptionally(InvalidBlockException.fromInvalidBlock(block.getHeader()));</span>
+<span class="fc" id="L206">        return;</span>
+      }
+<span class="fc" id="L208">      result.complete(block);</span>
+<span class="nc" id="L209">    } catch (final Exception e) {</span>
+<span class="nc" id="L210">      result.completeExceptionally(e);</span>
+<span class="fc" id="L211">    }</span>
+<span class="fc" id="L212">  }</span>
+
+  @Override
+  protected void cleanup() {
+<span class="fc" id="L216">    final double timeInS = getTaskTimeInSec();</span>
+<span class="pc bpc" id="L217" title="1 of 3 branches missed.">    switch (blockImportResult.getStatus()) {</span>
+      case IMPORTED:
+<span class="fc" id="L219">        LOG.info(</span>
+<span class="fc" id="L220">            String.format(</span>
+                &quot;Imported #%,d / %d tx / %d om / %,d (%01.1f%%) gas / (%s) in %01.3fs. Peers: %d&quot;,
+<span class="fc" id="L222">                block.getHeader().getNumber(),</span>
+<span class="fc" id="L223">                block.getBody().getTransactions().size(),</span>
+<span class="fc" id="L224">                block.getBody().getOmmers().size(),</span>
+<span class="fc" id="L225">                block.getHeader().getGasUsed(),</span>
+<span class="fc" id="L226">                (block.getHeader().getGasUsed() * 100.0) / block.getHeader().getGasLimit(),</span>
+<span class="fc" id="L227">                block.getHash().toHexString(),</span>
+<span class="fc" id="L228">                timeInS,</span>
+<span class="fc" id="L229">                ethContext.getEthPeers().peerCount()));</span>
+<span class="fc" id="L230">        break;</span>
+      case ALREADY_IMPORTED:
+<span class="nc" id="L232">        LOG.info(&quot;Block {} is already imported&quot;, block.toLogString());</span>
+<span class="nc" id="L233">        break;</span>
+      default:
+        break;
+    }
+<span class="fc" id="L237">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

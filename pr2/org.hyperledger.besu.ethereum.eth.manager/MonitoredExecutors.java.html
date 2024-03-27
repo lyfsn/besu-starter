@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MonitoredExecutors.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">MonitoredExecutors.java</span></div><h1>MonitoredExecutors.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import org.hyperledger.besu.ethereum.eth.manager.bounded.BoundedQueue;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+
+import java.util.Locale;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionHandler;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor.AbortPolicy;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
+
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+
+<span class="nc" id="L38">public class MonitoredExecutors {</span>
+
+  public static ExecutorService newFixedThreadPool(
+      final String name,
+      final int minWorkerCount,
+      final int workerCount,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L45">    return newFixedThreadPool(</span>
+        name, minWorkerCount, workerCount, new LinkedBlockingQueue&lt;&gt;(), metricsSystem);
+  }
+
+  public static ExecutorService newBoundedThreadPool(
+      final String name,
+      final int workerCount,
+      final int queueSize,
+      final MetricsSystem metricsSystem) {
+<span class="nc" id="L54">    return newBoundedThreadPool(name, 1, workerCount, queueSize, metricsSystem);</span>
+  }
+
+  public static ExecutorService newBoundedThreadPool(
+      final String name,
+      final int minWorkerCount,
+      final int maxWorkerCount,
+      final int queueSize,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L63">    return newFixedThreadPool(</span>
+        name,
+        minWorkerCount,
+        maxWorkerCount,
+<span class="fc" id="L67">        new BoundedQueue(queueSize, toMetricName(name), metricsSystem),</span>
+        metricsSystem);
+  }
+
+  private static ExecutorService newFixedThreadPool(
+      final String name,
+      final int minWorkerCount,
+      final int maxWorkerCount,
+      final BlockingQueue&lt;Runnable&gt; workingQueue,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L77">    return newMonitoredExecutor(</span>
+        name,
+        metricsSystem,
+        (rejectedExecutionHandler, threadFactory) -&gt;
+<span class="fc" id="L81">            new ThreadPoolExecutor(</span>
+                minWorkerCount,
+                maxWorkerCount,
+                60L,
+                TimeUnit.SECONDS,
+                workingQueue,
+                threadFactory,
+                rejectedExecutionHandler));
+  }
+
+  public static ExecutorService newCachedThreadPool(
+      final String name, final MetricsSystem metricsSystem) {
+<span class="fc" id="L93">    return newCachedThreadPool(name, 0, metricsSystem);</span>
+  }
+
+  public static ExecutorService newCachedThreadPool(
+      final String name, final int corePoolSize, final MetricsSystem metricsSystem) {
+<span class="fc" id="L98">    return newMonitoredExecutor(</span>
+        name,
+        metricsSystem,
+        (rejectedExecutionHandler, threadFactory) -&gt;
+<span class="fc" id="L102">            new ThreadPoolExecutor(</span>
+                corePoolSize,
+                Integer.MAX_VALUE,
+                60L,
+                TimeUnit.SECONDS,
+                new SynchronousQueue&lt;Runnable&gt;(),
+                threadFactory,
+                rejectedExecutionHandler));
+  }
+
+  public static ScheduledExecutorService newScheduledThreadPool(
+      final String name, final int corePoolSize, final MetricsSystem metricsSystem) {
+<span class="fc" id="L114">    return newMonitoredExecutor(</span>
+        name,
+        metricsSystem,
+        (rejectedExecutionHandler, threadFactory) -&gt;
+<span class="fc" id="L118">            new ScheduledThreadPoolExecutor(corePoolSize, threadFactory, rejectedExecutionHandler));</span>
+  }
+
+  public static ExecutorService newSingleThreadExecutor(
+      final String name, final MetricsSystem metricsSystem) {
+<span class="nc" id="L123">    return newFixedThreadPool(name, 1, 1, metricsSystem);</span>
+  }
+
+  private static &lt;T extends ThreadPoolExecutor&gt; T newMonitoredExecutor(
+      final String name,
+      final MetricsSystem metricsSystem,
+      final BiFunction&lt;RejectedExecutionHandler, ThreadFactory, T&gt; creator) {
+
+<span class="fc" id="L131">    final String metricName = toMetricName(name);</span>
+
+<span class="fc" id="L133">    final T executor =</span>
+<span class="fc" id="L134">        creator.apply(</span>
+            new CountingAbortPolicy(metricName, metricsSystem),
+<span class="fc" id="L136">            new ThreadFactoryBuilder().setNameFormat(name + &quot;-%d&quot;).build());</span>
+
+<span class="fc" id="L138">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.EXECUTORS,
+        metricName + &quot;_queue_length_current&quot;,
+        &quot;Current number of tasks awaiting execution&quot;,
+<span class="fc" id="L142">        executor.getQueue()::size);</span>
+
+<span class="fc" id="L144">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.EXECUTORS,
+        metricName + &quot;_active_threads_current&quot;,
+        &quot;Current number of threads executing tasks&quot;,
+<span class="fc" id="L148">        executor::getActiveCount);</span>
+
+<span class="fc" id="L150">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.EXECUTORS,
+        metricName + &quot;_pool_size_current&quot;,
+        &quot;Current number of threads in the thread pool&quot;,
+<span class="fc" id="L154">        executor::getPoolSize);</span>
+
+<span class="fc" id="L156">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.EXECUTORS,
+        metricName + &quot;_completed_tasks_total&quot;,
+        &quot;Total number of tasks executed&quot;,
+<span class="fc" id="L160">        executor::getCompletedTaskCount);</span>
+
+<span class="fc" id="L162">    metricsSystem.createLongGauge(</span>
+        BesuMetricCategory.EXECUTORS,
+        metricName + &quot;_submitted_tasks_total&quot;,
+        &quot;Total number of tasks executed&quot;,
+<span class="fc" id="L166">        executor::getTaskCount);</span>
+
+<span class="fc" id="L168">    return executor;</span>
+  }
+
+  private static String toMetricName(final String name) {
+<span class="fc" id="L172">    return name.toLowerCase(Locale.US).replace('-', '_');</span>
+  }
+
+  private static class CountingAbortPolicy extends AbortPolicy {
+
+    private final Counter rejectedTaskCounter;
+
+<span class="fc" id="L179">    public CountingAbortPolicy(final String metricName, final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L180">      this.rejectedTaskCounter =</span>
+<span class="fc" id="L181">          metricsSystem.createCounter(</span>
+              BesuMetricCategory.EXECUTORS,
+              metricName + &quot;_rejected_tasks_total&quot;,
+              &quot;Total number of tasks rejected by this executor&quot;);
+<span class="fc" id="L185">    }</span>
+
+    @Override
+    public void rejectedExecution(final Runnable r, final ThreadPoolExecutor e) {
+<span class="nc" id="L189">      rejectedTaskCounter.inc();</span>
+<span class="nc" id="L190">      super.rejectedExecution(r, e);</span>
+<span class="nc" id="L191">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

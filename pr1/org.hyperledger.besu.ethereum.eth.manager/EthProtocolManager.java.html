@@ -1,0 +1,517 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthProtocolManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">EthProtocolManager.java</span></div><h1>EthProtocolManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MinedBlockObserver;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.eth.EthProtocol;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV62;
+import org.hyperledger.besu.ethereum.eth.messages.StatusMessage;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidatorRunner;
+import org.hyperledger.besu.ethereum.eth.sync.BlockBroadcaster;
+import org.hyperledger.besu.ethereum.eth.sync.SyncMode;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.forkid.ForkId;
+import org.hyperledger.besu.ethereum.forkid.ForkIdManager;
+import org.hyperledger.besu.ethereum.p2p.network.ProtocolManager;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection.PeerNotConnected;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class EthProtocolManager implements ProtocolManager, MinedBlockObserver {
+<span class="fc" id="L65">  private static final Logger LOG = LoggerFactory.getLogger(EthProtocolManager.class);</span>
+
+  private final EthScheduler scheduler;
+  private final CountDownLatch shutdown;
+<span class="fc" id="L69">  private final AtomicBoolean stopped = new AtomicBoolean(false);</span>
+
+  private final Hash genesisHash;
+  private final ForkIdManager forkIdManager;
+  private final BigInteger networkId;
+  private final EthPeers ethPeers;
+  private final EthMessages ethMessages;
+  private final EthContext ethContext;
+  private final List&lt;Capability&gt; supportedCapabilities;
+  private final Blockchain blockchain;
+  private final BlockBroadcaster blockBroadcaster;
+  private final List&lt;PeerValidator&gt; peerValidators;
+  private final Optional&lt;MergePeerFilter&gt; mergePeerFilter;
+
+  public EthProtocolManager(
+      final Blockchain blockchain,
+      final BigInteger networkId,
+      final WorldStateArchive worldStateArchive,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthMessages ethMessages,
+      final EthContext ethContext,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final EthScheduler scheduler,
+<span class="fc" id="L96">      final ForkIdManager forkIdManager) {</span>
+<span class="fc" id="L97">    this.networkId = networkId;</span>
+<span class="fc" id="L98">    this.peerValidators = peerValidators;</span>
+<span class="fc" id="L99">    this.scheduler = scheduler;</span>
+<span class="fc" id="L100">    this.blockchain = blockchain;</span>
+<span class="fc" id="L101">    this.mergePeerFilter = mergePeerFilter;</span>
+<span class="fc" id="L102">    this.shutdown = new CountDownLatch(1);</span>
+<span class="fc" id="L103">    this.genesisHash = blockchain.getBlockHashByNumber(0L).orElse(Hash.ZERO);</span>
+
+<span class="fc" id="L105">    this.forkIdManager = forkIdManager;</span>
+
+<span class="fc" id="L107">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L108">    this.ethMessages = ethMessages;</span>
+<span class="fc" id="L109">    this.ethContext = ethContext;</span>
+
+<span class="fc" id="L111">    this.blockBroadcaster = new BlockBroadcaster(ethContext);</span>
+
+<span class="fc" id="L113">    this.supportedCapabilities =</span>
+<span class="fc" id="L114">        calculateCapabilities(synchronizerConfiguration, ethereumWireProtocolConfiguration);</span>
+
+    // Run validators
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    for (final PeerValidator peerValidator : this.peerValidators) {</span>
+<span class="fc" id="L118">      PeerValidatorRunner.runValidator(ethContext, peerValidator);</span>
+<span class="fc" id="L119">    }</span>
+
+    // Set up request handlers
+<span class="fc" id="L122">    new EthServer(</span>
+        blockchain,
+        worldStateArchive,
+        transactionPool,
+        ethMessages,
+        ethereumWireProtocolConfiguration);
+<span class="fc" id="L128">  }</span>
+
+  @VisibleForTesting
+  public EthProtocolManager(
+      final Blockchain blockchain,
+      final BigInteger networkId,
+      final WorldStateArchive worldStateArchive,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthMessages ethMessages,
+      final EthContext ethContext,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final EthScheduler scheduler) {
+<span class="fc" id="L144">    this(</span>
+        blockchain,
+        networkId,
+        worldStateArchive,
+        transactionPool,
+        ethereumWireProtocolConfiguration,
+        ethPeers,
+        ethMessages,
+        ethContext,
+        peerValidators,
+        mergePeerFilter,
+        synchronizerConfiguration,
+        scheduler,
+        new ForkIdManager(
+            blockchain,
+<span class="fc" id="L159">            Collections.emptyList(),</span>
+<span class="fc" id="L160">            Collections.emptyList(),</span>
+<span class="fc" id="L161">            ethereumWireProtocolConfiguration.isLegacyEth64ForkIdEnabled()));</span>
+<span class="fc" id="L162">  }</span>
+
+  public EthProtocolManager(
+      final Blockchain blockchain,
+      final BigInteger networkId,
+      final WorldStateArchive worldStateArchive,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthMessages ethMessages,
+      final EthContext ethContext,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final EthScheduler scheduler,
+      final List&lt;Long&gt; blockNumberForks,
+      final List&lt;Long&gt; timestampForks) {
+<span class="fc" id="L179">    this(</span>
+        blockchain,
+        networkId,
+        worldStateArchive,
+        transactionPool,
+        ethereumWireProtocolConfiguration,
+        ethPeers,
+        ethMessages,
+        ethContext,
+        peerValidators,
+        mergePeerFilter,
+        synchronizerConfiguration,
+        scheduler,
+        new ForkIdManager(
+            blockchain,
+            blockNumberForks,
+            timestampForks,
+<span class="fc" id="L196">            ethereumWireProtocolConfiguration.isLegacyEth64ForkIdEnabled()));</span>
+<span class="fc" id="L197">  }</span>
+
+  public EthContext ethContext() {
+<span class="fc" id="L200">    return ethContext;</span>
+  }
+
+  public BlockBroadcaster getBlockBroadcaster() {
+<span class="fc" id="L204">    return blockBroadcaster;</span>
+  }
+
+  @Override
+  public String getSupportedProtocol() {
+<span class="fc" id="L209">    return EthProtocol.NAME;</span>
+  }
+
+  private List&lt;Capability&gt; calculateCapabilities(
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final EthProtocolConfiguration ethProtocolConfiguration) {
+<span class="fc" id="L215">    final List&lt;Capability&gt; capabilities = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L217" title="All 2 branches covered.">    if (SyncMode.isFullSync(synchronizerConfiguration.getSyncMode())) {</span>
+<span class="fc" id="L218">      capabilities.add(EthProtocol.ETH62);</span>
+    }
+<span class="fc" id="L220">    capabilities.add(EthProtocol.ETH63);</span>
+<span class="fc" id="L221">    capabilities.add(EthProtocol.ETH64);</span>
+<span class="fc" id="L222">    capabilities.add(EthProtocol.ETH65);</span>
+<span class="fc" id="L223">    capabilities.add(EthProtocol.ETH66);</span>
+
+    // Version 67 removes the GetNodeData and NodeData
+    // Fast sync depends on GetNodeData and NodeData
+    // see https://eips.ethereum.org/EIPS/eip-4938
+<span class="fc bfc" id="L228" title="All 2 branches covered.">    if (!Objects.equals(SyncMode.FAST, synchronizerConfiguration.getSyncMode())) {</span>
+<span class="fc" id="L229">      capabilities.add(EthProtocol.ETH67);</span>
+<span class="fc" id="L230">      capabilities.add(EthProtocol.ETH68);</span>
+    }
+
+<span class="fc bfc" id="L233" title="All 2 branches covered.">    capabilities.removeIf(cap -&gt; cap.getVersion() &gt; ethProtocolConfiguration.getMaxEthCapability());</span>
+<span class="fc bfc" id="L234" title="All 2 branches covered.">    capabilities.removeIf(cap -&gt; cap.getVersion() &lt; ethProtocolConfiguration.getMinEthCapability());</span>
+
+<span class="fc" id="L236">    return Collections.unmodifiableList(capabilities);</span>
+  }
+
+  @Override
+  public int getHighestProtocolVersion() {
+<span class="fc" id="L241">    return getSupportedCapabilities().stream()</span>
+<span class="fc" id="L242">        .max(Comparator.comparing(Capability::getVersion))</span>
+<span class="fc" id="L243">        .map(Capability::getVersion)</span>
+<span class="fc" id="L244">        .orElse(0);</span>
+  }
+
+  @Override
+  public List&lt;Capability&gt; getSupportedCapabilities() {
+<span class="fc" id="L249">    return supportedCapabilities;</span>
+  }
+
+  @Override
+  public void stop() {
+<span class="pc bpc" id="L254" title="1 of 2 branches missed.">    if (stopped.compareAndSet(false, true)) {</span>
+<span class="fc" id="L255">      LOG.atInfo().setMessage(&quot;Stopping {} Subprotocol.&quot;).addArgument(getSupportedProtocol()).log();</span>
+<span class="fc" id="L256">      scheduler.stop();</span>
+<span class="fc" id="L257">      shutdown.countDown();</span>
+    } else {
+<span class="nc" id="L259">      LOG.atInfo()</span>
+<span class="nc" id="L260">          .setMessage(&quot;Attempted to stop already stopped {} Subprotocol.&quot;)</span>
+<span class="nc" id="L261">          .addArgument(this::getSupportedProtocol)</span>
+<span class="nc" id="L262">          .log();</span>
+    }
+<span class="fc" id="L264">  }</span>
+
+  @Override
+  public void awaitStop() throws InterruptedException {
+<span class="fc" id="L268">    shutdown.await();</span>
+<span class="fc" id="L269">    scheduler.awaitStop();</span>
+<span class="fc" id="L270">    LOG.atInfo()</span>
+<span class="fc" id="L271">        .setMessage(&quot;{} Subprotocol stopped.&quot;)</span>
+<span class="fc" id="L272">        .addArgument(this::getSupportedProtocol)</span>
+<span class="fc" id="L273">        .log();</span>
+<span class="fc" id="L274">  }</span>
+
+  @Override
+  public void processMessage(final Capability cap, final Message message) {
+<span class="fc" id="L278">    checkArgument(</span>
+<span class="fc" id="L279">        getSupportedCapabilities().contains(cap),</span>
+        &quot;Unsupported capability passed to processMessage(): &quot; + cap);
+<span class="fc" id="L281">    final MessageData messageData = message.getData();</span>
+<span class="fc" id="L282">    final int code = messageData.getCode();</span>
+<span class="fc" id="L283">    EthProtocolLogger.logProcessMessage(cap, code);</span>
+<span class="fc" id="L284">    final EthPeer ethPeer = ethPeers.peer(message.getConnection());</span>
+<span class="pc bpc" id="L285" title="1 of 2 branches missed.">    if (ethPeer == null) {</span>
+<span class="nc" id="L286">      LOG.atDebug()</span>
+<span class="nc" id="L287">          .setMessage(&quot;Ignoring message received from unknown peer connection: {}&quot;)</span>
+<span class="nc" id="L288">          .addArgument(message::getConnection)</span>
+<span class="nc" id="L289">          .log();</span>
+<span class="nc" id="L290">      return;</span>
+    }
+
+    // Handle STATUS processing
+<span class="fc bfc" id="L294" title="All 2 branches covered.">    if (code == EthPV62.STATUS) {</span>
+<span class="fc" id="L295">      handleStatusMessage(ethPeer, message);</span>
+<span class="fc" id="L296">      return;</span>
+<span class="fc bfc" id="L297" title="All 2 branches covered.">    } else if (!ethPeer.statusHasBeenReceived()) {</span>
+      // Peers are required to send status messages before any other message type
+<span class="fc" id="L299">      LOG.atDebug()</span>
+<span class="fc" id="L300">          .setMessage(</span>
+              &quot;{} requires a Status ({}) message to be sent first.  Instead, received message {} (BREACH_OF_PROTOCOL).  Disconnecting from {}.&quot;)
+<span class="pc" id="L302">          .addArgument(() -&gt; this.getClass().getSimpleName())</span>
+<span class="fc" id="L303">          .addArgument(EthPV62.STATUS)</span>
+<span class="fc" id="L304">          .addArgument(code)</span>
+<span class="fc" id="L305">          .addArgument(ethPeer::toString)</span>
+<span class="fc" id="L306">          .log();</span>
+<span class="fc" id="L307">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="fc" id="L308">      return;</span>
+    }
+
+<span class="pc bpc" id="L311" title="1 of 2 branches missed.">    if (this.mergePeerFilter.isPresent()) {</span>
+<span class="nc bnc" id="L312" title="All 2 branches missed.">      if (this.mergePeerFilter.get().disconnectIfGossipingBlocks(message, ethPeer)) {</span>
+<span class="nc" id="L313">        LOG.atDebug()</span>
+<span class="nc" id="L314">            .setMessage(&quot;Post-merge disconnect: peer still gossiping blocks {}&quot;)</span>
+<span class="nc" id="L315">            .addArgument(ethPeer::toString)</span>
+<span class="nc" id="L316">            .log();</span>
+<span class="nc" id="L317">        handleDisconnect(ethPeer.getConnection(), DisconnectReason.SUBPROTOCOL_TRIGGERED, false);</span>
+<span class="nc" id="L318">        return;</span>
+      }
+    }
+
+<span class="fc" id="L322">    final EthMessage ethMessage = new EthMessage(ethPeer, messageData);</span>
+
+<span class="fc bfc" id="L324" title="All 2 branches covered.">    if (!ethPeer.validateReceivedMessage(ethMessage, getSupportedProtocol())) {</span>
+<span class="fc" id="L325">      LOG.debug(</span>
+          &quot;Unsolicited message received (BREACH_OF_PROTOCOL), disconnecting from EthPeer: {}&quot;,
+          ethPeer);
+<span class="fc" id="L328">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="fc" id="L329">      return;</span>
+    }
+
+    // This will handle responses
+<span class="fc" id="L333">    ethPeers.dispatchMessage(ethPeer, ethMessage, getSupportedProtocol());</span>
+
+    // This will handle requests
+<span class="fc" id="L336">    Optional&lt;MessageData&gt; maybeResponseData = Optional.empty();</span>
+    try {
+<span class="fc bfc" id="L338" title="All 4 branches covered.">      if (EthProtocol.isEth66Compatible(cap) &amp;&amp; EthProtocol.requestIdCompatible(code)) {</span>
+<span class="fc" id="L339">        final Map.Entry&lt;BigInteger, MessageData&gt; requestIdAndEthMessage =</span>
+<span class="fc" id="L340">            ethMessage.getData().unwrapMessageData();</span>
+<span class="fc" id="L341">        maybeResponseData =</span>
+            ethMessages
+<span class="fc" id="L343">                .dispatch(new EthMessage(ethPeer, requestIdAndEthMessage.getValue()))</span>
+<span class="fc" id="L344">                .map(responseData -&gt; responseData.wrapMessageData(requestIdAndEthMessage.getKey()));</span>
+<span class="fc" id="L345">      } else {</span>
+<span class="fc" id="L346">        maybeResponseData = ethMessages.dispatch(ethMessage);</span>
+      }
+<span class="fc" id="L348">    } catch (final RLPException e) {</span>
+<span class="fc" id="L349">      LOG.atDebug()</span>
+<span class="fc" id="L350">          .setMessage(&quot;Received malformed message {} (BREACH_OF_PROTOCOL), disconnecting: {}, {}&quot;)</span>
+<span class="fc" id="L351">          .addArgument(messageData::getData)</span>
+<span class="fc" id="L352">          .addArgument(ethPeer::toString)</span>
+<span class="fc" id="L353">          .addArgument(e::toString)</span>
+<span class="fc" id="L354">          .log();</span>
+
+<span class="fc" id="L356">      ethPeer.disconnect(DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="fc" id="L357">    }</span>
+<span class="fc" id="L358">    maybeResponseData.ifPresent(</span>
+        responseData -&gt; {
+          try {
+<span class="fc" id="L361">            ethPeer.send(responseData, getSupportedProtocol());</span>
+<span class="nc" id="L362">          } catch (final PeerNotConnected __) {</span>
+            // Peer disconnected before we could respond - nothing to do
+<span class="fc" id="L364">          }</span>
+<span class="fc" id="L365">        });</span>
+<span class="fc" id="L366">  }</span>
+
+  @Override
+  public void handleNewConnection(final PeerConnection connection) {
+<span class="fc" id="L370">    ethPeers.registerNewConnection(connection, peerValidators);</span>
+<span class="fc" id="L371">    final EthPeer peer = ethPeers.peer(connection);</span>
+
+<span class="fc" id="L373">    final Capability cap = connection.capability(getSupportedProtocol());</span>
+    final ForkId latestForkId =
+<span class="fc bfc" id="L375" title="All 2 branches covered.">        cap.getVersion() &gt;= 64 ? forkIdManager.getForkIdForChainHead() : null;</span>
+<span class="fc" id="L376">    final StatusMessage status =</span>
+<span class="fc" id="L377">        StatusMessage.create(</span>
+<span class="fc" id="L378">            cap.getVersion(),</span>
+            networkId,
+<span class="fc" id="L380">            blockchain.getChainHead().getTotalDifficulty(),</span>
+<span class="fc" id="L381">            blockchain.getChainHeadHash(),</span>
+            genesisHash,
+            latestForkId);
+    try {
+<span class="fc" id="L385">      LOG.atTrace()</span>
+<span class="fc" id="L386">          .setMessage(&quot;Sending status message to {} for connection {}.&quot;)</span>
+<span class="fc" id="L387">          .addArgument(peer::getId)</span>
+<span class="fc" id="L388">          .addArgument(connection::toString)</span>
+<span class="fc" id="L389">          .log();</span>
+<span class="fc" id="L390">      peer.send(status, getSupportedProtocol(), connection);</span>
+<span class="fc" id="L391">      peer.registerStatusSent(connection);</span>
+<span class="nc" id="L392">    } catch (final PeerNotConnected peerNotConnected) {</span>
+      // Nothing to do.
+<span class="fc" id="L394">    }</span>
+<span class="fc" id="L395">    LOG.atTrace().setMessage(&quot;{}&quot;).addArgument(ethPeers::toString).log();</span>
+<span class="fc" id="L396">  }</span>
+
+  @Override
+  public boolean shouldConnect(final Peer peer, final boolean incoming) {
+<span class="pc bpc" id="L400" title="1 of 2 branches missed.">    if (peer.getForkId().map(forkIdManager::peerCheck).orElse(true)) {</span>
+<span class="fc" id="L401">      LOG.atDebug()</span>
+<span class="fc" id="L402">          .setMessage(&quot;ForkId OK or not available for peer {}&quot;)</span>
+<span class="fc" id="L403">          .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L404">          .log();</span>
+<span class="fc bfc" id="L405" title="All 2 branches covered.">      if (ethPeers.shouldConnect(peer, incoming)) {</span>
+<span class="fc" id="L406">        return true;</span>
+      }
+    }
+<span class="fc" id="L409">    LOG.atDebug()</span>
+<span class="fc" id="L410">        .setMessage(&quot;ForkId check failed for peer {}&quot;)</span>
+<span class="fc" id="L411">        .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L412">        .log();</span>
+<span class="fc" id="L413">    return false;</span>
+  }
+
+  @Override
+  public void handleDisconnect(
+      final PeerConnection connection,
+      final DisconnectReason reason,
+      final boolean initiatedByPeer) {
+<span class="fc bfc" id="L421" title="All 2 branches covered.">    if (ethPeers.registerDisconnect(connection)) {</span>
+<span class="fc" id="L422">      LOG.atDebug()</span>
+<span class="fc" id="L423">          .setMessage(&quot;Disconnect - {} - {} - {} - {} peers left&quot;)</span>
+<span class="fc bfc" id="L424" title="All 2 branches covered.">          .addArgument(initiatedByPeer ? &quot;Inbound&quot; : &quot;Outbound&quot;)</span>
+<span class="fc" id="L425">          .addArgument(reason::toString)</span>
+<span class="pc" id="L426">          .addArgument(() -&gt; connection.getPeer().getLoggableId())</span>
+<span class="fc" id="L427">          .addArgument(ethPeers::peerCount)</span>
+<span class="fc" id="L428">          .log();</span>
+<span class="fc" id="L429">      LOG.atTrace().setMessage(&quot;{}&quot;).addArgument(ethPeers::toString).log();</span>
+    }
+<span class="fc" id="L431">  }</span>
+
+  private void handleStatusMessage(final EthPeer peer, final Message message) {
+<span class="fc" id="L434">    final StatusMessage status = StatusMessage.readFrom(message.getData());</span>
+<span class="fc" id="L435">    final ForkId forkId = status.forkId();</span>
+<span class="fc" id="L436">    peer.getConnection().getPeer().setForkId(forkId);</span>
+    try {
+<span class="fc bfc" id="L438" title="All 2 branches covered.">      if (!status.networkId().equals(networkId)) {</span>
+<span class="fc" id="L439">        LOG.atDebug()</span>
+<span class="fc" id="L440">            .setMessage(&quot;Mismatched network id: {}, peer {}&quot;)</span>
+<span class="fc" id="L441">            .addArgument(status::networkId)</span>
+<span class="pc" id="L442">            .addArgument(() -&gt; getPeerOrPeerId(peer))</span>
+<span class="fc" id="L443">            .log();</span>
+<span class="fc" id="L444">        peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="pc bpc" id="L445" title="3 of 4 branches missed.">      } else if (!forkIdManager.peerCheck(forkId) &amp;&amp; status.protocolVersion() &gt; 63) {</span>
+<span class="nc" id="L446">        LOG.atDebug()</span>
+<span class="nc" id="L447">            .setMessage(&quot;{} has matching network id ({}), but non-matching fork id: {}&quot;)</span>
+<span class="nc" id="L448">            .addArgument(() -&gt; getPeerOrPeerId(peer))</span>
+<span class="nc" id="L449">            .addArgument(networkId::toString)</span>
+<span class="nc" id="L450">            .addArgument(forkId)</span>
+<span class="nc" id="L451">            .log();</span>
+<span class="nc" id="L452">        peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="pc bpc" id="L453" title="1 of 2 branches missed.">      } else if (forkIdManager.peerCheck(status.genesisHash())) {</span>
+<span class="nc" id="L454">        LOG.atDebug()</span>
+<span class="nc" id="L455">            .setMessage(&quot;{} has matching network id ({}), but non-matching genesis hash: {}&quot;)</span>
+<span class="nc" id="L456">            .addArgument(() -&gt; getPeerOrPeerId(peer))</span>
+<span class="nc" id="L457">            .addArgument(networkId::toString)</span>
+<span class="nc" id="L458">            .addArgument(status::genesisHash)</span>
+<span class="nc" id="L459">            .log();</span>
+<span class="nc" id="L460">        peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="fc bfc" id="L461" title="All 2 branches covered.">      } else if (mergePeerFilter.isPresent()</span>
+<span class="fc bfc" id="L462" title="All 2 branches covered.">          &amp;&amp; mergePeerFilter.get().disconnectIfPoW(status, peer)) {</span>
+<span class="fc" id="L463">        LOG.atDebug()</span>
+<span class="fc" id="L464">            .setMessage(&quot;Post-merge disconnect: peer still PoW {}&quot;)</span>
+<span class="pc" id="L465">            .addArgument(() -&gt; getPeerOrPeerId(peer))</span>
+<span class="fc" id="L466">            .log();</span>
+<span class="fc" id="L467">        handleDisconnect(peer.getConnection(), DisconnectReason.SUBPROTOCOL_TRIGGERED, false);</span>
+      } else {
+<span class="fc" id="L469">        LOG.atDebug()</span>
+<span class="fc" id="L470">            .setMessage(&quot;Received status message from {}: {} with connection {}&quot;)</span>
+<span class="fc" id="L471">            .addArgument(peer::toString)</span>
+<span class="fc" id="L472">            .addArgument(status::toString)</span>
+<span class="fc" id="L473">            .addArgument(message::getConnection)</span>
+<span class="fc" id="L474">            .log();</span>
+<span class="fc" id="L475">        peer.registerStatusReceived(</span>
+<span class="fc" id="L476">            status.bestHash(),</span>
+<span class="fc" id="L477">            status.totalDifficulty(),</span>
+<span class="fc" id="L478">            status.protocolVersion(),</span>
+<span class="fc" id="L479">            message.getConnection());</span>
+      }
+<span class="nc" id="L481">    } catch (final RLPException e) {</span>
+<span class="nc" id="L482">      LOG.atDebug()</span>
+<span class="nc" id="L483">          .setMessage(&quot;Unable to parse status message from peer {}... {}&quot;)</span>
+<span class="nc" id="L484">          .addArgument(peer::getLoggableId)</span>
+<span class="nc" id="L485">          .addArgument(e)</span>
+<span class="nc" id="L486">          .log();</span>
+      // Parsing errors can happen when clients broadcast network ids outside the int range,
+      // So just disconnect with &quot;subprotocol&quot; error rather than &quot;breach of protocol&quot;.
+<span class="nc" id="L489">      peer.disconnect(DisconnectReason.SUBPROTOCOL_TRIGGERED);</span>
+<span class="fc" id="L490">    }</span>
+<span class="fc" id="L491">  }</span>
+
+  private Object getPeerOrPeerId(final EthPeer peer) {
+<span class="nc bnc" id="L494" title="All 2 branches missed.">    return LOG.isTraceEnabled() ? peer : peer.getLoggableId();</span>
+  }
+
+  @Override
+  public void blockMined(final Block block) {
+    // This assumes the block has already been included in the chain
+<span class="fc" id="L500">    final Difficulty totalDifficulty =</span>
+        blockchain
+<span class="fc" id="L502">            .getTotalDifficultyByHash(block.getHash())</span>
+<span class="fc" id="L503">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L505">                    new IllegalStateException(</span>
+                        &quot;Unable to get total difficulty from blockchain for mined block.&quot;));
+<span class="fc" id="L507">    blockBroadcaster.propagate(block, totalDifficulty);</span>
+<span class="fc" id="L508">  }</span>
+
+  public List&lt;Bytes&gt; getForkIdAsBytesList() {
+<span class="fc" id="L511">    final ForkId chainHeadForkId = forkIdManager.getForkIdForChainHead();</span>
+<span class="pc bpc" id="L512" title="1 of 2 branches missed.">    return chainHeadForkId == null</span>
+<span class="fc" id="L513">        ? Collections.emptyList()</span>
+<span class="nc" id="L514">        : chainHeadForkId.getForkIdAsBytesList();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

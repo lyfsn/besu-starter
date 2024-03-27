@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DatabaseMetadata.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb.configuration</a> &gt; <span class="el_source">DatabaseMetadata.java</span></div><h1>DatabaseMetadata.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb.configuration;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.OptionalInt;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DatabindException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Database metadata. */
+public class DatabaseMetadata {
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(DatabaseMetadata.class);</span>
+
+  private static final String METADATA_FILENAME = &quot;DATABASE_METADATA.json&quot;;
+<span class="fc" id="L42">  private static final ObjectMapper MAPPER =</span>
+      new ObjectMapper()
+<span class="fc" id="L44">          .registerModule(new Jdk8Module())</span>
+<span class="fc" id="L45">          .setSerializationInclusion(JsonInclude.Include.NON_ABSENT)</span>
+<span class="fc" id="L46">          .enable(SerializationFeature.INDENT_OUTPUT);</span>
+  private final VersionedStorageFormat versionedStorageFormat;
+
+<span class="fc" id="L49">  private DatabaseMetadata(final VersionedStorageFormat versionedStorageFormat) {</span>
+<span class="fc" id="L50">    this.versionedStorageFormat = versionedStorageFormat;</span>
+<span class="fc" id="L51">  }</span>
+
+  /**
+   * Return the default metadata for new db for a specific format
+   *
+   * @param dataStorageFormat data storage format
+   * @return the metadata to use for new db
+   */
+  public static DatabaseMetadata defaultForNewDb(final DataStorageFormat dataStorageFormat) {
+<span class="fc" id="L60">    return new DatabaseMetadata(BaseVersionedStorageFormat.defaultForNewDB(dataStorageFormat));</span>
+  }
+
+  /**
+   * Return the default metadata for new db when privacy feature is enabled
+   *
+   * @return the metadata to use for new db
+   */
+  public static DatabaseMetadata defaultForNewPrivateDb() {
+<span class="fc" id="L69">    return new DatabaseMetadata(PrivacyVersionedStorageFormat.FOREST_WITH_VARIABLES);</span>
+  }
+
+  /**
+   * Return the version storage format contained in this metadata
+   *
+   * @return version storage format
+   */
+  public VersionedStorageFormat getVersionedStorageFormat() {
+<span class="fc" id="L78">    return versionedStorageFormat;</span>
+  }
+
+  /**
+   * Look up database metadata.
+   *
+   * @param dataDir the data dir
+   * @return the database metadata
+   * @throws IOException the io exception
+   */
+  public static DatabaseMetadata lookUpFrom(final Path dataDir) throws IOException {
+<span class="fc" id="L89">    LOG.info(&quot;Lookup database metadata file in data directory: {}&quot;, dataDir.toString());</span>
+<span class="fc" id="L90">    return resolveDatabaseMetadata(getDefaultMetadataFile(dataDir));</span>
+  }
+
+  /**
+   * Is the metadata file present in the specified data dir?
+   *
+   * @param dataDir the dir to search for the metadata file
+   * @return true is the metadata file exists, false otherwise
+   * @throws IOException if there is an error trying to access the metadata file
+   */
+  public static boolean isPresent(final Path dataDir) throws IOException {
+<span class="fc" id="L101">    return getDefaultMetadataFile(dataDir).exists();</span>
+  }
+
+  /**
+   * Write to directory.
+   *
+   * @param dataDir the data dir
+   * @throws IOException the io exception
+   */
+  public void writeToDirectory(final Path dataDir) throws IOException {
+<span class="fc" id="L111">    writeToFile(getDefaultMetadataFile(dataDir));</span>
+<span class="fc" id="L112">  }</span>
+
+  private void writeToFile(final File file) throws IOException {
+<span class="fc" id="L115">    MAPPER.writeValue(</span>
+        file,
+        new V2(
+            new MetadataV2(
+<span class="fc" id="L119">                versionedStorageFormat.getFormat(),</span>
+<span class="fc" id="L120">                versionedStorageFormat.getVersion(),</span>
+<span class="fc" id="L121">                versionedStorageFormat.getPrivacyVersion())));</span>
+<span class="fc" id="L122">  }</span>
+
+  private static File getDefaultMetadataFile(final Path dataDir) {
+<span class="fc" id="L125">    return dataDir.resolve(METADATA_FILENAME).toFile();</span>
+  }
+
+  private static DatabaseMetadata resolveDatabaseMetadata(final File metadataFile)
+      throws IOException {
+    try {
+      try {
+<span class="fc" id="L132">        return tryReadAndMigrateV1(metadataFile);</span>
+<span class="fc" id="L133">      } catch (DatabindException dbe) {</span>
+<span class="fc" id="L134">        return tryReadV2(metadataFile);</span>
+      }
+<span class="nc" id="L136">    } catch (FileNotFoundException fnfe) {</span>
+<span class="nc" id="L137">      throw new StorageException(</span>
+          &quot;Database exists but metadata file &quot;
+<span class="nc" id="L139">              + metadataFile.toString()</span>
+              + &quot; not found, without it there is no safe way to open the database&quot;,
+          fnfe);
+<span class="fc" id="L142">    } catch (JsonProcessingException jpe) {</span>
+<span class="fc" id="L143">      throw new IllegalStateException(</span>
+<span class="fc" id="L144">          String.format(&quot;Invalid metadata file %s&quot;, metadataFile.getAbsolutePath()), jpe);</span>
+    }
+  }
+
+  private static DatabaseMetadata tryReadAndMigrateV1(final File metadataFile) throws IOException {
+<span class="fc" id="L149">    final V1 v1 = MAPPER.readValue(metadataFile, V1.class);</span>
+    // when migrating from v1, this version will automatically migrate the db to the variables
+    // storage, so we use the `_WITH_VARIABLES` variants
+    final VersionedStorageFormat versionedStorageFormat;
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (v1.privacyVersion().isEmpty()) {</span>
+<span class="fc" id="L154">      versionedStorageFormat =</span>
+<span class="pc bpc" id="L155" title="1 of 3 branches missed.">          switch (v1.version()) {</span>
+<span class="nc" id="L156">            case 1 -&gt; BaseVersionedStorageFormat.FOREST_WITH_VARIABLES;</span>
+<span class="fc" id="L157">            case 2 -&gt; BaseVersionedStorageFormat.BONSAI_WITH_VARIABLES;</span>
+<span class="fc" id="L158">            default -&gt; throw new StorageException(&quot;Unsupported db version: &quot; + v1.version());</span>
+          };
+    } else {
+<span class="fc" id="L161">      versionedStorageFormat =</span>
+<span class="pc bpc" id="L162" title="1 of 2 branches missed.">          switch (v1.privacyVersion().getAsInt()) {</span>
+<span class="pc bpc" id="L163" title="2 of 3 branches missed.">            case 1 -&gt; switch (v1.version()) {</span>
+<span class="fc" id="L164">              case 1 -&gt; PrivacyVersionedStorageFormat.FOREST_WITH_VARIABLES;</span>
+<span class="nc" id="L165">              case 2 -&gt; PrivacyVersionedStorageFormat.BONSAI_WITH_VARIABLES;</span>
+<span class="nc" id="L166">              default -&gt; throw new StorageException(&quot;Unsupported db version: &quot; + v1.version());</span>
+            };
+<span class="nc" id="L168">            default -&gt; throw new StorageException(</span>
+<span class="pc" id="L169">                &quot;Unsupported db privacy version: &quot; + v1.privacyVersion().getAsInt());</span>
+          };
+    }
+
+<span class="fc" id="L173">    final DatabaseMetadata metadataV2 = new DatabaseMetadata(versionedStorageFormat);</span>
+    // writing the metadata will migrate to v2
+<span class="fc" id="L175">    metadataV2.writeToFile(metadataFile);</span>
+<span class="fc" id="L176">    return metadataV2;</span>
+  }
+
+  private static DatabaseMetadata tryReadV2(final File metadataFile) throws IOException {
+<span class="fc" id="L180">    final V2 v2 = MAPPER.readValue(metadataFile, V2.class);</span>
+<span class="fc" id="L181">    return new DatabaseMetadata(fromV2(v2.v2));</span>
+  }
+
+  private static VersionedStorageFormat fromV2(final MetadataV2 metadataV2) {
+<span class="fc bfc" id="L185" title="All 2 branches covered.">    if (metadataV2.privacyVersion().isEmpty()) {</span>
+<span class="fc" id="L186">      return Arrays.stream(BaseVersionedStorageFormat.values())</span>
+<span class="fc" id="L187">          .filter(</span>
+              vsf -&gt;
+<span class="fc bfc" id="L189" title="All 2 branches covered.">                  vsf.getFormat().equals(metadataV2.format())</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">                      &amp;&amp; vsf.getVersion() == metadataV2.version())</span>
+<span class="fc" id="L191">          .findFirst()</span>
+<span class="fc" id="L192">          .orElseThrow(</span>
+              () -&gt; {
+<span class="nc" id="L194">                final String message = &quot;Unsupported RocksDB metadata: &quot; + metadataV2;</span>
+<span class="nc" id="L195">                LOG.error(message);</span>
+<span class="nc" id="L196">                throw new StorageException(message);</span>
+              });
+    }
+<span class="fc" id="L199">    return Arrays.stream(PrivacyVersionedStorageFormat.values())</span>
+<span class="fc" id="L200">        .filter(</span>
+            vsf -&gt;
+<span class="pc bpc" id="L202" title="1 of 2 branches missed.">                vsf.getFormat().equals(metadataV2.format())</span>
+<span class="fc bfc" id="L203" title="All 2 branches covered.">                    &amp;&amp; vsf.getVersion() == metadataV2.version()</span>
+<span class="pc bpc" id="L204" title="1 of 2 branches missed.">                    &amp;&amp; vsf.getPrivacyVersion().equals(metadataV2.privacyVersion()))</span>
+<span class="fc" id="L205">        .findFirst()</span>
+<span class="fc" id="L206">        .orElseThrow(</span>
+            () -&gt; {
+<span class="nc" id="L208">              final String message = &quot;Unsupported RocksDB metadata: &quot; + metadataV2;</span>
+<span class="nc" id="L209">              LOG.error(message);</span>
+<span class="nc" id="L210">              throw new StorageException(message);</span>
+            });
+  }
+
+  /**
+   * Update an existing base storage to support privacy feature
+   *
+   * @return the update metadata with the privacy support
+   */
+  public DatabaseMetadata upgradeToPrivacy() {
+<span class="fc" id="L220">    return new DatabaseMetadata(</span>
+<span class="pc bpc" id="L221" title="2 of 3 branches missed.">        switch (versionedStorageFormat.getFormat()) {</span>
+<span class="pc bpc" id="L222" title="2 of 3 branches missed.">          case FOREST -&gt; switch (versionedStorageFormat.getVersion()) {</span>
+<span class="nc" id="L223">            case 1 -&gt; PrivacyVersionedStorageFormat.FOREST_ORIGINAL;</span>
+<span class="fc" id="L224">            case 2 -&gt; PrivacyVersionedStorageFormat.FOREST_WITH_VARIABLES;</span>
+<span class="nc" id="L225">            default -&gt; throw new StorageException(</span>
+                &quot;Unsupported database with format FOREST and version &quot;
+<span class="nc" id="L227">                    + versionedStorageFormat.getVersion());</span>
+          };
+<span class="nc bnc" id="L229" title="All 3 branches missed.">          case BONSAI -&gt; switch (versionedStorageFormat.getVersion()) {</span>
+<span class="nc" id="L230">            case 1 -&gt; PrivacyVersionedStorageFormat.BONSAI_ORIGINAL;</span>
+<span class="nc" id="L231">            case 2 -&gt; PrivacyVersionedStorageFormat.BONSAI_WITH_VARIABLES;</span>
+<span class="nc" id="L232">            default -&gt; throw new StorageException(</span>
+                &quot;Unsupported database with format BONSAI and version &quot;
+<span class="pc" id="L234">                    + versionedStorageFormat.getVersion());</span>
+          };
+        });
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L241">    return &quot;versionedStorageFormat=&quot; + versionedStorageFormat;</span>
+  }
+
+<span class="fc" id="L244">  @JsonSerialize</span>
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L246">  private record V1(int version, OptionalInt privacyVersion) {}</span>
+
+<span class="fc" id="L248">  @JsonSerialize</span>
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L250">  private record V2(MetadataV2 v2) {}</span>
+
+<span class="fc" id="L252">  @JsonSerialize</span>
+  @SuppressWarnings(&quot;unused&quot;)
+<span class="fc" id="L254">  private record MetadataV2(DataStorageFormat format, int version, OptionalInt privacyVersion) {}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

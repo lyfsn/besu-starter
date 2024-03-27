@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DebugStorageRangeAt.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">DebugStorageRangeAt.java</span></div><h1>DebugStorageRangeAt.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameterOrBlockHash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.BlockReplay;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.Tracer;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.Tracer.TraceableState;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.DebugStorageRangeAtResult;
+import org.hyperledger.besu.ethereum.api.query.BlockWithMetadata;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.query.TransactionWithMetadata;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+
+import java.util.Collections;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import com.google.common.base.Suppliers;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class DebugStorageRangeAt implements JsonRpcMethod {
+
+  private final Supplier&lt;BlockchainQueries&gt; blockchainQueries;
+  private final Supplier&lt;BlockReplay&gt; blockReplay;
+  private final boolean shortValues;
+
+  public DebugStorageRangeAt(
+      final BlockchainQueries blockchainQueries, final BlockReplay blockReplay) {
+<span class="fc" id="L51">    this(Suppliers.ofInstance(blockchainQueries), Suppliers.ofInstance(blockReplay), false);</span>
+<span class="fc" id="L52">  }</span>
+
+  public DebugStorageRangeAt(
+      final Supplier&lt;BlockchainQueries&gt; blockchainQueries,
+      final Supplier&lt;BlockReplay&gt; blockReplay,
+<span class="fc" id="L57">      final boolean shortValues) {</span>
+<span class="fc" id="L58">    this.blockchainQueries = blockchainQueries;</span>
+<span class="fc" id="L59">    this.blockReplay = blockReplay;</span>
+<span class="fc" id="L60">    this.shortValues = shortValues;</span>
+<span class="fc" id="L61">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L65">    return RpcMethod.DEBUG_STORAGE_RANGE_AT.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L70">    final BlockParameterOrBlockHash blockParameterOrBlockHash =</span>
+<span class="fc" id="L71">        requestContext.getRequiredParameter(0, BlockParameterOrBlockHash.class);</span>
+<span class="fc" id="L72">    final int transactionIndex = requestContext.getRequiredParameter(1, Integer.class);</span>
+<span class="fc" id="L73">    final Address accountAddress = requestContext.getRequiredParameter(2, Address.class);</span>
+<span class="fc" id="L74">    final Hash startKey =</span>
+<span class="fc" id="L75">        Hash.fromHexStringLenient(requestContext.getRequiredParameter(3, String.class));</span>
+<span class="fc" id="L76">    final int limit = requestContext.getRequiredParameter(4, Integer.class);</span>
+
+<span class="fc" id="L78">    final Optional&lt;Hash&gt; blockHashOptional = hashFromParameter(blockParameterOrBlockHash);</span>
+<span class="pc bpc" id="L79" title="1 of 2 branches missed.">    if (blockHashOptional.isEmpty()) {</span>
+<span class="nc" id="L80">      return emptyResponse(requestContext);</span>
+    }
+<span class="fc" id="L82">    final Hash blockHash = blockHashOptional.get();</span>
+<span class="fc" id="L83">    final Optional&lt;BlockHeader&gt; blockHeaderOptional =</span>
+<span class="fc" id="L84">        blockchainQueries.get().blockByHash(blockHash).map(BlockWithMetadata::getHeader);</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (blockHeaderOptional.isEmpty()) {</span>
+<span class="nc" id="L86">      return emptyResponse(requestContext);</span>
+    }
+
+<span class="fc" id="L89">    final Optional&lt;TransactionWithMetadata&gt; maybeTransactionIndex =</span>
+<span class="fc" id="L90">        blockchainQueries.get().transactionByBlockHashAndIndex(blockHash, transactionIndex);</span>
+
+<span class="fc" id="L92">    return Tracer.processTracing(</span>
+<span class="fc" id="L93">            blockchainQueries.get(),</span>
+<span class="fc" id="L94">            Optional.of(blockHeaderOptional.get()),</span>
+            mutableWorldState -&gt; {
+<span class="fc bfc" id="L96" title="All 2 branches covered.">              if (maybeTransactionIndex.isEmpty()) {</span>
+<span class="fc" id="L97">                return Optional.of(</span>
+<span class="fc" id="L98">                    extractStorageAt(</span>
+                        requestContext, accountAddress, startKey, limit, mutableWorldState));
+              } else {
+<span class="fc" id="L101">                return blockReplay</span>
+<span class="fc" id="L102">                    .get()</span>
+<span class="fc" id="L103">                    .afterTransactionInBlock(</span>
+                        mutableWorldState,
+                        blockHash,
+<span class="fc" id="L106">                        maybeTransactionIndex.get().getTransaction().getHash(),</span>
+                        (transaction,
+                            blockHeader,
+                            blockchain,
+                            transactionProcessor,
+                            protocolSpec) -&gt;
+<span class="fc" id="L112">                            extractStorageAt(</span>
+                                requestContext,
+                                accountAddress,
+                                startKey,
+                                limit,
+                                mutableWorldState));
+              }
+            })
+<span class="fc" id="L120">        .orElse(emptyResponse(requestContext));</span>
+  }
+
+  private Optional&lt;Hash&gt; hashFromParameter(final BlockParameterOrBlockHash blockParameter) {
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">    if (blockParameter.isEarliest()) {</span>
+<span class="nc" id="L125">      return blockchainQueries.get().getBlockHashByNumber(0);</span>
+<span class="pc bpc" id="L126" title="2 of 4 branches missed.">    } else if (blockParameter.isLatest() || blockParameter.isPending()) {</span>
+<span class="nc" id="L127">      return blockchainQueries</span>
+<span class="nc" id="L128">          .get()</span>
+<span class="nc" id="L129">          .latestBlockWithTxHashes()</span>
+<span class="nc" id="L130">          .map(block -&gt; block.getHeader().getHash());</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    } else if (blockParameter.isNumeric()) {</span>
+<span class="fc" id="L132">      return blockchainQueries.get().getBlockHashByNumber(blockParameter.getNumber().getAsLong());</span>
+    } else {
+<span class="fc" id="L134">      return blockParameter.getHash();</span>
+    }
+  }
+
+  private JsonRpcSuccessResponse extractStorageAt(
+      final JsonRpcRequestContext requestContext,
+      final Address accountAddress,
+      final Hash startKey,
+      final int limit,
+      final TraceableState worldState) {
+<span class="fc" id="L144">    final Account account = worldState.get(accountAddress);</span>
+<span class="fc" id="L145">    final NavigableMap&lt;Bytes32, AccountStorageEntry&gt; entries =</span>
+<span class="fc" id="L146">        account.storageEntriesFrom(startKey, limit + 1);</span>
+
+<span class="fc" id="L148">    Bytes32 nextKey = null;</span>
+<span class="pc bpc" id="L149" title="1 of 2 branches missed.">    if (entries.size() == limit + 1) {</span>
+<span class="nc" id="L150">      nextKey = entries.lastKey();</span>
+<span class="nc" id="L151">      entries.remove(nextKey);</span>
+    }
+<span class="fc" id="L153">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L154">        requestContext.getRequest().getId(),</span>
+        new DebugStorageRangeAtResult(entries, nextKey, shortValues));
+  }
+
+  private JsonRpcSuccessResponse emptyResponse(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L159">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L160">        requestContext.getRequest().getId(),</span>
+<span class="fc" id="L161">        new DebugStorageRangeAtResult(Collections.emptyNavigableMap(), null, shortValues));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

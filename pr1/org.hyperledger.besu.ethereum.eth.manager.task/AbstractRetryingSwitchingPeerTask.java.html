@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractRetryingSwitchingPeerTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">AbstractRetryingSwitchingPeerTask.java</span></div><h1>AbstractRetryingSwitchingPeerTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.NoAvailablePeersException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractRetryingSwitchingPeerTask&lt;T&gt; extends AbstractRetryingPeerTask&lt;T&gt; {
+
+<span class="fc" id="L37">  private static final Logger LOG =</span>
+<span class="fc" id="L38">      LoggerFactory.getLogger(AbstractRetryingSwitchingPeerTask.class);</span>
+
+<span class="fc" id="L40">  private final Set&lt;EthPeer&gt; triedPeers = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L41">  private final Set&lt;EthPeer&gt; failedPeers = new HashSet&lt;&gt;();</span>
+
+  protected AbstractRetryingSwitchingPeerTask(
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final Predicate&lt;T&gt; isEmptyResponse,
+      final int maxRetries) {
+<span class="fc" id="L48">    super(ethContext, maxRetries, isEmptyResponse, metricsSystem);</span>
+<span class="fc" id="L49">  }</span>
+
+  @Override
+  public void assignPeer(final EthPeer peer) {
+<span class="fc" id="L53">    super.assignPeer(peer);</span>
+<span class="fc" id="L54">    triedPeers.add(peer);</span>
+<span class="fc" id="L55">  }</span>
+
+  protected abstract CompletableFuture&lt;T&gt; executeTaskOnCurrentPeer(final EthPeer peer);
+
+  @Override
+  protected CompletableFuture&lt;T&gt; executePeerTask(final Optional&lt;EthPeer&gt; assignedPeer) {
+
+<span class="fc" id="L62">    final Optional&lt;EthPeer&gt; maybePeer =</span>
+        assignedPeer
+<span class="fc bfc" id="L64" title="All 2 branches covered.">            .filter(u -&gt; getRetryCount() == 1) // first try with the assigned peer if present</span>
+<span class="fc" id="L65">            .map(Optional::of)</span>
+<span class="fc" id="L66">            .orElseGet(this::selectNextPeer); // otherwise, select a new one from the pool</span>
+
+<span class="fc bfc" id="L68" title="All 2 branches covered.">    if (maybePeer.isEmpty()) {</span>
+<span class="fc" id="L69">      LOG.atTrace()</span>
+<span class="fc" id="L70">          .setMessage(&quot;No peer found to try to execute task at attempt {}, tried peers {}&quot;)</span>
+<span class="fc" id="L71">          .addArgument(this::getRetryCount)</span>
+<span class="fc" id="L72">          .addArgument(triedPeers)</span>
+<span class="fc" id="L73">          .log();</span>
+<span class="fc" id="L74">      final var ex = new NoAvailablePeersException();</span>
+<span class="fc" id="L75">      return CompletableFuture.failedFuture(ex);</span>
+    }
+
+<span class="fc" id="L78">    final EthPeer peerToUse = maybePeer.get();</span>
+<span class="fc" id="L79">    assignPeer(peerToUse);</span>
+
+<span class="fc" id="L81">    LOG.atTrace()</span>
+<span class="fc" id="L82">        .setMessage(&quot;Trying to execute task on peer {}, attempt {}&quot;)</span>
+<span class="fc" id="L83">        .addArgument(this::getAssignedPeer)</span>
+<span class="fc" id="L84">        .addArgument(this::getRetryCount)</span>
+<span class="fc" id="L85">        .log();</span>
+
+<span class="fc" id="L87">    return executeTaskOnCurrentPeer(peerToUse)</span>
+<span class="fc" id="L88">        .thenApply(</span>
+            peerResult -&gt; {
+<span class="fc" id="L90">              LOG.atTrace()</span>
+<span class="fc" id="L91">                  .setMessage(&quot;Got result {} from peer {}, attempt {}&quot;)</span>
+<span class="fc" id="L92">                  .addArgument(peerResult)</span>
+<span class="fc" id="L93">                  .addArgument(peerToUse)</span>
+<span class="fc" id="L94">                  .addArgument(this::getRetryCount)</span>
+<span class="fc" id="L95">                  .log();</span>
+<span class="fc" id="L96">              result.complete(peerResult);</span>
+<span class="fc" id="L97">              return peerResult;</span>
+            });
+  }
+
+  @Override
+  protected void handleTaskError(final Throwable error) {
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (isPeerFailure(error)) {</span>
+<span class="pc" id="L104">      getAssignedPeer().ifPresent(peer -&gt; failedPeers.add(peer));</span>
+    }
+<span class="fc" id="L106">    super.handleTaskError(error);</span>
+<span class="fc" id="L107">  }</span>
+
+  @Override
+  protected boolean isRetryableError(final Throwable error) {
+<span class="fc bfc" id="L111" title="All 4 branches covered.">    return error instanceof TimeoutException || isPeerFailure(error);</span>
+  }
+
+  private Optional&lt;EthPeer&gt; selectNextPeer() {
+<span class="fc" id="L115">    final Optional&lt;EthPeer&gt; maybeNextPeer = remainingPeersToTry().findFirst();</span>
+
+<span class="fc bfc" id="L117" title="All 2 branches covered.">    if (maybeNextPeer.isEmpty()) {</span>
+      // tried all the peers, restart from the best one but excluding the failed ones
+<span class="fc" id="L119">      refreshPeers();</span>
+<span class="fc" id="L120">      triedPeers.retainAll(failedPeers);</span>
+<span class="fc" id="L121">      return remainingPeersToTry().findFirst();</span>
+    }
+
+<span class="fc" id="L124">    return maybeNextPeer;</span>
+  }
+
+  private Stream&lt;EthPeer&gt; remainingPeersToTry() {
+<span class="fc" id="L128">    return getEthContext()</span>
+<span class="fc" id="L129">        .getEthPeers()</span>
+<span class="fc" id="L130">        .streamBestPeers()</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">        .filter(peer -&gt; !triedPeers.contains(peer));</span>
+  }
+
+  private void refreshPeers() {
+<span class="fc" id="L135">    final EthPeers peers = getEthContext().getEthPeers();</span>
+    // If we are at max connections, then refresh peers disconnecting one of the failed peers,
+    // or the least useful
+
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    if (peers.peerCount() &gt;= peers.getMaxPeers()) {</span>
+<span class="pc bnc" id="L140" title="All 2 branches missed.">      failedPeers.stream().filter(peer -&gt; !peer.isDisconnected()).findAny().stream()</span>
+<span class="fc" id="L141">          .min(EthPeers.MOST_USEFUL_PEER)</span>
+<span class="fc" id="L142">          .or(() -&gt; peers.streamAvailablePeers().min(EthPeers.MOST_USEFUL_PEER))</span>
+<span class="fc" id="L143">          .ifPresent(</span>
+              peer -&gt; {
+<span class="fc" id="L145">                LOG.atDebug()</span>
+<span class="fc" id="L146">                    .setMessage(</span>
+                        &quot;Refresh peers disconnecting peer {} Waiting for better peers. Current {} of max {}&quot;)
+<span class="fc" id="L148">                    .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L149">                    .addArgument(peers::peerCount)</span>
+<span class="fc" id="L150">                    .addArgument(peers::getMaxPeers)</span>
+<span class="fc" id="L151">                    .log();</span>
+<span class="fc" id="L152">                peer.disconnect(DisconnectReason.USELESS_PEER);</span>
+<span class="fc" id="L153">              });</span>
+    }
+<span class="fc" id="L155">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

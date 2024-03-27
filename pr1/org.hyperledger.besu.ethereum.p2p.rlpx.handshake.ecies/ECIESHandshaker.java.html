@@ -1,0 +1,449 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ECIESHandshaker.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies</a> &gt; <span class="el_source">ECIESHandshaker.java</span></div><h1>ECIESHandshaker.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+
+import static com.google.common.base.Preconditions.checkState;
+import static org.apache.tuweni.bytes.Bytes.concatenate;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SecureRandomProvider;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakeException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakeSecrets;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModuleException;
+
+import java.security.SecureRandom;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.google.common.annotations.VisibleForTesting;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.bouncycastle.crypto.InvalidCipherTextException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * An Elliptic Curve Integrated Encryption Scheme implementation, following the handshake ceremony
+ * of Ethereum.
+ *
+ * @see &lt;a href=&quot;https://github.com/ethereum/devp2p/blob/master/rlpx.md#encrypted-handshake&quot;&gt;RLPx
+ *     encrypted handshake&lt;/a&gt;
+ */
+<span class="fc" id="L52">public class ECIESHandshaker implements Handshaker {</span>
+
+<span class="fc" id="L54">  private static final Logger LOG = LoggerFactory.getLogger(ECIESHandshaker.class);</span>
+<span class="fc" id="L55">  private static final SecureRandom RANDOM = SecureRandomProvider.publicSecureRandom();</span>
+
+  static final int SIGNATURE_LENGTH = 65;
+  static final int HASH_EPH_PUBKEY_LENGTH = 32;
+  static final int PUBKEY_LENGTH = 64;
+  static final int NONCE_LENGTH = 32;
+  static final int TOKEN_FLAG_LENGTH = 1;
+
+  // Keypairs under our control.
+  private NodeKey nodeKey;
+  private KeyPair ephKeyPair;
+
+  // Party's material, only public keys.
+  private SECPPublicKey partyPubKey;
+  private SECPPublicKey partyEphPubKey;
+
+  // Messages, for later MAC calculation.
+  private InitiatorHandshakeMessage initiatorMsg;
+  private ResponderHandshakeMessage responderMsg;
+  private Bytes initiatorMsgEnc;
+  private Bytes responderMsgEnc;
+
+  // Nonces.
+  private Bytes32 initiatorNonce;
+  private Bytes32 responderNonce;
+
+  // Whether we are the party who initiated this handshake or not.
+  private boolean initiator;
+
+  // See Javadoc on #secrets() to understand the state machine.
+<span class="fc" id="L85">  private final AtomicReference&lt;Handshaker.HandshakeStatus&gt; status =</span>
+      new AtomicReference&lt;&gt;(Handshaker.HandshakeStatus.UNINITIALIZED);
+  private HandshakeSecrets secrets;
+
+<span class="fc" id="L89">  private boolean version4 = true;</span>
+
+<span class="fc" id="L91">  private final SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+
+  @Override
+  public void prepareInitiator(final NodeKey nodeKey, final SECPPublicKey theirPubKey) {
+<span class="fc" id="L95">    checkState(</span>
+<span class="fc" id="L96">        status.compareAndSet(</span>
+            Handshaker.HandshakeStatus.UNINITIALIZED, Handshaker.HandshakeStatus.PREPARED),
+        &quot;handshake was already prepared&quot;);
+
+<span class="fc" id="L100">    this.initiator = true;</span>
+<span class="fc" id="L101">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L102">    this.ephKeyPair = signatureAlgorithm.generateKeyPair();</span>
+<span class="fc" id="L103">    this.partyPubKey = theirPubKey;</span>
+<span class="fc" id="L104">    this.initiatorNonce = Bytes32.wrap(random(32), 0);</span>
+<span class="fc" id="L105">    LOG.trace(</span>
+        &quot;Prepared ECIES handshake with node {}... under INITIATOR role&quot;,
+<span class="fc" id="L107">        theirPubKey.getEncodedBytes().slice(0, 16));</span>
+<span class="fc" id="L108">  }</span>
+
+  @Override
+  public void prepareResponder(final NodeKey nodeKey) {
+<span class="fc" id="L112">    checkState(</span>
+<span class="fc" id="L113">        status.compareAndSet(</span>
+            Handshaker.HandshakeStatus.UNINITIALIZED, Handshaker.HandshakeStatus.IN_PROGRESS),
+        &quot;handshake was already prepared&quot;);
+
+<span class="fc" id="L117">    this.initiator = false;</span>
+<span class="fc" id="L118">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L119">    this.ephKeyPair = signatureAlgorithm.generateKeyPair();</span>
+<span class="fc" id="L120">    this.responderNonce = Bytes32.wrap(random(32), 0);</span>
+<span class="fc" id="L121">    LOG.trace(&quot;Prepared ECIES handshake under RESPONDER role&quot;);</span>
+<span class="fc" id="L122">  }</span>
+
+  @Override
+  public ByteBuf firstMessage() throws HandshakeException {
+<span class="fc" id="L126">    checkState(initiator, &quot;illegal invocation of firstMessage on non-initiator end of handshake&quot;);</span>
+<span class="fc" id="L127">    checkState(</span>
+<span class="fc" id="L128">        status.compareAndSet(</span>
+            Handshaker.HandshakeStatus.PREPARED, Handshaker.HandshakeStatus.IN_PROGRESS),
+        &quot;illegal invocation of firstMessage, handshake had already started&quot;);
+
+<span class="fc" id="L132">    final Bytes32 staticSharedSecret = nodeKey.calculateECDHKeyAgreement(partyPubKey);</span>
+<span class="pc bpc" id="L133" title="1 of 2 branches missed.">    if (version4) {</span>
+<span class="fc" id="L134">      initiatorMsg =</span>
+<span class="fc" id="L135">          InitiatorHandshakeMessageV4.create(</span>
+<span class="fc" id="L136">              nodeKey.getPublicKey(), ephKeyPair, staticSharedSecret, initiatorNonce);</span>
+    } else {
+<span class="nc" id="L138">      initiatorMsg =</span>
+<span class="nc" id="L139">          InitiatorHandshakeMessageV1.create(</span>
+<span class="nc" id="L140">              nodeKey.getPublicKey(), ephKeyPair, staticSharedSecret, initiatorNonce, false);</span>
+    }
+    try {
+<span class="pc bpc" id="L143" title="1 of 2 branches missed.">      if (version4) {</span>
+<span class="fc" id="L144">        initiatorMsgEnc = EncryptedMessage.encryptMsgEip8(initiatorMsg.encode(), partyPubKey);</span>
+      } else {
+<span class="nc" id="L146">        initiatorMsgEnc = EncryptedMessage.encryptMsg(initiatorMsg.encode(), partyPubKey);</span>
+      }
+<span class="nc" id="L148">    } catch (final InvalidCipherTextException e) {</span>
+<span class="nc" id="L149">      status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L150">      throw new HandshakeException(&quot;Encrypting the first handshake message failed&quot;, e);</span>
+<span class="fc" id="L151">    }</span>
+
+<span class="fc" id="L153">    LOG.trace(&quot;First ECIES handshake message under INITIATOR role: {}&quot;, initiatorMsg);</span>
+
+<span class="fc" id="L155">    return Unpooled.wrappedBuffer(initiatorMsgEnc.toArray());</span>
+  }
+
+  @Override
+  public Optional&lt;ByteBuf&gt; handleMessage(final ByteBuf buf) throws HandshakeException {
+<span class="fc" id="L160">    checkState(</span>
+<span class="pc bpc" id="L161" title="1 of 2 branches missed.">        status.get() == Handshaker.HandshakeStatus.IN_PROGRESS,</span>
+        &quot;illegal invocation of onMessage on handshake that is not in progress&quot;);
+
+    // Take as many bytes as expected in the next message.
+<span class="fc" id="L165">    int expectedLength = ECIESEncryptionEngine.ENCRYPTION_OVERHEAD;</span>
+<span class="fc" id="L166">    expectedLength +=</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">        initiator</span>
+<span class="fc" id="L168">            ? ResponderHandshakeMessageV1.MESSAGE_LENGTH</span>
+<span class="fc" id="L169">            : InitiatorHandshakeMessageV1.MESSAGE_LENGTH;</span>
+
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">    if (buf.readableBytes() &lt; expectedLength) {</span>
+<span class="nc" id="L172">      buf.markReaderIndex();</span>
+<span class="nc" id="L173">      final int size = buf.readUnsignedShort();</span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">      if (size &gt; buf.readableBytes() + 2) {</span>
+<span class="nc" id="L175">        buf.resetReaderIndex();</span>
+<span class="nc" id="L176">        return Optional.empty();</span>
+      }
+<span class="nc" id="L178">      expectedLength = size;</span>
+<span class="nc" id="L179">      buf.resetReaderIndex();</span>
+    }
+
+<span class="fc" id="L182">    buf.markReaderIndex();</span>
+<span class="fc" id="L183">    final ByteBuf bufferedBytes = buf.readSlice(expectedLength);</span>
+<span class="fc" id="L184">    final byte[] encryptedBytes = new byte[bufferedBytes.readableBytes()];</span>
+<span class="fc" id="L185">    bufferedBytes.getBytes(0, encryptedBytes);</span>
+<span class="fc" id="L186">    Bytes bytes = Bytes.wrap(encryptedBytes);</span>
+
+<span class="fc" id="L188">    Bytes encryptedMsg = bytes;</span>
+    try {
+      // Decrypt the message with our private key.
+      try {
+        // Assume new format
+<span class="fc" id="L193">        final int size = bufferedBytes.readUnsignedShort();</span>
+<span class="fc bfc" id="L194" title="All 2 branches covered.">        if (buf.writerIndex() &gt;= size) {</span>
+<span class="fc" id="L195">          bufferedBytes.readerIndex(0);</span>
+<span class="fc" id="L196">          final byte[] fullMessage = new byte[size + 2];</span>
+<span class="fc" id="L197">          bufferedBytes.readBytes(fullMessage, 0, expectedLength);</span>
+<span class="fc" id="L198">          buf.readBytes(fullMessage, expectedLength, size - expectedLength + 2);</span>
+<span class="fc" id="L199">          encryptedMsg = Bytes.wrap(fullMessage);</span>
+<span class="fc" id="L200">          bytes = EncryptedMessage.decryptMsgEIP8(encryptedMsg, nodeKey);</span>
+<span class="fc" id="L201">          version4 = true;</span>
+<span class="fc" id="L202">        } else {</span>
+<span class="fc" id="L203">          throw new HandshakeException(&quot;Failed to decrypt handshake message&quot;);</span>
+        }
+<span class="fc" id="L205">      } catch (final Exception ex) {</span>
+<span class="fc" id="L206">        bytes = EncryptedMessage.decryptMsg(bytes, nodeKey);</span>
+<span class="fc" id="L207">        version4 = false;</span>
+<span class="fc" id="L208">      }</span>
+<span class="nc" id="L209">    } catch (final InvalidCipherTextException e) {</span>
+<span class="nc" id="L210">      status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L211">      throw new HandshakeException(&quot;Decrypting an incoming handshake message failed&quot;, e);</span>
+<span class="nc" id="L212">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L213">      status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L214">      throw new HandshakeException(</span>
+          &quot;Unable to create ECDH Key agreement due to Crypto engine failure&quot;, e);
+<span class="fc" id="L216">    }</span>
+
+<span class="fc" id="L218">    Optional&lt;Bytes&gt; nextMsg = Optional.empty();</span>
+<span class="fc bfc" id="L219" title="All 2 branches covered.">    if (initiator) {</span>
+      // If we are the initiator, we have already sent our request and we're waiting for the
+      // responder's ack;
+      // when we receive it, we can build the handshake secret material and declare a SUCCESS.
+<span class="pc bpc" id="L223" title="1 of 2 branches missed.">      checkState(</span>
+          responderMsg == null,
+          &quot;unexpected message: responder message had &quot; + &quot;already been received&quot;);
+
+      // Store the message, as we need it to generating our ingress and egress MACs.
+<span class="fc" id="L228">      responderMsgEnc = encryptedMsg;</span>
+<span class="fc bfc" id="L229" title="All 2 branches covered.">      if (version4) {</span>
+<span class="fc" id="L230">        responderMsg = ResponderHandshakeMessageV4.decode(bytes);</span>
+      } else {
+<span class="fc" id="L232">        responderMsg = ResponderHandshakeMessageV1.decode(bytes);</span>
+      }
+
+      // Extract the responder's nonce and ephemeral pubkey, which will be used to generate the
+      // shared secrets.
+<span class="fc" id="L237">      responderNonce = responderMsg.getNonce();</span>
+<span class="fc" id="L238">      partyEphPubKey = responderMsg.getEphPublicKey();</span>
+
+<span class="fc" id="L240">      LOG.trace(</span>
+          &quot;Received responder's ECIES handshake message from node {}...: {}&quot;,
+<span class="fc" id="L242">          partyPubKey.getEncodedBytes().slice(0, 16),</span>
+          responderMsg);
+
+    } else {
+      // If we are the responder, we are waiting for an initiator message; after we generate our
+      // message and
+      // we can build the handshake secret material and declare a SUCCESS.
+<span class="pc bpc" id="L249" title="1 of 2 branches missed.">      checkState(</span>
+          initiatorMsg == null,
+          &quot;unexpected message: initiator message &quot; + &quot;had already been received&quot;);
+
+      // Store the message, as we need it to generating our ingress and egress MACs.
+<span class="fc" id="L254">      initiatorMsgEnc = encryptedMsg;</span>
+      try {
+<span class="fc bfc" id="L256" title="All 2 branches covered.">        if (version4) {</span>
+<span class="fc" id="L257">          initiatorMsg = InitiatorHandshakeMessageV4.decode(bytes, nodeKey);</span>
+        } else {
+<span class="fc" id="L259">          initiatorMsg = InitiatorHandshakeMessageV1.decode(bytes, nodeKey);</span>
+        }
+<span class="nc" id="L261">      } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L262">        status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L263">        throw new HandshakeException(</span>
+            &quot;Unable to create ECDH Key agreement due to Crypto engine failure&quot;, e);
+<span class="fc" id="L265">      }</span>
+
+<span class="fc" id="L267">      LOG.trace(</span>
+          &quot;[{}] Received initiator's ECIES handshake message: {}&quot;,
+<span class="fc" id="L269">          nodeKey.getPublicKey().getEncodedBytes(),</span>
+          initiatorMsg);
+
+      // Extract the initiator's data.
+<span class="fc" id="L273">      initiatorNonce = initiatorMsg.getNonce();</span>
+<span class="fc" id="L274">      partyPubKey = initiatorMsg.getPubKey();</span>
+<span class="fc" id="L275">      partyEphPubKey = initiatorMsg.getEphPubKey();</span>
+
+<span class="fc" id="L277">      checkState(</span>
+<span class="fc" id="L278">          keccak256(partyEphPubKey.getEncodedBytes()).equals(initiatorMsg.getEphPubKeyHash()),</span>
+          &quot;keccak hash of recovered ephemeral pubkey does not match announced hash&quot;);
+
+      // Build the response message.
+<span class="fc bfc" id="L282" title="All 2 branches covered.">      if (version4) {</span>
+<span class="fc" id="L283">        responderMsg =</span>
+<span class="fc" id="L284">            ResponderHandshakeMessageV4.create(ephKeyPair.getPublicKey(), responderNonce);</span>
+      } else {
+<span class="fc" id="L286">        responderMsg =</span>
+<span class="fc" id="L287">            ResponderHandshakeMessageV1.create(ephKeyPair.getPublicKey(), responderNonce, false);</span>
+      }
+
+<span class="fc" id="L290">      LOG.trace(</span>
+          &quot;Generated responder's ECIES handshake message against peer {}...: {}&quot;,
+<span class="fc" id="L292">          partyPubKey.getEncodedBytes().slice(0, 16),</span>
+          responderMsg);
+
+      try {
+<span class="fc bfc" id="L296" title="All 2 branches covered.">        if (version4) {</span>
+<span class="fc" id="L297">          responderMsgEnc = EncryptedMessage.encryptMsgEip8(responderMsg.encode(), partyPubKey);</span>
+        } else {
+<span class="fc" id="L299">          responderMsgEnc = EncryptedMessage.encryptMsg(responderMsg.encode(), partyPubKey);</span>
+        }
+<span class="nc" id="L301">      } catch (final InvalidCipherTextException e) {</span>
+<span class="nc" id="L302">        status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L303">        throw new HandshakeException(&quot;Encrypting the next handshake message failed&quot;, e);</span>
+<span class="fc" id="L304">      }</span>
+<span class="fc" id="L305">      nextMsg = Optional.of(responderMsgEnc);</span>
+
+      // Compute the secrets and declare this handshake as successful.
+    }
+
+    try {
+<span class="fc" id="L311">      computeSecrets();</span>
+<span class="nc" id="L312">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L313">      status.set(Handshaker.HandshakeStatus.FAILED);</span>
+<span class="nc" id="L314">      throw new HandshakeException(</span>
+          &quot;Unable to create ECDH Key agreement due to Crypto engine failure&quot;, e);
+<span class="fc" id="L316">    }</span>
+
+<span class="fc" id="L318">    status.set(Handshaker.HandshakeStatus.SUCCESS);</span>
+<span class="fc" id="L319">    LOG.trace(&quot;Handshake status set to {}&quot;, status.get());</span>
+<span class="fc" id="L320">    return nextMsg.map(bv -&gt; Unpooled.wrappedBuffer(bv.toArray()));</span>
+  }
+
+  /**
+   * Returns the current status of this handshake.
+   *
+   * &lt;p&gt;Starts {@link Handshaker.HandshakeStatus#UNINITIALIZED} and moves to {@link
+   * Handshaker.HandshakeStatus#PREPARED} when a prepared* method is called, or to {@link
+   * Handshaker.HandshakeStatus#IN_PROGRESS} if we're the responder part and have nothing to prepare
+   * since we're awaiting the initiator's message.
+   *
+   * &lt;p&gt;As soon as we receive the expected message, the status transitions to {@link
+   * Handshaker.HandshakeStatus#SUCCESS} if the message is well formed and we're able to generate
+   * the resulting secrets.
+   *
+   * @return Returns the current status of this handshake.
+   */
+  @Override
+  public Handshaker.HandshakeStatus getStatus() {
+<span class="fc" id="L339">    return status.get();</span>
+  }
+
+  @Override
+  public HandshakeSecrets secrets() {
+<span class="fc" id="L344">    checkState(</span>
+<span class="pc bpc" id="L345" title="1 of 2 branches missed.">        status.get() == Handshaker.HandshakeStatus.SUCCESS,</span>
+        &quot;cannot obtain secrets from an unsuccessful handshake&quot;);
+<span class="fc" id="L347">    return secrets;</span>
+  }
+
+  @Override
+  public SECPPublicKey partyPubKey() {
+<span class="fc bfc" id="L352" title="All 2 branches covered.">    checkState(</span>
+<span class="pc bpc" id="L353" title="1 of 2 branches missed.">        initiator || status.get() == Handshaker.HandshakeStatus.SUCCESS,</span>
+        &quot;under the role of responder, cannot return the party's public &quot;
+            + &quot;key until the handshake has completed&quot;);
+<span class="fc" id="L356">    return partyPubKey;</span>
+  }
+
+  /** Computes the secrets from the two exchanged messages. */
+  void computeSecrets() {
+<span class="fc" id="L361">    final Bytes agreedSecret =</span>
+<span class="fc" id="L362">        signatureAlgorithm.calculateECDHKeyAgreement(ephKeyPair.getPrivateKey(), partyEphPubKey);</span>
+
+<span class="fc" id="L364">    final Bytes sharedSecret =</span>
+<span class="fc" id="L365">        keccak256(</span>
+<span class="fc" id="L366">            concatenate(agreedSecret, keccak256(concatenate(responderNonce, initiatorNonce))));</span>
+
+<span class="fc" id="L368">    final Bytes32 aesSecret = keccak256(concatenate(agreedSecret, sharedSecret));</span>
+<span class="fc" id="L369">    final Bytes32 macSecret = keccak256(concatenate(agreedSecret, aesSecret));</span>
+<span class="fc" id="L370">    final Bytes32 token = keccak256(sharedSecret);</span>
+
+<span class="fc" id="L372">    final HandshakeSecrets secrets =</span>
+<span class="fc" id="L373">        new HandshakeSecrets(aesSecret.toArray(), macSecret.toArray(), token.toArray());</span>
+
+<span class="fc" id="L375">    final Bytes initiatorMac = concatenate(macSecret.xor(responderNonce), initiatorMsgEnc);</span>
+<span class="fc" id="L376">    final Bytes responderMac = concatenate(macSecret.xor(initiatorNonce), responderMsgEnc);</span>
+
+<span class="fc bfc" id="L378" title="All 2 branches covered.">    if (initiator) {</span>
+<span class="fc" id="L379">      secrets.updateEgress(initiatorMac.toArray());</span>
+<span class="fc" id="L380">      secrets.updateIngress(responderMac.toArray());</span>
+    } else {
+<span class="fc" id="L382">      secrets.updateIngress(initiatorMac.toArray());</span>
+<span class="fc" id="L383">      secrets.updateEgress(responderMac.toArray());</span>
+    }
+
+<span class="fc" id="L386">    this.secrets = secrets;</span>
+<span class="fc" id="L387">  }</span>
+
+  static Bytes random(final int size) {
+<span class="fc" id="L390">    final byte[] iv = new byte[size];</span>
+<span class="fc" id="L391">    RANDOM.nextBytes(iv);</span>
+<span class="fc" id="L392">    return Bytes.wrap(iv);</span>
+  }
+
+  // ---------------------------------------------
+  //  The methods below are for testing purposes.
+  // ---------------------------------------------
+
+  @VisibleForTesting
+  NodeKey getNodeKey() {
+<span class="fc" id="L401">    return nodeKey;</span>
+  }
+
+  @VisibleForTesting
+  KeyPair getEphKeyPair() {
+<span class="fc" id="L406">    return ephKeyPair;</span>
+  }
+
+  @VisibleForTesting
+  void setEphKeyPair(final KeyPair ephKeyPair) {
+<span class="fc" id="L411">    this.ephKeyPair = ephKeyPair;</span>
+<span class="fc" id="L412">  }</span>
+
+  @VisibleForTesting
+  SECPPublicKey getPartyEphPubKey() {
+<span class="fc" id="L416">    return partyEphPubKey;</span>
+  }
+
+  @VisibleForTesting
+  Bytes32 getInitiatorNonce() {
+<span class="fc" id="L421">    return initiatorNonce;</span>
+  }
+
+  @VisibleForTesting
+  void setInitiatorNonce(final Bytes32 initiatorNonce) {
+<span class="fc" id="L426">    this.initiatorNonce = initiatorNonce;</span>
+<span class="fc" id="L427">  }</span>
+
+  @VisibleForTesting
+  Bytes32 getResponderNonce() {
+<span class="fc" id="L431">    return responderNonce;</span>
+  }
+
+  @VisibleForTesting
+  void setResponderNonce(final Bytes32 responderNonce) {
+<span class="fc" id="L436">    this.responderNonce = responderNonce;</span>
+<span class="fc" id="L437">  }</span>
+
+  @VisibleForTesting
+  void setInitiatorMsgEnc(final Bytes initiatorMsgEnc) {
+<span class="fc" id="L441">    this.initiatorMsgEnc = initiatorMsgEnc;</span>
+<span class="fc" id="L442">  }</span>
+
+  @VisibleForTesting
+  void setResponderMsgEnc(final Bytes responderMsgEnc) {
+<span class="fc" id="L446">    this.responderMsgEnc = responderMsgEnc;</span>
+<span class="fc" id="L447">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

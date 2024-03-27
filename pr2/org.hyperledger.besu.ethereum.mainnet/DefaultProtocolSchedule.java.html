@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DefaultProtocolSchedule.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">DefaultProtocolSchedule.java</span></div><h1>DefaultProtocolSchedule.java</h1><pre class="source lang-java linenums">/*
+ *
+ *  * Copyright Hyperledger Besu Contributors.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ *  * the License. You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ *  * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ *  * specific language governing permissions and limitations under the License.
+ *  *
+ *  * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.PermissionTransactionFilter;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.ScheduledProtocolSpec.BlockNumberProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.ScheduledProtocolSpec.TimestampProtocolSpec;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.math.BigInteger;
+import java.util.Comparator;
+import java.util.NavigableSet;
+import java.util.Optional;
+import java.util.TreeSet;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+
+import com.google.common.annotations.VisibleForTesting;
+
+public class DefaultProtocolSchedule implements ProtocolSchedule {
+
+<span class="fc" id="L41">  @VisibleForTesting</span>
+  protected NavigableSet&lt;ScheduledProtocolSpec&gt; protocolSpecs =
+<span class="fc" id="L43">      new TreeSet&lt;&gt;(Comparator.comparing(ScheduledProtocolSpec::fork).reversed());</span>
+
+  private final Optional&lt;BigInteger&gt; chainId;
+
+<span class="fc" id="L47">  public DefaultProtocolSchedule(final Optional&lt;BigInteger&gt; chainId) {</span>
+<span class="fc" id="L48">    this.chainId = chainId;</span>
+<span class="fc" id="L49">  }</span>
+
+  @VisibleForTesting
+<span class="fc" id="L52">  protected DefaultProtocolSchedule(final DefaultProtocolSchedule protocolSchedule) {</span>
+<span class="fc" id="L53">    this.chainId = protocolSchedule.chainId;</span>
+<span class="fc" id="L54">    this.protocolSpecs = protocolSchedule.protocolSpecs;</span>
+<span class="fc" id="L55">  }</span>
+
+  @Override
+  public ProtocolSpec getByBlockHeader(final ProcessableBlockHeader blockHeader) {
+<span class="fc" id="L59">    checkArgument(</span>
+<span class="fc bfc" id="L60" title="All 2 branches covered.">        !protocolSpecs.isEmpty(), &quot;At least 1 milestone must be provided to the protocol schedule&quot;);</span>
+<span class="fc" id="L61">    checkArgument(</span>
+<span class="pc bpc" id="L62" title="1 of 2 branches missed.">        protocolSpecs.last().fork().milestone() == 0,</span>
+        &quot;There must be a milestone starting from block 0&quot;);
+
+    // protocolSpecs is sorted in descending block order, so the first one we find that's lower than
+    // the requested level will be the most appropriate spec
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">    for (final ScheduledProtocolSpec spec : protocolSpecs) {</span>
+<span class="fc bfc" id="L68" title="All 2 branches covered.">      if (spec.isOnOrAfterMilestoneBoundary(blockHeader)) {</span>
+<span class="fc" id="L69">        return spec.spec();</span>
+      }
+<span class="fc" id="L71">    }</span>
+<span class="nc" id="L72">    return null;</span>
+  }
+
+  @Override
+  public Optional&lt;BigInteger&gt; getChainId() {
+<span class="fc" id="L77">    return chainId;</span>
+  }
+
+  @Override
+  public String listMilestones() {
+<span class="fc" id="L82">    return protocolSpecs.stream()</span>
+<span class="fc" id="L83">        .sorted(Comparator.comparing(ScheduledProtocolSpec::fork))</span>
+<span class="fc" id="L84">        .map(scheduledSpec -&gt; scheduledSpec.fork().toString())</span>
+<span class="fc" id="L85">        .collect(Collectors.joining(&quot;, &quot;, &quot;[&quot;, &quot;]&quot;));</span>
+  }
+
+  @Override
+  public boolean isOnMilestoneBoundary(final BlockHeader blockHeader) {
+<span class="fc" id="L90">    return this.protocolSpecs.stream().anyMatch(s -&gt; s.isOnMilestoneBoundary(blockHeader));</span>
+  }
+
+  @Override
+  public void putBlockNumberMilestone(final long blockNumber, final ProtocolSpec protocolSpec) {
+<span class="fc" id="L95">    putMilestone(BlockNumberProtocolSpec.create(blockNumber, protocolSpec));</span>
+<span class="fc" id="L96">  }</span>
+
+  @Override
+  public void putTimestampMilestone(final long timestamp, final ProtocolSpec protocolSpec) {
+<span class="fc" id="L100">    putMilestone(TimestampProtocolSpec.create(timestamp, protocolSpec));</span>
+<span class="fc" id="L101">  }</span>
+
+  private void putMilestone(final ScheduledProtocolSpec scheduledProtocolSpec) {
+    // Ensure this replaces any existing spec at the same block number.
+<span class="fc" id="L105">    protocolSpecs.remove(scheduledProtocolSpec);</span>
+<span class="fc" id="L106">    protocolSpecs.add(scheduledProtocolSpec);</span>
+<span class="fc" id="L107">  }</span>
+
+  @Override
+  public boolean anyMatch(final Predicate&lt;ScheduledProtocolSpec&gt; predicate) {
+<span class="fc" id="L111">    return this.protocolSpecs.stream().anyMatch(predicate);</span>
+  }
+
+  @Override
+  public Optional&lt;ScheduledProtocolSpec.Hardfork&gt; hardforkFor(
+      final Predicate&lt;ScheduledProtocolSpec&gt; predicate) {
+<span class="nc" id="L117">    return this.protocolSpecs.stream()</span>
+<span class="nc" id="L118">        .filter(predicate)</span>
+<span class="nc" id="L119">        .findFirst()</span>
+<span class="nc" id="L120">        .map(ScheduledProtocolSpec::fork);</span>
+  }
+
+  @Override
+  public void setPermissionTransactionFilter(
+      final PermissionTransactionFilter permissionTransactionFilter) {
+<span class="nc" id="L126">    protocolSpecs.forEach(</span>
+        spec -&gt;
+<span class="nc" id="L128">            spec.spec()</span>
+<span class="nc" id="L129">                .getTransactionValidatorFactory()</span>
+<span class="nc" id="L130">                .setPermissionTransactionFilter(permissionTransactionFilter));</span>
+<span class="nc" id="L131">  }</span>
+
+  @Override
+  public void setPublicWorldStateArchiveForPrivacyBlockProcessor(
+      final WorldStateArchive publicWorldStateArchive) {
+<span class="fc" id="L136">    protocolSpecs.forEach(</span>
+        spec -&gt; {
+<span class="fc" id="L138">          final BlockProcessor blockProcessor = spec.spec().getBlockProcessor();</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">          if (PrivacyBlockProcessor.class.isAssignableFrom(blockProcessor.getClass()))</span>
+<span class="fc" id="L140">            ((PrivacyBlockProcessor) blockProcessor)</span>
+<span class="fc" id="L141">                .setPublicWorldStateArchive(publicWorldStateArchive);</span>
+<span class="fc" id="L142">        });</span>
+<span class="fc" id="L143">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

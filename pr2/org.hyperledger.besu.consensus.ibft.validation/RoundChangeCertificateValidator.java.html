@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RoundChangeCertificateValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.ibft.validation</a> &gt; <span class="el_source">RoundChangeCertificateValidator.java</span></div><h1>RoundChangeCertificateValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.ibft.validation;
+
+import org.hyperledger.besu.consensus.common.bft.BftBlockHeaderFunctions;
+import org.hyperledger.besu.consensus.common.bft.BftBlockInterface;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.common.bft.BftHelpers;
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.payload.SignedData;
+import org.hyperledger.besu.consensus.ibft.payload.PreparedCertificate;
+import org.hyperledger.besu.consensus.ibft.payload.RoundChangeCertificate;
+import org.hyperledger.besu.consensus.ibft.payload.RoundChangePayload;
+import org.hyperledger.besu.consensus.ibft.validation.RoundChangePayloadValidator.MessageValidatorForHeightFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.Block;
+
+import java.util.Collection;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Round change certificate validator. */
+public class RoundChangeCertificateValidator {
+
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(RoundChangeCertificateValidator.class);</span>
+
+  private final Collection&lt;Address&gt; validators;
+  private final MessageValidatorForHeightFactory messageValidatorFactory;
+  private final BftExtraDataCodec bftExtraDataCodec;
+  private final BftBlockInterface bftBlockInterface;
+  private final long quorum;
+  private final long chainHeight;
+
+  /**
+   * Instantiates a new Round change certificate validator.
+   *
+   * @param validators the validators
+   * @param messageValidatorFactory the message validator factory
+   * @param chainHeight the chain height
+   * @param bftExtraDataCodec the bft extra data codec
+   * @param bftBlockInterface the bft block interface
+   */
+  public RoundChangeCertificateValidator(
+      final Collection&lt;Address&gt; validators,
+      final MessageValidatorForHeightFactory messageValidatorFactory,
+      final long chainHeight,
+      final BftExtraDataCodec bftExtraDataCodec,
+<span class="fc" id="L62">      final BftBlockInterface bftBlockInterface) {</span>
+<span class="fc" id="L63">    this.validators = validators;</span>
+<span class="fc" id="L64">    this.messageValidatorFactory = messageValidatorFactory;</span>
+<span class="fc" id="L65">    this.quorum = BftHelpers.calculateRequiredValidatorQuorum(validators.size());</span>
+<span class="fc" id="L66">    this.chainHeight = chainHeight;</span>
+<span class="fc" id="L67">    this.bftExtraDataCodec = bftExtraDataCodec;</span>
+<span class="fc" id="L68">    this.bftBlockInterface = bftBlockInterface;</span>
+<span class="fc" id="L69">  }</span>
+
+  /**
+   * Validate round change messages and ensure target round matches root boolean.
+   *
+   * @param expectedRound the expected round
+   * @param roundChangeCert the round change cert
+   * @return the boolean
+   */
+  public boolean validateRoundChangeMessagesAndEnsureTargetRoundMatchesRoot(
+      final ConsensusRoundIdentifier expectedRound, final RoundChangeCertificate roundChangeCert) {
+
+<span class="fc" id="L81">    final Collection&lt;SignedData&lt;RoundChangePayload&gt;&gt; roundChangeMsgs =</span>
+<span class="fc" id="L82">        roundChangeCert.getRoundChangePayloads();</span>
+
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    if (roundChangeMsgs.size() &lt; quorum) {</span>
+<span class="fc" id="L85">      LOG.info(&quot;Invalid RoundChangeCertificate, insufficient RoundChange messages.&quot;);</span>
+<span class="fc" id="L86">      return false;</span>
+    }
+
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    if (hasDuplicateAuthors(roundChangeMsgs)) {</span>
+<span class="fc" id="L90">      return false;</span>
+    }
+
+<span class="nc" id="L93">    if (!roundChangeCert.getRoundChangePayloads().stream()</span>
+<span class="nc bnc" id="L94" title="All 2 branches missed.">        .allMatch(p -&gt; p.getPayload().getRoundIdentifier().equals(expectedRound))) {</span>
+<span class="nc" id="L95">      LOG.info(</span>
+          &quot;Invalid RoundChangeCertificate, not all embedded RoundChange messages have a &quot;
+              + &quot;matching target round.&quot;);
+<span class="nc" id="L98">      return false;</span>
+    }
+
+<span class="nc" id="L101">    final RoundChangePayloadValidator roundChangeValidator =</span>
+        new RoundChangePayloadValidator(
+            messageValidatorFactory,
+            validators,
+<span class="nc" id="L105">            BftHelpers.prepareMessageCountForQuorum(quorum),</span>
+            chainHeight);
+
+<span class="nc" id="L108">    if (!roundChangeCert.getRoundChangePayloads().stream()</span>
+<span class="nc bnc" id="L109" title="All 2 branches missed.">        .allMatch(roundChangeValidator::validateRoundChange)) {</span>
+<span class="nc" id="L110">      LOG.info(&quot;Invalid RoundChangeCertificate, embedded RoundChange message failed validation.&quot;);</span>
+<span class="nc" id="L111">      return false;</span>
+    }
+
+<span class="nc" id="L114">    return true;</span>
+  }
+
+  private boolean hasDuplicateAuthors(
+      final Collection&lt;SignedData&lt;RoundChangePayload&gt;&gt; roundChangeMsgs) {
+<span class="fc" id="L119">    final long distinctAuthorCount =</span>
+<span class="fc" id="L120">        roundChangeMsgs.stream().map(SignedData::getAuthor).distinct().count();</span>
+
+<span class="pc bpc" id="L122" title="1 of 2 branches missed.">    if (distinctAuthorCount != roundChangeMsgs.size()) {</span>
+<span class="fc" id="L123">      LOG.info(&quot;Invalid RoundChangeCertificate, multiple RoundChanges from the same author.&quot;);</span>
+<span class="fc" id="L124">      return true;</span>
+    }
+<span class="nc" id="L126">    return false;</span>
+  }
+
+  /**
+   * Validate proposal message matches latest prepare certificate.
+   *
+   * @param roundChangeCert the round change cert
+   * @param proposedBlock the proposed block
+   * @return the boolean
+   */
+  public boolean validateProposalMessageMatchesLatestPrepareCertificate(
+      final RoundChangeCertificate roundChangeCert, final Block proposedBlock) {
+
+<span class="fc" id="L139">    final Collection&lt;SignedData&lt;RoundChangePayload&gt;&gt; roundChangePayloads =</span>
+<span class="fc" id="L140">        roundChangeCert.getRoundChangePayloads();</span>
+
+<span class="fc" id="L142">    final Optional&lt;PreparedCertificate&gt; latestPreparedCertificate =</span>
+<span class="fc" id="L143">        findLatestPreparedCertificate(roundChangePayloads);</span>
+
+<span class="pc bpc" id="L145" title="1 of 2 branches missed.">    if (!latestPreparedCertificate.isPresent()) {</span>
+<span class="nc" id="L146">      LOG.debug(</span>
+          &quot;No round change messages have a preparedCertificate, any valid block may be proposed.&quot;);
+<span class="nc" id="L148">      return true;</span>
+    }
+
+    // Need to check that if we substitute the LatestPrepareCert round number into the supplied
+    // block that we get the SAME hash as PreparedCert.
+<span class="fc" id="L153">    final Block currentBlockWithOldRound =</span>
+<span class="fc" id="L154">        bftBlockInterface.replaceRoundInBlock(</span>
+            proposedBlock,
+            latestPreparedCertificate
+<span class="fc" id="L157">                .get()</span>
+<span class="fc" id="L158">                .getProposalPayload()</span>
+<span class="fc" id="L159">                .getPayload()</span>
+<span class="fc" id="L160">                .getRoundIdentifier()</span>
+<span class="fc" id="L161">                .getRoundNumber(),</span>
+<span class="fc" id="L162">            BftBlockHeaderFunctions.forCommittedSeal(bftExtraDataCodec));</span>
+
+<span class="fc" id="L164">    if (!currentBlockWithOldRound</span>
+<span class="fc" id="L165">        .getHash()</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">        .equals(latestPreparedCertificate.get().getProposalPayload().getPayload().getDigest())) {</span>
+<span class="fc" id="L167">      LOG.info(</span>
+          &quot;Invalid RoundChangeCertificate, block in latest RoundChange does not match proposed block.&quot;);
+<span class="fc" id="L169">      return false;</span>
+    }
+
+<span class="fc" id="L172">    return true;</span>
+  }
+
+  /**
+   * Find latest prepared certificate.
+   *
+   * @param msgs the msgs
+   * @return the optional
+   */
+  public static Optional&lt;PreparedCertificate&gt; findLatestPreparedCertificate(
+      final Collection&lt;SignedData&lt;RoundChangePayload&gt;&gt; msgs) {
+
+<span class="fc" id="L184">    Optional&lt;PreparedCertificate&gt; result = Optional.empty();</span>
+
+<span class="fc bfc" id="L186" title="All 2 branches covered.">    for (SignedData&lt;RoundChangePayload&gt; roundChangeMsg : msgs) {</span>
+<span class="fc" id="L187">      final RoundChangePayload payload = roundChangeMsg.getPayload();</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">      if (payload.getPreparedCertificate().isPresent()) {</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">        if (!result.isPresent()) {</span>
+<span class="fc" id="L190">          result = payload.getPreparedCertificate();</span>
+        } else {
+<span class="fc" id="L192">          final PreparedCertificate currentLatest = result.get();</span>
+<span class="fc" id="L193">          final PreparedCertificate nextCert = payload.getPreparedCertificate().get();</span>
+
+<span class="fc" id="L195">          if (currentLatest.getProposalPayload().getPayload().getRoundIdentifier().getRoundNumber()</span>
+<span class="pc bpc" id="L196" title="1 of 2 branches missed.">              &lt; nextCert.getProposalPayload().getPayload().getRoundIdentifier().getRoundNumber()) {</span>
+<span class="fc" id="L197">            result = Optional.of(nextCert);</span>
+          }
+        }
+      }
+<span class="fc" id="L201">    }</span>
+<span class="fc" id="L202">    return result;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

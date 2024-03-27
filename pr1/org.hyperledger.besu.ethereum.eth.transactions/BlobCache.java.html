@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlobCache.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">BlobCache.java</span></div><h1>BlobCache.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import org.hyperledger.besu.datatypes.BlobsWithCommitments;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BlobCache {
+  private final Cache&lt;VersionedHash, BlobsWithCommitments.BlobQuad&gt; cache;
+<span class="fc" id="L33">  private static final Logger LOG = LoggerFactory.getLogger(BlobCache.class);</span>
+
+<span class="fc" id="L35">  public BlobCache() {</span>
+<span class="fc" id="L36">    this.cache =</span>
+<span class="fc" id="L37">        Caffeine.newBuilder()</span>
+<span class="fc" id="L38">            .maximumSize(6 * 32 * 3L) // 6 blobs max per 32 slots per 3 epochs</span>
+<span class="fc" id="L39">            .expireAfterWrite(</span>
+                3 * 32 * 12L, TimeUnit.SECONDS) // 3 epochs of 32 slots which take 12 seconds each.
+<span class="fc" id="L41">            .build();</span>
+<span class="fc" id="L42">  }</span>
+
+  public void cacheBlobs(final Transaction t) {
+<span class="pc bpc" id="L45" title="1 of 2 branches missed.">    if (t.getType().supportsBlob()) {</span>
+<span class="fc" id="L46">      var bwc = t.getBlobsWithCommitments();</span>
+<span class="pc bpc" id="L47" title="1 of 2 branches missed.">      if (bwc.isPresent()) {</span>
+<span class="fc" id="L48">        bwc.get().getBlobQuads().stream()</span>
+<span class="fc" id="L49">            .forEach(blobQuad -&gt; this.cache.put(blobQuad.versionedHash(), blobQuad));</span>
+      } else {
+<span class="nc" id="L51">        LOG.debug(&quot;transaction is missing blobs, cannot cache&quot;);</span>
+      }
+    }
+<span class="fc" id="L54">  }</span>
+
+  public Optional&lt;Transaction&gt; restoreBlob(final Transaction transaction) {
+<span class="fc bfc" id="L57" title="All 2 branches covered.">    if (transaction.getType().supportsBlob()) {</span>
+<span class="fc" id="L58">      Optional&lt;List&lt;VersionedHash&gt;&gt; maybeHashes = transaction.getVersionedHashes();</span>
+<span class="pc bpc" id="L59" title="1 of 2 branches missed.">      if (maybeHashes.isPresent()) {</span>
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">        if (!maybeHashes.get().isEmpty()) {</span>
+<span class="fc" id="L61">          Transaction.Builder txBuilder = Transaction.builder();</span>
+<span class="fc" id="L62">          txBuilder.copiedFrom(transaction);</span>
+<span class="fc" id="L63">          List&lt;BlobsWithCommitments.BlobQuad&gt; blobQuads =</span>
+<span class="fc" id="L64">              maybeHashes.get().stream().map(cache::getIfPresent).toList();</span>
+<span class="fc" id="L65">          final BlobsWithCommitments bwc = new BlobsWithCommitments(blobQuads);</span>
+<span class="fc" id="L66">          if (blobQuads.stream()</span>
+<span class="fc" id="L67">              .map(BlobsWithCommitments.BlobQuad::versionedHash)</span>
+<span class="fc" id="L68">              .toList()</span>
+<span class="pc bpc" id="L69" title="1 of 2 branches missed.">              .containsAll(maybeHashes.get())) {</span>
+<span class="fc" id="L70">            txBuilder.blobsWithCommitments(bwc);</span>
+<span class="fc" id="L71">            return Optional.of(txBuilder.build());</span>
+          } else {
+<span class="nc" id="L73">            LOG.debug(&quot;did not find all versioned hashes to restore from cache&quot;);</span>
+<span class="nc" id="L74">            return Optional.empty();</span>
+          }
+        } else {
+<span class="nc" id="L77">          LOG.warn(&quot;can't restore blobs for transaction with empty list of versioned hashes&quot;);</span>
+<span class="nc" id="L78">          return Optional.empty();</span>
+        }
+      } else {
+<span class="nc" id="L81">        LOG.warn(&quot;can't restore blobs for transaction without list of versioned hashes&quot;);</span>
+<span class="nc" id="L82">        return Optional.empty();</span>
+      }
+
+    } else {
+<span class="fc" id="L86">      LOG.debug(</span>
+<span class="fc" id="L87">          &quot;can't restore blobs for non-blob transaction of type {}&quot;, transaction.getType().name());</span>
+<span class="fc" id="L88">      return Optional.empty();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

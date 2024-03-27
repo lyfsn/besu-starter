@@ -1,0 +1,1083 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockchainQueries.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.query</a> &gt; <span class="el_source">BlockchainQueries.java</span></div><h1>BlockchainQueries.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.query;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.ethereum.api.query.cache.TransactionLogBloomCacher.BLOCKS_PER_BLOOM_CACHE;
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.ApiConfiguration;
+import org.hyperledger.besu.ethereum.api.ImmutableApiConfiguration;
+import org.hyperledger.besu.ethereum.api.query.cache.TransactionLogBloomCacher;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.TransactionLocation;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.log.LogsBloomFilter;
+
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BlockchainQueries {
+<span class="fc" id="L67">  private static final Logger LOG = LoggerFactory.getLogger(BlockchainQueries.class);</span>
+
+  private final WorldStateArchive worldStateArchive;
+  private final Blockchain blockchain;
+  private final Optional&lt;Path&gt; cachePath;
+  private final Optional&lt;TransactionLogBloomCacher&gt; transactionLogBloomCacher;
+  private final Optional&lt;EthScheduler&gt; ethScheduler;
+  private final ApiConfiguration apiConfig;
+
+  public BlockchainQueries(final Blockchain blockchain, final WorldStateArchive worldStateArchive) {
+<span class="fc" id="L77">    this(blockchain, worldStateArchive, Optional.empty(), Optional.empty());</span>
+<span class="fc" id="L78">  }</span>
+
+  public BlockchainQueries(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final EthScheduler scheduler) {
+<span class="fc" id="L84">    this(blockchain, worldStateArchive, Optional.empty(), Optional.ofNullable(scheduler));</span>
+<span class="fc" id="L85">  }</span>
+
+  public BlockchainQueries(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final Optional&lt;Path&gt; cachePath,
+      final Optional&lt;EthScheduler&gt; scheduler) {
+<span class="fc" id="L92">    this(</span>
+        blockchain,
+        worldStateArchive,
+        cachePath,
+        scheduler,
+<span class="fc" id="L97">        ImmutableApiConfiguration.builder().build());</span>
+<span class="fc" id="L98">  }</span>
+
+  public BlockchainQueries(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final Optional&lt;Path&gt; cachePath,
+      final Optional&lt;EthScheduler&gt; scheduler,
+<span class="fc" id="L105">      final ApiConfiguration apiConfig) {</span>
+<span class="fc" id="L106">    this.blockchain = blockchain;</span>
+<span class="fc" id="L107">    this.worldStateArchive = worldStateArchive;</span>
+<span class="fc" id="L108">    this.cachePath = cachePath;</span>
+<span class="fc" id="L109">    this.ethScheduler = scheduler;</span>
+<span class="fc" id="L110">    this.transactionLogBloomCacher =</span>
+<span class="pc bpc" id="L111" title="1 of 4 branches missed.">        (cachePath.isPresent() &amp;&amp; scheduler.isPresent())</span>
+<span class="fc" id="L112">            ? Optional.of(</span>
+<span class="fc" id="L113">                new TransactionLogBloomCacher(blockchain, cachePath.get(), scheduler.get()))</span>
+<span class="fc" id="L114">            : Optional.empty();</span>
+<span class="fc" id="L115">    this.apiConfig = apiConfig;</span>
+<span class="fc" id="L116">  }</span>
+
+  public Blockchain getBlockchain() {
+<span class="fc" id="L119">    return blockchain;</span>
+  }
+
+  public WorldStateArchive getWorldStateArchive() {
+<span class="fc" id="L123">    return worldStateArchive;</span>
+  }
+
+  public Optional&lt;TransactionLogBloomCacher&gt; getTransactionLogBloomCacher() {
+<span class="fc" id="L127">    return transactionLogBloomCacher;</span>
+  }
+
+  /**
+   * Retrieves the header hash of the block at the given height in the canonical chain.
+   *
+   * @param number The height of the block whose hash should be retrieved.
+   * @return The hash of the block at the given height.
+   */
+  public Optional&lt;Hash&gt; getBlockHashByNumber(final long number) {
+<span class="fc" id="L137">    return blockchain.getBlockHashByNumber(number);</span>
+  }
+
+  /**
+   * Return the block number of the head of the chain.
+   *
+   * @return The block number of the head of the chain.
+   */
+  public long headBlockNumber() {
+<span class="fc" id="L146">    return blockchain.getChainHeadBlockNumber();</span>
+  }
+
+  /**
+   * Return the header of the head of the chain.
+   *
+   * @return The header of the head of the chain.
+   */
+  public BlockHeader headBlockHeader() {
+<span class="fc" id="L155">    return blockchain.getChainHeadHeader();</span>
+  }
+
+  /**
+   * Return the header of the last finalized block.
+   *
+   * @return The header of the last finalized block.
+   */
+  public Optional&lt;BlockHeader&gt; finalizedBlockHeader() {
+<span class="fc" id="L164">    return blockchain.getFinalized().flatMap(blockchain::getBlockHeader);</span>
+  }
+
+  /**
+   * Return the header of the last safe block.
+   *
+   * @return The header of the last safe block.
+   */
+  public Optional&lt;BlockHeader&gt; safeBlockHeader() {
+<span class="fc" id="L173">    return blockchain.getSafeBlock().flatMap(blockchain::getBlockHeader);</span>
+  }
+
+  /**
+   * Determines the block header for the address associated with this storage index.
+   *
+   * @param address The address of the account that owns the storage being queried.
+   * @param storageIndex The storage index whose value is being retrieved.
+   * @param blockNumber The blockNumber that is being queried.
+   * @return The value at the storage index being queried.
+   */
+  public Optional&lt;UInt256&gt; storageAt(
+      final Address address, final UInt256 storageIndex, final long blockNumber) {
+<span class="fc" id="L186">    final Hash blockHash = getBlockHashByNumber(blockNumber).orElse(Hash.EMPTY);</span>
+
+<span class="fc" id="L188">    return storageAt(address, storageIndex, blockHash);</span>
+  }
+
+  /**
+   * Determines the block header for the address associated with this storage index.
+   *
+   * @param address The address of the account that owns the storage being queried.
+   * @param storageIndex The storage index whose value is being retrieved.
+   * @param blockHash The blockHash that is being queried.
+   * @return The value at the storage index being queried.
+   */
+  public Optional&lt;UInt256&gt; storageAt(
+      final Address address, final UInt256 storageIndex, final Hash blockHash) {
+<span class="fc" id="L201">    return fromAccount(</span>
+<span class="fc" id="L202">        address, blockHash, account -&gt; account.getStorageValue(storageIndex), UInt256.ZERO);</span>
+  }
+
+  /**
+   * Returns the balance of the given account at a specific block number.
+   *
+   * @param address The address of the account being queried.
+   * @param blockNumber The block number being queried.
+   * @return The balance of the account in Wei.
+   */
+  public Optional&lt;Wei&gt; accountBalance(final Address address, final long blockNumber) {
+<span class="fc" id="L213">    final Hash blockHash = getBlockHashByNumber(blockNumber).orElse(Hash.EMPTY);</span>
+
+<span class="fc" id="L215">    return accountBalance(address, blockHash);</span>
+  }
+
+  /**
+   * Returns the balance of the given account at a specific block hash.
+   *
+   * @param address The address of the account being queried.
+   * @param blockHash The block hash being queried.
+   * @return The balance of the account in Wei.
+   */
+  public Optional&lt;Wei&gt; accountBalance(final Address address, final Hash blockHash) {
+<span class="fc" id="L226">    return fromAccount(address, blockHash, Account::getBalance, Wei.ZERO);</span>
+  }
+
+  /**
+   * Retrieves the code associated with the given account at a particular block number.
+   *
+   * @param address The account address being queried.
+   * @param blockNumber The height of the block to be checked.
+   * @return The code associated with this address.
+   */
+  public Optional&lt;Bytes&gt; getCode(final Address address, final long blockNumber) {
+<span class="nc" id="L237">    final Hash blockHash = getBlockHashByNumber(blockNumber).orElse(Hash.EMPTY);</span>
+
+<span class="nc" id="L239">    return getCode(address, blockHash);</span>
+  }
+
+  /**
+   * Retrieves the code associated with the given account at a particular block hash.
+   *
+   * @param address The account address being queried.
+   * @param blockHash The hash of the block to be checked.
+   * @return The code associated with this address.
+   */
+  public Optional&lt;Bytes&gt; getCode(final Address address, final Hash blockHash) {
+<span class="fc" id="L250">    return fromAccount(address, blockHash, Account::getCode, Bytes.EMPTY);</span>
+  }
+
+  /**
+   * Returns the number of transactions in the block at the given height.
+   *
+   * @param blockNumber The height of the block being queried.
+   * @return The number of transactions contained in the referenced block.
+   */
+  public Optional&lt;Integer&gt; getTransactionCount(final long blockNumber) {
+<span class="fc bfc" id="L260" title="All 2 branches covered.">    if (outsideBlockchainRange(blockNumber)) {</span>
+<span class="fc" id="L261">      return Optional.empty();</span>
+    }
+<span class="fc" id="L263">    return blockchain.getBlockHashByNumber(blockNumber).map(this::getTransactionCount);</span>
+  }
+
+  /**
+   * Returns the number of transactions in the block with the given hash.
+   *
+   * @param blockHeaderHash The hash of the block being queried.
+   * @return The number of transactions contained in the referenced block.
+   */
+  public Integer getTransactionCount(final Hash blockHeaderHash) {
+<span class="fc" id="L273">    return blockchain</span>
+<span class="fc" id="L274">        .getBlockBody(blockHeaderHash)</span>
+<span class="fc" id="L275">        .map(body -&gt; body.getTransactions().size())</span>
+<span class="fc" id="L276">        .orElse(-1);</span>
+  }
+
+  /**
+   * Returns the number of transactions sent from the given address in the block at the given
+   * height.
+   *
+   * @param address The address whose sent transactions we want to count.
+   * @param blockNumber The height of the block being queried.
+   * @return The number of transactions sent from the given address.
+   */
+  public long getTransactionCount(final Address address, final long blockNumber) {
+<span class="nc" id="L288">    final Hash blockHash =</span>
+<span class="nc" id="L289">        getBlockHeaderByNumber(blockNumber).map(BlockHeader::getHash).orElse(Hash.EMPTY);</span>
+
+<span class="nc" id="L291">    return getTransactionCount(address, blockHash);</span>
+  }
+
+  /**
+   * Returns the number of transactions sent from the given address in the block at the given hash.
+   *
+   * @param address The address whose sent transactions we want to count.
+   * @param blockHash The hash of the block being queried.
+   * @return The number of transactions sent from the given address.
+   */
+  public long getTransactionCount(final Address address, final Hash blockHash) {
+<span class="fc" id="L302">    return getAndMapWorldState(</span>
+<span class="fc" id="L303">            blockHash, worldState -&gt; Optional.ofNullable(worldState.get(address)))</span>
+<span class="fc" id="L304">        .map(Account::getNonce)</span>
+<span class="fc" id="L305">        .orElse(0L);</span>
+  }
+
+  /**
+   * Returns the number of transactions sent from the given address in the latest block.
+   *
+   * @param address The address whose sent transactions we want to count.
+   * @return The number of transactions sent from the given address.
+   */
+  public long getTransactionCount(final Address address) {
+<span class="nc" id="L315">    return getTransactionCount(address, headBlockNumber());</span>
+  }
+
+  /**
+   * Returns the number of ommers in the block at the given height.
+   *
+   * @param blockNumber The height of the block being queried.
+   * @return The number of ommers in the referenced block.
+   */
+  public Optional&lt;Integer&gt; getOmmerCount(final long blockNumber) {
+<span class="fc" id="L325">    return blockchain.getBlockHashByNumber(blockNumber).flatMap(this::getOmmerCount);</span>
+  }
+
+  /**
+   * Returns the number of ommers in the block at the given height.
+   *
+   * @param blockHeaderHash The hash of the block being queried.
+   * @return The number of ommers in the referenced block.
+   */
+  public Optional&lt;Integer&gt; getOmmerCount(final Hash blockHeaderHash) {
+<span class="fc" id="L335">    return blockchain.getBlockBody(blockHeaderHash).map(b -&gt; b.getOmmers().size());</span>
+  }
+
+  /**
+   * Returns the number of ommers in the latest block.
+   *
+   * @return The number of ommers in the latest block.
+   */
+  public Optional&lt;Integer&gt; getOmmerCount() {
+<span class="fc" id="L344">    return getOmmerCount(blockchain.getChainHeadHash());</span>
+  }
+
+  /**
+   * Returns the ommer at the given index for the referenced block.
+   *
+   * @param blockHeaderHash The hash of the block to be queried.
+   * @param index The index of the ommer in the blocks ommers list.
+   * @return The ommer at the given index belonging to the referenced block.
+   */
+  public Optional&lt;BlockHeader&gt; getOmmer(final Hash blockHeaderHash, final int index) {
+<span class="fc" id="L355">    return blockchain.getBlockBody(blockHeaderHash).map(blockBody -&gt; getOmmer(blockBody, index));</span>
+  }
+
+  private BlockHeader getOmmer(final BlockBody blockBody, final int index) {
+<span class="fc" id="L359">    final List&lt;BlockHeader&gt; ommers = blockBody.getOmmers();</span>
+<span class="fc bfc" id="L360" title="All 2 branches covered.">    if (ommers.size() &gt; index) {</span>
+<span class="fc" id="L361">      return ommers.get(index);</span>
+    } else {
+<span class="fc" id="L363">      return null;</span>
+    }
+  }
+
+  /**
+   * Returns the ommer at the given index for the referenced block.
+   *
+   * @param blockNumber The block number identifying the block to be queried.
+   * @param index The index of the ommer in the blocks ommers list.
+   * @return The ommer at the given index belonging to the referenced block.
+   */
+  public Optional&lt;BlockHeader&gt; getOmmer(final long blockNumber, final int index) {
+<span class="fc" id="L375">    return blockchain.getBlockHashByNumber(blockNumber).flatMap(hash -&gt; getOmmer(hash, index));</span>
+  }
+
+  /**
+   * Returns the ommer at the given index for the latest block.
+   *
+   * @param index The index of the ommer in the blocks ommers list.
+   * @return The ommer at the given index belonging to the latest block.
+   */
+  public Optional&lt;BlockHeader&gt; getOmmer(final int index) {
+<span class="fc" id="L385">    return blockchain</span>
+<span class="fc" id="L386">        .getBlockHashByNumber(blockchain.getChainHeadBlockNumber())</span>
+<span class="fc" id="L387">        .flatMap(hash -&gt; getOmmer(hash, index));</span>
+  }
+
+  /**
+   * Given a block hash, returns the associated block augmented with metadata.
+   *
+   * @param blockHeaderHash The hash of the target block's header.
+   * @return The referenced block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; blockByHash(
+      final Hash blockHeaderHash) {
+<span class="fc" id="L398">    return blockchain</span>
+<span class="fc" id="L399">        .getBlockHeader(blockHeaderHash)</span>
+<span class="fc" id="L400">        .flatMap(</span>
+            header -&gt;
+<span class="fc" id="L402">                blockchain</span>
+<span class="fc" id="L403">                    .getBlockBody(blockHeaderHash)</span>
+<span class="fc" id="L404">                    .flatMap(</span>
+                        body -&gt;
+<span class="fc" id="L406">                            blockchain</span>
+<span class="fc" id="L407">                                .getTotalDifficultyByHash(blockHeaderHash)</span>
+<span class="fc" id="L408">                                .map(</span>
+                                    td -&gt; {
+<span class="fc" id="L410">                                      final List&lt;Transaction&gt; txs = body.getTransactions();</span>
+<span class="fc" id="L411">                                      final List&lt;TransactionWithMetadata&gt; formattedTxs =</span>
+<span class="fc" id="L412">                                          formatTransactions(</span>
+                                              txs,
+<span class="fc" id="L414">                                              header.getNumber(),</span>
+<span class="fc" id="L415">                                              header.getBaseFee(),</span>
+                                              blockHeaderHash);
+<span class="fc" id="L417">                                      final List&lt;Hash&gt; ommers =</span>
+<span class="fc" id="L418">                                          body.getOmmers().stream()</span>
+<span class="fc" id="L419">                                              .map(BlockHeader::getHash)</span>
+<span class="fc" id="L420">                                              .collect(Collectors.toList());</span>
+<span class="fc" id="L421">                                      final int size = new Block(header, body).calculateSize();</span>
+<span class="fc" id="L422">                                      return new BlockWithMetadata&lt;&gt;(</span>
+                                          header,
+                                          formattedTxs,
+                                          ommers,
+                                          td,
+                                          size,
+<span class="fc" id="L428">                                          body.getWithdrawals());</span>
+                                    })));
+  }
+
+  /**
+   * Given a block number, returns the associated block augmented with metadata.
+   *
+   * @param number The height of the target block.
+   * @return The referenced block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; blockByNumber(
+      final long number) {
+<span class="fc" id="L440">    return blockchain.getBlockHashByNumber(number).flatMap(this::blockByHash);</span>
+  }
+
+  /**
+   * Returns the latest block augmented with metadata.
+   *
+   * @return The latest block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; latestBlock() {
+<span class="fc" id="L449">    return this.blockByHash(blockchain.getChainHeadHash());</span>
+  }
+
+  /**
+   * Given a block hash, returns the associated block with metadata and a list of transaction hashes
+   * rather than full transactions.
+   *
+   * @param blockHeaderHash The hash of the target block's header.
+   * @return The referenced block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;Hash, Hash&gt;&gt; blockByHashWithTxHashes(
+      final Hash blockHeaderHash) {
+<span class="fc" id="L461">    return blockchain</span>
+<span class="fc" id="L462">        .getBlockHeader(blockHeaderHash)</span>
+<span class="fc" id="L463">        .flatMap(</span>
+            header -&gt;
+<span class="fc" id="L465">                blockchain</span>
+<span class="fc" id="L466">                    .getBlockBody(blockHeaderHash)</span>
+<span class="fc" id="L467">                    .flatMap(</span>
+                        body -&gt;
+<span class="fc" id="L469">                            blockchain</span>
+<span class="fc" id="L470">                                .getTotalDifficultyByHash(blockHeaderHash)</span>
+<span class="fc" id="L471">                                .map(</span>
+                                    td -&gt; {
+<span class="fc" id="L473">                                      final List&lt;Hash&gt; txs =</span>
+<span class="fc" id="L474">                                          body.getTransactions().stream()</span>
+<span class="fc" id="L475">                                              .map(Transaction::getHash)</span>
+<span class="fc" id="L476">                                              .collect(Collectors.toList());</span>
+<span class="fc" id="L477">                                      final List&lt;Hash&gt; ommers =</span>
+<span class="fc" id="L478">                                          body.getOmmers().stream()</span>
+<span class="fc" id="L479">                                              .map(BlockHeader::getHash)</span>
+<span class="fc" id="L480">                                              .collect(Collectors.toList());</span>
+<span class="fc" id="L481">                                      final int size = new Block(header, body).calculateSize();</span>
+<span class="fc" id="L482">                                      return new BlockWithMetadata&lt;&gt;(</span>
+<span class="fc" id="L483">                                          header, txs, ommers, td, size, body.getWithdrawals());</span>
+                                    })));
+  }
+
+  /**
+   * Given a block number, returns the associated block with metadata and a list of transaction
+   * hashes rather than full transactions.
+   *
+   * @param blockNumber The height of the target block's header.
+   * @return The referenced block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;Hash, Hash&gt;&gt; blockByNumberWithTxHashes(final long blockNumber) {
+<span class="fc" id="L495">    return blockchain.getBlockHashByNumber(blockNumber).flatMap(this::blockByHashWithTxHashes);</span>
+  }
+
+  public Optional&lt;BlockHeader&gt; getBlockHeaderByHash(final Hash hash) {
+<span class="fc" id="L499">    return blockchain.getBlockHeader(hash);</span>
+  }
+
+  public Optional&lt;BlockHeader&gt; getBlockHeaderByNumber(final long number) {
+<span class="fc" id="L503">    return blockchain.getBlockHeader(number);</span>
+  }
+
+  public boolean blockIsOnCanonicalChain(final Hash hash) {
+<span class="fc" id="L507">    return blockchain.blockIsOnCanonicalChain(hash);</span>
+  }
+
+  /**
+   * Returns the latest block with metadata and a list of transaction hashes rather than full
+   * transactions.
+   *
+   * @return The latest block.
+   */
+  public Optional&lt;BlockWithMetadata&lt;Hash, Hash&gt;&gt; latestBlockWithTxHashes() {
+<span class="fc" id="L517">    return this.blockByHashWithTxHashes(blockchain.getChainHeadHash());</span>
+  }
+
+  /**
+   * Given a transaction hash, returns the associated transaction.
+   *
+   * @param transactionHash The hash of the target transaction.
+   * @return The transaction associated with the given hash.
+   */
+  public Optional&lt;TransactionWithMetadata&gt; transactionByHash(final Hash transactionHash) {
+<span class="fc" id="L527">    final Optional&lt;TransactionLocation&gt; maybeLocation =</span>
+<span class="fc" id="L528">        blockchain.getTransactionLocation(transactionHash);</span>
+<span class="fc bfc" id="L529" title="All 2 branches covered.">    if (maybeLocation.isEmpty()) {</span>
+<span class="fc" id="L530">      return Optional.empty();</span>
+    }
+<span class="fc" id="L532">    final TransactionLocation loc = maybeLocation.get();</span>
+<span class="fc" id="L533">    final Hash blockHash = loc.getBlockHash();</span>
+    // getTransactionLocation should not return if the TX or block doesn't exist, so throwing
+    // on a missing optional is appropriate.
+<span class="fc" id="L536">    final BlockHeader header = blockchain.getBlockHeader(blockHash).orElseThrow();</span>
+<span class="fc" id="L537">    final Transaction transaction = blockchain.getTransactionByHash(transactionHash).orElseThrow();</span>
+<span class="fc" id="L538">    return Optional.of(</span>
+        new TransactionWithMetadata(
+            transaction,
+<span class="fc" id="L541">            header.getNumber(),</span>
+<span class="fc" id="L542">            header.getBaseFee(),</span>
+            blockHash,
+<span class="fc" id="L544">            loc.getTransactionIndex()));</span>
+  }
+
+  /**
+   * Returns the transaction at the given index for the specified block.
+   *
+   * @param blockNumber The number of the block being queried.
+   * @param txIndex The index of the transaction to return.
+   * @return The transaction at the specified location.
+   */
+  public Optional&lt;TransactionWithMetadata&gt; transactionByBlockNumberAndIndex(
+      final long blockNumber, final int txIndex) {
+<span class="pc bpc" id="L556" title="1 of 2 branches missed.">    checkArgument(txIndex &gt;= 0);</span>
+<span class="fc" id="L557">    return blockchain</span>
+<span class="fc" id="L558">        .getBlockHeader(blockNumber)</span>
+<span class="fc" id="L559">        .map(header -&gt; transactionByHeaderAndIndex(header, txIndex));</span>
+  }
+
+  /**
+   * Returns the transaction at the given index for the specified block.
+   *
+   * @param blockHeaderHash The hash of the block being queried.
+   * @param txIndex The index of the transaction to return.
+   * @return The transaction at the specified location.
+   */
+  public Optional&lt;TransactionWithMetadata&gt; transactionByBlockHashAndIndex(
+      final Hash blockHeaderHash, final int txIndex) {
+<span class="pc bpc" id="L571" title="1 of 2 branches missed.">    checkArgument(txIndex &gt;= 0);</span>
+<span class="fc" id="L572">    return blockchain</span>
+<span class="fc" id="L573">        .getBlockHeader(blockHeaderHash)</span>
+<span class="fc" id="L574">        .map(header -&gt; transactionByHeaderAndIndex(header, txIndex));</span>
+  }
+
+  /**
+   * Helper method to return the transaction at the given index for the specified header, used by
+   * getTransactionByBlock*AndIndex methods.
+   *
+   * @param header The block header.
+   * @param txIndex The index of the transaction to return.
+   * @return The transaction at the specified location.
+   */
+  private TransactionWithMetadata transactionByHeaderAndIndex(
+      final BlockHeader header, final int txIndex) {
+<span class="fc" id="L587">    final Hash blockHeaderHash = header.getHash();</span>
+    // headers should not exist w/o bodies, so not being present is exceptional
+<span class="fc" id="L589">    final BlockBody blockBody = blockchain.getBlockBody(blockHeaderHash).orElseThrow();</span>
+<span class="fc" id="L590">    final List&lt;Transaction&gt; txs = blockBody.getTransactions();</span>
+<span class="fc bfc" id="L591" title="All 2 branches covered.">    if (txIndex &gt;= txs.size()) {</span>
+<span class="fc" id="L592">      return null;</span>
+    }
+<span class="fc" id="L594">    return new TransactionWithMetadata(</span>
+<span class="fc" id="L595">        txs.get(txIndex), header.getNumber(), header.getBaseFee(), blockHeaderHash, txIndex);</span>
+  }
+
+  public Optional&lt;TransactionLocation&gt; transactionLocationByHash(final Hash transactionHash) {
+<span class="nc" id="L599">    return blockchain.getTransactionLocation(transactionHash);</span>
+  }
+
+  /**
+   * Returns the transaction receipt associated with the given transaction hash.
+   *
+   * @param transactionHash The hash of the transaction that corresponds to the receipt to retrieve.
+   * @return The transaction receipt associated with the referenced transaction.
+   */
+  public Optional&lt;TransactionReceiptWithMetadata&gt; transactionReceiptByTransactionHash(
+      final Hash transactionHash, final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L610">    final Optional&lt;TransactionLocation&gt; maybeLocation =</span>
+<span class="fc" id="L611">        blockchain.getTransactionLocation(transactionHash);</span>
+<span class="fc bfc" id="L612" title="All 2 branches covered.">    if (maybeLocation.isEmpty()) {</span>
+<span class="fc" id="L613">      return Optional.empty();</span>
+    }
+    // getTransactionLocation should not return if the TX or block doesn't exist, so throwing
+    // on a missing optional is appropriate.
+<span class="fc" id="L617">    final TransactionLocation location = maybeLocation.get();</span>
+<span class="fc" id="L618">    final Hash blockhash = location.getBlockHash();</span>
+<span class="fc" id="L619">    final int transactionIndex = location.getTransactionIndex();</span>
+
+<span class="fc" id="L621">    final Block block = blockchain.getBlockByHash(blockhash).orElseThrow();</span>
+<span class="fc" id="L622">    final Transaction transaction = block.getBody().getTransactions().get(transactionIndex);</span>
+
+<span class="fc" id="L624">    final BlockHeader header = block.getHeader();</span>
+<span class="fc" id="L625">    final List&lt;TransactionReceipt&gt; transactionReceipts =</span>
+<span class="fc" id="L626">        blockchain.getTxReceipts(blockhash).orElseThrow();</span>
+<span class="fc" id="L627">    final TransactionReceipt transactionReceipt = transactionReceipts.get(transactionIndex);</span>
+
+<span class="fc" id="L629">    long gasUsed = transactionReceipt.getCumulativeGasUsed();</span>
+<span class="fc" id="L630">    int logIndexOffset = 0;</span>
+<span class="fc bfc" id="L631" title="All 2 branches covered.">    if (transactionIndex &gt; 0) {</span>
+<span class="fc" id="L632">      gasUsed -= transactionReceipts.get(transactionIndex - 1).getCumulativeGasUsed();</span>
+<span class="fc" id="L633">      logIndexOffset =</span>
+<span class="fc" id="L634">          IntStream.range(0, transactionIndex)</span>
+<span class="fc" id="L635">              .map(i -&gt; transactionReceipts.get(i).getLogsList().size())</span>
+<span class="fc" id="L636">              .sum();</span>
+    }
+
+<span class="fc" id="L639">    Optional&lt;Long&gt; maybeBlobGasUsed =</span>
+<span class="fc" id="L640">        getBlobGasUsed(transaction, protocolSchedule.getByBlockHeader(header));</span>
+
+<span class="fc" id="L642">    Optional&lt;Wei&gt; maybeBlobGasPrice =</span>
+<span class="fc" id="L643">        getBlobGasPrice(transaction, header, protocolSchedule.getByBlockHeader(header));</span>
+
+<span class="fc" id="L645">    return Optional.of(</span>
+<span class="fc" id="L646">        TransactionReceiptWithMetadata.create(</span>
+            transactionReceipt,
+            transaction,
+            transactionHash,
+            transactionIndex,
+            gasUsed,
+<span class="fc" id="L652">            header.getBaseFee(),</span>
+            blockhash,
+<span class="fc" id="L654">            header.getNumber(),</span>
+            maybeBlobGasUsed,
+            maybeBlobGasPrice,
+            logIndexOffset));
+  }
+
+  /**
+   * Calculates the blob gas used for data in a transaction.
+   *
+   * @param transaction the transaction to calculate the gas for
+   * @param protocolSpec the protocol specification to use for gas calculation
+   * @return an Optional containing the blob gas used for data if the transaction type supports
+   *     blobs, otherwise returns an empty Optional
+   */
+  private Optional&lt;Long&gt; getBlobGasUsed(
+      final Transaction transaction, final ProtocolSpec protocolSpec) {
+<span class="fc bfc" id="L670" title="All 2 branches covered.">    return transaction.getType().supportsBlob()</span>
+<span class="fc" id="L671">        ? Optional.of(protocolSpec.getGasCalculator().blobGasCost(transaction.getBlobCount()))</span>
+<span class="fc" id="L672">        : Optional.empty();</span>
+  }
+
+  /**
+   * Calculates the blob gas price for data in a transaction.
+   *
+   * @param transaction the transaction to calculate the gas price for
+   * @param header the block header of the current block
+   * @param protocolSpec the protocol specification to use for gas price calculation
+   * @return an Optional containing the blob gas price for data if the transaction type supports
+   *     blobs, otherwise returns an empty Optional
+   */
+  private Optional&lt;Wei&gt; getBlobGasPrice(
+      final Transaction transaction, final BlockHeader header, final ProtocolSpec protocolSpec) {
+<span class="fc bfc" id="L686" title="All 2 branches covered.">    if (transaction.getType().supportsBlob()) {</span>
+<span class="fc" id="L687">      return blockchain</span>
+<span class="fc" id="L688">          .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L689">          .map(</span>
+              parentHeader -&gt;
+<span class="fc" id="L691">                  protocolSpec</span>
+<span class="fc" id="L692">                      .getFeeMarket()</span>
+<span class="fc" id="L693">                      .blobGasPricePerGas(</span>
+<span class="fc" id="L694">                          calculateExcessBlobGasForParent(protocolSpec, parentHeader)));</span>
+    }
+<span class="fc" id="L696">    return Optional.empty();</span>
+  }
+
+  /**
+   * Retrieve logs from the range of blocks with optional filtering based on logger address and log
+   * topics.
+   *
+   * @param fromBlockNumber The block number defining the first block in the search range
+   *     (inclusive).
+   * @param toBlockNumber The block number defining the last block in the search range (inclusive).
+   * @param query Constraints on required topics by topic index. For a given index if the set of
+   *     topics is non-empty, the topic at this index must match one of the values in the set.
+   * @param isQueryAlive Whether or not the backend query should stay alive.
+   * @return The set of logs matching the given constraints.
+   */
+  public List&lt;LogWithMetadata&gt; matchingLogs(
+      final long fromBlockNumber,
+      final long toBlockNumber,
+      final LogsQuery query,
+      final Supplier&lt;Boolean&gt; isQueryAlive) {
+    try {
+<span class="fc" id="L717">      final List&lt;LogWithMetadata&gt; result = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L718">      final long startSegment = fromBlockNumber / BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="fc" id="L719">      final long endSegment = toBlockNumber / BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="fc" id="L720">      long currentStep = fromBlockNumber;</span>
+<span class="fc bfc" id="L721" title="All 2 branches covered.">      for (long segment = startSegment; segment &lt;= endSegment; segment++) {</span>
+<span class="fc" id="L722">        final long thisSegment = segment;</span>
+<span class="fc" id="L723">        final long thisStep = currentStep;</span>
+<span class="fc" id="L724">        final long nextStep = (segment + 1) * BLOCKS_PER_BLOOM_CACHE;</span>
+<span class="fc" id="L725">        BackendQuery.stopIfExpired(isQueryAlive);</span>
+<span class="fc" id="L726">        result.addAll(</span>
+            cachePath
+<span class="fc" id="L728">                .map(path -&gt; path.resolve(&quot;logBloom-&quot; + thisSegment + &quot;.cache&quot;))</span>
+<span class="fc" id="L729">                .filter(Files::isRegularFile)</span>
+<span class="fc" id="L730">                .map(</span>
+                    cacheFile -&gt; {
+                      try {
+<span class="fc" id="L733">                        return matchingLogsCached(</span>
+                            thisSegment * BLOCKS_PER_BLOOM_CACHE,
+                            thisStep % BLOCKS_PER_BLOOM_CACHE,
+<span class="fc" id="L736">                            Math.min(toBlockNumber, nextStep - 1) % BLOCKS_PER_BLOOM_CACHE,</span>
+                            query,
+                            cacheFile,
+                            isQueryAlive);
+<span class="nc" id="L740">                      } catch (final Exception e) {</span>
+<span class="nc" id="L741">                        throw new RuntimeException(e);</span>
+                      }
+                    })
+<span class="fc" id="L744">                .orElseGet(</span>
+                    () -&gt;
+<span class="fc" id="L746">                        matchingLogsUncached(</span>
+                            thisStep,
+<span class="fc" id="L748">                            Math.min(toBlockNumber, Math.min(toBlockNumber, nextStep - 1)),</span>
+                            query,
+                            isQueryAlive)));
+<span class="fc" id="L751">        currentStep = nextStep;</span>
+      }
+<span class="fc" id="L753">      return result;</span>
+<span class="nc" id="L754">    } catch (final Exception e) {</span>
+<span class="nc" id="L755">      throw new IllegalStateException(&quot;Error retrieving matching logs&quot;, e);</span>
+    }
+  }
+
+  private List&lt;LogWithMetadata&gt; matchingLogsUncached(
+      final long fromBlockNumber,
+      final long toBlockNumber,
+      final LogsQuery query,
+      final Supplier&lt;Boolean&gt; isQueryAlive) {
+    // rangeClosed handles the inverted from/to situations automatically with zero results.
+<span class="fc" id="L765">    return LongStream.rangeClosed(fromBlockNumber, toBlockNumber)</span>
+<span class="fc" id="L766">        .mapToObj(blockchain::getBlockHeader)</span>
+        // Use takeWhile instead of clamping on toBlockNumber/headBlockNumber because it may get an
+        // extra block or two for a query that has a toBlockNumber past chain head.  Similarly this
+        // handles the case when fromBlockNumber is past chain head.
+<span class="fc" id="L770">        .takeWhile(Optional::isPresent)</span>
+<span class="fc" id="L771">        .map(Optional::get)</span>
+<span class="fc" id="L772">        .filter(header -&gt; query.couldMatch(header.getLogsBloom()))</span>
+<span class="fc" id="L773">        .flatMap(header -&gt; matchingLogs(header.getHash(), query, isQueryAlive).stream())</span>
+<span class="fc" id="L774">        .collect(Collectors.toList());</span>
+  }
+
+  private List&lt;LogWithMetadata&gt; matchingLogsCached(
+      final long segmentStart,
+      final long offset,
+      final long endOffset,
+      final LogsQuery query,
+      final Path cacheFile,
+      final Supplier&lt;Boolean&gt; isQueryAlive)
+      throws Exception {
+<span class="fc" id="L785">    final List&lt;LogWithMetadata&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L786">    try (final RandomAccessFile raf = new RandomAccessFile(cacheFile.toFile(), &quot;r&quot;)) {</span>
+<span class="fc" id="L787">      raf.seek(offset * 256);</span>
+<span class="fc" id="L788">      final byte[] bloomBuff = new byte[256];</span>
+<span class="fc" id="L789">      final Bytes bytesValue = Bytes.wrap(bloomBuff);</span>
+<span class="fc bfc" id="L790" title="All 2 branches covered.">      for (long pos = offset; pos &lt;= endOffset; pos++) {</span>
+<span class="fc" id="L791">        BackendQuery.stopIfExpired(isQueryAlive);</span>
+        try {
+<span class="fc" id="L793">          raf.readFully(bloomBuff);</span>
+<span class="nc" id="L794">        } catch (final EOFException e) {</span>
+<span class="nc" id="L795">          results.addAll(</span>
+<span class="nc" id="L796">              matchingLogsUncached(</span>
+                  segmentStart + pos, segmentStart + endOffset, query, isQueryAlive));
+<span class="nc" id="L798">          break;</span>
+<span class="fc" id="L799">        }</span>
+<span class="fc" id="L800">        final LogsBloomFilter logsBloom = new LogsBloomFilter(bytesValue);</span>
+<span class="pc bpc" id="L801" title="1 of 2 branches missed.">        if (query.couldMatch(logsBloom)) {</span>
+<span class="fc" id="L802">          results.addAll(</span>
+<span class="fc" id="L803">              matchingLogs(</span>
+<span class="fc" id="L804">                  blockchain.getBlockHashByNumber(segmentStart + pos).orElseThrow(),</span>
+                  query,
+                  isQueryAlive));
+        }
+      }
+<span class="nc" id="L809">    } catch (final IOException e) {</span>
+<span class="nc" id="L810">      e.printStackTrace(System.out);</span>
+<span class="nc" id="L811">      LOG.error(&quot;Error reading cached log blooms&quot;, e);</span>
+<span class="fc" id="L812">    }</span>
+<span class="fc" id="L813">    return results;</span>
+  }
+
+  public List&lt;LogWithMetadata&gt; matchingLogs(
+      final Hash blockHash, final LogsQuery query, final Supplier&lt;Boolean&gt; isQueryAlive) {
+    try {
+<span class="fc" id="L819">      final Optional&lt;BlockHeader&gt; blockHeader = getBlockHeader(blockHash, isQueryAlive);</span>
+<span class="fc bfc" id="L820" title="All 2 branches covered.">      if (blockHeader.isEmpty()) {</span>
+<span class="fc" id="L821">        return Collections.emptyList();</span>
+      }
+      // receipts and transactions should exist if the header exists, so throwing is ok.
+<span class="fc" id="L824">      final List&lt;TransactionReceipt&gt; receipts = getReceipts(blockHash, isQueryAlive);</span>
+<span class="fc" id="L825">      final List&lt;Transaction&gt; transactions = getTransactions(blockHash, isQueryAlive);</span>
+<span class="fc" id="L826">      final long number = blockHeader.get().getNumber();</span>
+<span class="fc" id="L827">      final boolean removed = getRemoved(blockHash, isQueryAlive);</span>
+
+<span class="fc" id="L829">      final AtomicInteger logIndexOffset = new AtomicInteger();</span>
+<span class="fc" id="L830">      return IntStream.range(0, receipts.size())</span>
+<span class="fc" id="L831">          .mapToObj(</span>
+              i -&gt; {
+                try {
+<span class="fc" id="L834">                  BackendQuery.stopIfExpired(isQueryAlive);</span>
+<span class="fc" id="L835">                  final List&lt;LogWithMetadata&gt; result =</span>
+<span class="fc" id="L836">                      LogWithMetadata.generate(</span>
+<span class="fc" id="L837">                          logIndexOffset.intValue(),</span>
+<span class="fc" id="L838">                          receipts.get(i),</span>
+                          number,
+                          blockHash,
+<span class="fc" id="L841">                          transactions.get(i).getHash(),</span>
+                          i,
+                          removed);
+<span class="fc" id="L844">                  logIndexOffset.addAndGet(receipts.get(i).getLogs().size());</span>
+<span class="fc" id="L845">                  return result;</span>
+<span class="nc" id="L846">                } catch (final Exception e) {</span>
+<span class="nc" id="L847">                  throw new RuntimeException(e);</span>
+                }
+              })
+<span class="fc" id="L850">          .flatMap(Collection::stream)</span>
+<span class="fc" id="L851">          .filter(query::matches)</span>
+<span class="fc" id="L852">          .collect(Collectors.toList());</span>
+<span class="nc" id="L853">    } catch (final Exception e) {</span>
+<span class="nc" id="L854">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  public List&lt;LogWithMetadata&gt; matchingLogs(
+      final Hash blockHash,
+      final TransactionWithMetadata transactionWithMetaData,
+      final Supplier&lt;Boolean&gt; isQueryAlive) {
+<span class="pc bpc" id="L862" title="1 of 2 branches missed.">    if (transactionWithMetaData.getTransactionIndex().isEmpty()) {</span>
+<span class="nc" id="L863">      throw new RuntimeException(</span>
+          &quot;Cannot find logs because transaction &quot;
+<span class="nc" id="L865">              + transactionWithMetaData.getTransaction().getHash()</span>
+              + &quot; does not have a transaction index&quot;);
+    }
+
+    try {
+<span class="fc" id="L870">      final Optional&lt;BlockHeader&gt; blockHeader = getBlockHeader(blockHash, isQueryAlive);</span>
+<span class="pc bpc" id="L871" title="1 of 2 branches missed.">      if (blockHeader.isEmpty()) {</span>
+<span class="nc" id="L872">        return Collections.emptyList();</span>
+      }
+      // receipts and transactions should exist if the header exists, so throwing is ok.
+<span class="fc" id="L875">      final List&lt;TransactionReceipt&gt; receipts = getReceipts(blockHash, isQueryAlive);</span>
+<span class="fc" id="L876">      final List&lt;Transaction&gt; transactions = getTransactions(blockHash, isQueryAlive);</span>
+<span class="fc" id="L877">      final long number = blockHeader.get().getNumber();</span>
+<span class="fc" id="L878">      final boolean removed = getRemoved(blockHash, isQueryAlive);</span>
+
+<span class="fc" id="L880">      final int transactionIndex = transactionWithMetaData.getTransactionIndex().get();</span>
+<span class="fc" id="L881">      final int logIndexOffset =</span>
+<span class="fc" id="L882">          logIndexOffset(</span>
+<span class="fc" id="L883">              transactionWithMetaData.getTransaction().getHash(), receipts, transactions);</span>
+
+<span class="fc" id="L885">      return LogWithMetadata.generate(</span>
+          logIndexOffset,
+<span class="fc" id="L887">          receipts.get(transactionIndex),</span>
+          number,
+          blockHash,
+<span class="fc" id="L890">          transactions.get(transactionIndex).getHash(),</span>
+          transactionIndex,
+          removed);
+
+<span class="nc" id="L894">    } catch (final Exception e) {</span>
+<span class="nc" id="L895">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  /**
+   * Wraps an operation on MutableWorldState with try-with-resources the corresponding block hash.
+   * This method provides access to the worldstate via a mapper function in order to ensure all of
+   * the uses of the MutableWorldState are subsequently closed, via the try-with-resources block.
+   *
+   * @param &lt;U&gt; return type of the operation on the MutableWorldState
+   * @param blockHash the block hash
+   * @param mapper Function which performs an operation on a MutableWorldState
+   * @return the world state at the block number
+   */
+  public &lt;U&gt; Optional&lt;U&gt; getAndMapWorldState(
+      final Hash blockHash, final Function&lt;MutableWorldState, ? extends Optional&lt;U&gt;&gt; mapper) {
+
+<span class="fc" id="L912">    return blockchain</span>
+<span class="fc" id="L913">        .getBlockHeader(blockHash)</span>
+<span class="fc" id="L914">        .flatMap(</span>
+            blockHeader -&gt; {
+<span class="fc" id="L916">              try (var ws = worldStateArchive.getMutable(blockHeader, false).orElse(null)) {</span>
+<span class="pc bpc" id="L917" title="1 of 2 branches missed.">                if (ws != null) {</span>
+<span class="fc" id="L918">                  return mapper.apply(ws);</span>
+                }
+<span class="pc bpc" id="L920" title="1 of 2 branches missed.">              } catch (Exception ex) {</span>
+<span class="nc" id="L921">                LOG.error(&quot;failed worldstate query for &quot; + blockHash.toShortHexString(), ex);</span>
+<span class="nc" id="L922">              }</span>
+<span class="nc" id="L923">              LOG.atDebug()</span>
+<span class="nc" id="L924">                  .setMessage(&quot;Failed to find worldstate for {}&quot;)</span>
+<span class="nc" id="L925">                  .addArgument(blockHeader.toLogString())</span>
+<span class="nc" id="L926">                  .log();</span>
+<span class="nc" id="L927">              return Optional.empty();</span>
+            });
+  }
+
+  /**
+   * Wraps an operation on MutableWorldState with try-with-resources the corresponding block number
+   *
+   * @param &lt;U&gt; return type of the operation on the MutableWorldState
+   * @param blockNumber the block number
+   * @param mapper Function which performs an operation on a MutableWorldState returning type U
+   * @return the world state at the block number
+   */
+  public &lt;U&gt; Optional&lt;U&gt; getAndMapWorldState(
+      final long blockNumber, final Function&lt;MutableWorldState, ? extends Optional&lt;U&gt;&gt; mapper) {
+<span class="fc" id="L941">    final Hash blockHash =</span>
+<span class="fc" id="L942">        getBlockHeaderByNumber(blockNumber).map(BlockHeader::getHash).orElse(Hash.EMPTY);</span>
+<span class="fc" id="L943">    return getAndMapWorldState(blockHash, mapper);</span>
+  }
+
+  public Optional&lt;Long&gt; gasPrice() {
+<span class="fc" id="L947">    final long blockHeight = headBlockNumber();</span>
+<span class="fc" id="L948">    final long[] gasCollection =</span>
+<span class="fc" id="L949">        LongStream.range(Math.max(0, blockHeight - apiConfig.getGasPriceBlocks()), blockHeight)</span>
+<span class="fc" id="L950">            .mapToObj(</span>
+                l -&gt;
+                    blockchain
+<span class="fc" id="L953">                        .getBlockByNumber(l)</span>
+<span class="fc" id="L954">                        .map(Block::getBody)</span>
+<span class="fc" id="L955">                        .map(BlockBody::getTransactions)</span>
+<span class="fc" id="L956">                        .orElseThrow(</span>
+<span class="nc" id="L957">                            () -&gt; new IllegalStateException(&quot;Could not retrieve block #&quot; + l)))</span>
+<span class="fc" id="L958">            .flatMap(Collection::stream)</span>
+<span class="fc" id="L959">            .filter(t -&gt; t.getGasPrice().isPresent())</span>
+<span class="fc" id="L960">            .mapToLong(t -&gt; t.getGasPrice().get().toLong())</span>
+<span class="fc" id="L961">            .sorted()</span>
+<span class="fc" id="L962">            .toArray();</span>
+<span class="pc bpc" id="L963" title="1 of 4 branches missed.">    return (gasCollection == null || gasCollection.length == 0)</span>
+<span class="fc" id="L964">        ? Optional.empty()</span>
+<span class="fc" id="L965">        : Optional.of(</span>
+<span class="fc" id="L966">            Math.max(</span>
+<span class="fc" id="L967">                apiConfig.getGasPriceMinSupplier().getAsLong(),</span>
+<span class="fc" id="L968">                Math.min(</span>
+<span class="fc" id="L969">                    apiConfig.getGasPriceMax(),</span>
+                    gasCollection[
+<span class="fc" id="L971">                        Math.min(</span>
+                            gasCollection.length - 1,
+<span class="fc" id="L973">                            (int) ((gasCollection.length) * apiConfig.getGasPriceFraction()))])));</span>
+  }
+
+  public Optional&lt;Wei&gt; gasPriorityFee() {
+<span class="fc" id="L977">    final long blockHeight = headBlockNumber();</span>
+<span class="fc" id="L978">    final BigInteger[] gasCollection =</span>
+<span class="fc" id="L979">        LongStream.range(Math.max(0, blockHeight - apiConfig.getGasPriceBlocks()), blockHeight)</span>
+<span class="fc" id="L980">            .mapToObj(</span>
+                l -&gt;
+                    blockchain
+<span class="fc" id="L983">                        .getBlockByNumber(l)</span>
+<span class="fc" id="L984">                        .map(Block::getBody)</span>
+<span class="fc" id="L985">                        .map(BlockBody::getTransactions)</span>
+<span class="fc" id="L986">                        .orElseThrow(</span>
+<span class="nc" id="L987">                            () -&gt; new IllegalStateException(&quot;Could not retrieve block #&quot; + l)))</span>
+<span class="fc" id="L988">            .flatMap(Collection::stream)</span>
+<span class="fc" id="L989">            .filter(t -&gt; t.getMaxPriorityFeePerGas().isPresent())</span>
+<span class="fc" id="L990">            .map(t -&gt; t.getMaxPriorityFeePerGas().get().toBigInteger())</span>
+<span class="fc" id="L991">            .sorted(BigInteger::compareTo)</span>
+<span class="fc" id="L992">            .toArray(BigInteger[]::new);</span>
+<span class="pc bpc" id="L993" title="1 of 2 branches missed.">    return (gasCollection.length == 0)</span>
+<span class="nc" id="L994">        ? Optional.empty()</span>
+<span class="fc" id="L995">        : Optional.of(</span>
+<span class="fc" id="L996">            Wei.of(</span>
+                gasCollection[
+<span class="fc" id="L998">                    Math.min(</span>
+                        gasCollection.length - 1,
+<span class="fc" id="L1000">                        (int) ((gasCollection.length) * apiConfig.getGasPriceFraction()))]));</span>
+  }
+
+  private &lt;T&gt; Optional&lt;T&gt; fromAccount(
+      final Address address,
+      final Hash blockHash,
+      final Function&lt;Account, T&gt; getter,
+      final T noAccountValue) {
+<span class="fc" id="L1008">    return getAndMapWorldState(</span>
+        blockHash,
+        worldState -&gt;
+<span class="fc" id="L1011">            Optional.ofNullable(worldState.get(address))</span>
+<span class="fc" id="L1012">                .map(getter)</span>
+<span class="fc" id="L1013">                .or(() -&gt; Optional.ofNullable(noAccountValue)));</span>
+  }
+
+  private List&lt;TransactionWithMetadata&gt; formatTransactions(
+      final List&lt;Transaction&gt; txs,
+      final long blockNumber,
+      final Optional&lt;Wei&gt; baseFee,
+      final Hash blockHash) {
+<span class="fc" id="L1021">    final int count = txs.size();</span>
+<span class="fc" id="L1022">    final List&lt;TransactionWithMetadata&gt; result = new ArrayList&lt;&gt;(count);</span>
+<span class="fc bfc" id="L1023" title="All 2 branches covered.">    for (int i = 0; i &lt; count; i++) {</span>
+<span class="fc" id="L1024">      result.add(new TransactionWithMetadata(txs.get(i), blockNumber, baseFee, blockHash, i));</span>
+    }
+<span class="fc" id="L1026">    return result;</span>
+  }
+
+  private boolean outsideBlockchainRange(final long blockNumber) {
+<span class="fc bfc" id="L1030" title="All 4 branches covered.">    return blockNumber &gt; headBlockNumber() || blockNumber &lt; BlockHeader.GENESIS_BLOCK_NUMBER;</span>
+  }
+
+  private Boolean getRemoved(final Hash blockHash, final Supplier&lt;Boolean&gt; isQueryAlive)
+      throws Exception {
+<span class="fc" id="L1035">    return BackendQuery.runIfAlive(</span>
+        &quot;matchingLogs - blockIsOnCanonicalChain&quot;,
+<span class="fc bfc" id="L1037" title="All 2 branches covered.">        () -&gt; !blockchain.blockIsOnCanonicalChain(blockHash),</span>
+        isQueryAlive);
+  }
+
+  private List&lt;Transaction&gt; getTransactions(
+      final Hash blockHash, final Supplier&lt;Boolean&gt; isQueryAlive) throws Exception {
+<span class="fc" id="L1043">    return BackendQuery.runIfAlive(</span>
+        &quot;matchingLogs - getBlockBody&quot;,
+<span class="fc" id="L1045">        () -&gt; blockchain.getBlockBody(blockHash).orElseThrow().getTransactions(),</span>
+        isQueryAlive);
+  }
+
+  private List&lt;TransactionReceipt&gt; getReceipts(
+      final Hash blockHash, final Supplier&lt;Boolean&gt; isQueryAlive) throws Exception {
+<span class="fc" id="L1051">    return BackendQuery.runIfAlive(</span>
+        &quot;matchingLogs - getTxReceipts&quot;,
+<span class="fc" id="L1053">        () -&gt; blockchain.getTxReceipts(blockHash).orElseThrow(),</span>
+        isQueryAlive);
+  }
+
+  private Optional&lt;BlockHeader&gt; getBlockHeader(
+      final Hash blockHash, final Supplier&lt;Boolean&gt; isQueryAlive) throws Exception {
+<span class="fc" id="L1059">    return BackendQuery.runIfAlive(</span>
+<span class="fc" id="L1060">        &quot;matchingLogs - getBlockHeader&quot;, () -&gt; blockchain.getBlockHeader(blockHash), isQueryAlive);</span>
+  }
+
+  private int logIndexOffset(
+      final Hash transactionHash,
+      final List&lt;TransactionReceipt&gt; receipts,
+      final List&lt;Transaction&gt; transactions) {
+<span class="fc" id="L1067">    int logIndexOffset = 0;</span>
+<span class="pc bpc" id="L1068" title="1 of 2 branches missed.">    for (int i = 0; i &lt; receipts.size(); i++) {</span>
+<span class="pc bpc" id="L1069" title="1 of 2 branches missed.">      if (transactions.get(i).getHash().equals(transactionHash)) {</span>
+<span class="fc" id="L1070">        break;</span>
+      }
+
+<span class="nc" id="L1073">      logIndexOffset += receipts.get(i).getLogsList().size();</span>
+    }
+
+<span class="fc" id="L1076">    return logIndexOffset;</span>
+  }
+
+  public Optional&lt;EthScheduler&gt; getEthScheduler() {
+<span class="fc" id="L1080">    return ethScheduler;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GraphQLDataFetchers.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.graphql</a> &gt; <span class="el_source">GraphQLDataFetchers.java</span></div><h1>GraphQLDataFetchers.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.graphql;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.AccountAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.EmptyAccountAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.LogAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.NormalBlockAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.PendingStateAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.SyncStateAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter.TransactionAdapter;
+import org.hyperledger.besu.ethereum.api.graphql.internal.response.GraphQLError;
+import org.hyperledger.besu.ethereum.api.query.BlockWithMetadata;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.query.LogsQuery;
+import org.hyperledger.besu.ethereum.api.query.TransactionWithMetadata;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.EthProtocol;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.log.LogTopic;
+import org.hyperledger.besu.plugin.data.SyncStatus;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import com.google.common.base.Preconditions;
+import graphql.GraphQLContext;
+import graphql.schema.DataFetcher;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class GraphQLDataFetchers {
+
+  private final Integer highestEthVersion;
+
+<span class="fc" id="L69">  public GraphQLDataFetchers(final Set&lt;Capability&gt; supportedCapabilities) {</span>
+<span class="fc" id="L70">    final OptionalInt version =</span>
+<span class="fc" id="L71">        supportedCapabilities.stream()</span>
+<span class="fc" id="L72">            .filter(cap -&gt; EthProtocol.NAME.equals(cap.getName()))</span>
+<span class="fc" id="L73">            .mapToInt(Capability::getVersion)</span>
+<span class="fc" id="L74">            .max();</span>
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    highestEthVersion = version.isPresent() ? version.getAsInt() : null;</span>
+<span class="fc" id="L76">  }</span>
+
+  DataFetcher&lt;Optional&lt;Integer&gt;&gt; getProtocolVersionDataFetcher() {
+<span class="pc" id="L79">    return dataFetchingEnvironment -&gt; Optional.of(highestEthVersion);</span>
+  }
+
+  DataFetcher&lt;Optional&lt;Bytes32&gt;&gt; getSendRawTransactionDataFetcher() {
+<span class="fc" id="L83">    return dataFetchingEnvironment -&gt; {</span>
+      try {
+<span class="fc" id="L85">        final TransactionPool transactionPool =</span>
+<span class="fc" id="L86">            dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.TRANSACTION_POOL);</span>
+<span class="fc" id="L87">        final Bytes rawTran = dataFetchingEnvironment.getArgument(&quot;data&quot;);</span>
+
+<span class="fc" id="L89">        final Transaction transaction = Transaction.readFrom(RLP.input(rawTran));</span>
+<span class="fc" id="L90">        final ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+<span class="fc" id="L91">            transactionPool.addTransactionViaApi(transaction);</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">        if (validationResult.isValid()) {</span>
+<span class="fc" id="L93">          return Optional.of(transaction.getHash());</span>
+        } else {
+<span class="fc" id="L95">          throw new GraphQLException(GraphQLError.of(validationResult.getInvalidReason()));</span>
+        }
+<span class="fc" id="L97">      } catch (final IllegalArgumentException | RLPException e) {</span>
+<span class="fc" id="L98">        throw new GraphQLException(GraphQLError.INVALID_PARAMS);</span>
+      }
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;SyncStateAdapter&gt;&gt; getSyncingDataFetcher() {
+<span class="fc" id="L104">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L105">      final Synchronizer synchronizer =</span>
+<span class="fc" id="L106">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.SYNCHRONIZER);</span>
+<span class="fc" id="L107">      final Optional&lt;SyncStatus&gt; syncStatus = synchronizer.getSyncStatus();</span>
+<span class="fc" id="L108">      return syncStatus.map(SyncStateAdapter::new);</span>
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;PendingStateAdapter&gt;&gt; getPendingStateDataFetcher() {
+<span class="fc" id="L113">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L114">      final TransactionPool txPool =</span>
+<span class="fc" id="L115">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.TRANSACTION_POOL);</span>
+<span class="fc" id="L116">      return Optional.of(new PendingStateAdapter(txPool));</span>
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;Wei&gt;&gt; getGasPriceDataFetcher() {
+<span class="fc" id="L121">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L122">      final GraphQLContext graphQLContext = dataFetchingEnvironment.getGraphQlContext();</span>
+<span class="fc" id="L123">      final BlockchainQueries blockchainQueries =</span>
+<span class="fc" id="L124">          graphQLContext.get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+<span class="fc" id="L125">      final MiningCoordinator miningCoordinator =</span>
+<span class="fc" id="L126">          graphQLContext.get(GraphQLContextType.MINING_COORDINATOR);</span>
+<span class="fc" id="L127">      return blockchainQueries</span>
+<span class="fc" id="L128">          .gasPrice()</span>
+<span class="fc" id="L129">          .map(Wei::of)</span>
+<span class="pc" id="L130">          .or(() -&gt; Optional.of(miningCoordinator.getMinTransactionGasPrice()));</span>
+    };
+  }
+
+  public DataFetcher&lt;Optional&lt;BigInteger&gt;&gt; getChainIdDataFetcher() {
+<span class="fc" id="L135">    return dataFetchingEnvironment -&gt; {</span>
+<span class="nc" id="L136">      final GraphQLContext graphQLContext = dataFetchingEnvironment.getGraphQlContext();</span>
+<span class="nc" id="L137">      return graphQLContext.get(GraphQLContextType.CHAIN_ID);</span>
+    };
+  }
+
+  public DataFetcher&lt;Wei&gt; getMaxPriorityFeePerGasDataFetcher() {
+<span class="fc" id="L142">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L143">      final BlockchainQueries blockchainQuery =</span>
+<span class="fc" id="L144">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+<span class="fc" id="L145">      return blockchainQuery.gasPriorityFee().orElse(Wei.ZERO);</span>
+    };
+  }
+
+  DataFetcher&lt;List&lt;NormalBlockAdapter&gt;&gt; getRangeBlockDataFetcher() {
+
+<span class="fc" id="L151">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L152">      final BlockchainQueries blockchainQuery =</span>
+<span class="fc" id="L153">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+
+<span class="fc" id="L155">      final long from = dataFetchingEnvironment.getArgument(&quot;from&quot;);</span>
+      final long to;
+<span class="fc bfc" id="L157" title="All 2 branches covered.">      if (dataFetchingEnvironment.containsArgument(&quot;to&quot;)) {</span>
+<span class="fc" id="L158">        to = dataFetchingEnvironment.getArgument(&quot;to&quot;);</span>
+      } else {
+<span class="fc" id="L160">        to = blockchainQuery.latestBlock().map(block -&gt; block.getHeader().getNumber()).orElse(0L);</span>
+      }
+<span class="fc bfc" id="L162" title="All 2 branches covered.">      if (from &gt; to) {</span>
+<span class="fc" id="L163">        throw new GraphQLException(GraphQLError.INVALID_PARAMS);</span>
+      }
+
+<span class="fc" id="L166">      final List&lt;NormalBlockAdapter&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">      for (long i = from; i &lt;= to; i++) {</span>
+<span class="fc" id="L168">        final Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; block =</span>
+<span class="fc" id="L169">            blockchainQuery.blockByNumber(i);</span>
+<span class="fc" id="L170">        block.ifPresent(e -&gt; results.add(new NormalBlockAdapter(e)));</span>
+      }
+<span class="fc" id="L172">      return results;</span>
+    };
+  }
+
+  public DataFetcher&lt;Optional&lt;NormalBlockAdapter&gt;&gt; getBlockDataFetcher() {
+
+<span class="fc" id="L178">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L179">      final BlockchainQueries blockchain =</span>
+<span class="fc" id="L180">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+<span class="fc" id="L181">      final Long number = dataFetchingEnvironment.getArgument(&quot;number&quot;);</span>
+<span class="fc" id="L182">      final Bytes32 hash = dataFetchingEnvironment.getArgument(&quot;hash&quot;);</span>
+<span class="fc bfc" id="L183" title="All 4 branches covered.">      if ((number != null) &amp;&amp; (hash != null)) {</span>
+<span class="fc" id="L184">        throw new GraphQLException(GraphQLError.INVALID_PARAMS);</span>
+      }
+
+      final Optional&lt;BlockWithMetadata&lt;TransactionWithMetadata, Hash&gt;&gt; block;
+<span class="fc bfc" id="L188" title="All 2 branches covered.">      if (number != null) {</span>
+<span class="fc" id="L189">        block = blockchain.blockByNumber(number);</span>
+<span class="fc" id="L190">        checkArgument(block.isPresent(), &quot;Block number %s was not found&quot;, number);</span>
+<span class="fc bfc" id="L191" title="All 2 branches covered.">      } else if (hash != null) {</span>
+<span class="fc" id="L192">        block = blockchain.blockByHash(Hash.wrap(hash));</span>
+<span class="fc" id="L193">        Preconditions.checkArgument(block.isPresent(), &quot;Block hash %s was not found&quot;, hash);</span>
+      } else {
+<span class="fc" id="L195">        block = blockchain.latestBlock();</span>
+      }
+<span class="fc" id="L197">      return block.map(NormalBlockAdapter::new);</span>
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;AccountAdapter&gt;&gt; getAccountDataFetcher() {
+<span class="fc" id="L202">    return dataFetchingEnvironment -&gt; {</span>
+<span class="nc" id="L203">      final BlockchainQueries blockchainQuery =</span>
+<span class="nc" id="L204">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+<span class="nc" id="L205">      final Address addr = dataFetchingEnvironment.getArgument(&quot;address&quot;);</span>
+<span class="nc" id="L206">      final Long bn = dataFetchingEnvironment.getArgument(&quot;blockNumber&quot;);</span>
+<span class="nc bnc" id="L207" title="All 2 branches missed.">      if (bn != null) {</span>
+<span class="nc" id="L208">        return blockchainQuery</span>
+<span class="nc" id="L209">            .getAndMapWorldState(</span>
+<span class="nc" id="L210">                bn,</span>
+                ws -&gt; {
+<span class="nc" id="L212">                  final Account account = ws.get(addr);</span>
+<span class="nc bnc" id="L213" title="All 2 branches missed.">                  if (account == null) {</span>
+<span class="nc" id="L214">                    return Optional.of(new EmptyAccountAdapter(addr));</span>
+                  }
+<span class="nc" id="L216">                  return Optional.of(new AccountAdapter(account));</span>
+                })
+<span class="nc" id="L218">            .or(</span>
+                () -&gt; {
+<span class="nc bnc" id="L220" title="All 2 branches missed.">                  if (bn &gt; blockchainQuery.getBlockchain().getChainHeadBlockNumber()) {</span>
+                    // block is past chainhead
+<span class="nc" id="L222">                    throw new GraphQLException(GraphQLError.INVALID_PARAMS);</span>
+                  } else {
+                    // we don't have that block
+<span class="nc" id="L225">                    throw new GraphQLException(GraphQLError.CHAIN_HEAD_WORLD_STATE_NOT_AVAILABLE);</span>
+                  }
+                });
+      } else {
+        // return account on latest block
+<span class="nc" id="L230">        final long latestBn = blockchainQuery.latestBlock().get().getHeader().getNumber();</span>
+<span class="nc" id="L231">        return blockchainQuery.getAndMapWorldState(</span>
+            latestBn,
+            ws -&gt; {
+<span class="nc" id="L234">              final Account account = ws.get(addr);</span>
+<span class="nc bnc" id="L235" title="All 2 branches missed.">              if (account == null) {</span>
+<span class="nc" id="L236">                return Optional.of(new EmptyAccountAdapter(addr));</span>
+              }
+<span class="nc" id="L238">              return Optional.of(new AccountAdapter(account));</span>
+            });
+      }
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;List&lt;LogAdapter&gt;&gt;&gt; getLogsDataFetcher() {
+<span class="fc" id="L245">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L246">      final BlockchainQueries blockchainQuery =</span>
+<span class="fc" id="L247">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+
+<span class="fc" id="L249">      final Map&lt;String, Object&gt; filter = dataFetchingEnvironment.getArgument(&quot;filter&quot;);</span>
+
+<span class="fc" id="L251">      final long currentBlock = blockchainQuery.getBlockchain().getChainHeadBlockNumber();</span>
+<span class="fc" id="L252">      final long fromBlock = (Long) filter.getOrDefault(&quot;fromBlock&quot;, currentBlock);</span>
+<span class="fc" id="L253">      final long toBlock = (Long) filter.getOrDefault(&quot;toBlock&quot;, currentBlock);</span>
+
+<span class="pc bpc" id="L255" title="1 of 2 branches missed.">      if (fromBlock &gt; toBlock) {</span>
+<span class="nc" id="L256">        throw new GraphQLException(GraphQLError.INVALID_PARAMS);</span>
+      }
+
+      @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L260">      final List&lt;Address&gt; addrs = (List&lt;Address&gt;) filter.get(&quot;addresses&quot;);</span>
+      @SuppressWarnings(&quot;unchecked&quot;)
+<span class="fc" id="L262">      final List&lt;List&lt;Bytes32&gt;&gt; topics = (List&lt;List&lt;Bytes32&gt;&gt;) filter.get(&quot;topics&quot;);</span>
+
+<span class="fc" id="L264">      final List&lt;List&lt;LogTopic&gt;&gt; transformedTopics = new ArrayList&lt;&gt;();</span>
+<span class="pc bpc" id="L265" title="1 of 2 branches missed.">      for (final List&lt;Bytes32&gt; topic : topics) {</span>
+<span class="nc bnc" id="L266" title="All 2 branches missed.">        if (topic.isEmpty()) {</span>
+<span class="nc" id="L267">          transformedTopics.add(Collections.singletonList(null));</span>
+        } else {
+<span class="nc" id="L269">          transformedTopics.add(topic.stream().map(LogTopic::of).collect(Collectors.toList()));</span>
+        }
+<span class="nc" id="L271">      }</span>
+
+<span class="fc" id="L273">      final LogsQuery query =</span>
+<span class="fc" id="L274">          new LogsQuery.Builder().addresses(addrs).topics(transformedTopics).build();</span>
+
+<span class="fc" id="L276">      final List&lt;LogWithMetadata&gt; logs =</span>
+<span class="fc" id="L277">          blockchainQuery.matchingLogs(</span>
+              fromBlock,
+              toBlock,
+              query,
+<span class="fc" id="L281">              dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.IS_ALIVE_HANDLER));</span>
+<span class="fc" id="L282">      final List&lt;LogAdapter&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L283" title="All 2 branches covered.">      for (final LogWithMetadata log : logs) {</span>
+<span class="fc" id="L284">        results.add(new LogAdapter(log));</span>
+<span class="fc" id="L285">      }</span>
+<span class="fc" id="L286">      return Optional.of(results);</span>
+    };
+  }
+
+  DataFetcher&lt;Optional&lt;TransactionAdapter&gt;&gt; getTransactionDataFetcher() {
+<span class="fc" id="L291">    return dataFetchingEnvironment -&gt; {</span>
+<span class="fc" id="L292">      final BlockchainQueries blockchain =</span>
+<span class="fc" id="L293">          dataFetchingEnvironment.getGraphQlContext().get(GraphQLContextType.BLOCKCHAIN_QUERIES);</span>
+<span class="fc" id="L294">      final Bytes32 hash = dataFetchingEnvironment.getArgument(&quot;hash&quot;);</span>
+<span class="fc" id="L295">      final Optional&lt;TransactionWithMetadata&gt; tran = blockchain.transactionByHash(Hash.wrap(hash));</span>
+<span class="fc" id="L296">      return tran.map(this::getTransactionAdapter);</span>
+    };
+  }
+
+  private TransactionAdapter getTransactionAdapter(
+      final TransactionWithMetadata transactionWithMetadata) {
+<span class="fc" id="L302">    return new TransactionAdapter(transactionWithMetadata);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

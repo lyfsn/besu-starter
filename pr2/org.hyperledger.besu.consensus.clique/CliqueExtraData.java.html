@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CliqueExtraData.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.clique</a> &gt; <span class="el_source">CliqueExtraData.java</span></div><h1>CliqueExtraData.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.clique;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.ParsedExtraData;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import com.google.common.base.Suppliers;
+import com.google.common.collect.Lists;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Represents the data structure stored in the extraData field of the BlockHeader used when
+ * operating under an Clique consensus mechanism.
+ */
+public class CliqueExtraData implements ParsedExtraData {
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(CliqueExtraData.class);</span>
+  /** The constant EXTRA_VANITY_LENGTH. */
+  public static final int EXTRA_VANITY_LENGTH = 32;
+
+  private final Bytes vanityData;
+  private final List&lt;Address&gt; validators;
+  private final Optional&lt;SECPSignature&gt; proposerSeal;
+  private final Supplier&lt;Address&gt; proposerAddress;
+
+  /**
+   * Instantiates a new Clique extra data.
+   *
+   * @param vanityData the vanity data
+   * @param proposerSeal the proposer seal
+   * @param validators the validators
+   * @param header the header
+   */
+  public CliqueExtraData(
+      final Bytes vanityData,
+      final SECPSignature proposerSeal,
+      final List&lt;Address&gt; validators,
+<span class="fc" id="L62">      final BlockHeader header) {</span>
+
+<span class="fc" id="L64">    checkNotNull(vanityData);</span>
+<span class="fc" id="L65">    checkNotNull(validators);</span>
+<span class="fc" id="L66">    checkNotNull(header);</span>
+<span class="pc bpc" id="L67" title="1 of 2 branches missed.">    checkArgument(vanityData.size() == EXTRA_VANITY_LENGTH);</span>
+
+<span class="fc" id="L69">    this.vanityData = vanityData;</span>
+<span class="fc" id="L70">    this.proposerSeal = Optional.ofNullable(proposerSeal);</span>
+<span class="fc" id="L71">    this.validators = validators;</span>
+<span class="fc" id="L72">    proposerAddress =</span>
+<span class="fc" id="L73">        Suppliers.memoize(() -&gt; CliqueBlockHashing.recoverProposerAddress(header, this));</span>
+<span class="fc" id="L74">  }</span>
+
+  /**
+   * Create without proposer seal.
+   *
+   * @param vanityData the vanity data
+   * @param validators the validators
+   * @return the bytes
+   */
+  public static Bytes createWithoutProposerSeal(
+      final Bytes vanityData, final List&lt;Address&gt; validators) {
+<span class="fc" id="L85">    return CliqueExtraData.encodeUnsealed(vanityData, validators);</span>
+  }
+
+  /**
+   * Decode header to get clique extra data.
+   *
+   * @param header the header
+   * @return the clique extra data
+   */
+  public static CliqueExtraData decode(final BlockHeader header) {
+<span class="fc" id="L95">    final Object inputExtraData = header.getParsedExtraData();</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">    if (inputExtraData instanceof CliqueExtraData) {</span>
+<span class="fc" id="L97">      return (CliqueExtraData) inputExtraData;</span>
+    }
+<span class="fc" id="L99">    LOG.warn(</span>
+        &quot;Expected a CliqueExtraData instance but got {}. Reparsing required.&quot;,
+<span class="pc bpc" id="L101" title="1 of 2 branches missed.">        inputExtraData != null ? inputExtraData.getClass().getName() : &quot;null&quot;);</span>
+<span class="fc" id="L102">    return decodeRaw(header);</span>
+  }
+
+  /**
+   * Decode raw to get clique extra data.
+   *
+   * @param header the header
+   * @return the clique extra data
+   */
+  static CliqueExtraData decodeRaw(final BlockHeader header) {
+<span class="fc" id="L112">    final Bytes input = header.getExtraData();</span>
+<span class="fc bfc" id="L113" title="All 2 branches covered.">    if (input.size() &lt; EXTRA_VANITY_LENGTH + SECPSignature.BYTES_REQUIRED) {</span>
+<span class="fc" id="L114">      throw new IllegalArgumentException(</span>
+          &quot;Invalid Bytes supplied - too short to produce a valid Clique Extra Data object.&quot;);
+    }
+
+<span class="fc" id="L118">    final int validatorByteCount =</span>
+<span class="fc" id="L119">        input.size() - EXTRA_VANITY_LENGTH - SECPSignature.BYTES_REQUIRED;</span>
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if ((validatorByteCount % Address.SIZE) != 0) {</span>
+<span class="fc" id="L121">      throw new IllegalArgumentException(&quot;Bytes is of invalid size - i.e. contains unused bytes.&quot;);</span>
+    }
+
+<span class="fc" id="L124">    final Bytes vanityData = input.slice(0, EXTRA_VANITY_LENGTH);</span>
+<span class="fc" id="L125">    final List&lt;Address&gt; validators =</span>
+<span class="fc" id="L126">        extractValidators(input.slice(EXTRA_VANITY_LENGTH, validatorByteCount));</span>
+
+<span class="fc" id="L128">    final int proposerSealStartIndex = input.size() - SECPSignature.BYTES_REQUIRED;</span>
+<span class="fc" id="L129">    final SECPSignature proposerSeal = parseProposerSeal(input.slice(proposerSealStartIndex));</span>
+
+<span class="fc" id="L131">    return new CliqueExtraData(vanityData, proposerSeal, validators, header);</span>
+  }
+
+  /**
+   * Gets proposer address.
+   *
+   * @return the proposer address
+   */
+  public synchronized Address getProposerAddress() {
+<span class="fc" id="L140">    return proposerAddress.get();</span>
+  }
+
+  private static SECPSignature parseProposerSeal(final Bytes proposerSealRaw) {
+<span class="fc bfc" id="L144" title="All 2 branches covered.">    return proposerSealRaw.isZero()</span>
+<span class="fc" id="L145">        ? null</span>
+<span class="fc" id="L146">        : SignatureAlgorithmFactory.getInstance().decodeSignature(proposerSealRaw);</span>
+  }
+
+  private static List&lt;Address&gt; extractValidators(final Bytes validatorsRaw) {
+<span class="fc" id="L150">    final List&lt;Address&gt; result = Lists.newArrayList();</span>
+<span class="fc" id="L151">    final int countValidators = validatorsRaw.size() / Address.SIZE;</span>
+<span class="fc bfc" id="L152" title="All 2 branches covered.">    for (int i = 0; i &lt; countValidators; i++) {</span>
+<span class="fc" id="L153">      final int startIndex = i * Address.SIZE;</span>
+<span class="fc" id="L154">      result.add(Address.wrap(validatorsRaw.slice(startIndex, Address.SIZE)));</span>
+    }
+<span class="fc" id="L156">    return result;</span>
+  }
+
+  /**
+   * Encode to bytes.
+   *
+   * @return the bytes
+   */
+  public Bytes encode() {
+<span class="fc" id="L165">    return encode(vanityData, validators, proposerSeal);</span>
+  }
+
+  /**
+   * Encode unsealed to bytes.
+   *
+   * @param vanityData the vanity data
+   * @param validators the validators
+   * @return the bytes
+   */
+  public static Bytes encodeUnsealed(final Bytes vanityData, final List&lt;Address&gt; validators) {
+<span class="fc" id="L176">    return encode(vanityData, validators, Optional.empty());</span>
+  }
+
+  private static Bytes encode(
+      final Bytes vanityData,
+      final List&lt;Address&gt; validators,
+      final Optional&lt;SECPSignature&gt; proposerSeal) {
+<span class="fc" id="L183">    final Bytes validatorData = Bytes.concatenate(validators.toArray(new Bytes[0]));</span>
+<span class="fc" id="L184">    return Bytes.concatenate(</span>
+        vanityData,
+        validatorData,
+        proposerSeal
+<span class="fc" id="L188">            .map(SECPSignature::encodedBytes)</span>
+<span class="fc" id="L189">            .orElse(Bytes.wrap(new byte[SECPSignature.BYTES_REQUIRED])));</span>
+  }
+
+  /**
+   * Gets vanity data.
+   *
+   * @return the vanity data
+   */
+  public Bytes getVanityData() {
+<span class="fc" id="L198">    return vanityData;</span>
+  }
+
+  /**
+   * Gets proposer seal.
+   *
+   * @return the proposer seal
+   */
+  public Optional&lt;SECPSignature&gt; getProposerSeal() {
+<span class="fc" id="L207">    return proposerSeal;</span>
+  }
+
+  /**
+   * Gets validators.
+   *
+   * @return the validators
+   */
+  public List&lt;Address&gt; getValidators() {
+<span class="fc" id="L216">    return validators;</span>
+  }
+
+  /**
+   * Create genesis extra data string.
+   *
+   * @param validators the validators
+   * @return the string
+   */
+  public static String createGenesisExtraDataString(final List&lt;Address&gt; validators) {
+<span class="fc" id="L226">    return CliqueExtraData.createWithoutProposerSeal(Bytes.wrap(new byte[32]), validators)</span>
+<span class="fc" id="L227">        .toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

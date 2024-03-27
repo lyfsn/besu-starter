@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>UndoTable.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.collections.undo</a> &gt; <span class="el_source">UndoTable.java</span></div><h1>UndoTable.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.collections.undo;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import javax.annotation.CheckForNull;
+
+import com.google.common.collect.Table;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
+
+/**
+ * A Table that supports rolling back the Table to a prior state.
+ *
+ * &lt;p&gt;To register a prior state you want to roll back to call `mark()`. Then use that value in a
+ * subsequent call to `undo(mark)`. Every mutation operation across all undoable collections
+ * increases the global mark, so a mark set in once collection is usable across all
+ * UndoableCollection instances.
+ *
+ * @param &lt;V&gt; The type of the collection.
+ */
+public class UndoTable&lt;R, C, V&gt; implements Table&lt;R, C, V&gt;, Undoable {
+
+<span class="pc" id="L42">  record UndoEntry&lt;R, C, V&gt;(R row, C column, V value, long level) {</span>
+    UndoEntry(final R row, final C column, final V value) {
+<span class="fc" id="L44">      this(row, column, value, Undoable.incrementMarkStatic());</span>
+<span class="fc" id="L45">    }</span>
+  }
+
+  Table&lt;R, C, V&gt; delegate;
+  List&lt;UndoEntry&lt;R, C, V&gt;&gt; undoLog;
+
+  /**
+   * Create an UndoTable backed by another Table instance.
+   *
+   * @param table The Table instance to use for backing storage
+   * @param &lt;R&gt; The row type
+   * @param &lt;C&gt; The column type
+   * @param &lt;V&gt; The value type
+   * @return a new undo table backed by the provided table.
+   */
+  public static &lt;R, C, V&gt; UndoTable&lt;R, C, V&gt; of(final Table&lt;R, C, V&gt; table) {
+<span class="fc" id="L61">    return new UndoTable&lt;&gt;(table);</span>
+  }
+
+  /**
+   * Protected constructor for UndoTable
+   *
+   * @param delegate the table backing the undotable.
+   */
+<span class="fc" id="L69">  protected UndoTable(final Table&lt;R, C, V&gt; delegate) {</span>
+<span class="fc" id="L70">    this.delegate = delegate;</span>
+<span class="fc" id="L71">    undoLog = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L72">  }</span>
+
+  @Override
+  public void undo(final long mark) {
+<span class="fc" id="L76">    int pos = undoLog.size() - 1;</span>
+<span class="fc bfc" id="L77" title="All 4 branches covered.">    while (pos &gt;= 0 &amp;&amp; undoLog.get(pos).level &gt; mark) {</span>
+<span class="fc" id="L78">      final var entry = undoLog.get(pos);</span>
+<span class="fc" id="L79">      undoLog.remove(pos);</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">      if (entry.value() == null) {</span>
+<span class="fc" id="L81">        delegate.remove(entry.row(), entry.column());</span>
+      } else {
+<span class="fc" id="L83">        delegate.put(entry.row(), entry.column(), entry.value());</span>
+      }
+<span class="fc" id="L85">      pos--;</span>
+<span class="fc" id="L86">    }</span>
+<span class="fc" id="L87">  }</span>
+
+  @Override
+  public long lastUpdate() {
+<span class="nc bnc" id="L91" title="All 2 branches missed.">    return undoLog.isEmpty() ? 0L : undoLog.get(undoLog.size() - 1).level;</span>
+  }
+
+  @Override
+  public int size() {
+<span class="nc" id="L96">    return delegate.size();</span>
+  }
+
+  @Override
+  public boolean isEmpty() {
+<span class="nc" id="L101">    return delegate.isEmpty();</span>
+  }
+
+  @Override
+  public boolean contains(final Object rowKey, final Object columnKey) {
+<span class="nc" id="L106">    return delegate.contains(rowKey, columnKey);</span>
+  }
+
+  @Override
+  public boolean containsRow(final Object rowKey) {
+<span class="nc" id="L111">    return delegate.containsRow(rowKey);</span>
+  }
+
+  @Override
+  public boolean containsColumn(final Object columnKey) {
+<span class="nc" id="L116">    return delegate.containsColumn(columnKey);</span>
+  }
+
+  @Override
+  public boolean containsValue(final Object value) {
+<span class="nc" id="L121">    return delegate.containsValue(value);</span>
+  }
+
+  @Override
+  @CheckForNull
+  public V get(final Object rowKey, final Object columnKey) {
+<span class="fc" id="L127">    return delegate.get(rowKey, columnKey);</span>
+  }
+
+  @Override
+  public void clear() {
+<span class="nc" id="L132">    delegate.clear();</span>
+<span class="nc" id="L133">  }</span>
+
+  @Override
+  @CanIgnoreReturnValue
+  @CheckForNull
+  public V put(final R rowKey, final C columnKey, final V value) {
+<span class="fc" id="L139">    V oldV = delegate.put(rowKey, columnKey, value);</span>
+<span class="fc" id="L140">    undoLog.add(new UndoEntry&lt;&gt;(rowKey, columnKey, oldV));</span>
+<span class="fc" id="L141">    return oldV;</span>
+  }
+
+  @Override
+  public void putAll(final Table&lt;? extends R, ? extends C, ? extends V&gt; table) {
+<span class="nc bnc" id="L146" title="All 2 branches missed.">    for (var cell : table.cellSet()) {</span>
+<span class="nc" id="L147">      V newV = cell.getValue();</span>
+<span class="nc" id="L148">      V oldV = delegate.put(cell.getRowKey(), cell.getColumnKey(), newV);</span>
+<span class="nc bnc" id="L149" title="All 2 branches missed.">      if (!Objects.equals(oldV, newV)) {</span>
+<span class="nc" id="L150">        undoLog.add(new UndoEntry&lt;&gt;(cell.getRowKey(), cell.getColumnKey(), oldV));</span>
+      }
+<span class="nc" id="L152">    }</span>
+<span class="nc" id="L153">  }</span>
+
+  @SuppressWarnings(&quot;unchecked&quot;)
+  @Override
+  @CanIgnoreReturnValue
+  @CheckForNull
+  public V remove(final Object rowKey, final Object columnKey) {
+<span class="nc" id="L160">    V oldV = delegate.remove(rowKey, columnKey);</span>
+<span class="nc" id="L161">    undoLog.add(new UndoEntry&lt;&gt;((R) rowKey, (C) columnKey, oldV));</span>
+<span class="nc" id="L162">    return oldV;</span>
+  }
+
+  @Override
+  public Map&lt;C, V&gt; row(final R rowKey) {
+<span class="nc" id="L167">    return Collections.unmodifiableMap(delegate.row(rowKey));</span>
+  }
+
+  @Override
+  public Map&lt;R, V&gt; column(final C columnKey) {
+<span class="nc" id="L172">    return Collections.unmodifiableMap(delegate.column(columnKey));</span>
+  }
+
+  @Override
+  public Set&lt;Cell&lt;R, C, V&gt;&gt; cellSet() {
+<span class="nc" id="L177">    return Collections.unmodifiableSet(delegate.cellSet());</span>
+  }
+
+  @Override
+  public Set&lt;R&gt; rowKeySet() {
+<span class="nc" id="L182">    return Collections.unmodifiableSet(delegate.rowKeySet());</span>
+  }
+
+  @Override
+  public Set&lt;C&gt; columnKeySet() {
+<span class="nc" id="L187">    return Collections.unmodifiableSet(delegate.columnKeySet());</span>
+  }
+
+  @Override
+  public Collection&lt;V&gt; values() {
+<span class="nc" id="L192">    return Collections.unmodifiableCollection(delegate.values());</span>
+  }
+
+  @Override
+  public Map&lt;R, Map&lt;C, V&gt;&gt; rowMap() {
+<span class="nc" id="L197">    return Collections.unmodifiableMap(delegate.rowMap());</span>
+  }
+
+  @Override
+  public Map&lt;C, Map&lt;R, V&gt;&gt; columnMap() {
+<span class="nc" id="L202">    return Collections.unmodifiableMap(delegate.columnMap());</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="nc bnc" id="L207" title="All 4 branches missed.">    return o instanceof UndoTable &amp;&amp; delegate.equals(o);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L212">    return delegate.hashCode() ^ 0xde1e647e;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

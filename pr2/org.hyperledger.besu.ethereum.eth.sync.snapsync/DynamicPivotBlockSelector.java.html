@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DynamicPivotBlockSelector.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync</a> &gt; <span class="el_source">DynamicPivotBlockSelector.java</span></div><h1>DynamicPivotBlockSelector.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncActions;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncState;
+
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BiConsumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * DynamicPivotBlockSelector is responsible for dynamically selecting the pivot block for Snapsync.
+ * It uses an algorithm to find the most suitable pivot block based on the current network
+ * conditions.
+ */
+public class DynamicPivotBlockSelector {
+
+<span class="fc" id="L41">  private static final Duration DEFAULT_CHECK_INTERVAL = Duration.ofSeconds(60);</span>
+<span class="pc" id="L42">  public static final BiConsumer&lt;BlockHeader, Boolean&gt; doNothingOnPivotChange = (___, __) -&gt; {};</span>
+
+<span class="fc" id="L44">  private static final Logger LOG = LoggerFactory.getLogger(DynamicPivotBlockSelector.class);</span>
+
+<span class="fc" id="L46">  private final AtomicBoolean isTimeToCheckAgain = new AtomicBoolean(true);</span>
+
+  private final EthContext ethContext;
+  private final FastSyncActions syncActions;
+
+  private final SnapSyncProcessState syncState;
+  private final int pivotBlockWindowValidity;
+  private final int pivotBlockDistanceBeforeCaching;
+
+  private Optional&lt;BlockHeader&gt; lastPivotBlockFound;
+
+  public DynamicPivotBlockSelector(
+      final EthContext ethContext,
+      final FastSyncActions fastSyncActions,
+      final SnapSyncProcessState fastSyncState,
+      final int pivotBlockWindowValidity,
+<span class="fc" id="L62">      final int pivotBlockDistanceBeforeCaching) {</span>
+<span class="fc" id="L63">    this.ethContext = ethContext;</span>
+<span class="fc" id="L64">    this.syncActions = fastSyncActions;</span>
+<span class="fc" id="L65">    this.syncState = fastSyncState;</span>
+<span class="fc" id="L66">    this.pivotBlockWindowValidity = pivotBlockWindowValidity;</span>
+<span class="fc" id="L67">    this.pivotBlockDistanceBeforeCaching = pivotBlockDistanceBeforeCaching;</span>
+<span class="fc" id="L68">    this.lastPivotBlockFound = Optional.empty();</span>
+<span class="fc" id="L69">  }</span>
+
+  public void check(final BiConsumer&lt;BlockHeader, Boolean&gt; onNewPivotBlock) {
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">    if (isTimeToCheckAgain.compareAndSet(true, false)) {</span>
+<span class="fc" id="L73">      AtomicBoolean delayNextCheck = new AtomicBoolean(false);</span>
+
+<span class="fc" id="L75">      syncState</span>
+<span class="fc" id="L76">          .getPivotBlockNumber()</span>
+<span class="fc" id="L77">          .ifPresent(</span>
+              currentPivotBlockNumber -&gt; {
+<span class="fc" id="L79">                final long bestChainHeight = syncActions.getBestChainHeight();</span>
+<span class="fc" id="L80">                final long distanceNextPivotBlock =</span>
+                    bestChainHeight
+                        - lastPivotBlockFound
+<span class="fc" id="L83">                            .map(ProcessableBlockHeader::getNumber)</span>
+<span class="fc" id="L84">                            .orElse(currentPivotBlockNumber);</span>
+
+                final CompletableFuture&lt;Void&gt; searchForNewPivot;
+
+<span class="fc bfc" id="L88" title="All 2 branches covered.">                if (distanceNextPivotBlock &gt; pivotBlockDistanceBeforeCaching) {</span>
+<span class="fc" id="L89">                  LOG.atDebug()</span>
+<span class="fc" id="L90">                      .setMessage(</span>
+                          &quot;Searching for a new pivot: current pivot {} best chain height {} distance next pivot {} last pivot block found {}&quot;)
+<span class="fc" id="L92">                      .addArgument(currentPivotBlockNumber)</span>
+<span class="fc" id="L93">                      .addArgument(bestChainHeight)</span>
+<span class="fc" id="L94">                      .addArgument(distanceNextPivotBlock)</span>
+<span class="fc" id="L95">                      .addArgument(this::logLastPivotBlockFound)</span>
+<span class="fc" id="L96">                      .log();</span>
+
+<span class="fc" id="L98">                  searchForNewPivot =</span>
+<span class="fc" id="L99">                      CompletableFuture.completedFuture(FastSyncState.EMPTY_SYNC_STATE)</span>
+<span class="fc" id="L100">                          .thenCompose(syncActions::selectPivotBlock)</span>
+<span class="fc" id="L101">                          .thenCompose(</span>
+                              fss -&gt; {
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">                                if (isSamePivotBlock(fss)) {</span>
+<span class="nc" id="L104">                                  LOG.atDebug()</span>
+<span class="nc" id="L105">                                      .setMessage(</span>
+                                          &quot;New pivot {} is equal to last found {}, nothing to do&quot;)
+<span class="nc" id="L107">                                      .addArgument(fss::getPivotBlockHash)</span>
+<span class="nc" id="L108">                                      .addArgument(this::logLastPivotBlockFound)</span>
+<span class="nc" id="L109">                                      .log();</span>
+<span class="nc" id="L110">                                  return CompletableFuture.completedFuture(null);</span>
+                                }
+<span class="fc" id="L112">                                return downloadNewPivotBlock(fss);</span>
+                              })
+<span class="fc" id="L114">                          .whenComplete(</span>
+                              (unused, throwable) -&gt; {
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">                                if (throwable != null) {</span>
+<span class="nc" id="L117">                                  LOG.debug(&quot;Error while searching for a new pivot&quot;, throwable);</span>
+                                }
+<span class="fc" id="L119">                              });</span>
+                } else {
+<span class="fc" id="L121">                  searchForNewPivot = CompletableFuture.completedFuture(null);</span>
+                }
+
+                try {
+<span class="fc" id="L125">                  searchForNewPivot</span>
+<span class="fc" id="L126">                      .thenRun(</span>
+                          () -&gt; {
+<span class="fc" id="L128">                            final long distance = bestChainHeight - currentPivotBlockNumber;</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">                            if (distance &gt; pivotBlockWindowValidity) {</span>
+<span class="fc" id="L130">                              LOG.atDebug()</span>
+<span class="fc" id="L131">                                  .setMessage(</span>
+                                      &quot;Switch to new pivot: current pivot {} is distant {} from current best chain height {} last pivot block found {}&quot;)
+<span class="fc" id="L133">                                  .addArgument(currentPivotBlockNumber)</span>
+<span class="fc" id="L134">                                  .addArgument(distance)</span>
+<span class="fc" id="L135">                                  .addArgument(bestChainHeight)</span>
+<span class="fc" id="L136">                                  .addArgument(this::logLastPivotBlockFound)</span>
+<span class="fc" id="L137">                                  .log();</span>
+<span class="fc" id="L138">                              switchToNewPivotBlock(onNewPivotBlock);</span>
+                            }
+                            // delay next check only if we are successful
+<span class="fc" id="L141">                            delayNextCheck.set(true);</span>
+<span class="fc" id="L142">                          })</span>
+<span class="fc" id="L143">                      .get();</span>
+<span class="nc" id="L144">                } catch (InterruptedException | ExecutionException e) {</span>
+<span class="nc" id="L145">                  LOG.debug(&quot;Exception while searching for new pivot&quot;, e);</span>
+<span class="fc" id="L146">                }</span>
+<span class="fc" id="L147">              });</span>
+
+<span class="fc" id="L149">      scheduleNextCheck(delayNextCheck.get());</span>
+    }
+<span class="fc" id="L151">  }</span>
+
+  private CompletableFuture&lt;Void&gt; downloadNewPivotBlock(final FastSyncState fss) {
+<span class="fc" id="L154">    return syncActions</span>
+<span class="fc" id="L155">        .downloadPivotBlockHeader(fss)</span>
+<span class="fc" id="L156">        .thenAccept(</span>
+            fssWithHeader -&gt; {
+<span class="fc" id="L158">              lastPivotBlockFound = fssWithHeader.getPivotBlockHeader();</span>
+<span class="fc" id="L159">              LOG.atDebug()</span>
+<span class="fc" id="L160">                  .setMessage(&quot;Found new pivot block {}&quot;)</span>
+<span class="fc" id="L161">                  .addArgument(this::logLastPivotBlockFound)</span>
+<span class="fc" id="L162">                  .log();</span>
+<span class="fc" id="L163">            })</span>
+<span class="fc" id="L164">        .orTimeout(5, TimeUnit.MINUTES);</span>
+  }
+
+  private boolean isSamePivotBlock(final FastSyncState fss) {
+<span class="pc bpc" id="L168" title="1 of 2 branches missed.">    return lastPivotBlockFound.isPresent()</span>
+<span class="nc bnc" id="L169" title="All 2 branches missed.">        &amp;&amp; fss.hasPivotBlockHash()</span>
+<span class="pc bnc" id="L170" title="All 2 branches missed.">        &amp;&amp; lastPivotBlockFound.get().getHash().equals(fss.getPivotBlockHash().get());</span>
+  }
+
+  private void scheduleNextCheck(final boolean delayNextCheck) {
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    if (delayNextCheck) {</span>
+<span class="fc" id="L175">      ethContext</span>
+<span class="fc" id="L176">          .getScheduler()</span>
+<span class="fc" id="L177">          .scheduleFutureTask(</span>
+              () -&gt; {
+<span class="fc" id="L179">                LOG.debug(&quot;Is time to check the pivot again&quot;);</span>
+<span class="fc" id="L180">                isTimeToCheckAgain.set(true);</span>
+<span class="fc" id="L181">              },</span>
+              DEFAULT_CHECK_INTERVAL);
+    } else {
+<span class="fc" id="L184">      isTimeToCheckAgain.set(true);</span>
+    }
+<span class="fc" id="L186">  }</span>
+
+  public void switchToNewPivotBlock(final BiConsumer&lt;BlockHeader, Boolean&gt; onSwitchDone) {
+<span class="fc" id="L189">    lastPivotBlockFound.ifPresentOrElse(</span>
+        blockHeader -&gt; {
+<span class="pc bpc" id="L191" title="1 of 2 branches missed.">          if (syncState.getPivotBlockHeader().filter(blockHeader::equals).isEmpty()) {</span>
+<span class="fc" id="L192">            LOG.atDebug()</span>
+<span class="fc" id="L193">                .setMessage(&quot;Setting new pivot block {} with state root {}&quot;)</span>
+<span class="fc" id="L194">                .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L195">                .addArgument(blockHeader.getStateRoot())</span>
+<span class="fc" id="L196">                .log();</span>
+<span class="fc" id="L197">            syncState.setCurrentHeader(blockHeader);</span>
+<span class="fc" id="L198">            lastPivotBlockFound = Optional.empty();</span>
+          }
+<span class="fc" id="L200">          onSwitchDone.accept(blockHeader, true);</span>
+<span class="fc" id="L201">        },</span>
+<span class="nc" id="L202">        () -&gt; onSwitchDone.accept(syncState.getPivotBlockHeader().orElseThrow(), false));</span>
+<span class="fc" id="L203">  }</span>
+
+  public boolean isBlockchainBehind() {
+<span class="nc" id="L206">    return syncState</span>
+<span class="nc" id="L207">        .getPivotBlockHeader()</span>
+<span class="nc" id="L208">        .map(pivot -&gt; syncActions.isBlockchainBehind(pivot.getNumber()))</span>
+<span class="nc" id="L209">        .orElse(false);</span>
+  }
+
+  private String logLastPivotBlockFound() {
+<span class="nc" id="L213">    return lastPivotBlockFound.map(BlockHeader::toLogString).orElse(&quot;empty&quot;);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

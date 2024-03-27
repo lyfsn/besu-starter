@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MigratingMiningCoordinator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common</a> &gt; <span class="el_source">MigratingMiningCoordinator.java</span></div><h1>MigratingMiningCoordinator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.chain.BlockAddedObserver;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Migrating mining coordinator. */
+public class MigratingMiningCoordinator implements MiningCoordinator, BlockAddedObserver {
+
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(MigratingMiningCoordinator.class);</span>
+
+  private final ForksSchedule&lt;MiningCoordinator&gt; miningCoordinatorSchedule;
+  private final Blockchain blockchain;
+  private MiningCoordinator activeMiningCoordinator;
+  private long blockAddedObserverId;
+
+  /**
+   * Instantiates a new Migrating mining coordinator.
+   *
+   * @param miningCoordinatorSchedule the mining coordinator schedule
+   * @param blockchain the blockchain
+   */
+  public MigratingMiningCoordinator(
+      final ForksSchedule&lt;MiningCoordinator&gt; miningCoordinatorSchedule,
+<span class="fc" id="L54">      final Blockchain blockchain) {</span>
+<span class="fc" id="L55">    this.miningCoordinatorSchedule = miningCoordinatorSchedule;</span>
+<span class="fc" id="L56">    this.blockchain = blockchain;</span>
+<span class="fc" id="L57">    this.activeMiningCoordinator =</span>
+<span class="fc" id="L58">        this.miningCoordinatorSchedule.getFork(blockchain.getChainHeadBlockNumber()).getValue();</span>
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public void start() {
+<span class="fc" id="L63">    blockAddedObserverId = blockchain.observeBlockAdded(this);</span>
+<span class="fc" id="L64">    startActiveMiningCoordinator();</span>
+<span class="fc" id="L65">  }</span>
+
+  private void startActiveMiningCoordinator() {
+<span class="fc" id="L68">    activeMiningCoordinator.enable();</span>
+<span class="fc" id="L69">    activeMiningCoordinator.start();</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">    if (activeMiningCoordinator instanceof BlockAddedObserver) {</span>
+<span class="fc" id="L71">      ((BlockAddedObserver) activeMiningCoordinator).removeObserver();</span>
+    }
+<span class="fc" id="L73">  }</span>
+
+  @Override
+  public void stop() {
+<span class="fc" id="L77">    blockchain.removeObserver(blockAddedObserverId);</span>
+<span class="fc" id="L78">    activeMiningCoordinator.stop();</span>
+<span class="fc" id="L79">  }</span>
+
+  @Override
+  public void awaitStop() throws InterruptedException {
+<span class="fc" id="L83">    activeMiningCoordinator.awaitStop();</span>
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public boolean enable() {
+<span class="fc" id="L88">    return activeMiningCoordinator.enable();</span>
+  }
+
+  @Override
+  public boolean disable() {
+<span class="fc" id="L93">    return activeMiningCoordinator.disable();</span>
+  }
+
+  @Override
+  public boolean isMining() {
+<span class="fc" id="L98">    return activeMiningCoordinator.isMining();</span>
+  }
+
+  @Override
+  public Wei getMinTransactionGasPrice() {
+<span class="fc" id="L103">    return activeMiningCoordinator.getMinTransactionGasPrice();</span>
+  }
+
+  @Override
+  public Wei getMinPriorityFeePerGas() {
+<span class="nc" id="L108">    return activeMiningCoordinator.getMinPriorityFeePerGas();</span>
+  }
+
+  @Override
+  public void setExtraData(final Bytes extraData) {
+<span class="fc" id="L113">    activeMiningCoordinator.setExtraData(extraData);</span>
+<span class="fc" id="L114">  }</span>
+
+  @Override
+  public Optional&lt;Address&gt; getCoinbase() {
+<span class="fc" id="L118">    return activeMiningCoordinator.getCoinbase();</span>
+  }
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(
+      final BlockHeader parentHeader,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;BlockHeader&gt; ommers) {
+<span class="fc" id="L126">    return activeMiningCoordinator.createBlock(parentHeader, transactions, ommers);</span>
+  }
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(final BlockHeader parentHeader, final long timestamp) {
+<span class="nc" id="L131">    return Optional.empty();</span>
+  }
+
+  @Override
+  public void changeTargetGasLimit(final Long targetGasLimit) {
+<span class="fc" id="L136">    activeMiningCoordinator.changeTargetGasLimit(targetGasLimit);</span>
+<span class="fc" id="L137">  }</span>
+
+  @Override
+  public void onBlockAdded(final BlockAddedEvent event) {
+<span class="fc" id="L141">    final long currentBlock = event.getBlock().getHeader().getNumber();</span>
+<span class="fc" id="L142">    final MiningCoordinator nextMiningCoordinator =</span>
+<span class="fc" id="L143">        miningCoordinatorSchedule.getFork(currentBlock + 1).getValue();</span>
+
+<span class="pc bpc" id="L145" title="1 of 2 branches missed.">    if (activeMiningCoordinator != nextMiningCoordinator) {</span>
+<span class="nc" id="L146">      LOG.trace(</span>
+          &quot;Migrating mining coordinator at block {} from {} to {}&quot;,
+<span class="nc" id="L148">          currentBlock,</span>
+<span class="nc" id="L149">          activeMiningCoordinator.getClass().getSimpleName(),</span>
+<span class="nc" id="L150">          nextMiningCoordinator.getClass().getSimpleName());</span>
+
+<span class="nc" id="L152">      final Runnable stopActiveCoordinatorTask = () -&gt; activeMiningCoordinator.stop();</span>
+<span class="nc" id="L153">      final Runnable startNextCoordinatorTask =</span>
+          () -&gt; {
+<span class="nc" id="L155">            activeMiningCoordinator = nextMiningCoordinator;</span>
+<span class="nc" id="L156">            startActiveMiningCoordinator();</span>
+<span class="nc bnc" id="L157" title="All 2 branches missed.">            if (activeMiningCoordinator instanceof BlockAddedObserver) {</span>
+<span class="nc" id="L158">              ((BlockAddedObserver) activeMiningCoordinator).onBlockAdded(event);</span>
+            }
+<span class="nc" id="L160">          };</span>
+
+<span class="nc" id="L162">      CompletableFuture.runAsync(stopActiveCoordinatorTask).thenRun(startNextCoordinatorTask);</span>
+
+<span class="pc bfc" id="L164" title="All 2 branches covered.">    } else if (activeMiningCoordinator instanceof BlockAddedObserver) {</span>
+<span class="fc" id="L165">      ((BlockAddedObserver) activeMiningCoordinator).onBlockAdded(event);</span>
+    }
+<span class="fc" id="L167">  }</span>
+
+  /**
+   * Gets mining coordinator schedule.
+   *
+   * @return the mining coordinator schedule
+   */
+  @VisibleForTesting
+  public ForksSchedule&lt;MiningCoordinator&gt; getMiningCoordinatorSchedule() {
+<span class="fc" id="L176">    return this.miningCoordinatorSchedule;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

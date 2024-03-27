@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Address.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.datatypes</a> &gt; <span class="el_source">Address.java</span></div><h1>Address.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.datatypes;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static org.hyperledger.besu.crypto.Hash.keccak256;
+
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+
+import java.util.concurrent.ExecutionException;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.DelegatingBytes;
+
+/** A 160-bits account address. */
+public class Address extends DelegatingBytes {
+
+  /** The constant SIZE. */
+  public static final int SIZE = 20;
+
+  /** Specific addresses of the &quot;precompiled&quot; contracts. */
+<span class="fc" id="L42">  public static final Address ECREC = Address.precompiled(0x01);</span>
+
+  /** The constant SHA256. */
+<span class="fc" id="L45">  public static final Address SHA256 = Address.precompiled(0x02);</span>
+  /** The constant RIPEMD160. */
+<span class="fc" id="L47">  public static final Address RIPEMD160 = Address.precompiled(0x03);</span>
+  /** The constant ID. */
+<span class="fc" id="L49">  public static final Address ID = Address.precompiled(0x04);</span>
+  /** The constant MODEXP. */
+<span class="fc" id="L51">  public static final Address MODEXP = Address.precompiled(0x05);</span>
+  /** The constant ALTBN128_ADD. */
+<span class="fc" id="L53">  public static final Address ALTBN128_ADD = Address.precompiled(0x06);</span>
+  /** The constant ALTBN128_MUL. */
+<span class="fc" id="L55">  public static final Address ALTBN128_MUL = Address.precompiled(0x07);</span>
+  /** The constant ALTBN128_PAIRING. */
+<span class="fc" id="L57">  public static final Address ALTBN128_PAIRING = Address.precompiled(0x08);</span>
+  /** The constant BLAKE2B_F_COMPRESSION. */
+<span class="fc" id="L59">  public static final Address BLAKE2B_F_COMPRESSION = Address.precompiled(0x09);</span>
+  /** The constant KZG_POINT_EVAL aka POINT_EVALUATION_PRECOMPILE_ADDRESS. */
+<span class="fc" id="L61">  public static final Address KZG_POINT_EVAL = Address.precompiled(0xA);</span>
+  /** The constant BLS12_G1ADD. */
+<span class="fc" id="L63">  public static final Address BLS12_G1ADD = Address.precompiled(0xB);</span>
+  /** The constant BLS12_G1MUL. */
+<span class="fc" id="L65">  public static final Address BLS12_G1MUL = Address.precompiled(0xC);</span>
+  /** The constant BLS12_G1MULTIEXP. */
+<span class="fc" id="L67">  public static final Address BLS12_G1MULTIEXP = Address.precompiled(0xD);</span>
+  /** The constant BLS12_G2ADD. */
+<span class="fc" id="L69">  public static final Address BLS12_G2ADD = Address.precompiled(0xE);</span>
+  /** The constant BLS12_G2MUL. */
+<span class="fc" id="L71">  public static final Address BLS12_G2MUL = Address.precompiled(0xF);</span>
+  /** The constant BLS12_G2MULTIEXP. */
+<span class="fc" id="L73">  public static final Address BLS12_G2MULTIEXP = Address.precompiled(0x10);</span>
+  /** The constant BLS12_PAIRING. */
+<span class="fc" id="L75">  public static final Address BLS12_PAIRING = Address.precompiled(0x11);</span>
+  /** The constant BLS12_MAP_FP_TO_G1. */
+<span class="fc" id="L77">  public static final Address BLS12_MAP_FP_TO_G1 = Address.precompiled(0x12);</span>
+  /** The constant BLS12_MAP_FP2_TO_G2. */
+<span class="fc" id="L79">  public static final Address BLS12_MAP_FP2_TO_G2 = Address.precompiled(0x13);</span>
+  /** The constant ZERO. */
+<span class="fc" id="L81">  public static final Address ZERO = Address.fromHexString(&quot;0x0&quot;);</span>
+
+<span class="fc" id="L83">  static LoadingCache&lt;Address, Hash&gt; hashCache =</span>
+<span class="fc" id="L84">      CacheBuilder.newBuilder()</span>
+<span class="fc" id="L85">          .maximumSize(4000)</span>
+          // .weakKeys() // unless we &quot;intern&quot; all addresses we cannot use weak or soft keys.
+<span class="fc" id="L87">          .build(</span>
+<span class="fc" id="L88">              new CacheLoader&lt;&gt;() {</span>
+                @Override
+                public Hash load(final Address key) {
+<span class="fc" id="L91">                  return Hash.hash(key);</span>
+                }
+              });
+
+  /**
+   * Instantiates a new Address.
+   *
+   * @param bytes the bytes
+   */
+  protected Address(final Bytes bytes) {
+<span class="fc" id="L101">    super(bytes);</span>
+<span class="fc" id="L102">  }</span>
+
+  /**
+   * Wrap address.
+   *
+   * @param value the value
+   * @return the address
+   */
+  public static Address wrap(final Bytes value) {
+<span class="fc" id="L111">    checkArgument(</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">        value.size() == SIZE,</span>
+        &quot;An account address must be %s bytes long, got %s&quot;,
+        SIZE,
+<span class="fc" id="L115">        value.size());</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    if (value instanceof Address address) {</span>
+<span class="fc" id="L117">      return address;</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">    } else if (value instanceof DelegatingBytes delegatingBytes) {</span>
+<span class="nc" id="L119">      return new Address(delegatingBytes.copy());</span>
+    } else {
+<span class="fc" id="L121">      return new Address(value);</span>
+    }
+  }
+
+  /**
+   * Creates an address from the given RLP-encoded input.
+   *
+   * @param input The input to read from
+   * @return the input's corresponding address
+   */
+  public static Address readFrom(final RLPInput input) {
+<span class="fc" id="L132">    final Bytes bytes = input.readBytes();</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">    if (bytes.size() != SIZE) {</span>
+<span class="fc" id="L134">      throw new RLPException(</span>
+<span class="fc" id="L135">          String.format(&quot;Address unexpected size of %s (needs %s)&quot;, bytes.size(), SIZE));</span>
+    }
+<span class="fc" id="L137">    return Address.wrap(bytes);</span>
+  }
+
+  /**
+   * Extracts an address from a ECDSARECOVER result hash.
+   *
+   * @param hash A hash that has been obtained through hashing the return of the &lt;code&gt;
+   *     ECDSARECOVER     &lt;/code&gt; function from Appendix F (Signing Transactions) of the Ethereum
+   *     Yellow Paper.
+   * @return The ethereum address from the provided hash.
+   */
+  public static Address extract(final Bytes32 hash) {
+<span class="fc" id="L149">    return wrap(hash.slice(12, 20));</span>
+  }
+
+  /**
+   * Extract address.
+   *
+   * @param publicKey the public key
+   * @return the address
+   */
+  public static Address extract(final SECPPublicKey publicKey) {
+<span class="fc" id="L159">    return Address.extract(keccak256(publicKey.getEncodedBytes()));</span>
+  }
+
+  /**
+   * Parse a hexadecimal string representing an account address.
+   *
+   * @param str A hexadecimal string (with or without the leading '0x') representing a valid account
+   *     address.
+   * @return The parsed address: {@code null} if the provided string is {@code null}.
+   * @throws IllegalArgumentException if the string is either not hexadecimal, or not the valid
+   *     representation of an address.
+   */
+  @JsonCreator
+  public static Address fromHexString(final String str) {
+<span class="fc bfc" id="L173" title="All 2 branches covered.">    if (str == null) return null;</span>
+<span class="fc" id="L174">    return wrap(Bytes.fromHexStringLenient(str, SIZE));</span>
+  }
+
+  /**
+   * Parse a hexadecimal string representing an account address.
+   *
+   * @param str A hexadecimal string representing a valid account address (strictly 20 bytes).
+   * @return The parsed address.
+   * @throws IllegalArgumentException if the provided string is {@code null}.
+   * @throws IllegalArgumentException if the string is either not hexadecimal, or not the valid
+   *     representation of a 20 byte address.
+   */
+  public static Address fromHexStringStrict(final String str) {
+<span class="fc bfc" id="L187" title="All 2 branches covered.">    checkArgument(str != null);</span>
+<span class="fc" id="L188">    final Bytes value = Bytes.fromHexString(str);</span>
+<span class="fc" id="L189">    checkArgument(</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">        value.size() == SIZE,</span>
+        &quot;An account address must be %s bytes long, got %s&quot;,
+        SIZE,
+<span class="fc" id="L193">        value.size());</span>
+<span class="fc" id="L194">    return new Address(value);</span>
+  }
+
+  /**
+   * Precompiled address.
+   *
+   * @param value the value
+   * @return the address
+   */
+  public static Address precompiled(final int value) {
+    // Keep it simple while we don't need precompiled above 127.
+<span class="pc bpc" id="L205" title="1 of 2 branches missed.">    checkArgument(value &lt; Byte.MAX_VALUE);</span>
+<span class="fc" id="L206">    final byte[] address = new byte[SIZE];</span>
+<span class="fc" id="L207">    address[SIZE - 1] = (byte) value;</span>
+<span class="fc" id="L208">    return new Address(Bytes.wrap(address));</span>
+  }
+
+  /**
+   * Privacy precompiled address.
+   *
+   * @param value the value
+   * @return the address
+   */
+  public static Address privacyPrecompiled(final int value) {
+<span class="nc" id="L218">    return precompiled(value);</span>
+  }
+
+  /**
+   * Address of the created contract.
+   *
+   * &lt;p&gt;This implement equation (86) in Section 7 of the Yellow Paper (rev. a91c29c).
+   *
+   * @param senderAddress the address of the transaction sender.
+   * @param nonce the nonce of this transaction.
+   * @return The generated address of the created contract.
+   */
+  public static Address contractAddress(final Address senderAddress, final long nonce) {
+<span class="fc" id="L231">    return Address.extract(</span>
+<span class="fc" id="L232">        keccak256(</span>
+<span class="fc" id="L233">            RLP.encode(</span>
+                out -&gt; {
+<span class="fc" id="L235">                  out.startList();</span>
+<span class="fc" id="L236">                  out.writeBytes(senderAddress);</span>
+<span class="fc" id="L237">                  out.writeLongScalar(nonce);</span>
+<span class="fc" id="L238">                  out.endList();</span>
+<span class="fc" id="L239">                })));</span>
+  }
+
+  /**
+   * Address of the created private contract.
+   *
+   * @param senderAddress the address of the transaction sender.
+   * @param nonce the nonce of this transaction.
+   * @param privacyGroupId hash of participants list ordered from Enclave response.
+   * @return The generated address of the created private contract.
+   */
+  public static Address privateContractAddress(
+      final Address senderAddress, final long nonce, final Bytes privacyGroupId) {
+<span class="fc" id="L252">    return Address.extract(</span>
+<span class="fc" id="L253">        keccak256(</span>
+<span class="fc" id="L254">            RLP.encode(</span>
+                out -&gt; {
+<span class="fc" id="L256">                  out.startList();</span>
+<span class="fc" id="L257">                  out.writeBytes(senderAddress);</span>
+<span class="fc" id="L258">                  out.writeLongScalar(nonce);</span>
+<span class="fc" id="L259">                  out.writeBytes(privacyGroupId);</span>
+<span class="fc" id="L260">                  out.endList();</span>
+<span class="fc" id="L261">                })));</span>
+  }
+
+  /**
+   * Returns the hash of the address. Backed by a cache for performance reasons.
+   *
+   * @return the hash of the address.
+   */
+  public Hash addressHash() {
+    try {
+<span class="fc" id="L271">      return hashCache.get(this);</span>
+<span class="nc" id="L272">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L273">      return Hash.hash(this);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

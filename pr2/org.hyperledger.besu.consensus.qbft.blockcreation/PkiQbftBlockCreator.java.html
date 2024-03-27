@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PkiQbftBlockCreator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.qbft.blockcreation</a> &gt; <span class="el_source">PkiQbftBlockCreator.java</span></div><h1>PkiQbftBlockCreator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.qbft.blockcreation;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.consensus.common.bft.BftBlockHeaderFunctions;
+import org.hyperledger.besu.consensus.common.bft.BftExtraData;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.qbft.pki.PkiBlockCreationConfiguration;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftBlockHeaderFunctions;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftExtraData;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftExtraDataCodec;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.blockcreation.BlockCreator;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderBuilder;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.pki.cms.CmsCreator;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Pki qbft block creator. */
+public class PkiQbftBlockCreator implements BlockCreator {
+
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(PkiQbftBlockCreator.class);</span>
+
+  private final BlockCreator blockCreator;
+  private final PkiQbftExtraDataCodec pkiQbftExtraDataCodec;
+  private final CmsCreator cmsCreator;
+
+  /**
+   * Instantiates a new Pki qbft block creator.
+   *
+   * @param blockCreator the block creator
+   * @param pkiBlockCreationConfiguration the pki block creation configuration
+   * @param pkiQbftExtraDataCodec the pki qbft extra data codec
+   */
+  public PkiQbftBlockCreator(
+      final BlockCreator blockCreator,
+      final PkiBlockCreationConfiguration pkiBlockCreationConfiguration,
+      final BftExtraDataCodec pkiQbftExtraDataCodec) {
+<span class="nc" id="L63">    this(</span>
+        blockCreator,
+        new CmsCreator(
+<span class="nc" id="L66">            pkiBlockCreationConfiguration.getKeyStore(),</span>
+<span class="nc" id="L67">            pkiBlockCreationConfiguration.getCertificateAlias()),</span>
+        pkiQbftExtraDataCodec);
+<span class="nc" id="L69">  }</span>
+
+  /**
+   * Instantiates a new Pki qbft block creator.
+   *
+   * @param blockCreator the block creator
+   * @param cmsCreator the cms creator
+   * @param bftExtraDataCodec the bft extra data codec
+   */
+  @VisibleForTesting
+  public PkiQbftBlockCreator(
+      final BlockCreator blockCreator,
+      final CmsCreator cmsCreator,
+<span class="fc" id="L82">      final BftExtraDataCodec bftExtraDataCodec) {</span>
+<span class="fc" id="L83">    this.blockCreator = blockCreator;</span>
+<span class="fc" id="L84">    this.cmsCreator = cmsCreator;</span>
+
+<span class="fc" id="L86">    checkArgument(</span>
+        bftExtraDataCodec instanceof PkiQbftExtraDataCodec,
+        &quot;PkiQbftBlockCreator must use PkiQbftExtraDataCodec&quot;);
+<span class="fc" id="L89">    this.pkiQbftExtraDataCodec = (PkiQbftExtraDataCodec) bftExtraDataCodec;</span>
+<span class="fc" id="L90">  }</span>
+
+  @Override
+  public BlockCreationResult createBlock(final long timestamp) {
+<span class="fc" id="L94">    final BlockCreationResult blockCreationResult = blockCreator.createBlock(timestamp);</span>
+<span class="fc" id="L95">    return replaceCmsInBlock(blockCreationResult);</span>
+  }
+
+  @Override
+  public BlockCreationResult createBlock(
+      final List&lt;Transaction&gt; transactions, final List&lt;BlockHeader&gt; ommers, final long timestamp) {
+<span class="nc" id="L101">    final BlockCreationResult blockCreationResult =</span>
+<span class="nc" id="L102">        blockCreator.createBlock(transactions, ommers, timestamp);</span>
+<span class="nc" id="L103">    return replaceCmsInBlock(blockCreationResult);</span>
+  }
+
+  @Override
+  public BlockCreationResult createBlock(
+      final Optional&lt;List&lt;Transaction&gt;&gt; maybeTransactions,
+      final Optional&lt;List&lt;BlockHeader&gt;&gt; maybeOmmers,
+      final long timestamp) {
+<span class="nc" id="L111">    return createBlock(</span>
+<span class="nc" id="L112">        maybeTransactions.orElse(Collections.emptyList()),</span>
+<span class="nc" id="L113">        maybeOmmers.orElse(Collections.emptyList()),</span>
+        timestamp);
+  }
+
+  private BlockCreationResult replaceCmsInBlock(final BlockCreationResult blockCreationResult) {
+<span class="fc" id="L118">    final Block block = blockCreationResult.getBlock();</span>
+<span class="fc" id="L119">    final BlockHeader blockHeader = block.getHeader();</span>
+<span class="fc" id="L120">    final Hash hashWithoutCms =</span>
+<span class="fc" id="L121">        PkiQbftBlockHeaderFunctions.forCmsSignature(pkiQbftExtraDataCodec).hash(block.getHeader());</span>
+
+<span class="fc" id="L123">    final Bytes cms = cmsCreator.create(hashWithoutCms);</span>
+
+<span class="fc" id="L125">    final BftExtraData previousExtraData = pkiQbftExtraDataCodec.decode(blockHeader);</span>
+<span class="fc" id="L126">    final BftExtraData substituteExtraData = new PkiQbftExtraData(previousExtraData, cms);</span>
+<span class="fc" id="L127">    final Bytes substituteExtraDataBytes = pkiQbftExtraDataCodec.encode(substituteExtraData);</span>
+
+<span class="fc" id="L129">    final BlockHeaderBuilder headerBuilder = BlockHeaderBuilder.fromHeader(blockHeader);</span>
+<span class="fc" id="L130">    headerBuilder</span>
+<span class="fc" id="L131">        .extraData(substituteExtraDataBytes)</span>
+<span class="fc" id="L132">        .blockHeaderFunctions(BftBlockHeaderFunctions.forCommittedSeal(pkiQbftExtraDataCodec));</span>
+<span class="fc" id="L133">    final BlockHeader newHeader = headerBuilder.buildBlockHeader();</span>
+
+<span class="fc" id="L135">    LOG.debug(&quot;Created CMS with signed hash {} for block {}&quot;, hashWithoutCms, newHeader.getHash());</span>
+
+<span class="fc" id="L137">    return new BlockCreationResult(</span>
+<span class="fc" id="L138">        new Block(newHeader, block.getBody()),</span>
+<span class="fc" id="L139">        blockCreationResult.getTransactionSelectionResults());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

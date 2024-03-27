@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClassicBlockProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">ClassicBlockProcessor.java</span></div><h1>ClassicBlockProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.math.BigInteger;
+import java.util.List;
+import java.util.OptionalLong;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ClassicBlockProcessor extends AbstractBlockProcessor {
+
+<span class="fc" id="L32">  private static final Logger LOG = LoggerFactory.getLogger(ClassicBlockProcessor.class);</span>
+
+  private static final long DEFAULT_ERA_LENGTH = 5_000_000L;
+
+  private final long eraLength;
+
+  public ClassicBlockProcessor(
+      final MainnetTransactionProcessor transactionProcessor,
+      final TransactionReceiptFactory transactionReceiptFactory,
+      final Wei blockReward,
+      final MiningBeneficiaryCalculator miningBeneficiaryCalculator,
+      final boolean skipZeroBlockRewards,
+      final OptionalLong eraLen,
+      final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L46">    super(</span>
+        transactionProcessor,
+        transactionReceiptFactory,
+        blockReward,
+        miningBeneficiaryCalculator,
+        skipZeroBlockRewards,
+        protocolSchedule);
+<span class="fc" id="L53">    eraLength = eraLen.orElse(DEFAULT_ERA_LENGTH);</span>
+<span class="fc" id="L54">  }</span>
+
+  @Override
+  boolean rewardCoinbase(
+      final MutableWorldState worldState,
+      final BlockHeader header,
+      final List&lt;BlockHeader&gt; ommers,
+      final boolean skipZeroBlockRewards) {
+<span class="nc bnc" id="L62" title="All 4 branches missed.">    if (skipZeroBlockRewards &amp;&amp; blockReward.isZero()) {</span>
+<span class="nc" id="L63">      return true;</span>
+    }
+<span class="nc" id="L65">    final Wei coinbaseReward = getCoinbaseReward(blockReward, header.getNumber(), ommers.size());</span>
+<span class="nc" id="L66">    final WorldUpdater updater = worldState.updater();</span>
+<span class="nc" id="L67">    final MutableAccount coinbase = updater.getOrCreate(header.getCoinbase());</span>
+
+<span class="nc" id="L69">    coinbase.incrementBalance(coinbaseReward);</span>
+<span class="nc bnc" id="L70" title="All 2 branches missed.">    for (final BlockHeader ommerHeader : ommers) {</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">      if (ommerHeader.getNumber() - header.getNumber() &gt; MAX_GENERATION) {</span>
+<span class="nc" id="L72">        LOG.warn(</span>
+            &quot;Block processing error: ommer block number {} more than {} generations current block number {}&quot;,
+<span class="nc" id="L74">            ommerHeader.getNumber(),</span>
+<span class="nc" id="L75">            MAX_GENERATION,</span>
+<span class="nc" id="L76">            header.getNumber());</span>
+<span class="nc" id="L77">        return false;</span>
+      }
+
+<span class="nc" id="L80">      final MutableAccount ommerCoinbase = updater.getOrCreate(ommerHeader.getCoinbase());</span>
+<span class="nc" id="L81">      final Wei ommerReward =</span>
+<span class="nc" id="L82">          getOmmerReward(blockReward, header.getNumber(), ommerHeader.getNumber());</span>
+<span class="nc" id="L83">      ommerCoinbase.incrementBalance(ommerReward);</span>
+<span class="nc" id="L84">    }</span>
+
+<span class="nc" id="L86">    updater.commit();</span>
+<span class="nc" id="L87">    return true;</span>
+  }
+
+  // getUncleInclusionReword return reward for including
+  //  an uncle block
+  private Wei calculateOmmerReward(final int era, final long distance) {
+<span class="fc" id="L93">    Wei winnerReward = getBlockWinnerRewardByEra(era);</span>
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">    if (era &lt; 1) {</span>
+<span class="fc" id="L95">      return winnerReward.subtract(winnerReward.multiply(distance).divide(8));</span>
+    }
+<span class="nc" id="L97">    return winnerReward.divide(32);</span>
+  }
+
+  // GetBlockEra gets which &quot;Era&quot; a given block is within, given an era length (ecip-1017 has
+  // era=5,000,000 blocks)
+  // Returns a zero-index era number, so &quot;Era 1&quot;: 0, &quot;Era 2&quot;: 1, &quot;Era 3&quot;: 2 ...
+  private int getBlockEra(final long blockNumber, final long eraLength) {
+    // if genesis block or impossible nagative-numbered block, return zero
+<span class="pc bpc" id="L105" title="1 of 2 branches missed.">    if (blockNumber &lt; 0) return 0;</span>
+<span class="fc" id="L106">    long remainder = (blockNumber - 1) % eraLength;</span>
+<span class="fc" id="L107">    long base = blockNumber - remainder;</span>
+<span class="fc" id="L108">    long d = base / eraLength;</span>
+<span class="fc" id="L109">    return Math.toIntExact(d);</span>
+  }
+
+  // getRewardByEra gets a block reward at disinflation rate.
+  // Constants MaxBlockReward, DisinflationRateQuotient, and DisinflationRateDivisor assumed.
+  private Wei getBlockWinnerRewardByEra(final int era) {
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">    if (era == 0) {</span>
+<span class="fc" id="L116">      return this.blockReward;</span>
+    }
+
+    // MaxBlockReward _r_ * (4/5)**era == MaxBlockReward * (4**era) / (5**era)
+    // since (q/d)**n == q**n / d**n
+    // qed
+
+<span class="nc" id="L123">    BigInteger disinflationRateQuotient = BigInteger.valueOf(4);</span>
+    BigInteger q;
+<span class="nc" id="L125">    q = disinflationRateQuotient.pow(era);</span>
+
+<span class="nc" id="L127">    BigInteger disinflationRateDivisor = BigInteger.valueOf(5);</span>
+    BigInteger d;
+<span class="nc" id="L129">    d = disinflationRateDivisor.pow(era);</span>
+
+<span class="nc" id="L131">    BigInteger maximumBlockReward = this.blockReward.toBigInteger();</span>
+    BigInteger r;
+<span class="nc" id="L133">    r = maximumBlockReward.multiply(q);</span>
+
+<span class="nc" id="L135">    r = r.divide(d);</span>
+<span class="nc" id="L136">    return Wei.of(r);</span>
+  }
+
+  @Override
+  public Wei getOmmerReward(
+      final Wei blockReward, final long blockNumber, final long ommerBlockNumber) {
+<span class="fc" id="L142">    final int blockEra = getBlockEra(blockNumber, eraLength);</span>
+<span class="fc" id="L143">    final long distance = blockNumber - ommerBlockNumber;</span>
+<span class="fc" id="L144">    return calculateOmmerReward(blockEra, distance);</span>
+  }
+
+  @Override
+  public Wei getCoinbaseReward(
+      final Wei blockReward, final long blockNumber, final int ommersSize) {
+<span class="fc" id="L150">    final int blockEra = getBlockEra(blockNumber, eraLength);</span>
+<span class="fc" id="L151">    final Wei winnerReward = getBlockWinnerRewardByEra(blockEra);</span>
+<span class="fc" id="L152">    return winnerReward.plus(winnerReward.multiply(ommersSize).divide(32));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

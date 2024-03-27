@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>OkHttpStreamClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.nat.upnp</a> &gt; <span class="el_source">OkHttpStreamClient.java</span></div><h1>OkHttpStreamClient.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.nat.upnp;
+
+import java.util.concurrent.Callable;
+
+import okhttp3.Call;
+import okhttp3.Headers;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import org.jupnp.model.message.StreamRequestMessage;
+import org.jupnp.model.message.StreamResponseMessage;
+import org.jupnp.model.message.UpnpHeaders;
+import org.jupnp.model.message.UpnpMessage;
+import org.jupnp.model.message.UpnpRequest;
+import org.jupnp.model.message.UpnpResponse;
+import org.jupnp.transport.impl.jetty.StreamClientConfigurationImpl;
+import org.jupnp.transport.spi.AbstractStreamClient;
+
+/** The OkHttp stream client. */
+public class OkHttpStreamClient extends AbstractStreamClient&lt;StreamClientConfigurationImpl, Call&gt; {
+
+  private final StreamClientConfigurationImpl config;
+  private final OkHttpClient client;
+
+  /**
+   * Instantiates a new OkHttp stream client.
+   *
+   * @param config the config
+   */
+<span class="nc" id="L46">  OkHttpStreamClient(final StreamClientConfigurationImpl config) {</span>
+<span class="nc" id="L47">    this.config = config;</span>
+<span class="nc" id="L48">    client = new OkHttpClient();</span>
+<span class="nc" id="L49">  }</span>
+
+  @Override
+  protected Call createRequest(final StreamRequestMessage requestMessage) {
+
+<span class="nc" id="L54">    final UpnpRequest.Method method = requestMessage.getOperation().getMethod();</span>
+    final RequestBody body;
+<span class="nc bnc" id="L56" title="All 4 branches missed.">    if (method == UpnpRequest.Method.POST || method == UpnpRequest.Method.NOTIFY) {</span>
+<span class="nc" id="L57">      final MediaType mediaType = MediaType.get(requestMessage.getContentTypeHeader().getString());</span>
+<span class="nc bnc" id="L58" title="All 2 branches missed.">      if (requestMessage.getBodyType() == UpnpMessage.BodyType.STRING) {</span>
+<span class="nc" id="L59">        body = RequestBody.create(requestMessage.getBodyString(), mediaType);</span>
+      } else {
+<span class="nc" id="L61">        body = RequestBody.create(requestMessage.getBodyBytes(), mediaType);</span>
+      }
+<span class="nc" id="L63">    } else {</span>
+<span class="nc" id="L64">      body = null;</span>
+    }
+
+<span class="nc" id="L67">    final Headers.Builder headersBuilder = new Headers.Builder();</span>
+<span class="nc" id="L68">    requestMessage.getHeaders().forEach((k, v) -&gt; v.forEach(s -&gt; headersBuilder.add(k, s)));</span>
+
+<span class="nc" id="L70">    final Request request =</span>
+        new Request.Builder()
+<span class="nc" id="L72">            .url(requestMessage.getUri().toString())</span>
+<span class="nc" id="L73">            .method(requestMessage.getOperation().getHttpMethodName(), body)</span>
+<span class="nc" id="L74">            .headers(headersBuilder.build())</span>
+<span class="nc" id="L75">            .build();</span>
+<span class="nc" id="L76">    return client.newCall(request);</span>
+  }
+
+  @Override
+  protected Callable&lt;StreamResponseMessage&gt; createCallable(
+      final StreamRequestMessage requestMessage, final Call call) {
+<span class="nc" id="L82">    return () -&gt; {</span>
+<span class="nc" id="L83">      final Response httpResponse = call.execute();</span>
+<span class="nc" id="L84">      final UpnpResponse upnpResponse =</span>
+<span class="nc" id="L85">          new UpnpResponse(httpResponse.code(), httpResponse.message());</span>
+<span class="nc" id="L86">      final StreamResponseMessage streamResponseMessage = new StreamResponseMessage(upnpResponse);</span>
+<span class="nc" id="L87">      streamResponseMessage.setHeaders(new UpnpHeaders(httpResponse.headers().toMultimap()));</span>
+<span class="nc" id="L88">      streamResponseMessage.setBodyCharacters(httpResponse.body().bytes());</span>
+<span class="nc" id="L89">      return streamResponseMessage;</span>
+    };
+  }
+
+  @Override
+  protected void abort(final Call call) {
+<span class="nc" id="L95">    call.cancel();</span>
+<span class="nc" id="L96">  }</span>
+
+  @Override
+  protected boolean logExecutionException(final Throwable t) {
+<span class="nc" id="L100">    return false;</span>
+  }
+
+  @Override
+<span class="nc" id="L104">  public void stop() {}</span>
+
+  @Override
+  public StreamClientConfigurationImpl getConfiguration() {
+<span class="nc" id="L108">    return config;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

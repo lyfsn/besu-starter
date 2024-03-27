@@ -1,0 +1,261 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AccountRangeDataRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync.request</a> &gt; <span class="el_source">AccountRangeDataRequest.java</span></div><h1>AccountRangeDataRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync.request;
+
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MAX_RANGE;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MIN_RANGE;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.findNewBeginElementInRange;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RequestType.ACCOUNT_RANGE;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncMetricsManager.Step.DOWNLOAD;
+import static org.hyperledger.besu.ethereum.eth.sync.snapsync.StackTrie.FlatDatabaseUpdater.noop;
+import static org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator.applyForStrategy;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncProcessState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapWorldDownloadState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.StackTrie;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.trie.NodeUpdater;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
+
+import com.google.common.annotations.VisibleForTesting;
+import kotlin.collections.ArrayDeque;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Returns a list of accounts and the merkle proofs of an entire range */
+public class AccountRangeDataRequest extends SnapDataRequest {
+
+<span class="fc" id="L59">  private static final Logger LOG = LoggerFactory.getLogger(AccountRangeDataRequest.class);</span>
+
+  private final Bytes32 startKeyHash;
+  private final Bytes32 endKeyHash;
+  private final Optional&lt;Bytes32&gt; startStorageRange;
+  private final Optional&lt;Bytes32&gt; endStorageRange;
+
+  private final StackTrie stackTrie;
+  private Optional&lt;Boolean&gt; isProofValid;
+
+  protected AccountRangeDataRequest(
+      final Hash rootHash,
+      final Bytes32 startKeyHash,
+      final Bytes32 endKeyHash,
+      final Optional&lt;Bytes32&gt; startStorageRange,
+      final Optional&lt;Bytes32&gt; endStorageRange) {
+<span class="fc" id="L75">    super(ACCOUNT_RANGE, rootHash);</span>
+<span class="fc" id="L76">    this.startKeyHash = startKeyHash;</span>
+<span class="fc" id="L77">    this.endKeyHash = endKeyHash;</span>
+<span class="fc" id="L78">    this.startStorageRange = startStorageRange;</span>
+<span class="fc" id="L79">    this.endStorageRange = endStorageRange;</span>
+<span class="fc" id="L80">    this.isProofValid = Optional.empty();</span>
+<span class="fc" id="L81">    this.stackTrie = new StackTrie(rootHash, startKeyHash);</span>
+<span class="fc" id="L82">    LOG.trace(</span>
+        &quot;create get account range data request with root hash={} from {} to {}&quot;,
+        rootHash,
+        startKeyHash,
+        endKeyHash);
+<span class="fc" id="L87">  }</span>
+
+  protected AccountRangeDataRequest(
+      final Hash rootHash, final Bytes32 startKeyHash, final Bytes32 endKeyHash) {
+<span class="fc" id="L91">    this(rootHash, startKeyHash, endKeyHash, Optional.empty(), Optional.empty());</span>
+<span class="fc" id="L92">  }</span>
+
+  protected AccountRangeDataRequest(
+      final Hash rootHash,
+      final Hash accountHash,
+      final Bytes32 startStorageRange,
+      final Bytes32 endStorageRange) {
+<span class="fc" id="L99">    this(</span>
+        rootHash,
+        accountHash,
+        accountHash,
+<span class="fc" id="L103">        Optional.of(startStorageRange),</span>
+<span class="fc" id="L104">        Optional.of(endStorageRange));</span>
+<span class="fc" id="L105">  }</span>
+
+  @Override
+  protected int doPersist(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration snapSyncConfiguration) {
+
+<span class="pc bpc" id="L115" title="3 of 4 branches missed.">    if (startStorageRange.isPresent() &amp;&amp; endStorageRange.isPresent()) {</span>
+      // not store the new account if we just want to complete the account thanks to another
+      // rootHash
+<span class="nc" id="L118">      return 0;</span>
+    }
+
+    // search incomplete nodes in the range
+<span class="fc" id="L122">    final AtomicInteger nbNodesSaved = new AtomicInteger();</span>
+<span class="fc" id="L123">    final NodeUpdater nodeUpdater =</span>
+        (location, hash, value) -&gt; {
+<span class="fc" id="L125">          applyForStrategy(</span>
+              updater,
+              onBonsai -&gt; {
+<span class="fc" id="L128">                onBonsai.putAccountStateTrieNode(location, hash, value);</span>
+<span class="fc" id="L129">              },</span>
+              onForest -&gt; {
+<span class="nc" id="L131">                onForest.putAccountStateTrieNode(hash, value);</span>
+<span class="nc" id="L132">              });</span>
+<span class="fc" id="L133">          nbNodesSaved.getAndIncrement();</span>
+<span class="fc" id="L134">        };</span>
+
+<span class="fc" id="L136">    final AtomicReference&lt;StackTrie.FlatDatabaseUpdater&gt; flatDatabaseUpdater =</span>
+<span class="fc" id="L137">        new AtomicReference&lt;&gt;(noop());</span>
+
+    // we have a flat DB only with Bonsai
+<span class="fc" id="L140">    worldStateStorageCoordinator.applyOnMatchingFlatMode(</span>
+        FlatDbMode.FULL,
+        bonsaiWorldStateStorageStrategy -&gt; {
+<span class="nc" id="L143">          flatDatabaseUpdater.set(</span>
+              (key, value) -&gt;
+<span class="nc" id="L145">                  ((BonsaiWorldStateKeyValueStorage.Updater) updater)</span>
+<span class="nc" id="L146">                      .putAccountInfoState(Hash.wrap(key), value));</span>
+<span class="nc" id="L147">        });</span>
+
+<span class="fc" id="L149">    stackTrie.commit(flatDatabaseUpdater.get(), nodeUpdater);</span>
+
+<span class="fc" id="L151">    downloadState.getMetricsManager().notifyAccountsDownloaded(stackTrie.getElementsCount().get());</span>
+
+<span class="fc" id="L153">    return nbNodesSaved.get();</span>
+  }
+
+  public void addResponse(
+      final WorldStateProofProvider worldStateProofProvider,
+      final TreeMap&lt;Bytes32, Bytes&gt; accounts,
+      final ArrayDeque&lt;Bytes&gt; proofs) {
+<span class="pc bpc" id="L160" title="3 of 4 branches missed.">    if (!accounts.isEmpty() || !proofs.isEmpty()) {</span>
+<span class="pc bpc" id="L161" title="1 of 2 branches missed.">      if (!worldStateProofProvider.isValidRangeProof(</span>
+<span class="fc" id="L162">          startKeyHash, endKeyHash, getRootHash(), proofs, accounts)) {</span>
+<span class="nc" id="L163">        isProofValid = Optional.of(false);</span>
+      } else {
+<span class="fc" id="L165">        stackTrie.addElement(startKeyHash, proofs, accounts);</span>
+<span class="fc" id="L166">        isProofValid = Optional.of(true);</span>
+      }
+    }
+<span class="fc" id="L169">  }</span>
+
+  @Override
+  public boolean isResponseReceived() {
+<span class="fc" id="L173">    return isProofValid.orElse(false);</span>
+  }
+
+  @Override
+  public Stream&lt;SnapDataRequest&gt; getChildRequests(
+      final SnapWorldDownloadState downloadState,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapSyncProcessState snapSyncState) {
+<span class="fc" id="L181">    final List&lt;SnapDataRequest&gt; childRequests = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L183">    final StackTrie.TaskElement taskElement = stackTrie.getElement(startKeyHash);</span>
+    // new request is added if the response does not match all the requested range
+<span class="fc" id="L185">    findNewBeginElementInRange(getRootHash(), taskElement.proofs(), taskElement.keys(), endKeyHash)</span>
+<span class="fc" id="L186">        .ifPresentOrElse(</span>
+            missingRightElement -&gt; {
+<span class="nc" id="L188">              downloadState</span>
+<span class="nc" id="L189">                  .getMetricsManager()</span>
+<span class="nc" id="L190">                  .notifyRangeProgress(DOWNLOAD, missingRightElement, endKeyHash);</span>
+<span class="nc" id="L191">              childRequests.add(</span>
+<span class="nc" id="L192">                  createAccountRangeDataRequest(getRootHash(), missingRightElement, endKeyHash));</span>
+<span class="nc" id="L193">            },</span>
+            () -&gt;
+<span class="fc" id="L195">                downloadState</span>
+<span class="fc" id="L196">                    .getMetricsManager()</span>
+<span class="fc" id="L197">                    .notifyRangeProgress(DOWNLOAD, endKeyHash, endKeyHash));</span>
+
+    // find missing storages and code
+<span class="fc bfc" id="L200" title="All 2 branches covered.">    for (Map.Entry&lt;Bytes32, Bytes&gt; account : taskElement.keys().entrySet()) {</span>
+<span class="fc" id="L201">      final StateTrieAccountValue accountValue =</span>
+<span class="fc" id="L202">          StateTrieAccountValue.readFrom(RLP.input(account.getValue()));</span>
+<span class="pc bpc" id="L203" title="1 of 2 branches missed.">      if (!accountValue.getStorageRoot().equals(Hash.EMPTY_TRIE_HASH)) {</span>
+<span class="fc" id="L204">        childRequests.add(</span>
+<span class="fc" id="L205">            createStorageRangeDataRequest(</span>
+<span class="fc" id="L206">                getRootHash(),</span>
+<span class="fc" id="L207">                account.getKey(),</span>
+<span class="fc" id="L208">                accountValue.getStorageRoot(),</span>
+<span class="fc" id="L209">                startStorageRange.orElse(MIN_RANGE),</span>
+<span class="fc" id="L210">                endStorageRange.orElse(MAX_RANGE)));</span>
+      }
+<span class="pc bpc" id="L212" title="1 of 2 branches missed.">      if (!accountValue.getCodeHash().equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L213">        childRequests.add(</span>
+<span class="fc" id="L214">            createBytecodeRequest(account.getKey(), getRootHash(), accountValue.getCodeHash()));</span>
+      }
+<span class="fc" id="L216">    }</span>
+<span class="fc" id="L217">    return childRequests.stream();</span>
+  }
+
+  public Bytes32 getStartKeyHash() {
+<span class="nc" id="L221">    return startKeyHash;</span>
+  }
+
+  public Bytes32 getEndKeyHash() {
+<span class="nc" id="L225">    return endKeyHash;</span>
+  }
+
+  @VisibleForTesting
+  public TreeMap&lt;Bytes32, Bytes&gt; getAccounts() {
+<span class="fc" id="L230">    return stackTrie.getElement(startKeyHash).keys();</span>
+  }
+
+  @Override
+  public void clear() {
+<span class="nc" id="L235">    stackTrie.clear();</span>
+<span class="nc" id="L236">    isProofValid = Optional.of(false);</span>
+<span class="nc" id="L237">  }</span>
+
+  public Bytes serialize() {
+<span class="nc" id="L240">    return RLP.encode(</span>
+        out -&gt; {
+<span class="nc" id="L242">          out.startList();</span>
+<span class="nc" id="L243">          out.writeByte(getRequestType().getValue());</span>
+<span class="nc" id="L244">          out.writeBytes(getRootHash());</span>
+<span class="nc" id="L245">          out.writeBytes(getStartKeyHash());</span>
+<span class="nc" id="L246">          out.writeBytes(getEndKeyHash());</span>
+<span class="nc" id="L247">          out.endList();</span>
+<span class="nc" id="L248">        });</span>
+  }
+
+  public static AccountRangeDataRequest deserialize(final RLPInput in) {
+<span class="nc" id="L252">    in.enterList();</span>
+<span class="nc" id="L253">    in.skipNext(); // skip request type</span>
+<span class="nc" id="L254">    final Hash rootHash = Hash.wrap(in.readBytes32());</span>
+<span class="nc" id="L255">    final Bytes32 startKeyHash = in.readBytes32();</span>
+<span class="nc" id="L256">    final Bytes32 endKeyHash = in.readBytes32();</span>
+<span class="nc" id="L257">    in.leaveList();</span>
+<span class="nc" id="L258">    return createAccountRangeDataRequest(rootHash, startKeyHash, endKeyHash);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

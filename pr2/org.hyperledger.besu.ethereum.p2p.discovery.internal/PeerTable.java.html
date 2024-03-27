@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PeerTable.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">PeerTable.java</span></div><h1>PeerTable.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import static java.util.Comparator.comparingInt;
+import static java.util.stream.Collectors.toList;
+
+import org.hyperledger.besu.crypto.Hash;
+import org.hyperledger.besu.ethereum.p2p.discovery.DiscoveryPeer;
+import org.hyperledger.besu.ethereum.p2p.discovery.PeerDiscoveryStatus;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable.AddResult.AddOutcome;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.peers.PeerId;
+
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.stream.Stream;
+
+import com.google.common.hash.BloomFilter;
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * Implements a Kademlia routing table based on k-buckets with a keccak-256 XOR-based distance
+ * metric.
+ */
+public class PeerTable {
+  private static final int N_BUCKETS = 256;
+  private static final int DEFAULT_BUCKET_SIZE = 16;
+  private static final int BLOOM_FILTER_REGENERATION_THRESHOLD = 50; // evictions
+
+  private final Bucket[] table;
+  private final Bytes keccak256;
+  private final int maxEntriesCnt;
+
+  private final Map&lt;Bytes, Integer&gt; distanceCache;
+  private BloomFilter&lt;Bytes&gt; idBloom;
+<span class="fc" id="L53">  private int evictionCnt = 0;</span>
+
+  /**
+   * Builds a new peer table, where distance is calculated using the provided nodeId as a baseline.
+   *
+   * @param nodeId The ID of the node where this peer table is stored.
+   */
+<span class="fc" id="L60">  public PeerTable(final Bytes nodeId) {</span>
+<span class="fc" id="L61">    this.keccak256 = Hash.keccak256(nodeId);</span>
+<span class="fc" id="L62">    this.table =</span>
+<span class="fc" id="L63">        Stream.generate(() -&gt; new Bucket(DEFAULT_BUCKET_SIZE))</span>
+<span class="fc" id="L64">            .limit(N_BUCKETS + 1)</span>
+<span class="fc" id="L65">            .toArray(Bucket[]::new);</span>
+<span class="fc" id="L66">    this.distanceCache = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L67">    this.maxEntriesCnt = N_BUCKETS * DEFAULT_BUCKET_SIZE;</span>
+
+    // A bloom filter with 4096 expected insertions of 64-byte keys with a 0.1% false positive
+    // probability yields a memory footprint of ~7.5kb.
+<span class="fc" id="L71">    buildBloomFilter();</span>
+<span class="fc" id="L72">  }</span>
+
+  /**
+   * Returns the table's representation of a peer, if it exists.
+   *
+   * @param peer The peer to query.
+   * @return The stored representation.
+   */
+  public Optional&lt;DiscoveryPeer&gt; get(final PeerId peer) {
+<span class="fc" id="L81">    final Bytes peerId = peer.getId();</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (!idBloom.mightContain(peerId)) {</span>
+<span class="fc" id="L83">      return Optional.empty();</span>
+    }
+<span class="fc" id="L85">    final int distance = distanceFrom(peer);</span>
+<span class="fc" id="L86">    return table[distance].getAndTouch(peerId);</span>
+  }
+
+  /**
+   * Attempts to add the provided peer to the peer table, and returns an {@link AddResult}
+   * signalling one of three outcomes.
+   *
+   * &lt;h3&gt;Possible outcomes:&lt;/h3&gt;
+   *
+   * &lt;ul&gt;
+   *   &lt;li&gt;the operation succeeded and the peer was added to the corresponding k-bucket.
+   *   &lt;li&gt;the operation failed because the k-bucket was full, in which case a candidate is proposed
+   *       for eviction.
+   *   &lt;li&gt;the operation failed because the peer already existed.
+   * &lt;/ul&gt;
+   *
+   * @param peer The peer to add.
+   * @return An object indicating the outcome of the operation.
+   * @see AddOutcome
+   */
+  public AddResult tryAdd(final DiscoveryPeer peer) {
+<span class="fc" id="L107">    final Bytes id = peer.getId();</span>
+<span class="fc" id="L108">    final int distance = distanceFrom(peer);</span>
+
+    // Safeguard against adding ourselves to the peer table.
+<span class="fc bfc" id="L111" title="All 2 branches covered.">    if (distance == 0) {</span>
+<span class="fc" id="L112">      return AddResult.self();</span>
+    }
+
+<span class="fc" id="L115">    final Bucket bucket = table[distance];</span>
+    // We add the peer, and two things can happen: (1) either we get an empty optional (peer was
+    // added successfully,
+    // or it was already there), or (2) we get a filled optional, in which case the bucket is full
+    // and an eviction
+    // candidate is proposed. The Bucket#add method will raise an exception if the peer already
+    // existed.
+    final Optional&lt;DiscoveryPeer&gt; res;
+    try {
+<span class="fc" id="L124">      res = bucket.add(peer);</span>
+<span class="fc" id="L125">    } catch (final IllegalArgumentException ex) {</span>
+<span class="fc" id="L126">      return AddResult.existed();</span>
+<span class="fc" id="L127">    }</span>
+
+<span class="fc bfc" id="L129" title="All 2 branches covered.">    if (!res.isPresent()) {</span>
+<span class="fc" id="L130">      idBloom.put(id);</span>
+<span class="fc" id="L131">      distanceCache.put(id, distance);</span>
+<span class="fc" id="L132">      return AddResult.added();</span>
+    }
+
+<span class="fc" id="L135">    return res.map(AddResult::bucketFull).get();</span>
+  }
+
+  /**
+   * Evicts a peer from the underlying table.
+   *
+   * @param peer The peer to evict.
+   * @return Whether the peer existed, and hence the eviction took place.
+   */
+  public EvictResult tryEvict(final PeerId peer) {
+<span class="fc" id="L145">    final Bytes id = peer.getId();</span>
+<span class="fc" id="L146">    final int distance = distanceFrom(peer);</span>
+
+<span class="fc bfc" id="L148" title="All 2 branches covered.">    if (distance == 0) {</span>
+<span class="fc" id="L149">      return EvictResult.self();</span>
+    }
+
+<span class="fc" id="L152">    distanceCache.remove(id);</span>
+
+<span class="fc bfc" id="L154" title="All 2 branches covered.">    if (table[distance].getPeers().isEmpty()) {</span>
+<span class="fc" id="L155">      return EvictResult.absent();</span>
+    }
+
+<span class="fc" id="L158">    final boolean evicted = table[distance].evict(peer);</span>
+<span class="fc bfc" id="L159" title="All 2 branches covered.">    if (evicted) {</span>
+<span class="fc" id="L160">      evictionCnt++;</span>
+    } else {
+<span class="fc" id="L162">      return EvictResult.absent();</span>
+    }
+
+    // Trigger the bloom filter regeneration if needed.
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    if (evictionCnt &gt;= BLOOM_FILTER_REGENERATION_THRESHOLD) {</span>
+<span class="fc" id="L167">      ForkJoinPool.commonPool().execute(this::buildBloomFilter);</span>
+    }
+
+<span class="fc" id="L170">    return EvictResult.evicted();</span>
+  }
+
+  private void buildBloomFilter() {
+<span class="fc" id="L174">    final BloomFilter&lt;Bytes&gt; bf =</span>
+<span class="fc" id="L175">        BloomFilter.create((id, val) -&gt; val.putBytes(id.toArray()), maxEntriesCnt, 0.001);</span>
+<span class="fc" id="L176">    streamAllPeers().map(Peer::getId).forEach(bf::put);</span>
+<span class="fc" id="L177">    this.evictionCnt = 0;</span>
+<span class="fc" id="L178">    this.idBloom = bf;</span>
+<span class="fc" id="L179">  }</span>
+
+  /**
+   * Returns the &lt;code&gt;limit&lt;/code&gt; peers (at most) bonded closest to the provided target, based on
+   * the XOR distance between the keccak-256 hash of the ID and the keccak-256 hash of the target.
+   *
+   * @param target The target node ID.
+   * @param limit The amount of results to return.
+   * @return The &lt;code&gt;limit&lt;/code&gt; closest peers, at most.
+   */
+  public List&lt;DiscoveryPeer&gt; nearestBondedPeers(final Bytes target, final int limit) {
+<span class="fc" id="L190">    final Bytes keccak256 = Hash.keccak256(target);</span>
+<span class="fc" id="L191">    return streamAllPeers()</span>
+<span class="fc bfc" id="L192" title="All 2 branches covered.">        .filter(p -&gt; p.getStatus() == PeerDiscoveryStatus.BONDED)</span>
+<span class="fc" id="L193">        .sorted(</span>
+<span class="fc" id="L194">            comparingInt((peer) -&gt; PeerDistanceCalculator.distance(peer.keccak256(), keccak256)))</span>
+<span class="fc" id="L195">        .limit(limit)</span>
+<span class="fc" id="L196">        .collect(toList());</span>
+  }
+
+  public Stream&lt;DiscoveryPeer&gt; streamAllPeers() {
+<span class="fc" id="L200">    return Arrays.stream(table).flatMap(e -&gt; e.getPeers().stream());</span>
+  }
+
+  /**
+   * Calculates the XOR distance between the keccak-256 hashes of our node ID and the provided
+   * {@link DiscoveryPeer}.
+   *
+   * @param peer The target peer.
+   * @return The distance.
+   */
+  private int distanceFrom(final PeerId peer) {
+<span class="fc" id="L211">    final Integer distance = distanceCache.get(peer.getId());</span>
+<span class="fc bfc" id="L212" title="All 2 branches covered.">    return distance == null</span>
+<span class="fc" id="L213">        ? PeerDistanceCalculator.distance(keccak256, peer.keccak256())</span>
+<span class="fc" id="L214">        : distance;</span>
+  }
+
+  /** A class that encapsulates the result of a peer addition to the table. */
+  public static class AddResult {
+    /** The outcome of the operation. */
+<span class="fc" id="L220">    public enum AddOutcome {</span>
+
+      /** The peer was added successfully to its corresponding k-bucket. */
+<span class="fc" id="L223">      ADDED,</span>
+
+      /** The bucket for this peer was full. An eviction candidate must be proposed. */
+<span class="fc" id="L226">      BUCKET_FULL,</span>
+
+      /** The peer already existed, hence it was not overwritten. */
+<span class="fc" id="L229">      ALREADY_EXISTED,</span>
+
+      /** The caller requested to add ourselves. */
+<span class="fc" id="L232">      SELF</span>
+    }
+
+    private final AddOutcome outcome;
+    private final Peer evictionCandidate;
+
+<span class="fc" id="L238">    private AddResult(final AddOutcome outcome, final Peer evictionCandidate) {</span>
+<span class="fc" id="L239">      this.outcome = outcome;</span>
+<span class="fc" id="L240">      this.evictionCandidate = evictionCandidate;</span>
+<span class="fc" id="L241">    }</span>
+
+    static AddResult added() {
+<span class="fc" id="L244">      return new AddResult(AddOutcome.ADDED, null);</span>
+    }
+
+    static AddResult bucketFull(final Peer evictionCandidate) {
+<span class="fc" id="L248">      return new AddResult(AddOutcome.BUCKET_FULL, evictionCandidate);</span>
+    }
+
+    static AddResult existed() {
+<span class="fc" id="L252">      return new AddResult(AddOutcome.ALREADY_EXISTED, null);</span>
+    }
+
+    static AddResult self() {
+<span class="fc" id="L256">      return new AddResult(AddOutcome.SELF, null);</span>
+    }
+
+    public AddOutcome getOutcome() {
+<span class="fc" id="L260">      return outcome;</span>
+    }
+
+    public Peer getEvictionCandidate() {
+<span class="fc" id="L264">      return evictionCandidate;</span>
+    }
+  }
+
+  static class EvictResult {
+<span class="fc" id="L269">    public enum EvictOutcome {</span>
+<span class="fc" id="L270">      EVICTED,</span>
+<span class="fc" id="L271">      ABSENT,</span>
+<span class="fc" id="L272">      SELF</span>
+    }
+
+    private final EvictOutcome outcome;
+
+<span class="fc" id="L277">    private EvictResult(final EvictOutcome outcome) {</span>
+<span class="fc" id="L278">      this.outcome = outcome;</span>
+<span class="fc" id="L279">    }</span>
+
+    static EvictResult evicted() {
+<span class="fc" id="L282">      return new EvictResult(EvictOutcome.EVICTED);</span>
+    }
+
+    static EvictResult absent() {
+<span class="fc" id="L286">      return new EvictResult(EvictOutcome.ABSENT);</span>
+    }
+
+    static EvictResult self() {
+<span class="fc" id="L290">      return new EvictResult(EvictOutcome.SELF);</span>
+    }
+
+    EvictOutcome getOutcome() {
+<span class="fc" id="L294">      return outcome;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

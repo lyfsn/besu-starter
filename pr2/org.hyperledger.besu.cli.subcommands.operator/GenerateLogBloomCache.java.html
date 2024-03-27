@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GenerateLogBloomCache.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.operator</a> &gt; <span class="el_source">GenerateLogBloomCache.java</span></div><h1>GenerateLogBloomCache.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.cli.subcommands.operator;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP;
+import static org.hyperledger.besu.ethereum.api.query.cache.TransactionLogBloomCacher.BLOCKS_PER_BLOOM_CACHE;
+
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.ethereum.api.query.cache.TransactionLogBloomCacher;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.metrics.noop.NoOpMetricsSystem;
+
+import java.nio.file.Path;
+
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParentCommand;
+
+/** The generate-log-bloom-cache CLI command. */
+@Command(
+    name = &quot;generate-log-bloom-cache&quot;,
+    description = &quot;Generate cached values of block log bloom filters.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+<span class="fc" id="L43">public class GenerateLogBloomCache implements Runnable {</span>
+
+<span class="fc" id="L45">  @Option(</span>
+      names = &quot;--start-block&quot;,
+      paramLabel = MANDATORY_LONG_FORMAT_HELP,
+      description =
+          &quot;The block to start generating the cache.  Must be an increment of &quot;
+              + BLOCKS_PER_BLOOM_CACHE
+              + &quot; (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1..1&quot;)
+<span class="fc" id="L53">  private final Long startBlock = 0L;</span>
+
+<span class="fc" id="L55">  @Option(</span>
+      names = &quot;--end-block&quot;,
+      paramLabel = MANDATORY_LONG_FORMAT_HELP,
+      description = &quot;The block to stop generating the cache (default is last block of the chain).&quot;,
+      arity = &quot;1..1&quot;)
+<span class="fc" id="L60">  private final Long endBlock = Long.MAX_VALUE;</span>
+
+  @ParentCommand private OperatorSubCommand parentCommand;
+
+  @SuppressWarnings(&quot;ResultOfMethodCallIgnored&quot;)
+  @Override
+  public void run() {
+<span class="nc" id="L67">    checkPreconditions();</span>
+<span class="nc" id="L68">    final Path cacheDir = parentCommand.parentCommand.dataDir().resolve(BesuController.CACHE_PATH);</span>
+<span class="nc" id="L69">    cacheDir.toFile().mkdirs();</span>
+<span class="nc" id="L70">    final MutableBlockchain blockchain =</span>
+<span class="nc" id="L71">        createBesuController().getProtocolContext().getBlockchain();</span>
+<span class="nc" id="L72">    final EthScheduler scheduler = new EthScheduler(1, 1, 1, 1, new NoOpMetricsSystem());</span>
+    try {
+<span class="nc" id="L74">      final long finalBlock = Math.min(blockchain.getChainHeadBlockNumber(), endBlock);</span>
+<span class="nc" id="L75">      final TransactionLogBloomCacher cacher =</span>
+          new TransactionLogBloomCacher(blockchain, cacheDir, scheduler);
+<span class="nc" id="L77">      cacher.generateLogBloomCache(startBlock, finalBlock);</span>
+    } finally {
+<span class="nc" id="L79">      scheduler.stop();</span>
+      try {
+<span class="nc" id="L81">        scheduler.awaitStop();</span>
+<span class="nc" id="L82">      } catch (final InterruptedException e) {</span>
+        // ignore
+<span class="nc" id="L84">      }</span>
+    }
+<span class="nc" id="L86">  }</span>
+
+  private void checkPreconditions() {
+<span class="nc" id="L89">    checkNotNull(parentCommand.parentCommand.dataDir());</span>
+<span class="nc" id="L90">    checkState(</span>
+<span class="nc bnc" id="L91" title="All 2 branches missed.">        startBlock % BLOCKS_PER_BLOOM_CACHE == 0,</span>
+        &quot;Start block must be an even increment of %s&quot;,
+        BLOCKS_PER_BLOOM_CACHE);
+<span class="nc" id="L94">  }</span>
+
+  private BesuController createBesuController() {
+<span class="nc" id="L97">    return parentCommand.parentCommand.buildController();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

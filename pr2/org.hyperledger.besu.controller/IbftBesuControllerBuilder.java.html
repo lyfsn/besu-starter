@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IbftBesuControllerBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">IbftBesuControllerBuilder.java</span></div><h1>IbftBesuControllerBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import org.hyperledger.besu.config.BftConfigOptions;
+import org.hyperledger.besu.config.BftFork;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.common.BftValidatorOverrides;
+import org.hyperledger.besu.consensus.common.EpochManager;
+import org.hyperledger.besu.consensus.common.ForksSchedule;
+import org.hyperledger.besu.consensus.common.bft.BftContext;
+import org.hyperledger.besu.consensus.common.bft.BftEventQueue;
+import org.hyperledger.besu.consensus.common.bft.BftExecutors;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.common.bft.BftProcessor;
+import org.hyperledger.besu.consensus.common.bft.BftProtocolSchedule;
+import org.hyperledger.besu.consensus.common.bft.BlockTimer;
+import org.hyperledger.besu.consensus.common.bft.EthSynchronizerUpdater;
+import org.hyperledger.besu.consensus.common.bft.EventMultiplexer;
+import org.hyperledger.besu.consensus.common.bft.MessageTracker;
+import org.hyperledger.besu.consensus.common.bft.RoundTimer;
+import org.hyperledger.besu.consensus.common.bft.UniqueMessageMulticaster;
+import org.hyperledger.besu.consensus.common.bft.blockcreation.BftBlockCreatorFactory;
+import org.hyperledger.besu.consensus.common.bft.blockcreation.BftMiningCoordinator;
+import org.hyperledger.besu.consensus.common.bft.blockcreation.ProposerSelector;
+import org.hyperledger.besu.consensus.common.bft.network.ValidatorPeers;
+import org.hyperledger.besu.consensus.common.bft.protocol.BftProtocolManager;
+import org.hyperledger.besu.consensus.common.bft.statemachine.BftEventHandler;
+import org.hyperledger.besu.consensus.common.bft.statemachine.BftFinalState;
+import org.hyperledger.besu.consensus.common.bft.statemachine.FutureMessageBuffer;
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.consensus.common.validator.blockbased.BlockValidatorProvider;
+import org.hyperledger.besu.consensus.ibft.IbftExtraDataCodec;
+import org.hyperledger.besu.consensus.ibft.IbftForksSchedulesFactory;
+import org.hyperledger.besu.consensus.ibft.IbftGossip;
+import org.hyperledger.besu.consensus.ibft.IbftProtocolScheduleBuilder;
+import org.hyperledger.besu.consensus.ibft.jsonrpc.IbftJsonRpcMethods;
+import org.hyperledger.besu.consensus.ibft.payload.MessageFactory;
+import org.hyperledger.besu.consensus.ibft.protocol.IbftSubProtocol;
+import org.hyperledger.besu.consensus.ibft.statemachine.IbftBlockHeightManagerFactory;
+import org.hyperledger.besu.consensus.ibft.statemachine.IbftController;
+import org.hyperledger.besu.consensus.ibft.statemachine.IbftRoundFactory;
+import org.hyperledger.besu.consensus.ibft.validation.MessageValidatorFactory;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.methods.JsonRpcMethods;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MinedBlockObserver;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.Util;
+import org.hyperledger.besu.ethereum.eth.EthProtocol;
+import org.hyperledger.besu.ethereum.eth.SnapProtocol;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.manager.snap.SnapProtocolManager;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.p2p.config.SubProtocolConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.plugin.services.BesuEvents;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+import com.google.common.base.Suppliers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Ibft besu controller builder. */
+<span class="fc" id="L90">public class IbftBesuControllerBuilder extends BftBesuControllerBuilder {</span>
+
+<span class="fc" id="L92">  private static final Logger LOG = LoggerFactory.getLogger(IbftBesuControllerBuilder.class);</span>
+  private BftEventQueue bftEventQueue;
+  private BftConfigOptions bftConfig;
+  private ForksSchedule&lt;BftConfigOptions&gt; forksSchedule;
+  private ValidatorPeers peers;
+
+  @Override
+  protected Supplier&lt;BftExtraDataCodec&gt; bftExtraDataCodec() {
+<span class="fc" id="L100">    return Suppliers.memoize(IbftExtraDataCodec::new);</span>
+  }
+
+  @Override
+  protected void prepForBuild() {
+<span class="fc" id="L105">    bftConfig = configOptionsSupplier.get().getBftConfigOptions();</span>
+<span class="fc" id="L106">    bftEventQueue = new BftEventQueue(bftConfig.getMessageQueueLimit());</span>
+<span class="fc" id="L107">    forksSchedule = IbftForksSchedulesFactory.create(configOptionsSupplier.get());</span>
+<span class="fc" id="L108">  }</span>
+
+  @Override
+  protected JsonRpcMethods createAdditionalJsonRpcMethodFactory(
+      final ProtocolContext protocolContext) {
+<span class="fc" id="L113">    return new IbftJsonRpcMethods(protocolContext);</span>
+  }
+
+  @Override
+  protected SubProtocolConfiguration createSubProtocolConfiguration(
+      final EthProtocolManager ethProtocolManager,
+      final Optional&lt;SnapProtocolManager&gt; maybeSnapProtocolManager) {
+<span class="fc" id="L120">    final SubProtocolConfiguration subProtocolConfiguration =</span>
+        new SubProtocolConfiguration()
+<span class="fc" id="L122">            .withSubProtocol(EthProtocol.get(), ethProtocolManager)</span>
+<span class="fc" id="L123">            .withSubProtocol(</span>
+<span class="fc" id="L124">                IbftSubProtocol.get(),</span>
+                new BftProtocolManager(
+<span class="fc" id="L126">                    bftEventQueue, peers, IbftSubProtocol.IBFV1, IbftSubProtocol.get().getName()));</span>
+<span class="fc" id="L127">    maybeSnapProtocolManager.ifPresent(</span>
+        snapProtocolManager -&gt; {
+<span class="fc" id="L129">          subProtocolConfiguration.withSubProtocol(SnapProtocol.get(), snapProtocolManager);</span>
+<span class="fc" id="L130">        });</span>
+<span class="fc" id="L131">    return subProtocolConfiguration;</span>
+  }
+
+  @Override
+  protected MiningCoordinator createMiningCoordinator(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParameters,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager) {
+<span class="fc" id="L142">    final MutableBlockchain blockchain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L143">    final BftExecutors bftExecutors =</span>
+<span class="fc" id="L144">        BftExecutors.create(metricsSystem, BftExecutors.ConsensusType.IBFT);</span>
+
+<span class="fc" id="L146">    final Address localAddress = Util.publicKeyToAddress(nodeKey.getPublicKey());</span>
+<span class="fc" id="L147">    final BftProtocolSchedule bftProtocolSchedule = (BftProtocolSchedule) protocolSchedule;</span>
+<span class="fc" id="L148">    final BftBlockCreatorFactory&lt;?&gt; blockCreatorFactory =</span>
+        new BftBlockCreatorFactory&lt;&gt;(
+            transactionPool,
+            protocolContext,
+            bftProtocolSchedule,
+            forksSchedule,
+            miningParameters,
+            localAddress,
+<span class="fc" id="L156">            bftExtraDataCodec().get(),</span>
+<span class="fc" id="L157">            ethProtocolManager.ethContext().getScheduler());</span>
+
+<span class="fc" id="L159">    final ValidatorProvider validatorProvider =</span>
+<span class="fc" id="L160">        protocolContext.getConsensusContext(BftContext.class).getValidatorProvider();</span>
+
+<span class="fc" id="L162">    final ProposerSelector proposerSelector =</span>
+<span class="fc" id="L163">        new ProposerSelector(blockchain, bftBlockInterface().get(), true, validatorProvider);</span>
+
+    // NOTE: peers should not be used for accessing the network as it does not enforce the
+    // &quot;only send once&quot; filter applied by the UniqueMessageMulticaster.
+<span class="fc" id="L167">    peers = new ValidatorPeers(validatorProvider, IbftSubProtocol.NAME);</span>
+
+<span class="fc" id="L169">    final UniqueMessageMulticaster uniqueMessageMulticaster =</span>
+<span class="fc" id="L170">        new UniqueMessageMulticaster(peers, bftConfig.getGossipedHistoryLimit());</span>
+
+<span class="fc" id="L172">    final IbftGossip gossiper = new IbftGossip(uniqueMessageMulticaster);</span>
+
+<span class="fc" id="L174">    final BftFinalState finalState =</span>
+        new BftFinalState(
+            validatorProvider,
+            nodeKey,
+<span class="fc" id="L178">            Util.publicKeyToAddress(nodeKey.getPublicKey()),</span>
+            proposerSelector,
+            uniqueMessageMulticaster,
+<span class="fc" id="L181">            new RoundTimer(bftEventQueue, bftConfig.getRequestTimeoutSeconds(), bftExecutors),</span>
+            new BlockTimer(bftEventQueue, forksSchedule, bftExecutors, clock),
+            blockCreatorFactory,
+            clock);
+
+<span class="fc" id="L186">    final MessageValidatorFactory messageValidatorFactory =</span>
+        new MessageValidatorFactory(
+<span class="fc" id="L188">            proposerSelector, bftProtocolSchedule, protocolContext, bftExtraDataCodec().get());</span>
+
+<span class="fc" id="L190">    final Subscribers&lt;MinedBlockObserver&gt; minedBlockObservers = Subscribers.create();</span>
+<span class="fc" id="L191">    minedBlockObservers.subscribe(ethProtocolManager);</span>
+<span class="fc" id="L192">    minedBlockObservers.subscribe(blockLogger(transactionPool, localAddress));</span>
+
+<span class="fc" id="L194">    final FutureMessageBuffer futureMessageBuffer =</span>
+        new FutureMessageBuffer(
+<span class="fc" id="L196">            bftConfig.getFutureMessagesMaxDistance(),</span>
+<span class="fc" id="L197">            bftConfig.getFutureMessagesLimit(),</span>
+<span class="fc" id="L198">            blockchain.getChainHeadBlockNumber());</span>
+<span class="fc" id="L199">    final MessageTracker duplicateMessageTracker =</span>
+<span class="fc" id="L200">        new MessageTracker(bftConfig.getDuplicateMessageLimit());</span>
+
+<span class="fc" id="L202">    final MessageFactory messageFactory = new MessageFactory(nodeKey);</span>
+
+<span class="fc" id="L204">    final BftEventHandler ibftController =</span>
+        new IbftController(
+            blockchain,
+            finalState,
+            new IbftBlockHeightManagerFactory(
+                finalState,
+                new IbftRoundFactory(
+                    finalState,
+                    protocolContext,
+                    bftProtocolSchedule,
+                    minedBlockObservers,
+                    messageValidatorFactory,
+                    messageFactory,
+<span class="fc" id="L217">                    bftExtraDataCodec().get()),</span>
+                messageValidatorFactory,
+                messageFactory),
+            gossiper,
+            duplicateMessageTracker,
+            futureMessageBuffer,
+<span class="fc" id="L223">            new EthSynchronizerUpdater(ethProtocolManager.ethContext().getEthPeers()));</span>
+
+<span class="fc" id="L225">    final EventMultiplexer eventMultiplexer = new EventMultiplexer(ibftController);</span>
+<span class="fc" id="L226">    final BftProcessor bftProcessor = new BftProcessor(bftEventQueue, eventMultiplexer);</span>
+
+<span class="fc" id="L228">    final MiningCoordinator ibftMiningCoordinator =</span>
+        new BftMiningCoordinator(
+            bftExecutors,
+            ibftController,
+            bftProcessor,
+            blockCreatorFactory,
+            blockchain,
+            bftEventQueue);
+
+    // Update the next block period in seconds according to the transition schedule
+<span class="fc" id="L238">    protocolContext</span>
+<span class="fc" id="L239">        .getBlockchain()</span>
+<span class="fc" id="L240">        .observeBlockAdded(</span>
+            o -&gt;
+<span class="fc" id="L242">                miningParameters.setBlockPeriodSeconds(</span>
+                    forksSchedule
+<span class="fc" id="L244">                        .getFork(o.getBlock().getHeader().getNumber() + 1)</span>
+<span class="fc" id="L245">                        .getValue()</span>
+<span class="fc" id="L246">                        .getBlockPeriodSeconds()));</span>
+
+<span class="pc bpc" id="L248" title="1 of 2 branches missed.">    if (syncState.isInitialSyncPhaseDone()) {</span>
+<span class="fc" id="L249">      ibftMiningCoordinator.enable();</span>
+    }
+
+<span class="fc" id="L252">    syncState.subscribeCompletionReached(</span>
+<span class="fc" id="L253">        new BesuEvents.InitialSyncCompletionListener() {</span>
+          @Override
+          public void onInitialSyncCompleted() {
+<span class="nc" id="L256">            LOG.info(&quot;Starting IBFT mining coordinator following initial sync&quot;);</span>
+<span class="nc" id="L257">            ibftMiningCoordinator.enable();</span>
+<span class="nc" id="L258">            ibftMiningCoordinator.start();</span>
+<span class="nc" id="L259">          }</span>
+
+          @Override
+          public void onInitialSyncRestart() {
+            // Nothing to do. The mining coordinator won't be started until
+            // sync has completed.
+<span class="nc" id="L265">          }</span>
+        });
+
+<span class="fc" id="L268">    return ibftMiningCoordinator;</span>
+  }
+
+  @Override
+  protected PluginServiceFactory createAdditionalPluginServices(
+      final Blockchain blockchain, final ProtocolContext protocolContext) {
+<span class="fc" id="L274">    final ValidatorProvider validatorProvider =</span>
+<span class="fc" id="L275">        protocolContext.getConsensusContext(BftContext.class).getValidatorProvider();</span>
+<span class="fc" id="L276">    return new IbftQueryPluginServiceFactory(</span>
+<span class="fc" id="L277">        blockchain, bftBlockInterface().get(), validatorProvider, nodeKey);</span>
+  }
+
+  @Override
+  protected ProtocolSchedule createProtocolSchedule() {
+<span class="fc" id="L282">    return IbftProtocolScheduleBuilder.create(</span>
+<span class="fc" id="L283">        configOptionsSupplier.get(),</span>
+        forksSchedule,
+        privacyParameters,
+        isRevertReasonEnabled,
+<span class="fc" id="L287">        bftExtraDataCodec().get(),</span>
+        evmConfiguration,
+        miningParameters,
+        badBlockManager);
+  }
+
+  @Override
+  protected void validateContext(final ProtocolContext context) {
+<span class="fc" id="L295">    final BlockHeader genesisBlockHeader = context.getBlockchain().getGenesisBlock().getHeader();</span>
+
+<span class="pc bpc" id="L297" title="1 of 2 branches missed.">    if (bftBlockInterface().get().validatorsInBlock(genesisBlockHeader).isEmpty()) {</span>
+<span class="nc" id="L298">      LOG.warn(&quot;Genesis block contains no signers - chain will not progress.&quot;);</span>
+    }
+<span class="fc" id="L300">  }</span>
+
+  @Override
+  protected BftContext createConsensusContext(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L307">    final GenesisConfigOptions configOptions = configOptionsSupplier.get();</span>
+<span class="fc" id="L308">    final BftConfigOptions ibftConfig = configOptions.getBftConfigOptions();</span>
+<span class="fc" id="L309">    final EpochManager epochManager = new EpochManager(ibftConfig.getEpochLength());</span>
+
+<span class="fc" id="L311">    final BftValidatorOverrides validatorOverrides =</span>
+<span class="fc" id="L312">        convertIbftForks(configOptions.getTransitions().getIbftForks());</span>
+
+<span class="fc" id="L314">    return new BftContext(</span>
+<span class="fc" id="L315">        BlockValidatorProvider.forkingValidatorProvider(</span>
+<span class="fc" id="L316">            blockchain, epochManager, bftBlockInterface().get(), validatorOverrides),</span>
+        epochManager,
+<span class="fc" id="L318">        bftBlockInterface().get());</span>
+  }
+
+  private BftValidatorOverrides convertIbftForks(final List&lt;BftFork&gt; bftForks) {
+<span class="fc" id="L322">    final Map&lt;Long, List&lt;Address&gt;&gt; result = new HashMap&lt;&gt;();</span>
+
+<span class="fc bfc" id="L324" title="All 2 branches covered.">    for (final BftFork fork : bftForks) {</span>
+<span class="fc" id="L325">      fork.getValidators()</span>
+<span class="fc" id="L326">          .ifPresent(</span>
+              validators -&gt;
+<span class="nc" id="L328">                  result.put(</span>
+<span class="nc" id="L329">                      fork.getForkBlock(),</span>
+<span class="nc" id="L330">                      validators.stream()</span>
+<span class="nc" id="L331">                          .map(Address::fromHexString)</span>
+<span class="nc" id="L332">                          .collect(Collectors.toList())));</span>
+<span class="fc" id="L333">    }</span>
+
+<span class="fc" id="L335">    return new BftValidatorOverrides(result);</span>
+  }
+
+  private static MinedBlockObserver blockLogger(
+      final TransactionPool transactionPool, final Address localAddress) {
+<span class="fc" id="L340">    return block -&gt;</span>
+<span class="nc" id="L341">        LOG.info(</span>
+<span class="nc" id="L342">            String.format(</span>
+                &quot;%s #%,d / %d tx / %d pending / %,d (%01.1f%%) gas / (%s)&quot;,
+<span class="nc bnc" id="L344" title="All 2 branches missed.">                block.getHeader().getCoinbase().equals(localAddress) ? &quot;Produced&quot; : &quot;Imported&quot;,</span>
+<span class="nc" id="L345">                block.getHeader().getNumber(),</span>
+<span class="nc" id="L346">                block.getBody().getTransactions().size(),</span>
+<span class="nc" id="L347">                transactionPool.count(),</span>
+<span class="nc" id="L348">                block.getHeader().getGasUsed(),</span>
+<span class="nc" id="L349">                (block.getHeader().getGasUsed() * 100.0) / block.getHeader().getGasLimit(),</span>
+<span class="nc" id="L350">                block.getHash().toHexString()));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

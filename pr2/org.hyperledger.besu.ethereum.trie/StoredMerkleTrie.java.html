@@ -1,0 +1,216 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StoredMerkleTrie.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie</a> &gt; <span class="el_source">StoredMerkleTrie.java</span></div><h1>StoredMerkleTrie.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.stream.Collectors.toUnmodifiableSet;
+import static org.hyperledger.besu.ethereum.trie.CompactEncoding.bytesToPath;
+
+import org.hyperledger.besu.ethereum.trie.patricia.StoredNodeFactory;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/**
+ * A {@link MerkleTrie} that persists trie nodes to a {@link MerkleStorage} key/value store.
+ *
+ * @param &lt;V&gt; The type of values stored by this trie.
+ */
+public abstract class StoredMerkleTrie&lt;K extends Bytes, V&gt; implements MerkleTrie&lt;K, V&gt; {
+
+  protected final NodeFactory&lt;V&gt; nodeFactory;
+
+  protected Node&lt;V&gt; root;
+
+  /**
+   * Create a trie.
+   *
+   * @param nodeFactory The {@link StoredNodeFactory} to retrieve node.
+   */
+  public StoredMerkleTrie(final NodeFactory&lt;V&gt; nodeFactory) {
+<span class="fc" id="L53">    this(nodeFactory, EMPTY_TRIE_NODE_HASH);</span>
+<span class="fc" id="L54">  }</span>
+
+  /**
+   * Create a trie.
+   *
+   * @param nodeFactory The {@link StoredNodeFactory} to retrieve node.
+   * @param rootHash The initial root has for the trie, which should be already present in {@code
+   *     storage}.
+   * @param rootLocation The initial root location for the trie
+   */
+  public StoredMerkleTrie(
+<span class="fc" id="L65">      final NodeFactory&lt;V&gt; nodeFactory, final Bytes32 rootHash, final Bytes rootLocation) {</span>
+<span class="fc" id="L66">    this.nodeFactory = nodeFactory;</span>
+<span class="fc" id="L67">    this.root =</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">        rootHash.equals(EMPTY_TRIE_NODE_HASH)</span>
+<span class="nc" id="L69">            ? NullNode.instance()</span>
+<span class="fc" id="L70">            : new StoredNode&lt;&gt;(nodeFactory, rootLocation, rootHash);</span>
+<span class="fc" id="L71">  }</span>
+
+  /**
+   * Create a trie.
+   *
+   * @param nodeFactory The {@link StoredNodeFactory} to retrieve node.
+   * @param rootHash The initial root hash for the trie, which should be already present in {@code
+   *     storage}.
+   */
+<span class="fc" id="L80">  public StoredMerkleTrie(final NodeFactory&lt;V&gt; nodeFactory, final Bytes32 rootHash) {</span>
+<span class="fc" id="L81">    this.nodeFactory = nodeFactory;</span>
+<span class="fc" id="L82">    this.root =</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">        rootHash.equals(EMPTY_TRIE_NODE_HASH)</span>
+<span class="fc" id="L84">            ? NullNode.instance()</span>
+<span class="fc" id="L85">            : new StoredNode&lt;&gt;(nodeFactory, Bytes.EMPTY, rootHash);</span>
+<span class="fc" id="L86">  }</span>
+
+  @Override
+  public Optional&lt;V&gt; get(final K key) {
+<span class="fc" id="L90">    checkNotNull(key);</span>
+<span class="fc" id="L91">    return root.accept(getGetVisitor(), bytesToPath(key)).getValue();</span>
+  }
+
+  @Override
+  public Optional&lt;V&gt; getPath(final K path) {
+<span class="nc" id="L96">    checkNotNull(path);</span>
+<span class="nc" id="L97">    return root.accept(getGetVisitor(), path).getValue();</span>
+  }
+
+  @Override
+  public Proof&lt;V&gt; getValueWithProof(final K key) {
+<span class="fc" id="L102">    checkNotNull(key);</span>
+<span class="fc" id="L103">    final ProofVisitor&lt;V&gt; proofVisitor = new ProofVisitor&lt;&gt;(root);</span>
+<span class="fc" id="L104">    final Optional&lt;V&gt; value = root.accept(proofVisitor, bytesToPath(key)).getValue();</span>
+<span class="fc" id="L105">    final List&lt;Bytes&gt; proof =</span>
+<span class="fc" id="L106">        proofVisitor.getProof().stream().map(Node::getEncodedBytes).collect(Collectors.toList());</span>
+<span class="fc" id="L107">    return new Proof&lt;&gt;(value, proof);</span>
+  }
+
+  @Override
+  public void put(final K key, final V value) {
+<span class="fc" id="L112">    checkNotNull(key);</span>
+<span class="fc" id="L113">    checkNotNull(value);</span>
+<span class="fc" id="L114">    this.root = root.accept(getPutVisitor(value), bytesToPath(key));</span>
+<span class="fc" id="L115">  }</span>
+
+  @Override
+  public void putPath(final K path, final V value) {
+<span class="fc" id="L119">    checkNotNull(path);</span>
+<span class="fc" id="L120">    checkNotNull(value);</span>
+<span class="fc" id="L121">    this.root = root.accept(getPutVisitor(value), path);</span>
+<span class="fc" id="L122">  }</span>
+
+  @Override
+  public void put(final K key, final PathNodeVisitor&lt;V&gt; putVisitor) {
+<span class="fc" id="L126">    checkNotNull(key);</span>
+<span class="fc" id="L127">    this.root = root.accept(putVisitor, bytesToPath(key));</span>
+<span class="fc" id="L128">  }</span>
+
+  @Override
+  public void remove(final K key) {
+<span class="fc" id="L132">    checkNotNull(key);</span>
+<span class="fc" id="L133">    this.root = root.accept(getRemoveVisitor(), bytesToPath(key));</span>
+<span class="fc" id="L134">  }</span>
+
+  @Override
+  public void removePath(final K path, final PathNodeVisitor&lt;V&gt; removeVisitor) {
+<span class="fc" id="L138">    checkNotNull(path);</span>
+<span class="fc" id="L139">    this.root = root.accept(removeVisitor, path);</span>
+<span class="fc" id="L140">  }</span>
+
+  @Override
+  public void commit(final NodeUpdater nodeUpdater) {
+<span class="fc" id="L144">    commit(nodeUpdater, new CommitVisitor&lt;&gt;(nodeUpdater));</span>
+<span class="fc" id="L145">  }</span>
+
+  @Override
+  public void commit(final NodeUpdater nodeUpdater, final CommitVisitor&lt;V&gt; commitVisitor) {
+<span class="fc" id="L149">    root.accept(Bytes.EMPTY, commitVisitor);</span>
+    // Make sure root node was stored
+<span class="fc bfc" id="L151" title="All 4 branches covered.">    if (root.isDirty() &amp;&amp; root.getEncodedBytesRef().size() &lt; 32) {</span>
+<span class="fc" id="L152">      nodeUpdater.store(Bytes.EMPTY, root.getHash(), root.getEncodedBytesRef());</span>
+    }
+    // Reset root so dirty nodes can be garbage collected
+<span class="fc" id="L155">    final Bytes32 rootHash = root.getHash();</span>
+<span class="fc" id="L156">    this.root =</span>
+<span class="fc bfc" id="L157" title="All 2 branches covered.">        rootHash.equals(EMPTY_TRIE_NODE_HASH)</span>
+<span class="fc" id="L158">            ? NullNode.instance()</span>
+<span class="fc" id="L159">            : new StoredNode&lt;&gt;(nodeFactory, Bytes.EMPTY, rootHash);</span>
+<span class="fc" id="L160">  }</span>
+
+  @Override
+  public Map&lt;Bytes32, V&gt; entriesFrom(final Bytes32 startKeyHash, final int limit) {
+<span class="fc" id="L164">    return StorageEntriesCollector.collectEntries(root, startKeyHash, limit);</span>
+  }
+
+  @Override
+  public Map&lt;Bytes32, V&gt; entriesFrom(final Function&lt;Node&lt;V&gt;, Map&lt;Bytes32, V&gt;&gt; handler) {
+<span class="fc" id="L169">    return handler.apply(root);</span>
+  }
+
+  @Override
+  public void visitAll(final Consumer&lt;Node&lt;V&gt;&gt; nodeConsumer) {
+<span class="fc" id="L174">    root.accept(new AllNodesVisitor&lt;&gt;(nodeConsumer));</span>
+<span class="fc" id="L175">  }</span>
+
+  @Override
+  public CompletableFuture&lt;Void&gt; visitAll(
+      final Consumer&lt;Node&lt;V&gt;&gt; nodeConsumer, final ExecutorService executorService) {
+<span class="fc" id="L180">    return CompletableFuture.allOf(</span>
+<span class="fc" id="L181">        Stream.concat(</span>
+<span class="fc" id="L182">                Stream.of(</span>
+<span class="fc" id="L183">                    CompletableFuture.runAsync(() -&gt; nodeConsumer.accept(root), executorService)),</span>
+<span class="fc" id="L184">                root.getChildren().stream()</span>
+<span class="fc" id="L185">                    .map(</span>
+                        rootChild -&gt;
+<span class="fc" id="L187">                            CompletableFuture.runAsync(</span>
+<span class="fc" id="L188">                                () -&gt; rootChild.accept(new AllNodesVisitor&lt;&gt;(nodeConsumer)),</span>
+                                executorService)))
+<span class="fc" id="L190">            .collect(toUnmodifiableSet())</span>
+<span class="fc" id="L191">            .toArray(CompletableFuture[]::new));</span>
+  }
+
+  @Override
+  public void visitLeafs(final TrieIterator.LeafHandler&lt;V&gt; handler) {
+<span class="fc" id="L196">    final TrieIterator&lt;V&gt; visitor = new TrieIterator&lt;&gt;(handler, true);</span>
+<span class="fc" id="L197">    root.accept(visitor, CompactEncoding.bytesToPath(Bytes32.ZERO));</span>
+<span class="fc" id="L198">  }</span>
+
+  @Override
+  public Bytes32 getRootHash() {
+<span class="fc" id="L202">    return root.getHash();</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L207">    return getClass().getSimpleName() + &quot;[&quot; + getRootHash() + &quot;]&quot;;</span>
+  }
+
+  public abstract PathNodeVisitor&lt;V&gt; getGetVisitor();
+
+  public abstract PathNodeVisitor&lt;V&gt; getRemoveVisitor();
+
+  public abstract PathNodeVisitor&lt;V&gt; getPutVisitor(final V value);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

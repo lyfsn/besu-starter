@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RocksDBSnapshotTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb.segmented</a> &gt; <span class="el_source">RocksDBSnapshotTransaction.java</span></div><h1>RocksDBSnapshotTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb.segmented;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDBMetrics;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDbIterator;
+
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.OptimisticTransactionDB;
+import org.rocksdb.ReadOptions;
+import org.rocksdb.RocksDBException;
+import org.rocksdb.RocksIterator;
+import org.rocksdb.Transaction;
+import org.rocksdb.WriteOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Rocks db snapshot transaction. */
+public class RocksDBSnapshotTransaction
+    implements SegmentedKeyValueStorageTransaction, AutoCloseable {
+<span class="fc" id="L45">  private static final Logger LOG = LoggerFactory.getLogger(RocksDBSnapshotTransaction.class);</span>
+  private static final String NO_SPACE_LEFT_ON_DEVICE = &quot;No space left on device&quot;;
+  private final RocksDBMetrics metrics;
+  private final OptimisticTransactionDB db;
+  private final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper;
+  private final Transaction snapTx;
+  private final RocksDBSnapshot snapshot;
+  private final WriteOptions writeOptions;
+  private final ReadOptions readOptions;
+<span class="pc" id="L54">  private final AtomicBoolean isClosed = new AtomicBoolean(false);</span>
+
+  /**
+   * Instantiates a new RocksDb snapshot transaction.
+   *
+   * @param db the db
+   * @param columnFamilyMapper mapper from segment identifier to column family handle
+   * @param metrics the metrics
+   */
+  RocksDBSnapshotTransaction(
+      final OptimisticTransactionDB db,
+      final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper,
+<span class="fc" id="L66">      final RocksDBMetrics metrics) {</span>
+<span class="fc" id="L67">    this.metrics = metrics;</span>
+<span class="fc" id="L68">    this.db = db;</span>
+<span class="fc" id="L69">    this.columnFamilyMapper = columnFamilyMapper;</span>
+<span class="fc" id="L70">    this.snapshot = new RocksDBSnapshot(db);</span>
+<span class="fc" id="L71">    this.writeOptions = new WriteOptions();</span>
+<span class="fc" id="L72">    this.snapTx = db.beginTransaction(writeOptions);</span>
+<span class="fc" id="L73">    this.readOptions =</span>
+<span class="fc" id="L74">        new ReadOptions().setVerifyChecksums(false).setSnapshot(snapshot.markAndUseSnapshot());</span>
+<span class="fc" id="L75">  }</span>
+
+  private RocksDBSnapshotTransaction(
+      final OptimisticTransactionDB db,
+      final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper,
+      final RocksDBMetrics metrics,
+      final RocksDBSnapshot snapshot,
+      final Transaction snapTx,
+<span class="nc" id="L83">      final ReadOptions readOptions) {</span>
+<span class="nc" id="L84">    this.metrics = metrics;</span>
+<span class="nc" id="L85">    this.db = db;</span>
+<span class="nc" id="L86">    this.columnFamilyMapper = columnFamilyMapper;</span>
+<span class="nc" id="L87">    this.snapshot = snapshot;</span>
+<span class="nc" id="L88">    this.writeOptions = new WriteOptions();</span>
+<span class="nc" id="L89">    this.readOptions = readOptions;</span>
+<span class="nc" id="L90">    this.snapTx = snapTx;</span>
+<span class="nc" id="L91">  }</span>
+
+  /**
+   * Get data against given key.
+   *
+   * @param segmentId the segment id
+   * @param key the key
+   * @return the optional data
+   */
+  public Optional&lt;byte[]&gt; get(final SegmentIdentifier segmentId, final byte[] key) {
+<span class="fc" id="L101">    throwIfClosed();</span>
+
+<span class="fc" id="L103">    try (final OperationTimer.TimingContext ignored = metrics.getReadLatency().startTimer()) {</span>
+<span class="fc" id="L104">      return Optional.ofNullable(snapTx.get(columnFamilyMapper.apply(segmentId), readOptions, key));</span>
+<span class="nc" id="L105">    } catch (final RocksDBException e) {</span>
+<span class="nc" id="L106">      throw new StorageException(e);</span>
+    }
+  }
+
+  @Override
+  public void put(final SegmentIdentifier segmentId, final byte[] key, final byte[] value) {
+<span class="nc" id="L112">    throwIfClosed();</span>
+
+<span class="nc" id="L114">    try (final OperationTimer.TimingContext ignored = metrics.getWriteLatency().startTimer()) {</span>
+<span class="nc" id="L115">      snapTx.put(columnFamilyMapper.apply(segmentId), key, value);</span>
+<span class="nc" id="L116">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L117" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L118">        LOG.error(e.getMessage());</span>
+<span class="nc" id="L119">        System.exit(0);</span>
+      }
+<span class="nc" id="L121">      throw new StorageException(e);</span>
+<span class="nc" id="L122">    }</span>
+<span class="nc" id="L123">  }</span>
+
+  @Override
+  public void remove(final SegmentIdentifier segmentId, final byte[] key) {
+<span class="nc" id="L127">    throwIfClosed();</span>
+
+<span class="nc" id="L129">    try (final OperationTimer.TimingContext ignored = metrics.getRemoveLatency().startTimer()) {</span>
+<span class="nc" id="L130">      snapTx.delete(columnFamilyMapper.apply(segmentId), key);</span>
+<span class="nc" id="L131">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L132" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L133">        LOG.error(e.getMessage());</span>
+<span class="nc" id="L134">        System.exit(0);</span>
+      }
+<span class="nc" id="L136">      throw new StorageException(e);</span>
+<span class="nc" id="L137">    }</span>
+<span class="nc" id="L138">  }</span>
+
+  /**
+   * get a RocksIterator that reads through the transaction to represent the current state.
+   *
+   * &lt;p&gt;be sure to close this iterator, like in a try-with-resources block, otherwise a native
+   * memory leak might occur.
+   *
+   * @param segmentId id for the segment to iterate over.
+   * @return RocksIterator
+   */
+  public RocksIterator getIterator(final SegmentIdentifier segmentId) {
+<span class="nc" id="L150">    return snapTx.getIterator(readOptions, columnFamilyMapper.apply(segmentId));</span>
+  }
+
+  /**
+   * Stream.
+   *
+   * @param segmentId the segment id
+   * @return the stream
+   */
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream(final SegmentIdentifier segmentId) {
+<span class="nc" id="L160">    throwIfClosed();</span>
+
+<span class="nc" id="L162">    final RocksIterator rocksIterator =</span>
+<span class="nc" id="L163">        db.newIterator(columnFamilyMapper.apply(segmentId), readOptions);</span>
+<span class="nc" id="L164">    rocksIterator.seekToFirst();</span>
+<span class="nc" id="L165">    return RocksDbIterator.create(rocksIterator).toStream();</span>
+  }
+
+  /**
+   * Stream keys.
+   *
+   * @param segmentId the segment id
+   * @return the stream
+   */
+  public Stream&lt;byte[]&gt; streamKeys(final SegmentIdentifier segmentId) {
+<span class="nc" id="L175">    throwIfClosed();</span>
+
+<span class="nc" id="L177">    final RocksIterator rocksIterator =</span>
+<span class="nc" id="L178">        db.newIterator(columnFamilyMapper.apply(segmentId), readOptions);</span>
+<span class="nc" id="L179">    rocksIterator.seekToFirst();</span>
+<span class="nc" id="L180">    return RocksDbIterator.create(rocksIterator).toStreamKeys();</span>
+  }
+  /**
+   * Returns a stream of key-value pairs starting from the specified key. This method is used to
+   * retrieve a stream of data reading through the transaction, starting from the given key. If no
+   * data is available from the specified key onwards, an empty stream is returned.
+   *
+   * @param segment The segment identifier whose keys we want to stream.
+   * @param startKey The key from which the stream should start.
+   * @return A stream of key-value pairs starting from the specified key.
+   */
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segment, final byte[] startKey) {
+<span class="nc" id="L193">    throwIfClosed();</span>
+
+<span class="nc" id="L195">    final RocksIterator rocksIterator =</span>
+<span class="nc" id="L196">        db.newIterator(columnFamilyMapper.apply(segment), readOptions);</span>
+<span class="nc" id="L197">    rocksIterator.seek(startKey);</span>
+<span class="nc" id="L198">    return RocksDbIterator.create(rocksIterator).toStream();</span>
+  }
+
+  /**
+   * Returns a stream of key-value pairs starting from the specified key, ending at the specified
+   * key. This method is used to retrieve a stream of data reading through the transaction, starting
+   * from the given key. If no data is available from the specified key onwards, an empty stream is
+   * returned.
+   *
+   * @param segment The segment identifier whose keys we want to stream.
+   * @param startKey The key from which the stream should start.
+   * @param endKey The key at which the stream should stop.
+   * @return A stream of key-value pairs starting from the specified key.
+   */
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segment, final byte[] startKey, final byte[] endKey) {
+<span class="nc" id="L214">    throwIfClosed();</span>
+<span class="nc" id="L215">    final Bytes endKeyBytes = Bytes.wrap(endKey);</span>
+
+<span class="nc" id="L217">    final RocksIterator rocksIterator =</span>
+<span class="nc" id="L218">        db.newIterator(columnFamilyMapper.apply(segment), readOptions);</span>
+<span class="nc" id="L219">    rocksIterator.seek(startKey);</span>
+<span class="nc" id="L220">    return RocksDbIterator.create(rocksIterator)</span>
+<span class="nc" id="L221">        .toStream()</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">        .takeWhile(e -&gt; endKeyBytes.compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
+  }
+
+  @Override
+  public void commit() throws StorageException {
+    // no-op
+<span class="nc" id="L228">  }</span>
+
+  @Override
+  public void rollback() {
+<span class="nc" id="L232">    throwIfClosed();</span>
+
+    try {
+<span class="nc" id="L235">      snapTx.rollback();</span>
+<span class="nc" id="L236">      metrics.getRollbackCount().inc();</span>
+<span class="nc" id="L237">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L238" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L239">        LOG.error(e.getMessage());</span>
+<span class="nc" id="L240">        System.exit(0);</span>
+      }
+<span class="nc" id="L242">      throw new StorageException(e);</span>
+    } finally {
+<span class="nc" id="L244">      close();</span>
+    }
+<span class="nc" id="L246">  }</span>
+
+  /**
+   * Copy.
+   *
+   * @return the rocks db snapshot transaction
+   */
+  public RocksDBSnapshotTransaction copy() {
+<span class="nc" id="L254">    throwIfClosed();</span>
+    try {
+<span class="nc" id="L256">      var copyReadOptions = new ReadOptions().setSnapshot(snapshot.markAndUseSnapshot());</span>
+<span class="nc" id="L257">      var copySnapTx = db.beginTransaction(writeOptions);</span>
+<span class="nc" id="L258">      copySnapTx.rebuildFromWriteBatch(snapTx.getWriteBatch().getWriteBatch());</span>
+<span class="nc" id="L259">      return new RocksDBSnapshotTransaction(</span>
+          db, columnFamilyMapper, metrics, snapshot, copySnapTx, copyReadOptions);
+<span class="nc" id="L261">    } catch (Exception ex) {</span>
+<span class="nc" id="L262">      LOG.error(&quot;Failed to copy snapshot transaction&quot;, ex);</span>
+<span class="nc" id="L263">      snapshot.unMarkSnapshot();</span>
+<span class="nc" id="L264">      throw new StorageException(ex);</span>
+    }
+  }
+
+  @Override
+  public void close() {
+<span class="fc" id="L270">    snapTx.close();</span>
+<span class="fc" id="L271">    writeOptions.close();</span>
+<span class="fc" id="L272">    readOptions.close();</span>
+<span class="fc" id="L273">    snapshot.unMarkSnapshot();</span>
+<span class="fc" id="L274">    isClosed.set(true);</span>
+<span class="fc" id="L275">  }</span>
+
+  private void throwIfClosed() {
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">    if (isClosed.get()) {</span>
+<span class="nc" id="L279">      LOG.error(&quot;Attempting to use a closed RocksDBSnapshotTransaction&quot;);</span>
+<span class="nc" id="L280">      throw new StorageException(&quot;Storage has already been closed&quot;);</span>
+    }
+<span class="fc" id="L282">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

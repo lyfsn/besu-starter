@@ -1,0 +1,658 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlatTraceGenerator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat</a> &gt; <span class="el_source">FlatTraceGenerator.java</span></div><h1>FlatTraceGenerator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.flat;
+
+import static org.hyperledger.besu.evm.internal.Words.toAddress;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor.TransactionTrace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.Quantity;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.Trace;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.tracing.TracingUtils;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.debug.TraceFrame;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.operation.ReturnOperation;
+import org.hyperledger.besu.evm.operation.RevertOperation;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.collect.Streams;
+import com.google.common.util.concurrent.Atomics;
+import org.apache.tuweni.bytes.Bytes;
+
+<span class="nc" id="L52">public class FlatTraceGenerator {</span>
+
+<span class="fc" id="L54">  private static final String ZERO_ADDRESS_STRING = Address.ZERO.toHexString();</span>
+
+  private static final int EIP_150_DIVISOR = 64;
+
+  /**
+   * Generates a stream of {@link Trace} from the passed {@link TransactionTrace} data.
+   *
+   * @param protocolSchedule the current {@link ProtocolSchedule} to use
+   * @param transactionTrace the {@link TransactionTrace} to use
+   * @param block the {@link Block} to use
+   * @param traceCounter the current trace counter value
+   * @param consumer to use to add additional contextual information to the trace
+   * @return a stream of generated traces {@link Trace}
+   */
+  public static Stream&lt;Trace&gt; generateFromTransactionTrace(
+      final ProtocolSchedule protocolSchedule,
+      final TransactionTrace transactionTrace,
+      final Block block,
+      final AtomicInteger traceCounter,
+      final Consumer&lt;FlatTrace.Builder&gt; consumer) {
+
+<span class="fc" id="L75">    final FlatTrace.Builder firstFlatTraceBuilder = FlatTrace.freshBuilder(transactionTrace);</span>
+
+<span class="fc" id="L77">    final Transaction tx = transactionTrace.getTransaction();</span>
+
+<span class="fc" id="L79">    final Optional&lt;String&gt; smartContractCode =</span>
+<span class="fc" id="L80">        tx.getInit().map(__ -&gt; transactionTrace.getResult().getOutput().toString());</span>
+<span class="fc" id="L81">    final Optional&lt;String&gt; smartContractAddress =</span>
+<span class="fc" id="L82">        smartContractCode.map(</span>
+<span class="fc" id="L83">            __ -&gt; Address.contractAddress(tx.getSender(), tx.getNonce()).toHexString());</span>
+<span class="fc" id="L84">    final Optional&lt;Bytes&gt; revertReason = transactionTrace.getResult().getRevertReason();</span>
+
+    // set code field in result node
+<span class="fc" id="L87">    smartContractCode.ifPresent(firstFlatTraceBuilder.getResultBuilder()::code);</span>
+<span class="fc" id="L88">    revertReason.ifPresent(r -&gt; firstFlatTraceBuilder.revertReason(r.toHexString()));</span>
+
+    // set init field if transaction is a smart contract deployment
+<span class="fc" id="L91">    tx.getInit().map(Bytes::toHexString).ifPresent(firstFlatTraceBuilder.getActionBuilder()::init);</span>
+
+    // set to, input and callType fields if not a smart contract
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    if (tx.getTo().isPresent()) {</span>
+<span class="fc" id="L95">      final Bytes payload = tx.getPayload();</span>
+<span class="fc" id="L96">      firstFlatTraceBuilder</span>
+<span class="fc" id="L97">          .getActionBuilder()</span>
+<span class="fc" id="L98">          .to(tx.getTo().map(Bytes::toHexString).orElse(null))</span>
+<span class="fc" id="L99">          .callType(&quot;call&quot;)</span>
+<span class="pc bpc" id="L100" title="1 of 2 branches missed.">          .input(payload == null ? &quot;0x&quot; : payload.toHexString());</span>
+
+<span class="pc bpc" id="L102" title="1 of 2 branches missed.">      if (!transactionTrace.getTraceFrames().isEmpty()</span>
+<span class="fc bfc" id="L103" title="All 2 branches covered.">          &amp;&amp; hasRevertInSubCall(transactionTrace, transactionTrace.getTraceFrames().get(0))) {</span>
+<span class="fc" id="L104">        firstFlatTraceBuilder.error(Optional.of(&quot;Reverted&quot;));</span>
+      }
+
+<span class="fc" id="L107">    } else {</span>
+<span class="fc" id="L108">      firstFlatTraceBuilder</span>
+<span class="fc" id="L109">          .type(&quot;create&quot;)</span>
+<span class="fc" id="L110">          .getResultBuilder()</span>
+<span class="fc" id="L111">          .address(smartContractAddress.orElse(null));</span>
+    }
+
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (!transactionTrace.getTraceFrames().isEmpty()) {</span>
+<span class="fc" id="L115">      final OptionalLong precompiledGasCost =</span>
+<span class="fc" id="L116">          transactionTrace.getTraceFrames().get(0).getPrecompiledGasCost();</span>
+<span class="fc bfc" id="L117" title="All 2 branches covered.">      if (precompiledGasCost.isPresent()) {</span>
+<span class="fc" id="L118">        firstFlatTraceBuilder</span>
+<span class="fc" id="L119">            .getResultBuilder()</span>
+<span class="fc" id="L120">            .gasUsed(&quot;0x&quot; + Long.toHexString(precompiledGasCost.getAsLong()));</span>
+      }
+    }
+
+<span class="fc" id="L124">    final List&lt;FlatTrace.Builder&gt; flatTraces = new ArrayList&lt;&gt;();</span>
+
+    // stack of previous contexts
+<span class="fc" id="L127">    final Deque&lt;FlatTrace.Context&gt; tracesContexts = new ArrayDeque&lt;&gt;();</span>
+
+    // add the first transactionTrace context to the queue of transactionTrace contexts
+<span class="fc" id="L130">    FlatTrace.Context currentContext = new FlatTrace.Context(firstFlatTraceBuilder);</span>
+<span class="fc" id="L131">    tracesContexts.addLast(currentContext);</span>
+<span class="fc" id="L132">    flatTraces.add(currentContext.getBuilder());</span>
+    // declare the first transactionTrace context as the previous transactionTrace context
+<span class="fc" id="L134">    long cumulativeGasCost = 0;</span>
+
+<span class="fc" id="L136">    final Iterator&lt;TraceFrame&gt; iter = transactionTrace.getTraceFrames().iterator();</span>
+    Optional&lt;TraceFrame&gt; nextTraceFrame =
+<span class="fc bfc" id="L138" title="All 2 branches covered.">        iter.hasNext() ? Optional.of(iter.next()) : Optional.empty();</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    while (nextTraceFrame.isPresent()) {</span>
+<span class="fc" id="L140">      final TraceFrame traceFrame = nextTraceFrame.get();</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">      nextTraceFrame = iter.hasNext() ? Optional.of(iter.next()) : Optional.empty();</span>
+<span class="fc" id="L142">      cumulativeGasCost +=</span>
+<span class="fc" id="L143">          traceFrame.getGasCost().orElse(0L) + traceFrame.getPrecompiledGasCost().orElse(0L);</span>
+
+<span class="fc" id="L145">      final String opcodeString = traceFrame.getOpcode();</span>
+<span class="fc bfc" id="L146" title="All 2 branches covered.">      if (&quot;CALL&quot;.equals(opcodeString)</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">          || &quot;CALLCODE&quot;.equals(opcodeString)</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">          || &quot;DELEGATECALL&quot;.equals(opcodeString)</span>
+<span class="fc bfc" id="L149" title="All 2 branches covered.">          || &quot;STATICCALL&quot;.equals(opcodeString)) {</span>
+
+<span class="fc" id="L151">        currentContext =</span>
+<span class="fc" id="L152">            handleCall(</span>
+                transactionTrace,
+                traceFrame,
+                nextTraceFrame,
+                flatTraces,
+                cumulativeGasCost,
+                tracesContexts,
+<span class="fc" id="L159">                opcodeString.toLowerCase(Locale.US));</span>
+
+<span class="fc bfc" id="L161" title="All 2 branches covered.">      } else if (&quot;CALLDATALOAD&quot;.equals(opcodeString)) {</span>
+<span class="fc" id="L162">        currentContext = handleCallDataLoad(currentContext, traceFrame);</span>
+<span class="fc bfc" id="L163" title="All 4 branches covered.">      } else if (&quot;RETURN&quot;.equals(opcodeString) || &quot;STOP&quot;.equals(opcodeString)) {</span>
+<span class="fc" id="L164">        currentContext =</span>
+<span class="fc" id="L165">            handleReturn(</span>
+                protocolSchedule,
+                transactionTrace,
+                block,
+                traceFrame,
+                tracesContexts,
+                currentContext);
+<span class="fc bfc" id="L172" title="All 2 branches covered.">      } else if (&quot;SELFDESTRUCT&quot;.equals(opcodeString)) {</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">        if (traceFrame.getExceptionalHaltReason().isPresent()) {</span>
+<span class="fc" id="L174">          currentContext =</span>
+<span class="fc" id="L175">              handleCall(</span>
+                  transactionTrace,
+                  traceFrame,
+                  nextTraceFrame,
+                  flatTraces,
+                  cumulativeGasCost,
+                  tracesContexts,
+<span class="fc" id="L182">                  opcodeString.toLowerCase(Locale.US));</span>
+        } else {
+<span class="fc" id="L184">          currentContext =</span>
+<span class="fc" id="L185">              handleSelfDestruct(traceFrame, tracesContexts, currentContext, flatTraces);</span>
+        }
+<span class="fc bfc" id="L187" title="All 4 branches covered.">      } else if ((&quot;CREATE&quot;.equals(opcodeString) || &quot;CREATE2&quot;.equals(opcodeString))</span>
+<span class="fc bfc" id="L188" title="All 4 branches covered.">          &amp;&amp; (traceFrame.getExceptionalHaltReason().isEmpty() || traceFrame.getDepth() == 0)) {</span>
+<span class="fc" id="L189">        currentContext =</span>
+<span class="fc" id="L190">            handleCreateOperation(</span>
+                traceFrame,
+                nextTraceFrame,
+                flatTraces,
+                cumulativeGasCost,
+                tracesContexts,
+                smartContractAddress);
+<span class="fc bfc" id="L197" title="All 2 branches covered.">      } else if (&quot;REVERT&quot;.equals(opcodeString)) {</span>
+<span class="fc" id="L198">        currentContext = handleRevert(tracesContexts, currentContext);</span>
+      }
+
+<span class="fc bfc" id="L201" title="All 2 branches covered.">      if (traceFrame.getExceptionalHaltReason().isPresent()) {</span>
+<span class="fc" id="L202">        currentContext = handleHalt(flatTraces, tracesContexts, currentContext, traceFrame);</span>
+      }
+
+<span class="fc bfc" id="L205" title="All 2 branches covered.">      if (currentContext == null) {</span>
+<span class="fc" id="L206">        break;</span>
+      }
+<span class="fc" id="L208">    }</span>
+
+<span class="fc" id="L210">    return flatTraces.stream().peek(consumer).map(FlatTrace.Builder::build);</span>
+  }
+
+  /**
+   * Generates a stream of {@link Trace} from the passed {@link TransactionTrace} and {@link Block}
+   * data.
+   *
+   * @param protocolSchedule the current {@link ProtocolSchedule} to use
+   * @param transactionTrace the {@link TransactionTrace} to use
+   * @param block the {@link Block} to use
+   * @param traceCounter the current traceCounter
+   * @return a stream of generated traces {@link Trace}
+   */
+  public static Stream&lt;Trace&gt; generateFromTransactionTrace(
+      final ProtocolSchedule protocolSchedule,
+      final TransactionTrace transactionTrace,
+      final Block block,
+      final AtomicInteger traceCounter) {
+<span class="fc" id="L228">    return generateFromTransactionTrace(</span>
+        protocolSchedule, transactionTrace, block, traceCounter, true);
+  }
+
+  public static Stream&lt;Trace&gt; generateFromTransactionTrace(
+      final ProtocolSchedule protocolSchedule,
+      final TransactionTrace transactionTrace,
+      final Block block,
+      final AtomicInteger traceCounter,
+      final boolean includeCreationMethod) {
+<span class="fc" id="L238">    return generateFromTransactionTrace(</span>
+        protocolSchedule,
+        transactionTrace,
+        block,
+        traceCounter,
+<span class="fc bfc" id="L243" title="All 2 branches covered.">        includeCreationMethod</span>
+<span class="fc" id="L244">            ? builder -&gt; addContractCreationMethodToTrace(transactionTrace, builder)</span>
+<span class="fc" id="L245">            : builder -&gt; {});</span>
+  }
+
+  /**
+   * Generates a stream of {@link Trace} from the passed {@link TransactionTrace} and {@link Block}
+   * data with additional Transaction Information added to FlatTrace
+   *
+   * @param protocolSchedule the current {@link ProtocolSchedule} to use
+   * @param transactionTrace the {@link TransactionTrace} to use
+   * @param block the {@link Block} to use
+   * @return a stream of generated traces {@link Trace}
+   */
+  public static Stream&lt;Trace&gt; generateFromTransactionTraceAndBlock(
+      final ProtocolSchedule protocolSchedule,
+      final TransactionTrace transactionTrace,
+      final Block block) {
+<span class="fc" id="L261">    return generateFromTransactionTrace(</span>
+        protocolSchedule,
+        transactionTrace,
+        block,
+        new AtomicInteger(),
+        builder -&gt;
+<span class="fc" id="L267">            addAdditionalTransactionInformationToFlatTrace(builder, transactionTrace, block));</span>
+  }
+
+  private static FlatTrace.Context handleCall(
+      final TransactionTrace transactionTrace,
+      final TraceFrame traceFrame,
+      final Optional&lt;TraceFrame&gt; nextTraceFrame,
+      final List&lt;FlatTrace.Builder&gt; flatTraces,
+      final long cumulativeGasCost,
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final String opcodeString) {
+<span class="fc" id="L278">    final Bytes[] stack = traceFrame.getStack().orElseThrow();</span>
+<span class="fc" id="L279">    final FlatTrace.Context lastContext = tracesContexts.peekLast();</span>
+
+<span class="fc" id="L281">    final String callingAddress = calculateCallingAddress(lastContext);</span>
+
+<span class="fc bfc" id="L283" title="All 2 branches covered.">    if (traceFrame.getDepth() &gt;= nextTraceFrame.map(TraceFrame::getDepth).orElse(0)) {</span>
+      // don't log calls to calls that don't execute, such as insufficient value and precompiles
+<span class="fc" id="L285">      return tracesContexts.peekLast();</span>
+    }
+
+    final FlatTrace.Builder subTraceBuilder =
+<span class="fc" id="L289">        FlatTrace.builder()</span>
+<span class="fc" id="L290">            .traceAddress(calculateTraceAddress(tracesContexts))</span>
+<span class="fc" id="L291">            .resultBuilder(Result.builder());</span>
+    final Action.Builder subTraceActionBuilder =
+<span class="fc" id="L293">        Action.builder()</span>
+<span class="fc" id="L294">            .from(callingAddress)</span>
+<span class="fc" id="L295">            .input(</span>
+<span class="fc" id="L296">                nextTraceFrame.map(TraceFrame::getInputData).map(Bytes::toHexString).orElse(null))</span>
+<span class="fc" id="L297">            .gas(</span>
+<span class="fc" id="L298">                &quot;0x&quot; + Long.toHexString(nextTraceFrame.map(TraceFrame::getGasRemaining).orElse(0L)))</span>
+<span class="fc" id="L299">            .callType(opcodeString.toLowerCase(Locale.US))</span>
+<span class="fc" id="L300">            .value(Quantity.create(traceFrame.getValue()));</span>
+
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">    if (stack.length &gt; 1) {</span>
+<span class="fc" id="L303">      subTraceActionBuilder.to(toAddress(stack[stack.length - 2]).toString());</span>
+    }
+
+<span class="fc" id="L306">    nextTraceFrame.ifPresent(</span>
+        nextFrame -&gt; {
+<span class="pc bpc" id="L308" title="1 of 2 branches missed.">          if (hasRevertInSubCall(transactionTrace, nextFrame)) {</span>
+<span class="nc" id="L309">            subTraceBuilder.error(Optional.of(&quot;Reverted&quot;));</span>
+          }
+<span class="fc" id="L311">        });</span>
+
+<span class="fc" id="L313">    final FlatTrace.Context currentContext =</span>
+<span class="fc" id="L314">        new FlatTrace.Context(subTraceBuilder.actionBuilder(subTraceActionBuilder));</span>
+<span class="fc" id="L315">    currentContext.decGasUsed(cumulativeGasCost);</span>
+
+<span class="fc" id="L317">    tracesContexts.addLast(currentContext);</span>
+<span class="fc" id="L318">    flatTraces.add(currentContext.getBuilder());</span>
+<span class="fc" id="L319">    return currentContext;</span>
+  }
+
+  private static FlatTrace.Context handleReturn(
+      final ProtocolSchedule protocolSchedule,
+      final TransactionTrace transactionTrace,
+      final Block block,
+      final TraceFrame traceFrame,
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final FlatTrace.Context currentContext) {
+
+<span class="fc" id="L330">    final FlatTrace.Builder traceFrameBuilder = currentContext.getBuilder();</span>
+<span class="fc" id="L331">    final Result.Builder resultBuilder = traceFrameBuilder.getResultBuilder();</span>
+<span class="fc" id="L332">    final Action.Builder actionBuilder = traceFrameBuilder.getActionBuilder();</span>
+<span class="fc" id="L333">    actionBuilder.value(Quantity.create(traceFrame.getValue()));</span>
+
+<span class="fc" id="L335">    currentContext.setGasUsed(</span>
+<span class="fc" id="L336">        computeGasUsed(tracesContexts, currentContext, transactionTrace, traceFrame));</span>
+
+<span class="fc bfc" id="L338" title="All 4 branches covered.">    if (&quot;STOP&quot;.equals(traceFrame.getOpcode()) &amp;&amp; resultBuilder.isGasUsedEmpty()) {</span>
+<span class="fc" id="L339">      final long callStipend =</span>
+          protocolSchedule
+<span class="fc" id="L341">              .getByBlockHeader(block.getHeader())</span>
+<span class="fc" id="L342">              .getGasCalculator()</span>
+<span class="fc" id="L343">              .getAdditionalCallStipend();</span>
+<span class="fc" id="L344">      tracesContexts.stream()</span>
+<span class="fc" id="L345">          .filter(</span>
+              context -&gt;
+<span class="fc bfc" id="L347" title="All 2 branches covered.">                  !tracesContexts.getFirst().equals(context)</span>
+<span class="fc bfc" id="L348" title="All 2 branches covered.">                      &amp;&amp; !tracesContexts.getLast().equals(context))</span>
+<span class="fc" id="L349">          .forEach(context -&gt; context.decGasUsed(callStipend));</span>
+    }
+
+<span class="fc" id="L352">    final Bytes outputData = traceFrame.getOutputData();</span>
+<span class="fc bfc" id="L353" title="All 2 branches covered.">    if (resultBuilder.getCode() == null) {</span>
+<span class="fc" id="L354">      resultBuilder.output(outputData.toHexString());</span>
+    }
+
+    // set value for contract creation TXes, CREATE, and CREATE2
+<span class="pc bpc" id="L358" title="1 of 4 branches missed.">    if (actionBuilder.getCallType() == null &amp;&amp; traceFrame.getMaybeCode().isPresent()) {</span>
+<span class="fc" id="L359">      actionBuilder.init(traceFrame.getMaybeCode().get().getBytes().toHexString());</span>
+<span class="fc" id="L360">      resultBuilder.code(outputData.toHexString());</span>
+<span class="fc bfc" id="L361" title="All 2 branches covered.">      if (currentContext.isCreateOp()) {</span>
+        // this is from a CREATE/CREATE2, so add code deposit cost.
+<span class="fc" id="L363">        currentContext.incGasUsed(outputData.size() * 200L);</span>
+      }
+    }
+
+<span class="fc" id="L367">    tracesContexts.removeLast();</span>
+<span class="fc" id="L368">    final FlatTrace.Context nextContext = tracesContexts.peekLast();</span>
+<span class="fc bfc" id="L369" title="All 2 branches covered.">    if (nextContext != null) {</span>
+<span class="fc" id="L370">      nextContext.getBuilder().incSubTraces();</span>
+    }
+<span class="fc" id="L372">    return nextContext;</span>
+  }
+
+  private static FlatTrace.Context handleSelfDestruct(
+      final TraceFrame traceFrame,
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final FlatTrace.Context currentContext,
+      final List&lt;FlatTrace.Builder&gt; flatTraces) {
+
+<span class="fc" id="L381">    final Action.Builder actionBuilder = currentContext.getBuilder().getActionBuilder();</span>
+<span class="fc" id="L382">    final long gasUsed =</span>
+<span class="fc" id="L383">        Long.decode(actionBuilder.getGas())</span>
+<span class="fc" id="L384">            - traceFrame.getGasRemaining()</span>
+<span class="fc" id="L385">            + (traceFrame.getGasCost().orElse(0L));</span>
+
+<span class="fc" id="L387">    currentContext.setGasUsed(gasUsed);</span>
+
+<span class="fc" id="L389">    final Bytes[] stack = traceFrame.getStack().orElseThrow();</span>
+<span class="fc" id="L390">    final Address refundAddress = toAddress(stack[stack.length - 1]);</span>
+    final FlatTrace.Builder subTraceBuilder =
+<span class="fc" id="L392">        FlatTrace.builder()</span>
+<span class="fc" id="L393">            .type(&quot;suicide&quot;)</span>
+<span class="fc" id="L394">            .traceAddress(calculateSelfDescructAddress(tracesContexts));</span>
+
+<span class="fc" id="L396">    final AtomicReference&lt;Wei&gt; weiBalance = Atomics.newReference(Wei.ZERO);</span>
+<span class="fc" id="L397">    traceFrame</span>
+<span class="fc" id="L398">        .getMaybeRefunds()</span>
+<span class="fc" id="L399">        .ifPresent(refunds -&gt; weiBalance.set(refunds.getOrDefault(refundAddress, Wei.ZERO)));</span>
+
+<span class="fc" id="L401">    final Action.Builder callingAction = tracesContexts.peekLast().getBuilder().getActionBuilder();</span>
+<span class="fc" id="L402">    final String actionAddress =</span>
+<span class="fc" id="L403">        getActionAddress(callingAction, traceFrame.getRecipient().toHexString());</span>
+    final Action.Builder subTraceActionBuilder =
+<span class="fc" id="L405">        Action.builder()</span>
+<span class="fc" id="L406">            .address(actionAddress)</span>
+<span class="fc" id="L407">            .refundAddress(refundAddress.toString())</span>
+<span class="fc" id="L408">            .balance(TracingUtils.weiAsHex(weiBalance.get()));</span>
+
+<span class="fc" id="L410">    flatTraces.add(</span>
+<span class="fc" id="L411">        new FlatTrace.Context(subTraceBuilder.actionBuilder(subTraceActionBuilder)).getBuilder());</span>
+<span class="fc" id="L412">    final FlatTrace.Context lastContext = tracesContexts.removeLast();</span>
+<span class="fc" id="L413">    lastContext.getBuilder().incSubTraces();</span>
+<span class="fc" id="L414">    final FlatTrace.Context nextContext = tracesContexts.peekLast();</span>
+<span class="fc bfc" id="L415" title="All 2 branches covered.">    if (nextContext != null) {</span>
+<span class="fc" id="L416">      nextContext.getBuilder().incSubTraces();</span>
+    }
+<span class="fc" id="L418">    return nextContext;</span>
+  }
+
+  private static String getActionAddress(
+      final Action.Builder callingAction, final String recipient) {
+<span class="fc bfc" id="L423" title="All 2 branches covered.">    if (callingAction.getCallType() != null) {</span>
+<span class="fc bfc" id="L424" title="All 2 branches covered.">      return callingAction.getCallType().equals(&quot;call&quot;)</span>
+<span class="fc" id="L425">          ? callingAction.getTo()</span>
+<span class="fc" id="L426">          : callingAction.getFrom();</span>
+    }
+<span class="fc" id="L428">    return firstNonNull(&quot;&quot;, recipient, callingAction.getFrom(), callingAction.getTo());</span>
+  }
+
+  private static String firstNonNull(final String defaultValue, final String... values) {
+<span class="pc bpc" id="L432" title="1 of 2 branches missed.">    for (final String value : values) {</span>
+<span class="pc bpc" id="L433" title="1 of 2 branches missed.">      if (value != null) {</span>
+<span class="fc" id="L434">        return value;</span>
+      }
+    }
+<span class="nc" id="L437">    return defaultValue;</span>
+  }
+
+  private static FlatTrace.Context handleCreateOperation(
+      final TraceFrame traceFrame,
+      final Optional&lt;TraceFrame&gt; nextTraceFrame,
+      final List&lt;FlatTrace.Builder&gt; flatTraces,
+      final long cumulativeGasCost,
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final Optional&lt;String&gt; smartContractAddress) {
+<span class="fc" id="L447">    final FlatTrace.Context lastContext = tracesContexts.peekLast();</span>
+
+<span class="fc" id="L449">    final String callingAddress = calculateCallingAddress(lastContext);</span>
+
+    final FlatTrace.Builder subTraceBuilder =
+<span class="fc" id="L452">        FlatTrace.builder()</span>
+<span class="fc" id="L453">            .type(&quot;create&quot;)</span>
+<span class="fc" id="L454">            .traceAddress(calculateTraceAddress(tracesContexts))</span>
+<span class="fc" id="L455">            .resultBuilder(Result.builder());</span>
+
+    final Action.Builder subTraceActionBuilder =
+<span class="fc" id="L458">        Action.builder()</span>
+<span class="fc" id="L459">            .from(smartContractAddress.orElse(callingAddress))</span>
+<span class="fc" id="L460">            .gas(&quot;0x&quot; + Long.toHexString(computeGas(traceFrame, nextTraceFrame)))</span>
+<span class="fc" id="L461">            .value(Quantity.create(nextTraceFrame.map(TraceFrame::getValue).orElse(Wei.ZERO)));</span>
+
+<span class="fc" id="L463">    traceFrame</span>
+<span class="fc" id="L464">        .getMaybeCode()</span>
+<span class="fc" id="L465">        .map(Code::getBytes)</span>
+<span class="fc" id="L466">        .map(Bytes::toHexString)</span>
+<span class="fc" id="L467">        .ifPresent(subTraceActionBuilder::init);</span>
+
+<span class="fc" id="L469">    final FlatTrace.Context currentContext =</span>
+<span class="fc" id="L470">        new FlatTrace.Context(subTraceBuilder.actionBuilder(subTraceActionBuilder));</span>
+
+<span class="fc" id="L472">    currentContext</span>
+<span class="fc" id="L473">        .getBuilder()</span>
+<span class="fc" id="L474">        .getResultBuilder()</span>
+<span class="fc" id="L475">        .address(nextTraceFrame.map(TraceFrame::getRecipient).orElse(Address.ZERO).toHexString());</span>
+<span class="fc" id="L476">    currentContext.setCreateOp(true);</span>
+<span class="fc" id="L477">    currentContext.decGasUsed(cumulativeGasCost);</span>
+<span class="fc" id="L478">    tracesContexts.addLast(currentContext);</span>
+<span class="fc" id="L479">    flatTraces.add(currentContext.getBuilder());</span>
+<span class="fc" id="L480">    return currentContext;</span>
+  }
+
+  private static FlatTrace.Context handleHalt(
+      final List&lt;FlatTrace.Builder&gt; flatTraces,
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final FlatTrace.Context currentContext,
+      final TraceFrame traceFrame) {
+    final FlatTrace.Builder traceFrameBuilder;
+<span class="fc bfc" id="L489" title="All 2 branches covered.">    if (currentContext == null) {</span>
+<span class="fc" id="L490">      traceFrameBuilder = flatTraces.get(flatTraces.size() - 1);</span>
+    } else {
+<span class="fc" id="L492">      traceFrameBuilder = currentContext.getBuilder();</span>
+    }
+<span class="fc" id="L494">    traceFrameBuilder.error(</span>
+<span class="fc" id="L495">        traceFrame.getExceptionalHaltReason().map(ExceptionalHaltReason::getDescription));</span>
+<span class="fc bfc" id="L496" title="All 2 branches covered.">    if (currentContext != null) {</span>
+<span class="fc" id="L497">      final Action.Builder actionBuilder = traceFrameBuilder.getActionBuilder();</span>
+<span class="fc" id="L498">      actionBuilder.value(Quantity.create(traceFrame.getValue()));</span>
+<span class="fc" id="L499">      tracesContexts.removeLast();</span>
+<span class="fc" id="L500">      final FlatTrace.Context nextContext = tracesContexts.peekLast();</span>
+<span class="fc bfc" id="L501" title="All 2 branches covered.">      if (nextContext != null) {</span>
+<span class="fc" id="L502">        nextContext.getBuilder().incSubTraces();</span>
+      }
+<span class="fc" id="L504">      return nextContext;</span>
+    }
+<span class="fc" id="L506">    return currentContext;</span>
+  }
+
+  private static FlatTrace.Context handleRevert(
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts, final FlatTrace.Context currentContext) {
+<span class="fc" id="L511">    currentContext.getBuilder().error(Optional.of(&quot;Reverted&quot;));</span>
+<span class="fc" id="L512">    tracesContexts.removeLast();</span>
+<span class="fc" id="L513">    final FlatTrace.Context nextContext = tracesContexts.peekLast();</span>
+<span class="pc bpc" id="L514" title="1 of 2 branches missed.">    if (nextContext != null) {</span>
+<span class="nc" id="L515">      nextContext.getBuilder().incSubTraces();</span>
+    }
+<span class="fc" id="L517">    return nextContext;</span>
+  }
+
+  private static FlatTrace.Context handleCallDataLoad(
+      final FlatTrace.Context currentContext, final TraceFrame traceFrame) {
+<span class="fc bfc" id="L522" title="All 2 branches covered.">    if (!traceFrame.getValue().isZero()) {</span>
+<span class="fc" id="L523">      currentContext</span>
+<span class="fc" id="L524">          .getBuilder()</span>
+<span class="fc" id="L525">          .getActionBuilder()</span>
+<span class="fc" id="L526">          .value(traceFrame.getValue().toShortHexString());</span>
+    } else {
+<span class="fc" id="L528">      currentContext.getBuilder().getActionBuilder().value(&quot;0x0&quot;);</span>
+    }
+<span class="fc" id="L530">    return currentContext;</span>
+  }
+
+  private static boolean hasRevertInSubCall(
+      final TransactionTrace transactionTrace, final TraceFrame callFrame) {
+<span class="fc bfc" id="L535" title="All 2 branches covered.">    for (int i = 0; i &lt; transactionTrace.getTraceFrames().size(); i++) {</span>
+<span class="fc bfc" id="L536" title="All 2 branches covered.">      if (i + 1 &lt; transactionTrace.getTraceFrames().size()) {</span>
+<span class="fc" id="L537">        final TraceFrame next = transactionTrace.getTraceFrames().get(i + 1);</span>
+<span class="fc bfc" id="L538" title="All 2 branches covered.">        if (next.getDepth() == callFrame.getDepth()) {</span>
+<span class="fc bfc" id="L539" title="All 2 branches covered.">          if (next.getOpcodeNumber() == RevertOperation.OPCODE) {</span>
+<span class="fc" id="L540">            return true;</span>
+<span class="fc bfc" id="L541" title="All 2 branches covered.">          } else if (next.getOpcodeNumber() == ReturnOperation.OPCODE) {</span>
+<span class="fc" id="L542">            return false;</span>
+          }
+        }
+      }
+    }
+<span class="fc" id="L547">    return false;</span>
+  }
+
+  private static String calculateCallingAddress(final FlatTrace.Context lastContext) {
+<span class="fc" id="L551">    final FlatTrace.Builder lastContextBuilder = lastContext.getBuilder();</span>
+<span class="fc" id="L552">    final Action.Builder lastActionBuilder = lastContextBuilder.getActionBuilder();</span>
+<span class="fc bfc" id="L553" title="All 2 branches covered.">    if (lastActionBuilder.getCallType() == null) {</span>
+<span class="pc bpc" id="L554" title="1 of 2 branches missed.">      if (&quot;create&quot;.equals(lastContextBuilder.getType())) {</span>
+<span class="fc" id="L555">        return lastContextBuilder.getResultBuilder().getAddress();</span>
+      } else {
+<span class="nc" id="L557">        return ZERO_ADDRESS_STRING;</span>
+      }
+    }
+<span class="pc bpc" id="L560" title="3 of 4 branches missed.">    switch (lastActionBuilder.getCallType()) {</span>
+      case &quot;call&quot;:
+      case &quot;staticcall&quot;:
+<span class="fc" id="L563">        return lastActionBuilder.getTo();</span>
+      case &quot;delegatecall&quot;:
+      case &quot;callcode&quot;:
+<span class="nc" id="L566">        return lastActionBuilder.getFrom();</span>
+      case &quot;create&quot;:
+      case &quot;create2&quot;:
+<span class="nc" id="L569">        return lastContextBuilder.getResultBuilder().getAddress();</span>
+      default:
+<span class="nc" id="L571">        return ZERO_ADDRESS_STRING;</span>
+    }
+  }
+
+  private static long computeGasUsed(
+      final Deque&lt;FlatTrace.Context&gt; tracesContexts,
+      final FlatTrace.Context currentContext,
+      final TransactionTrace transactionTrace,
+      final TraceFrame traceFrame) {
+
+    final long gasRemainingBeforeProcessed;
+    final long gasRemainingAfterProcessed;
+<span class="fc" id="L583">    long gasRefund = 0;</span>
+<span class="fc bfc" id="L584" title="All 2 branches covered.">    if (tracesContexts.size() == 1) {</span>
+<span class="fc" id="L585">      gasRemainingBeforeProcessed = transactionTrace.getTraceFrames().get(0).getGasRemaining();</span>
+<span class="fc" id="L586">      gasRemainingAfterProcessed = transactionTrace.getResult().getGasRemaining();</span>
+<span class="fc bfc" id="L587" title="All 2 branches covered.">      if (gasRemainingAfterProcessed &gt; traceFrame.getGasRemaining()) {</span>
+<span class="fc" id="L588">        gasRefund = gasRemainingAfterProcessed - traceFrame.getGasRemaining();</span>
+      } else {
+<span class="fc" id="L590">        gasRefund = traceFrame.getGasRefund();</span>
+      }
+    } else {
+<span class="fc" id="L593">      final Action.Builder actionBuilder = currentContext.getBuilder().getActionBuilder();</span>
+<span class="fc" id="L594">      gasRemainingBeforeProcessed = Long.decode(actionBuilder.getGas());</span>
+<span class="fc" id="L595">      gasRemainingAfterProcessed = traceFrame.getGasRemaining();</span>
+    }
+<span class="fc" id="L597">    return gasRemainingBeforeProcessed - gasRemainingAfterProcessed + gasRefund;</span>
+  }
+
+  private static long computeGas(
+      final TraceFrame traceFrame, final Optional&lt;TraceFrame&gt; nextTraceFrame) {
+<span class="pc bpc" id="L602" title="1 of 2 branches missed.">    if (traceFrame.getGasCost().isPresent()) {</span>
+<span class="fc" id="L603">      final long gasNeeded = traceFrame.getGasCost().getAsLong();</span>
+<span class="fc" id="L604">      final long currentGas = traceFrame.getGasRemaining();</span>
+<span class="pc bpc" id="L605" title="1 of 2 branches missed.">      if (currentGas &gt;= gasNeeded) {</span>
+<span class="fc" id="L606">        final long gasRemaining = currentGas - gasNeeded;</span>
+<span class="fc" id="L607">        return gasRemaining - Math.floorDiv(gasRemaining, EIP_150_DIVISOR);</span>
+      }
+    }
+<span class="nc" id="L610">    return nextTraceFrame.map(TraceFrame::getGasRemaining).orElse(0L);</span>
+  }
+
+  private static List&lt;Integer&gt; calculateTraceAddress(final Deque&lt;FlatTrace.Context&gt; contexts) {
+<span class="fc" id="L614">    return contexts.stream()</span>
+<span class="fc" id="L615">        .map(context -&gt; context.getBuilder().getSubtraces())</span>
+<span class="fc" id="L616">        .collect(Collectors.toList());</span>
+  }
+
+  private static List&lt;Integer&gt; calculateSelfDescructAddress(
+      final Deque&lt;FlatTrace.Context&gt; contexts) {
+<span class="fc" id="L621">    return Streams.concat(</span>
+<span class="fc" id="L622">            contexts.stream()</span>
+<span class="fc" id="L623">                .map(context -&gt; context.getBuilder().getSubtraces())) // , Stream.of(0))</span>
+<span class="fc" id="L624">        .collect(Collectors.toList());</span>
+  }
+
+  private static void addAdditionalTransactionInformationToFlatTrace(
+      final FlatTrace.Builder builder, final TransactionTrace transactionTrace, final Block block) {
+    // add block information (hash and number)
+<span class="fc" id="L630">    builder.blockHash(block.getHash().toHexString()).blockNumber(block.getHeader().getNumber());</span>
+    // add transaction information (position and hash)
+<span class="fc" id="L632">    builder</span>
+<span class="fc" id="L633">        .transactionPosition(</span>
+<span class="fc" id="L634">            block.getBody().getTransactions().indexOf(transactionTrace.getTransaction()))</span>
+<span class="fc" id="L635">        .transactionHash(transactionTrace.getTransaction().getHash().toHexString());</span>
+
+<span class="fc" id="L637">    addContractCreationMethodToTrace(transactionTrace, builder);</span>
+<span class="fc" id="L638">  }</span>
+
+  private static void addContractCreationMethodToTrace(
+      final TransactionTrace transactionTrace, final FlatTrace.Builder builder) {
+    // add creationMethod for create action
+<span class="fc" id="L643">    Optional.ofNullable(builder.getType())</span>
+<span class="fc" id="L644">        .filter(type -&gt; type.equals(&quot;create&quot;))</span>
+<span class="fc" id="L645">        .ifPresent(</span>
+            __ -&gt;
+<span class="fc" id="L647">                builder</span>
+<span class="fc" id="L648">                    .getActionBuilder()</span>
+<span class="fc" id="L649">                    .creationMethod(</span>
+<span class="fc" id="L650">                        transactionTrace.getTraceFrames().stream()</span>
+<span class="fc" id="L651">                            .filter(frame -&gt; &quot;CREATE2&quot;.equals(frame.getOpcode()))</span>
+<span class="fc" id="L652">                            .findFirst()</span>
+<span class="fc" id="L653">                            .map(TraceFrame::getOpcode)</span>
+<span class="fc" id="L654">                            .orElse(&quot;CREATE&quot;)</span>
+<span class="fc" id="L655">                            .toLowerCase(Locale.US)));</span>
+<span class="fc" id="L656">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

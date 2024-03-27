@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractEngineForkchoiceUpdated.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine</a> &gt; <span class="el_source">AbstractEngineForkchoiceUpdated.java</span></div><h1>AbstractEngineForkchoiceUpdated.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine;
+
+import static java.util.stream.Collectors.toList;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.INVALID;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.SYNCING;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod.EngineStatus.VALID;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine.WithdrawalsValidatorProvider.getWithdrawalsValidator;
+
+import org.hyperledger.besu.consensus.merge.blockcreation.MergeMiningCoordinator;
+import org.hyperledger.besu.consensus.merge.blockcreation.MergeMiningCoordinator.ForkchoiceResult;
+import org.hyperledger.besu.consensus.merge.blockcreation.PayloadIdentifier;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.ExecutionEngineJsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.EngineForkchoiceUpdatedParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.EnginePayloadAttributesParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.WithdrawalParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.EngineUpdateForkchoiceResult;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ScheduledProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
+
+import io.vertx.core.Vertx;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.spi.LoggingEventBuilder;
+
+public abstract class AbstractEngineForkchoiceUpdated extends ExecutionEngineJsonRpcMethod {
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(AbstractEngineForkchoiceUpdated.class);</span>
+  private final MergeMiningCoordinator mergeCoordinator;
+  protected final Long cancunTimestamp;
+
+  public AbstractEngineForkchoiceUpdated(
+      final Vertx vertx,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final MergeMiningCoordinator mergeCoordinator,
+      final EngineCallListener engineCallListener) {
+<span class="fc" id="L65">    super(vertx, protocolSchedule, protocolContext, engineCallListener);</span>
+
+<span class="fc" id="L67">    this.mergeCoordinator = mergeCoordinator;</span>
+<span class="fc" id="L68">    Optional&lt;ScheduledProtocolSpec.Hardfork&gt; cancun =</span>
+<span class="pc" id="L69">        protocolSchedule.hardforkFor(s -&gt; s.fork().name().equalsIgnoreCase(&quot;Cancun&quot;));</span>
+<span class="fc" id="L70">    cancunTimestamp = cancun.map(ScheduledProtocolSpec.Hardfork::milestone).orElse(Long.MAX_VALUE);</span>
+<span class="fc" id="L71">  }</span>
+
+  protected ValidationResult&lt;RpcErrorType&gt; validateParameter(
+      final EngineForkchoiceUpdatedParameter forkchoiceUpdatedParameter,
+      final Optional&lt;EnginePayloadAttributesParameter&gt; maybePayloadAttributes) {
+<span class="fc" id="L76">    return ValidationResult.valid();</span>
+  }
+
+  @Override
+  public JsonRpcResponse syncResponse(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L81">    engineCallListener.executionEngineCalled();</span>
+
+<span class="fc" id="L83">    final Object requestId = requestContext.getRequest().getId();</span>
+
+<span class="fc" id="L85">    final EngineForkchoiceUpdatedParameter forkChoice =</span>
+<span class="fc" id="L86">        requestContext.getRequiredParameter(0, EngineForkchoiceUpdatedParameter.class);</span>
+<span class="fc" id="L87">    final Optional&lt;EnginePayloadAttributesParameter&gt; maybePayloadAttributes =</span>
+<span class="fc" id="L88">        requestContext.getOptionalParameter(1, EnginePayloadAttributesParameter.class);</span>
+
+<span class="fc" id="L90">    LOG.debug(&quot;Forkchoice parameters {}&quot;, forkChoice);</span>
+<span class="fc" id="L91">    mergeContext</span>
+<span class="fc" id="L92">        .get()</span>
+<span class="fc" id="L93">        .fireNewUnverifiedForkchoiceEvent(</span>
+<span class="fc" id="L94">            forkChoice.getHeadBlockHash(),</span>
+<span class="fc" id="L95">            forkChoice.getSafeBlockHash(),</span>
+<span class="fc" id="L96">            forkChoice.getFinalizedBlockHash());</span>
+
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    if (mergeCoordinator.isBadBlock(forkChoice.getHeadBlockHash())) {</span>
+<span class="fc" id="L99">      logForkchoiceUpdatedCall(INVALID, forkChoice);</span>
+<span class="fc" id="L100">      return new JsonRpcSuccessResponse(</span>
+          requestId,
+          new EngineUpdateForkchoiceResult(
+              INVALID,
+              mergeCoordinator
+<span class="fc" id="L105">                  .getLatestValidHashOfBadBlock(forkChoice.getHeadBlockHash())</span>
+<span class="fc" id="L106">                  .orElse(Hash.ZERO),</span>
+              null,
+<span class="fc" id="L108">              Optional.of(forkChoice.getHeadBlockHash() + &quot; is an invalid block&quot;)));</span>
+    }
+
+<span class="fc" id="L111">    final Optional&lt;BlockHeader&gt; maybeNewHead =</span>
+<span class="fc" id="L112">        mergeCoordinator.getOrSyncHeadByHash(</span>
+<span class="fc" id="L113">            forkChoice.getHeadBlockHash(), forkChoice.getFinalizedBlockHash());</span>
+
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    if (maybeNewHead.isEmpty()) {</span>
+<span class="fc" id="L116">      return syncingResponse(requestId, forkChoice);</span>
+    }
+
+<span class="fc" id="L119">    ForkchoiceResult forkchoiceResult = null;</span>
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (!isValidForkchoiceState(</span>
+<span class="fc" id="L121">        forkChoice.getSafeBlockHash(), forkChoice.getFinalizedBlockHash(), maybeNewHead.get())) {</span>
+<span class="fc" id="L122">      logForkchoiceUpdatedCall(INVALID, forkChoice);</span>
+<span class="fc" id="L123">      return new JsonRpcErrorResponse(requestId, RpcErrorType.INVALID_FORKCHOICE_STATE);</span>
+    } else {
+<span class="fc" id="L125">      forkchoiceResult =</span>
+<span class="fc" id="L126">          mergeCoordinator.updateForkChoice(</span>
+<span class="fc" id="L127">              maybeNewHead.get(),</span>
+<span class="fc" id="L128">              forkChoice.getFinalizedBlockHash(),</span>
+<span class="fc" id="L129">              forkChoice.getSafeBlockHash());</span>
+    }
+
+<span class="fc" id="L132">    Optional&lt;List&lt;Withdrawal&gt;&gt; withdrawals = Optional.empty();</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">    if (maybePayloadAttributes.isPresent()) {</span>
+<span class="fc" id="L134">      final EnginePayloadAttributesParameter payloadAttributes = maybePayloadAttributes.get();</span>
+<span class="fc" id="L135">      withdrawals =</span>
+<span class="fc" id="L136">          maybePayloadAttributes.flatMap(</span>
+              pa -&gt;
+<span class="fc" id="L138">                  Optional.ofNullable(pa.getWithdrawals())</span>
+<span class="fc" id="L139">                      .map(</span>
+                          ws -&gt;
+<span class="fc" id="L141">                              ws.stream()</span>
+<span class="fc" id="L142">                                  .map(WithdrawalParameter::toWithdrawal)</span>
+<span class="fc" id="L143">                                  .collect(toList())));</span>
+<span class="fc" id="L144">      Optional&lt;JsonRpcErrorResponse&gt; maybeError =</span>
+<span class="fc" id="L145">          isPayloadAttributesValid(requestId, payloadAttributes);</span>
+<span class="pc bpc" id="L146" title="1 of 2 branches missed.">      if (maybeError.isPresent()) {</span>
+<span class="nc" id="L147">        LOG.atWarn()</span>
+<span class="nc" id="L148">            .setMessage(&quot;RpcError {}: {}&quot;)</span>
+<span class="nc" id="L149">            .addArgument(maybeError.get().getErrorType())</span>
+<span class="nc" id="L150">            .addArgument(</span>
+                () -&gt;
+<span class="nc" id="L152">                    maybePayloadAttributes</span>
+<span class="nc" id="L153">                        .map(EnginePayloadAttributesParameter::serialize)</span>
+<span class="nc" id="L154">                        .orElse(null))</span>
+<span class="nc" id="L155">            .log();</span>
+<span class="nc" id="L156">        return maybeError.get();</span>
+      }
+<span class="fc" id="L158">      ValidationResult&lt;RpcErrorType&gt; forkValidationResult =</span>
+<span class="fc" id="L159">          validateForkSupported(payloadAttributes.getTimestamp());</span>
+<span class="pc bpc" id="L160" title="1 of 2 branches missed.">      if (!forkValidationResult.isValid()) {</span>
+<span class="nc" id="L161">        return new JsonRpcErrorResponse(requestId, forkValidationResult);</span>
+      }
+    }
+
+<span class="fc" id="L165">    final BlockHeader newHead = maybeNewHead.get();</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">    if (maybePayloadAttributes.isPresent()) {</span>
+<span class="fc" id="L167">      Optional&lt;JsonRpcErrorResponse&gt; maybeError =</span>
+<span class="fc" id="L168">          isPayloadAttributeRelevantToNewHead(requestId, maybePayloadAttributes.get(), newHead);</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">      if (maybeError.isPresent()) {</span>
+<span class="fc" id="L170">        return maybeError.get();</span>
+      }
+<span class="fc" id="L172">      if (!getWithdrawalsValidator(</span>
+<span class="fc" id="L173">              protocolSchedule.get(), newHead, maybePayloadAttributes.get().getTimestamp())</span>
+<span class="fc bfc" id="L174" title="All 2 branches covered.">          .validateWithdrawals(withdrawals)) {</span>
+<span class="fc" id="L175">        return new JsonRpcErrorResponse(requestId, getInvalidPayloadError());</span>
+      }
+    }
+
+<span class="fc" id="L179">    ValidationResult&lt;RpcErrorType&gt; parameterValidationResult =</span>
+<span class="fc" id="L180">        validateParameter(forkChoice, maybePayloadAttributes);</span>
+<span class="pc bpc" id="L181" title="1 of 2 branches missed.">    if (!parameterValidationResult.isValid()) {</span>
+<span class="nc" id="L182">      return new JsonRpcSuccessResponse(requestId, parameterValidationResult);</span>
+    }
+
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">    if (mergeContext.get().isSyncing()) {</span>
+<span class="nc" id="L186">      return syncingResponse(requestId, forkChoice);</span>
+    }
+
+<span class="fc" id="L189">    maybePayloadAttributes.ifPresentOrElse(</span>
+<span class="fc" id="L190">        this::logPayload, () -&gt; LOG.debug(&quot;Payload attributes are null&quot;));</span>
+
+<span class="fc bfc" id="L192" title="All 2 branches covered.">    if (forkchoiceResult.shouldNotProceedToPayloadBuildProcess()) {</span>
+<span class="fc bfc" id="L193" title="All 2 branches covered.">      if (ForkchoiceResult.Status.IGNORE_UPDATE_TO_OLD_HEAD.equals(forkchoiceResult.getStatus())) {</span>
+<span class="fc" id="L194">        logForkchoiceUpdatedCall(VALID, forkChoice);</span>
+      } else {
+<span class="fc" id="L196">        logForkchoiceUpdatedCall(INVALID, forkChoice);</span>
+      }
+<span class="fc" id="L198">      return handleNonValidForkchoiceUpdate(requestId, forkchoiceResult);</span>
+    }
+
+    // begin preparing a block if we have a non-empty payload attributes param
+<span class="fc" id="L202">    final Optional&lt;List&lt;Withdrawal&gt;&gt; finalWithdrawals = withdrawals;</span>
+<span class="fc" id="L203">    Optional&lt;PayloadIdentifier&gt; payloadId =</span>
+<span class="fc" id="L204">        maybePayloadAttributes.map(</span>
+            payloadAttributes -&gt;
+<span class="fc" id="L206">                mergeCoordinator.preparePayload(</span>
+                    newHead,
+<span class="fc" id="L208">                    payloadAttributes.getTimestamp(),</span>
+<span class="fc" id="L209">                    payloadAttributes.getPrevRandao(),</span>
+<span class="fc" id="L210">                    payloadAttributes.getSuggestedFeeRecipient(),</span>
+                    finalWithdrawals,
+<span class="fc" id="L212">                    Optional.ofNullable(payloadAttributes.getParentBeaconBlockRoot())));</span>
+
+<span class="fc" id="L214">    payloadId.ifPresent(</span>
+        pid -&gt;
+<span class="fc" id="L216">            LOG.atDebug()</span>
+<span class="fc" id="L217">                .setMessage(&quot;returning identifier {} for requested payload {}&quot;)</span>
+<span class="fc" id="L218">                .addArgument(pid::toHexString)</span>
+<span class="fc" id="L219">                .addArgument(</span>
+<span class="nc" id="L220">                    () -&gt; maybePayloadAttributes.map(EnginePayloadAttributesParameter::serialize))</span>
+<span class="fc" id="L221">                .log());</span>
+
+<span class="fc" id="L223">    logForkchoiceUpdatedCall(VALID, forkChoice);</span>
+<span class="fc" id="L224">    return new JsonRpcSuccessResponse(</span>
+        requestId,
+        new EngineUpdateForkchoiceResult(
+            VALID,
+<span class="fc" id="L228">            forkchoiceResult.getNewHead().map(BlockHeader::getHash).orElse(null),</span>
+<span class="fc" id="L229">            payloadId.orElse(null),</span>
+<span class="fc" id="L230">            Optional.empty()));</span>
+  }
+
+  protected abstract Optional&lt;JsonRpcErrorResponse&gt; isPayloadAttributesValid(
+      final Object requestId, final EnginePayloadAttributesParameter payloadAttribute);
+
+  protected Optional&lt;JsonRpcErrorResponse&gt; isPayloadAttributeRelevantToNewHead(
+      final Object requestId,
+      final EnginePayloadAttributesParameter payloadAttributes,
+      final BlockHeader headBlockHeader) {
+
+<span class="fc bfc" id="L241" title="All 2 branches covered.">    if (payloadAttributes.getTimestamp() &lt;= headBlockHeader.getTimestamp()) {</span>
+<span class="fc" id="L242">      LOG.warn(</span>
+          &quot;Payload attributes timestamp is smaller than timestamp of header in fork choice update&quot;);
+<span class="fc" id="L244">      return Optional.of(new JsonRpcErrorResponse(requestId, getInvalidPayloadError()));</span>
+    }
+
+<span class="fc" id="L247">    return Optional.empty();</span>
+  }
+
+  private JsonRpcResponse handleNonValidForkchoiceUpdate(
+      final Object requestId, final ForkchoiceResult result) {
+    JsonRpcResponse response;
+
+<span class="fc" id="L254">    final Optional&lt;Hash&gt; latestValid = result.getLatestValid();</span>
+
+<span class="pc bpc" id="L256" title="1 of 3 branches missed.">    switch (result.getStatus()) {</span>
+      case INVALID:
+<span class="fc" id="L258">        response =</span>
+            new JsonRpcSuccessResponse(
+                requestId,
+                new EngineUpdateForkchoiceResult(
+<span class="fc" id="L262">                    INVALID, latestValid.orElse(null), null, result.getErrorMessage()));</span>
+<span class="fc" id="L263">        break;</span>
+      case IGNORE_UPDATE_TO_OLD_HEAD:
+<span class="fc" id="L265">        response =</span>
+            new JsonRpcSuccessResponse(
+                requestId,
+                new EngineUpdateForkchoiceResult(
+<span class="fc" id="L269">                    VALID, latestValid.orElse(null), null, result.getErrorMessage()));</span>
+<span class="fc" id="L270">        break;</span>
+      default:
+<span class="nc" id="L272">        throw new AssertionError(</span>
+            &quot;ForkchoiceResult.Status &quot;
+<span class="nc" id="L274">                + result.getStatus()</span>
+                + &quot; not handled in EngineForkchoiceUpdated.handleForkchoiceError&quot;);
+    }
+
+<span class="fc" id="L278">    return response;</span>
+  }
+
+  private void logPayload(final EnginePayloadAttributesParameter payloadAttributes) {
+<span class="fc" id="L282">    String message = &quot;payloadAttributes: timestamp: {}, prevRandao: {}, suggestedFeeRecipient: {}&quot;;</span>
+<span class="fc" id="L283">    LoggingEventBuilder builder =</span>
+<span class="fc" id="L284">        LOG.atDebug()</span>
+<span class="fc" id="L285">            .setMessage(message)</span>
+<span class="fc" id="L286">            .addArgument(payloadAttributes::getTimestamp)</span>
+<span class="pc" id="L287">            .addArgument(() -&gt; payloadAttributes.getPrevRandao().toHexString())</span>
+<span class="pc" id="L288">            .addArgument(() -&gt; payloadAttributes.getSuggestedFeeRecipient().toHexString());</span>
+<span class="fc bfc" id="L289" title="All 2 branches covered.">    if (payloadAttributes.getWithdrawals() != null) {</span>
+<span class="fc" id="L290">      message += &quot;, withdrawals: {}&quot;;</span>
+<span class="fc" id="L291">      builder =</span>
+          builder
+<span class="fc" id="L293">              .setMessage(message)</span>
+<span class="fc" id="L294">              .addArgument(</span>
+<span class="fc" id="L295">                  payloadAttributes.getWithdrawals().stream()</span>
+<span class="fc" id="L296">                      .map(WithdrawalParameter::toString)</span>
+<span class="fc" id="L297">                      .collect(Collectors.joining(&quot;, &quot;, &quot;[&quot;, &quot;]&quot;)));</span>
+    }
+<span class="pc bpc" id="L299" title="1 of 2 branches missed.">    if (payloadAttributes.getParentBeaconBlockRoot() != null) {</span>
+<span class="nc" id="L300">      message += &quot;, parentBeaconBlockRoot: {}&quot;;</span>
+<span class="nc" id="L301">      builder =</span>
+          builder
+<span class="nc" id="L303">              .setMessage(message)</span>
+<span class="nc" id="L304">              .addArgument(() -&gt; payloadAttributes.getParentBeaconBlockRoot().toHexString());</span>
+    }
+<span class="fc" id="L306">    builder.log();</span>
+<span class="fc" id="L307">  }</span>
+
+  private boolean isValidForkchoiceState(
+      final Hash safeBlockHash, final Hash finalizedBlockHash, final BlockHeader newBlock) {
+<span class="fc" id="L311">    Optional&lt;BlockHeader&gt; maybeFinalizedBlock = Optional.empty();</span>
+
+<span class="fc bfc" id="L313" title="All 2 branches covered.">    if (!finalizedBlockHash.isZero()) {</span>
+<span class="fc" id="L314">      maybeFinalizedBlock = protocolContext.getBlockchain().getBlockHeader(finalizedBlockHash);</span>
+
+      // if the finalized block hash is not zero, we always need to have its block, because we
+      // only do this check once we have finished syncing
+<span class="fc bfc" id="L318" title="All 2 branches covered.">      if (maybeFinalizedBlock.isEmpty()) {</span>
+<span class="fc" id="L319">        return false;</span>
+      }
+
+      // a valid finalized block must be an ancestor of the new head
+<span class="fc bfc" id="L323" title="All 2 branches covered.">      if (!mergeCoordinator.isDescendantOf(maybeFinalizedBlock.get(), newBlock)) {</span>
+<span class="fc" id="L324">        return false;</span>
+      }
+    }
+
+    // A zero value is only allowed, if the transition block is not yet finalized.
+    // Once we have at least one finalized block, the transition block has either been finalized
+    // directly
+    // or through one of its descendants.
+<span class="fc bfc" id="L332" title="All 2 branches covered.">    if (safeBlockHash.isZero()) {</span>
+<span class="fc" id="L333">      return finalizedBlockHash.isZero();</span>
+    }
+
+<span class="fc" id="L336">    final Optional&lt;BlockHeader&gt; maybeSafeBlock =</span>
+<span class="fc" id="L337">        protocolContext.getBlockchain().getBlockHeader(safeBlockHash);</span>
+
+    // if the safe block hash is not zero, we always need to have its block, because we
+    // only do this check once we have finished syncing
+<span class="fc bfc" id="L341" title="All 2 branches covered.">    if (maybeSafeBlock.isEmpty()) {</span>
+<span class="fc" id="L342">      return false;</span>
+    }
+
+    // a valid safe block must be a descendant of the finalized block
+<span class="fc bfc" id="L346" title="All 2 branches covered.">    if (maybeFinalizedBlock.isPresent()</span>
+<span class="pc bpc" id="L347" title="1 of 2 branches missed.">        &amp;&amp; !mergeCoordinator.isDescendantOf(maybeFinalizedBlock.get(), maybeSafeBlock.get())) {</span>
+<span class="nc" id="L348">      return false;</span>
+    }
+
+    // a valid safe block must be an ancestor of the new block
+<span class="fc" id="L352">    return mergeCoordinator.isDescendantOf(maybeSafeBlock.get(), newBlock);</span>
+  }
+
+  private JsonRpcResponse syncingResponse(
+      final Object requestId, final EngineForkchoiceUpdatedParameter forkChoice) {
+
+<span class="fc" id="L358">    logForkchoiceUpdatedCall(this::logAtDebug, SYNCING, forkChoice);</span>
+<span class="fc" id="L359">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L360">        requestId, new EngineUpdateForkchoiceResult(SYNCING, null, null, Optional.empty()));</span>
+  }
+
+  protected boolean requireTerminalPoWBlockValidation() {
+<span class="nc" id="L364">    return false;</span>
+  }
+
+  protected RpcErrorType getInvalidPayloadError() {
+<span class="nc" id="L368">    return RpcErrorType.INVALID_PARAMS;</span>
+  }
+
+  // fcU calls are synchronous, no need to make volatile
+<span class="fc" id="L372">  private long lastFcuInfoLog = System.currentTimeMillis();</span>
+  private static final String logMessage =
+      &quot;{} for fork-choice-update: head: {}, finalized: {}, safeBlockHash: {}&quot;;
+
+  private void logForkchoiceUpdatedCall(
+      final EngineStatus status, final EngineForkchoiceUpdatedParameter forkChoice) {
+<span class="fc" id="L378">    logForkchoiceUpdatedCall(this::logAtInfo, status, forkChoice);</span>
+<span class="fc" id="L379">  }</span>
+
+  private void logForkchoiceUpdatedCall(
+      final BiConsumer&lt;EngineStatus, EngineForkchoiceUpdatedParameter&gt; logAtLevel,
+      final EngineStatus status,
+      final EngineForkchoiceUpdatedParameter forkChoice) {
+    // cheaply limit the noise of fcU during consensus client syncing to once a minute:
+<span class="pc bpc" id="L386" title="1 of 2 branches missed.">    if (lastFcuInfoLog + ENGINE_API_LOGGING_THRESHOLD &lt; System.currentTimeMillis()) {</span>
+<span class="nc" id="L387">      lastFcuInfoLog = System.currentTimeMillis();</span>
+<span class="nc" id="L388">      logAtLevel.accept(status, forkChoice);</span>
+    }
+<span class="fc" id="L390">  }</span>
+
+  private void logAtInfo(
+      final EngineStatus status, final EngineForkchoiceUpdatedParameter forkChoice) {
+<span class="nc" id="L394">    LOG.info(</span>
+        logMessage,
+<span class="nc" id="L396">        status.name(),</span>
+<span class="nc" id="L397">        forkChoice.getHeadBlockHash(),</span>
+<span class="nc" id="L398">        forkChoice.getFinalizedBlockHash(),</span>
+<span class="nc" id="L399">        forkChoice.getSafeBlockHash());</span>
+<span class="nc" id="L400">  }</span>
+
+  private void logAtDebug(
+      final EngineStatus status, final EngineForkchoiceUpdatedParameter forkChoice) {
+<span class="nc" id="L404">    LOG.debug(</span>
+        logMessage,
+<span class="nc" id="L406">        status.name(),</span>
+<span class="nc" id="L407">        forkChoice.getHeadBlockHash(),</span>
+<span class="nc" id="L408">        forkChoice.getFinalizedBlockHash(),</span>
+<span class="nc" id="L409">        forkChoice.getSafeBlockHash());</span>
+<span class="nc" id="L410">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonTestParameters.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.testutil</a> &gt; <span class="el_source">JsonTestParameters.java</span></div><h1>JsonTestParameters.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.testutil;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import javax.annotation.Nullable;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonFactoryBuilder;
+import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+
+/**
+ * Utility class for generating JUnit test parameters from json files. Each set of test parameters
+ * will contain a String name followed by an object representing a deserialized json test case.
+ *
+ * @param &lt;S&gt; the type parameter
+ * @param &lt;T&gt; the type parameter
+ */
+public class JsonTestParameters&lt;S, T&gt; {
+
+<span class="fc" id="L55">  private static final String TEST_PATTERN_STR = System.getProperty(&quot;test.ethereum.include&quot;);</span>
+
+  /**
+   * The Collector.
+   *
+   * @param &lt;S&gt; the type parameter
+   */
+  public static class Collector&lt;S&gt; {
+
+    @Nullable private final Predicate&lt;String&gt; includes;
+    private final Predicate&lt;String&gt; ignore;
+
+<span class="fc" id="L67">    private Collector(@Nullable final Predicate&lt;String&gt; includes, final Predicate&lt;String&gt; ignore) {</span>
+<span class="fc" id="L68">      this.includes = includes;</span>
+<span class="fc" id="L69">      this.ignore = ignore;</span>
+<span class="fc" id="L70">    }</span>
+
+    // Reference tests are plentiful so we'll add quite a bit of element, so starting with a
+    // relatively large capacity (without getting crazy) to avoid resizing. It's going to waste
+    // memory when we run a single test, but it's not the case we're trying to optimize.
+<span class="fc" id="L75">    private final List&lt;Object[]&gt; testParameters = new ArrayList&lt;&gt;(256);</span>
+
+    /**
+     * Add.
+     *
+     * @param name the name
+     * @param fullPath the full path of the test
+     * @param value the value
+     * @param runTest the run test
+     */
+    public void add(
+        final String name, final String fullPath, final S value, final boolean runTest) {
+<span class="fc bfc" id="L87" title="All 2 branches covered.">      testParameters.add(</span>
+<span class="fc bfc" id="L88" title="All 4 branches covered.">          new Object[] {name, value, runTest &amp;&amp; includes(name) &amp;&amp; includes(fullPath)});</span>
+<span class="fc" id="L89">    }</span>
+
+    private boolean includes(final String name) {
+      // If there is no specific includes, everything is included unless it is ignored, otherwise,
+      // only what is in includes is included whether or not it is ignored.
+<span class="pc bpc" id="L94" title="1 of 2 branches missed.">      if (includes == null) {</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">        return !ignore.test(name);</span>
+      } else {
+<span class="nc" id="L97">        return includes.test(name);</span>
+      }
+    }
+
+    private Collection&lt;Object[]&gt; getParameters() {
+<span class="fc" id="L102">      return testParameters;</span>
+    }
+  }
+
+  /**
+   * The interface Generator.
+   *
+   * @param &lt;S&gt; the type parameter
+   * @param &lt;T&gt; the type parameter
+   */
+  @FunctionalInterface
+  public interface Generator&lt;S, T&gt; {
+    /**
+     * Generate.
+     *
+     * @param name the name
+     * @param fullPath the full path of the test
+     * @param mappedType the mapped type
+     * @param collector the collector
+     */
+    void generate(String name, String fullPath, S mappedType, Collector&lt;T&gt; collector);
+  }
+
+<span class="fc" id="L125">  private static final ObjectMapper objectMapper =</span>
+      new ObjectMapper(
+              new JsonFactoryBuilder()
+<span class="fc" id="L128">                  .streamReadConstraints(</span>
+<span class="fc" id="L129">                      StreamReadConstraints.builder().maxStringLength(Integer.MAX_VALUE).build())</span>
+<span class="fc" id="L130">                  .build())</span>
+<span class="fc" id="L131">          .registerModule(new Jdk8Module());</span>
+
+  // The type to which the json file is directly mapped
+  private final Class&lt;S&gt; jsonFileMappedType;
+  // The final type of the test case spec, which may or may not not be same than jsonFileMappedType
+  // Note that we don't really use this field as of now, but as this is the actual type of the final
+  // spec used by tests, it feels &quot;right&quot; to have it passed explicitly at construction and having it
+  // around could prove useful later.
+  @SuppressWarnings({&quot;FieldCanBeLocal&quot;, &quot;unused&quot;})
+  private final Class&lt;T&gt; testCaseSpec;
+
+<span class="fc" id="L142">  private final Set&lt;String&gt; fileExcludes = new HashSet&lt;&gt;();</span>
+  private Generator&lt;S, T&gt; generator;
+
+<span class="fc" id="L145">  private final List&lt;Predicate&lt;String&gt;&gt; testIncludes = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L146">  private final List&lt;Predicate&lt;String&gt;&gt; testIgnores = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L148">  private JsonTestParameters(final Class&lt;S&gt; jsonFileMappedType, final Class&lt;T&gt; testCaseSpec) {</span>
+<span class="fc" id="L149">    this.jsonFileMappedType = jsonFileMappedType;</span>
+<span class="fc" id="L150">    this.testCaseSpec = testCaseSpec;</span>
+
+<span class="pc bpc" id="L152" title="1 of 2 branches missed.">    if (TEST_PATTERN_STR != null) {</span>
+<span class="nc" id="L153">      includeTests(TEST_PATTERN_STR);</span>
+    }
+<span class="fc" id="L155">  }</span>
+
+  /**
+   * Create json test parameters.
+   *
+   * @param &lt;T&gt; the type parameter
+   * @param testCaseSpec the test case spec
+   * @return the json test parameters
+   */
+  public static &lt;T&gt; JsonTestParameters&lt;T, T&gt; create(final Class&lt;T&gt; testCaseSpec) {
+<span class="fc" id="L165">    return new JsonTestParameters&lt;&gt;(testCaseSpec, testCaseSpec)</span>
+<span class="fc" id="L166">        .generator(</span>
+<span class="fc" id="L167">            (name, fullPath, testCase, collector) -&gt; collector.add(name, fullPath, testCase, true));</span>
+  }
+
+  /**
+   * Create json test parameters.
+   *
+   * @param &lt;S&gt; the type parameter
+   * @param &lt;T&gt; the type parameter
+   * @param jsonFileMappedType the json file mapped type
+   * @param testCaseSpec the test case spec
+   * @return the json test parameters
+   */
+  public static &lt;S, T&gt; JsonTestParameters&lt;S, T&gt; create(
+      final Class&lt;S&gt; jsonFileMappedType, final Class&lt;T&gt; testCaseSpec) {
+<span class="fc" id="L181">    return new JsonTestParameters&lt;&gt;(jsonFileMappedType, testCaseSpec);</span>
+  }
+
+  /**
+   * Exclude files json test parameters.
+   *
+   * @param filenames the filenames
+   * @return the json test parameters
+   */
+  @SuppressWarnings(&quot;unused&quot;)
+  public JsonTestParameters&lt;S, T&gt; excludeFiles(final String... filenames) {
+<span class="nc" id="L192">    fileExcludes.addAll(Arrays.asList(filenames));</span>
+<span class="nc" id="L193">    return this;</span>
+  }
+
+  private void addPatterns(final String[] patterns, final List&lt;Predicate&lt;String&gt;&gt; listForAddition) {
+<span class="fc bfc" id="L197" title="All 2 branches covered.">    for (final String pattern : patterns) {</span>
+<span class="fc" id="L198">      final Pattern compiled = Pattern.compile(pattern);</span>
+<span class="fc" id="L199">      listForAddition.add(t -&gt; compiled.matcher(t).find());</span>
+    }
+<span class="fc" id="L201">  }</span>
+
+  @SuppressWarnings({&quot;unused&quot;})
+  private void includeTests(final String... patterns) {
+<span class="nc" id="L205">    addPatterns(patterns, testIncludes);</span>
+<span class="nc" id="L206">  }</span>
+
+  /**
+   * Ignore json test parameters.
+   *
+   * @param patterns the patterns
+   * @return the json test parameters
+   */
+  public JsonTestParameters&lt;S, T&gt; ignore(final String... patterns) {
+<span class="fc" id="L215">    addPatterns(patterns, testIgnores);</span>
+<span class="fc" id="L216">    return this;</span>
+  }
+
+  /** Ignore all. */
+  public void ignoreAll() {
+<span class="nc" id="L221">    testIgnores.add(t -&gt; true);</span>
+<span class="nc" id="L222">  }</span>
+
+  /**
+   * Generator json test parameters.
+   *
+   * @param generator the generator
+   * @return the json test parameters
+   */
+  public JsonTestParameters&lt;S, T&gt; generator(final Generator&lt;S, T&gt; generator) {
+<span class="fc" id="L231">    this.generator = generator;</span>
+<span class="fc" id="L232">    return this;</span>
+  }
+
+  /**
+   * Generate collection.
+   *
+   * @param paths the paths
+   * @return the collection
+   */
+  public Collection&lt;Object[]&gt; generate(final String... paths) {
+<span class="fc" id="L242">    return generate(getFilteredFiles(paths));</span>
+  }
+
+  /**
+   * Generate collection.
+   *
+   * @param filteredFiles the filtered files
+   * @return the collection
+   */
+  public Collection&lt;Object[]&gt; generate(final Collection&lt;File&gt; filteredFiles) {
+<span class="pc bpc" id="L252" title="1 of 2 branches missed.">    checkState(generator != null, &quot;Missing generator function&quot;);</span>
+
+<span class="fc" id="L254">    final Collector&lt;T&gt; collector =</span>
+        new Collector&lt;&gt;(
+<span class="pc bpc" id="L256" title="1 of 2 branches missed.">            testIncludes.isEmpty() ? null : t -&gt; matchAny(t, testIncludes),</span>
+<span class="fc" id="L257">            t -&gt; matchAny(t, testIgnores));</span>
+
+<span class="fc bfc" id="L259" title="All 2 branches covered.">    for (final File file : filteredFiles) {</span>
+<span class="fc" id="L260">      final JsonTestCaseReader&lt;S&gt; testCase = parseFile(file);</span>
+<span class="fc bfc" id="L261" title="All 2 branches covered.">      for (final Map.Entry&lt;String, S&gt; entry : testCase.testCaseSpecs.entrySet()) {</span>
+<span class="fc" id="L262">        final String testName = entry.getKey();</span>
+<span class="fc" id="L263">        final S mappedType = entry.getValue();</span>
+<span class="fc" id="L264">        generator.generate(testName, file.getPath(), mappedType, collector);</span>
+<span class="fc" id="L265">      }</span>
+<span class="fc" id="L266">    }</span>
+<span class="fc" id="L267">    return collector.getParameters();</span>
+  }
+
+  private static &lt;T&gt; boolean matchAny(final T toTest, final List&lt;Predicate&lt;T&gt;&gt; tests) {
+<span class="fc bfc" id="L271" title="All 2 branches covered.">    for (final Predicate&lt;T&gt; predicate : tests) {</span>
+<span class="fc bfc" id="L272" title="All 2 branches covered.">      if (predicate.test(toTest)) {</span>
+<span class="fc" id="L273">        return true;</span>
+      }
+<span class="fc" id="L275">    }</span>
+<span class="fc" id="L276">    return false;</span>
+  }
+
+  private Collection&lt;File&gt; getFilteredFiles(final String[] paths) {
+<span class="fc" id="L280">    final ClassLoader classLoader = JsonTestParameters.class.getClassLoader();</span>
+<span class="fc" id="L281">    final List&lt;File&gt; files = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L282" title="All 2 branches covered.">    for (final String path : paths) {</span>
+<span class="fc" id="L283">      final URL url = classLoader.getResource(path);</span>
+<span class="pc bpc" id="L284" title="1 of 2 branches missed.">      checkState(url != null, &quot;Cannot find test directory &quot; + path);</span>
+      final Path dir;
+      try {
+<span class="fc" id="L287">        dir = Paths.get(url.toURI());</span>
+<span class="nc" id="L288">      } catch (final URISyntaxException e) {</span>
+<span class="nc" id="L289">        throw new RuntimeException(&quot;Problem converting URL to URI &quot; + url, e);</span>
+<span class="fc" id="L290">      }</span>
+<span class="fc" id="L291">      try (final Stream&lt;Path&gt; s = Files.walk(dir)) {</span>
+<span class="fc" id="L292">        s.map(Path::toFile)</span>
+<span class="fc" id="L293">            .filter(f -&gt; f.getPath().endsWith(&quot;.json&quot;))</span>
+<span class="pc bpc" id="L294" title="1 of 2 branches missed.">            .filter(f -&gt; !fileExcludes.contains(f.getName()))</span>
+<span class="fc" id="L295">            .forEach(files::add);</span>
+<span class="nc" id="L296">      } catch (final IOException e) {</span>
+<span class="nc" id="L297">        throw new RuntimeException(&quot;Problem reading directory &quot; + dir, e);</span>
+<span class="fc" id="L298">      }</span>
+    }
+<span class="fc" id="L300">    return files;</span>
+  }
+
+  private JsonTestCaseReader&lt;S&gt; parseFile(final File file) {
+<span class="fc" id="L304">    final JavaType javaType =</span>
+        objectMapper
+<span class="fc" id="L306">            .getTypeFactory()</span>
+<span class="fc" id="L307">            .constructParametricType(JsonTestCaseReader.class, jsonFileMappedType);</span>
+
+    try {
+<span class="fc" id="L310">      return objectMapper.readValue(file, javaType);</span>
+<span class="nc" id="L311">    } catch (final IOException e) {</span>
+<span class="nc" id="L312">      throw new RuntimeException(</span>
+          &quot;Error parsing test case file &quot; + file + &quot; to class &quot; + jsonFileMappedType, e);
+    }
+  }
+
+  private static class JsonTestCaseReader&lt;T&gt; {
+
+    /** The Test case specs. */
+    final Map&lt;String, T&gt; testCaseSpecs;
+
+    /**
+     * Public constructor.
+     *
+     * @param testCaseSpecs The test cases to run.
+     */
+    @JsonCreator
+<span class="fc" id="L328">    JsonTestCaseReader(@JsonProperty final Map&lt;String, T&gt; testCaseSpecs) {</span>
+<span class="fc" id="L329">      this.testCaseSpecs = testCaseSpecs;</span>
+<span class="fc" id="L330">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

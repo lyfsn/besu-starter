@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>GenerateBlockchainConfig.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.operator</a> &gt; <span class="el_source">GenerateBlockchainConfig.java</span></div><h1>GenerateBlockchainConfig.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.subcommands.operator;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.cli.DefaultCommandValues;
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.config.GenesisConfigFile;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.config.JsonGenesisConfigOptions;
+import org.hyperledger.besu.config.JsonUtil;
+import org.hyperledger.besu.consensus.ibft.IbftExtraDataCodec;
+import org.hyperledger.besu.consensus.qbft.QbftExtraDataCodec;
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPrivateKey;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.crypto.SignatureAlgorithmType;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.core.Util;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.IntStream;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeType;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.io.Resources;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParentCommand;
+
+@Command(
+    name = &quot;generate-blockchain-config&quot;,
+    description = &quot;Generate node keypairs and genesis file with RLP encoded extra data.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class)
+<span class="fc" id="L67">class GenerateBlockchainConfig implements Runnable {</span>
+<span class="fc" id="L68">  private static final Logger LOG = LoggerFactory.getLogger(GenerateBlockchainConfig.class);</span>
+
+<span class="fc" id="L70">  private final Supplier&lt;SignatureAlgorithm&gt; SIGNATURE_ALGORITHM =</span>
+<span class="fc" id="L71">      Suppliers.memoize(SignatureAlgorithmFactory::getInstance);</span>
+
+<span class="fc" id="L73">  @Option(</span>
+      required = true,
+      names = &quot;--config-file&quot;,
+      paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+      description = &quot;Configuration file.&quot;,
+      arity = &quot;1..1&quot;)
+  private final File configurationFile = null;
+
+<span class="fc" id="L81">  @Option(</span>
+      required = true,
+      names = &quot;--to&quot;,
+      paramLabel = DefaultCommandValues.MANDATORY_DIRECTORY_FORMAT_HELP,
+      description = &quot;Directory to write output files to.&quot;,
+      arity = &quot;1..1&quot;)
+  private final File outputDirectory = null;
+
+<span class="fc" id="L89">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @Option(
+      names = &quot;--genesis-file-name&quot;,
+      paramLabel = DefaultCommandValues.MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;Name of the genesis file. (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1..1&quot;)
+  private String genesisFileName = &quot;genesis.json&quot;;
+
+<span class="fc" id="L97">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @Option(
+      names = &quot;--private-key-file-name&quot;,
+      paramLabel = DefaultCommandValues.MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;Name of the private key file. (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1..1&quot;)
+  private String privateKeyFileName = &quot;key.priv&quot;;
+
+<span class="fc" id="L105">  @SuppressWarnings({&quot;FieldCanBeFinal&quot;, &quot;FieldMayBeFinal&quot;}) // PicoCLI requires non-final Strings.</span>
+  @Option(
+      names = &quot;--public-key-file-name&quot;,
+      paramLabel = DefaultCommandValues.MANDATORY_PATH_FORMAT_HELP,
+      description = &quot;Name of the public key file. (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1..1&quot;)
+  private String publicKeyFileName = &quot;key.pub&quot;;
+
+  @ParentCommand
+  private OperatorSubCommand parentCommand; // Picocli injects reference to parent command
+
+  private ObjectNode operatorConfig;
+  private ObjectNode genesisConfig;
+  private ObjectNode blockchainConfig;
+  private ObjectNode nodesConfig;
+  private boolean generateNodesKeys;
+<span class="fc" id="L121">  private final List&lt;Address&gt; addressesForGenesisExtraData = new ArrayList&lt;&gt;();</span>
+  private Path keysDirectory;
+
+  @Override
+  public void run() {
+<span class="fc" id="L126">    checkPreconditions();</span>
+<span class="fc" id="L127">    generateBlockchainConfig();</span>
+<span class="fc" id="L128">  }</span>
+
+  private void checkPreconditions() {
+<span class="fc" id="L131">    checkNotNull(parentCommand);</span>
+<span class="fc" id="L132">    checkNotNull(parentCommand.parentCommand);</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">    if (isAnyDuplicate(genesisFileName, publicKeyFileName, privateKeyFileName)) {</span>
+<span class="fc" id="L134">      throw new IllegalArgumentException(&quot;Output file paths must be unique.&quot;);</span>
+    }
+<span class="fc" id="L136">  }</span>
+
+  /** Generates output directory with all required configuration files. */
+  private void generateBlockchainConfig() {
+    try {
+<span class="fc" id="L141">      handleOutputDirectory();</span>
+<span class="fc" id="L142">      parseConfig();</span>
+<span class="fc" id="L143">      processEcCurve();</span>
+<span class="fc bfc" id="L144" title="All 2 branches covered.">      if (generateNodesKeys) {</span>
+<span class="fc" id="L145">        generateNodesKeys();</span>
+      } else {
+<span class="fc" id="L147">        importPublicKeysFromConfig();</span>
+      }
+<span class="fc" id="L149">      processExtraData();</span>
+<span class="fc" id="L150">      writeGenesisFile(outputDirectory, genesisFileName, genesisConfig);</span>
+<span class="nc" id="L151">    } catch (final IOException e) {</span>
+<span class="nc" id="L152">      LOG.error(&quot;An error occurred while trying to generate network configuration.&quot;, e);</span>
+<span class="fc" id="L153">    }</span>
+<span class="fc" id="L154">  }</span>
+
+  /** Imports public keys from input configuration. */
+  private void importPublicKeysFromConfig() {
+<span class="fc" id="L158">    LOG.info(&quot;Importing public keys from configuration.&quot;);</span>
+<span class="fc" id="L159">    JsonUtil.getArrayNode(nodesConfig, &quot;keys&quot;)</span>
+<span class="fc" id="L160">        .ifPresent(keys -&gt; keys.forEach(this::importPublicKey));</span>
+<span class="fc" id="L161">  }</span>
+
+  /**
+   * Imports a single public key.
+   *
+   * @param publicKeyJson The public key.
+   */
+  private void importPublicKey(final JsonNode publicKeyJson) {
+<span class="fc bfc" id="L169" title="All 2 branches covered.">    if (publicKeyJson.getNodeType() != JsonNodeType.STRING) {</span>
+<span class="fc" id="L170">      throw new IllegalArgumentException(</span>
+<span class="fc" id="L171">          &quot;Invalid key json of type: &quot; + publicKeyJson.getNodeType());</span>
+    }
+<span class="fc" id="L173">    final String publicKeyText = publicKeyJson.asText();</span>
+
+    try {
+<span class="fc" id="L176">      final SECPPublicKey publicKey =</span>
+<span class="fc" id="L177">          SIGNATURE_ALGORITHM.get().createPublicKey(Bytes.fromHexString(publicKeyText));</span>
+
+<span class="fc bfc" id="L179" title="All 2 branches covered.">      if (!SIGNATURE_ALGORITHM.get().isValidPublicKey(publicKey)) {</span>
+<span class="fc" id="L180">        throw new IllegalArgumentException(</span>
+            new StringBuilder()
+<span class="fc" id="L182">                .append(publicKeyText)</span>
+<span class="fc" id="L183">                .append(&quot; is not a valid public key for elliptic curve &quot;)</span>
+<span class="fc" id="L184">                .append(SIGNATURE_ALGORITHM.get().getCurveName())</span>
+<span class="fc" id="L185">                .toString());</span>
+      }
+
+<span class="fc" id="L188">      writeKeypair(publicKey, null);</span>
+<span class="fc" id="L189">      LOG.info(&quot;Public key imported from configuration.({})&quot;, publicKey.toString());</span>
+<span class="nc" id="L190">    } catch (final IOException e) {</span>
+<span class="nc" id="L191">      LOG.error(&quot;An error occurred while trying to import node public key.&quot;, e);</span>
+<span class="fc" id="L192">    }</span>
+<span class="fc" id="L193">  }</span>
+
+  /** Generates nodes keypairs. */
+  private void generateNodesKeys() {
+<span class="fc" id="L197">    final int nodesCount = JsonUtil.getInt(nodesConfig, &quot;count&quot;, 0);</span>
+<span class="fc" id="L198">    LOG.info(&quot;Generating {} nodes keys.&quot;, nodesCount);</span>
+<span class="fc" id="L199">    IntStream.range(0, nodesCount).forEach(this::generateNodeKeypair);</span>
+<span class="fc" id="L200">  }</span>
+
+  /**
+   * Generate a keypair for a node.
+   *
+   * @param node The number of the node.
+   */
+  private void generateNodeKeypair(final int node) {
+    try {
+<span class="fc" id="L209">      LOG.info(&quot;Generating keypair for node {}.&quot;, node);</span>
+<span class="fc" id="L210">      final KeyPair keyPair = SIGNATURE_ALGORITHM.get().generateKeyPair();</span>
+<span class="fc" id="L211">      writeKeypair(keyPair.getPublicKey(), keyPair.getPrivateKey());</span>
+
+<span class="nc" id="L213">    } catch (final IOException e) {</span>
+<span class="nc" id="L214">      LOG.error(&quot;An error occurred while trying to generate node keypair.&quot;, e);</span>
+<span class="fc" id="L215">    }</span>
+<span class="fc" id="L216">  }</span>
+
+  /**
+   * Writes public and private keys in separate files. Both are written in the same directory named
+   * with the address derived from the public key.
+   *
+   * @param publicKey The public key.
+   * @param privateKey The private key. No file is created if privateKey is NULL.
+   * @throws IOException If the file cannot be written or accessed.
+   */
+  private void writeKeypair(final SECPPublicKey publicKey, final SECPPrivateKey privateKey)
+      throws IOException {
+<span class="fc" id="L228">    final Address nodeAddress = Util.publicKeyToAddress(publicKey);</span>
+<span class="fc" id="L229">    addressesForGenesisExtraData.add(nodeAddress);</span>
+<span class="fc" id="L230">    final Path nodeDirectoryPath = keysDirectory.resolve(nodeAddress.toString());</span>
+<span class="fc" id="L231">    Files.createDirectory(nodeDirectoryPath);</span>
+<span class="fc" id="L232">    createFileAndWrite(nodeDirectoryPath, publicKeyFileName, publicKey.toString());</span>
+<span class="fc bfc" id="L233" title="All 2 branches covered.">    if (privateKey != null) {</span>
+<span class="fc" id="L234">      createFileAndWrite(nodeDirectoryPath, privateKeyFileName, privateKey.toString());</span>
+    }
+<span class="fc" id="L236">  }</span>
+
+  /** Computes RLP encoded exta data from pre filled list of addresses. */
+  private void processExtraData() {
+<span class="fc" id="L240">    final ObjectNode configNode =</span>
+<span class="fc" id="L241">        JsonUtil.getObjectNode(genesisConfig, &quot;config&quot;)</span>
+<span class="fc" id="L242">            .orElseThrow(</span>
+<span class="fc" id="L243">                () -&gt; new IllegalArgumentException(&quot;Missing config section in config file&quot;));</span>
+
+<span class="fc" id="L245">    final JsonGenesisConfigOptions genesisConfigOptions =</span>
+<span class="fc" id="L246">        JsonGenesisConfigOptions.fromJsonObject(configNode);</span>
+<span class="fc bfc" id="L247" title="All 2 branches covered.">    if (genesisConfigOptions.isIbft2()) {</span>
+<span class="fc" id="L248">      LOG.info(&quot;Generating IBFT extra data.&quot;);</span>
+<span class="fc" id="L249">      final String extraData =</span>
+<span class="fc" id="L250">          IbftExtraDataCodec.encodeFromAddresses(addressesForGenesisExtraData).toString();</span>
+<span class="fc" id="L251">      genesisConfig.put(&quot;extraData&quot;, extraData);</span>
+<span class="pc bpc" id="L252" title="1 of 2 branches missed.">    } else if (genesisConfigOptions.isQbft()) {</span>
+<span class="fc" id="L253">      LOG.info(&quot;Generating QBFT extra data.&quot;);</span>
+<span class="fc" id="L254">      final String extraData =</span>
+<span class="fc" id="L255">          QbftExtraDataCodec.encodeFromAddresses(addressesForGenesisExtraData).toString();</span>
+<span class="fc" id="L256">      genesisConfig.put(&quot;extraData&quot;, extraData);</span>
+    }
+<span class="fc" id="L258">  }</span>
+
+  private void createFileAndWrite(final Path directory, final String fileName, final String content)
+      throws IOException {
+<span class="fc" id="L262">    final Path filePath = directory.resolve(fileName);</span>
+<span class="fc" id="L263">    Files.write(filePath, content.getBytes(UTF_8), StandardOpenOption.CREATE_NEW);</span>
+<span class="fc" id="L264">  }</span>
+
+  /**
+   * Parses the root configuration file and related sub elements.
+   *
+   * @throws IOException If the file cannot be read or accessed.
+   */
+  private void parseConfig() throws IOException {
+<span class="fc" id="L272">    final String configString =</span>
+<span class="fc" id="L273">        Resources.toString(configurationFile.toPath().toUri().toURL(), UTF_8);</span>
+<span class="fc" id="L274">    final ObjectNode root = JsonUtil.objectNodeFromString(configString);</span>
+<span class="fc" id="L275">    operatorConfig = root;</span>
+<span class="fc" id="L276">    genesisConfig =</span>
+<span class="fc" id="L277">        JsonUtil.getObjectNode(operatorConfig, &quot;genesis&quot;).orElse(JsonUtil.createEmptyObjectNode());</span>
+<span class="fc" id="L278">    blockchainConfig =</span>
+<span class="fc" id="L279">        JsonUtil.getObjectNode(operatorConfig, &quot;blockchain&quot;)</span>
+<span class="fc" id="L280">            .orElse(JsonUtil.createEmptyObjectNode());</span>
+<span class="fc" id="L281">    nodesConfig =</span>
+<span class="fc" id="L282">        JsonUtil.getObjectNode(blockchainConfig, &quot;nodes&quot;).orElse(JsonUtil.createEmptyObjectNode());</span>
+<span class="fc" id="L283">    generateNodesKeys = JsonUtil.getBoolean(nodesConfig, &quot;generate&quot;, false);</span>
+<span class="fc" id="L284">  }</span>
+
+  /** Sets the selected signature algorithm instance in SignatureAlgorithmFactory. */
+  private void processEcCurve() {
+<span class="fc" id="L288">    GenesisConfigOptions options = GenesisConfigFile.fromConfig(genesisConfig).getConfigOptions();</span>
+<span class="fc" id="L289">    Optional&lt;String&gt; ecCurve = options.getEcCurve();</span>
+
+<span class="fc bfc" id="L291" title="All 2 branches covered.">    if (ecCurve.isEmpty()) {</span>
+<span class="fc" id="L292">      SignatureAlgorithmFactory.setInstance(SignatureAlgorithmType.createDefault());</span>
+<span class="fc" id="L293">      return;</span>
+    }
+
+    try {
+<span class="fc" id="L297">      SignatureAlgorithmFactory.setInstance(SignatureAlgorithmType.create(ecCurve.get()));</span>
+<span class="fc" id="L298">    } catch (IllegalArgumentException e) {</span>
+<span class="fc" id="L299">      throw new IllegalArgumentException(</span>
+          new StringBuilder()
+<span class="fc" id="L301">              .append(&quot;Invalid parameter for ecCurve in genesis config: &quot;)</span>
+<span class="fc" id="L302">              .append(e.getMessage())</span>
+<span class="fc" id="L303">              .toString());</span>
+<span class="fc" id="L304">    }</span>
+<span class="fc" id="L305">  }</span>
+
+  /**
+   * Checks if the output directory exists.
+   *
+   * @throws IOException If the cannot be accessed or created.
+   */
+  private void handleOutputDirectory() throws IOException {
+<span class="fc" id="L313">    checkNotNull(outputDirectory);</span>
+<span class="fc" id="L314">    final Path outputDirectoryPath = outputDirectory.toPath();</span>
+<span class="pc bpc" id="L315" title="1 of 2 branches missed.">    if (outputDirectory.exists()</span>
+<span class="pc bpc" id="L316" title="1 of 2 branches missed.">        &amp;&amp; outputDirectory.isDirectory()</span>
+<span class="pc bpc" id="L317" title="1 of 2 branches missed.">        &amp;&amp; outputDirectory.list() != null</span>
+<span class="fc bfc" id="L318" title="All 2 branches covered.">        &amp;&amp; outputDirectory.list().length &gt; 0) {</span>
+<span class="fc" id="L319">      throw new IllegalArgumentException(&quot;Output directory already exists.&quot;);</span>
+<span class="pc bpc" id="L320" title="1 of 2 branches missed.">    } else if (!outputDirectory.exists()) {</span>
+<span class="nc" id="L321">      Files.createDirectory(outputDirectoryPath);</span>
+    }
+<span class="fc" id="L323">    keysDirectory = outputDirectoryPath.resolve(&quot;keys&quot;);</span>
+<span class="fc" id="L324">    Files.createDirectory(keysDirectory);</span>
+<span class="fc" id="L325">  }</span>
+
+  /**
+   * Write the content of the genesis to the output file.
+   *
+   * @param directory The directory to write the file to.
+   * @param fileName The name of the output file.
+   * @param genesis The genesis content.
+   * @throws IOException If the genesis file cannot be written or accessed.
+   */
+  private void writeGenesisFile(
+      final File directory, final String fileName, final ObjectNode genesis) throws IOException {
+<span class="fc" id="L337">    LOG.info(&quot;Writing genesis file.&quot;);</span>
+<span class="fc" id="L338">    Files.write(</span>
+<span class="fc" id="L339">        directory.toPath().resolve(fileName),</span>
+<span class="fc" id="L340">        JsonUtil.getJson(genesis).getBytes(UTF_8),</span>
+        StandardOpenOption.CREATE_NEW);
+<span class="fc" id="L342">  }</span>
+
+  private static boolean isAnyDuplicate(final String... values) {
+<span class="fc" id="L345">    final Set&lt;String&gt; set = new HashSet&lt;&gt;();</span>
+<span class="fc bfc" id="L346" title="All 2 branches covered.">    for (final String value : values) {</span>
+<span class="fc bfc" id="L347" title="All 2 branches covered.">      if (!set.add(value)) {</span>
+<span class="fc" id="L348">        return true;</span>
+      }
+    }
+<span class="fc" id="L351">    return false;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

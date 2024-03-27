@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StackedUpdater.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.worldstate</a> &gt; <span class="el_source">StackedUpdater.java</span></div><h1>StackedUpdater.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.worldstate;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+
+import java.util.ArrayList;
+import java.util.Collection;
+
+/**
+ * The Stacked updater.
+ *
+ * @param &lt;W&gt; the WorldView type parameter
+ * @param &lt;A&gt; the Account type parameter
+ */
+public class StackedUpdater&lt;W extends WorldView, A extends Account&gt;
+    extends AbstractWorldUpdater&lt;AbstractWorldUpdater&lt;W, A&gt;, UpdateTrackingAccount&lt;A&gt;&gt; {
+
+  /**
+   * Instantiates a new Stacked updater.
+   *
+   * @param world the world
+   * @param evmConfiguration the EVM Configuration parameters
+   */
+  public StackedUpdater(
+      final AbstractWorldUpdater&lt;W, A&gt; world, final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L41">    super(world, evmConfiguration);</span>
+<span class="fc" id="L42">  }</span>
+
+  @Override
+  protected UpdateTrackingAccount&lt;A&gt; getForMutation(final Address address) {
+<span class="fc" id="L46">    final AbstractWorldUpdater&lt;W, A&gt; wrapped = wrappedWorldView();</span>
+<span class="fc" id="L47">    final UpdateTrackingAccount&lt;A&gt; wrappedTracker = wrapped.updatedAccounts.get(address);</span>
+<span class="fc bfc" id="L48" title="All 2 branches covered.">    if (wrappedTracker != null) {</span>
+<span class="fc" id="L49">      return wrappedTracker;</span>
+    }
+<span class="fc bfc" id="L51" title="All 2 branches covered.">    if (wrapped.deletedAccounts.contains(address)) {</span>
+<span class="fc" id="L52">      return null;</span>
+    }
+    // The wrapped one isn't tracking that account. We're creating a tracking &quot;for him&quot; (but
+    // don't add him yet to his tracking map) because we need it to satisfy the type system.
+    // We will recognize this case in commit below and use that tracker &quot;pay back&quot; our
+    // allocation, so this isn't lost.
+<span class="fc" id="L58">    final A account = wrappedWorldView().getForMutation(address);</span>
+<span class="fc bfc" id="L59" title="All 2 branches covered.">    return account == null ? null : new UpdateTrackingAccount&lt;&gt;(account);</span>
+  }
+
+  @Override
+  public Collection&lt;? extends Account&gt; getTouchedAccounts() {
+<span class="fc" id="L64">    return new ArrayList&lt;&gt;(getUpdatedAccounts());</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getDeletedAccountAddresses() {
+<span class="fc" id="L69">    return new ArrayList&lt;&gt;(getDeletedAccounts());</span>
+  }
+
+  @Override
+  public void revert() {
+<span class="fc" id="L74">    getDeletedAccounts().clear();</span>
+<span class="fc" id="L75">    getUpdatedAccounts().clear();</span>
+<span class="fc" id="L76">  }</span>
+
+  @Override
+  public void commit() {
+<span class="fc" id="L80">    final AbstractWorldUpdater&lt;W, A&gt; wrapped = wrappedWorldView();</span>
+    // Our own updates should apply on top of the updates we're stacked on top, so our deletions
+    // may kill some of &quot;their&quot; updates, and our updates may review some of the account &quot;they&quot;
+    // deleted.
+<span class="fc" id="L84">    getDeletedAccounts().forEach(wrapped.updatedAccounts::remove);</span>
+<span class="fc" id="L85">    getUpdatedAccounts().forEach(a -&gt; wrapped.deletedAccounts.remove(a.getAddress()));</span>
+
+    // Then push our deletes and updates to the stacked ones.
+<span class="fc" id="L88">    wrapped.deletedAccounts.addAll(getDeletedAccounts());</span>
+
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    for (final UpdateTrackingAccount&lt;UpdateTrackingAccount&lt;A&gt;&gt; update : getUpdatedAccounts()) {</span>
+<span class="fc" id="L91">      UpdateTrackingAccount&lt;A&gt; existing = wrapped.updatedAccounts.get(update.getAddress());</span>
+<span class="fc bfc" id="L92" title="All 2 branches covered.">      if (existing == null) {</span>
+        // If we don't track this account, it's either a new one or getForMutation above had
+        // created a tracker to satisfy the type system above and we can reuse that now.
+<span class="fc" id="L95">        existing = update.getWrappedAccount();</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">        if (existing == null) {</span>
+          // Brand new account, create our own version
+<span class="fc" id="L98">          existing = new UpdateTrackingAccount&lt;&gt;(update.getAddress());</span>
+        }
+<span class="fc" id="L100">        wrapped.updatedAccounts.put(existing.getAddress(), existing);</span>
+      }
+<span class="fc" id="L102">      existing.setNonce(update.getNonce());</span>
+<span class="fc" id="L103">      existing.setBalance(update.getBalance());</span>
+<span class="fc bfc" id="L104" title="All 2 branches covered.">      if (update.codeWasUpdated()) {</span>
+<span class="fc" id="L105">        existing.setCode(update.getCode());</span>
+      }
+<span class="fc bfc" id="L107" title="All 2 branches covered.">      if (update.getStorageWasCleared()) {</span>
+<span class="fc" id="L108">        existing.clearStorage();</span>
+      }
+<span class="fc" id="L110">      update.getUpdatedStorage().forEach(existing::setStorageValue);</span>
+<span class="fc" id="L111">    }</span>
+<span class="fc" id="L112">  }</span>
+
+  /** Mark transaction boundary. */
+  @Override
+  public void markTransactionBoundary() {
+<span class="fc" id="L117">    getUpdatedAccounts().forEach(UpdateTrackingAccount::markTransactionBoundary);</span>
+<span class="fc" id="L118">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

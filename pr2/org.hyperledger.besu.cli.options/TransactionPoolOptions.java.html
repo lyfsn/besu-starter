@@ -1,0 +1,382 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionPoolOptions.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.options</a> &gt; <span class="el_source">TransactionPoolOptions.java</span></div><h1>TransactionPoolOptions.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.options;
+
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_DOUBLE_FORMAT_HELP;
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_INTEGER_FORMAT_HELP;
+import static org.hyperledger.besu.cli.DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP;
+import static org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration.Implementation.LAYERED;
+import static org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration.Implementation.LEGACY;
+import static org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration.Implementation.SEQUENCED;
+
+import org.hyperledger.besu.cli.converter.DurationMillisConverter;
+import org.hyperledger.besu.cli.converter.FractionConverter;
+import org.hyperledger.besu.cli.converter.PercentageConverter;
+import org.hyperledger.besu.cli.util.CommandLineUtils;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.eth.transactions.ImmutableTransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.plugin.services.TransactionPoolValidatorService;
+import org.hyperledger.besu.util.number.Fraction;
+import org.hyperledger.besu.util.number.Percentage;
+
+import java.io.File;
+import java.time.Duration;
+import java.util.List;
+import java.util.Set;
+
+import picocli.CommandLine;
+
+/** The Transaction pool Cli stable options. */
+public class TransactionPoolOptions implements CLIOptions&lt;TransactionPoolConfiguration&gt; {
+  private static final String TX_POOL_IMPLEMENTATION = &quot;--tx-pool&quot;;
+  /** Use TX_POOL_NO_LOCAL_PRIORITY instead */
+  @Deprecated(forRemoval = true)
+  private static final String TX_POOL_DISABLE_LOCALS = &quot;--tx-pool-disable-locals&quot;;
+
+  private static final String TX_POOL_NO_LOCAL_PRIORITY = &quot;--tx-pool-no-local-priority&quot;;
+  private static final String TX_POOL_ENABLE_SAVE_RESTORE = &quot;--tx-pool-enable-save-restore&quot;;
+  private static final String TX_POOL_SAVE_FILE = &quot;--tx-pool-save-file&quot;;
+  private static final String TX_POOL_PRICE_BUMP = &quot;--tx-pool-price-bump&quot;;
+  private static final String RPC_TX_FEECAP = &quot;--rpc-tx-feecap&quot;;
+  private static final String STRICT_TX_REPLAY_PROTECTION_ENABLED_FLAG =
+      &quot;--strict-tx-replay-protection-enabled&quot;;
+  private static final String TX_POOL_PRIORITY_SENDERS = &quot;--tx-pool-priority-senders&quot;;
+  private static final String TX_POOL_MIN_GAS_PRICE = &quot;--tx-pool-min-gas-price&quot;;
+
+  private TransactionPoolValidatorService transactionPoolValidatorService;
+
+<span class="fc" id="L63">  @CommandLine.Option(</span>
+      names = {TX_POOL_IMPLEMENTATION},
+      paramLabel = &quot;&lt;Enum&gt;&quot;,
+      description = &quot;The Transaction Pool implementation to use(default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;0..1&quot;)
+  private TransactionPoolConfiguration.Implementation txPoolImplementation = LAYERED;
+
+<span class="fc" id="L70">  @CommandLine.Option(</span>
+      names = {TX_POOL_NO_LOCAL_PRIORITY, TX_POOL_DISABLE_LOCALS},
+      paramLabel = &quot;&lt;Boolean&gt;&quot;,
+      description =
+          &quot;Set to true if senders of transactions sent via RPC should not have priority (default: ${DEFAULT-VALUE})&quot;,
+      fallbackValue = &quot;true&quot;,
+      arity = &quot;0..1&quot;)
+<span class="fc" id="L77">  private Boolean noLocalPriority = TransactionPoolConfiguration.DEFAULT_NO_LOCAL_PRIORITY;</span>
+
+<span class="fc" id="L79">  @CommandLine.Option(</span>
+      names = {TX_POOL_ENABLE_SAVE_RESTORE},
+      paramLabel = &quot;&lt;Boolean&gt;&quot;,
+      description =
+          &quot;Set to true to enable saving the txpool content to file on shutdown and reloading it on startup (default: ${DEFAULT-VALUE})&quot;,
+      fallbackValue = &quot;true&quot;,
+      arity = &quot;0..1&quot;)
+<span class="fc" id="L86">  private Boolean saveRestoreEnabled = TransactionPoolConfiguration.DEFAULT_ENABLE_SAVE_RESTORE;</span>
+
+<span class="fc" id="L88">  @CommandLine.Option(</span>
+      names = {TX_POOL_SAVE_FILE},
+      paramLabel = &quot;&lt;STRING&gt;&quot;,
+      description =
+          &quot;If saving the txpool content is enabled, define a custom path for the save file (default: ${DEFAULT-VALUE} in the data-dir)&quot;,
+      arity = &quot;1&quot;)
+  private File saveFile = TransactionPoolConfiguration.DEFAULT_SAVE_FILE;
+
+<span class="fc" id="L96">  @CommandLine.Option(</span>
+      names = {TX_POOL_PRICE_BUMP},
+      paramLabel = &quot;&lt;Percentage&gt;&quot;,
+      converter = PercentageConverter.class,
+      description =
+          &quot;Price bump percentage to replace an already existing transaction  (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Percentage priceBump = TransactionPoolConfiguration.DEFAULT_PRICE_BUMP;
+
+<span class="fc" id="L105">  @CommandLine.Option(</span>
+      names = {RPC_TX_FEECAP},
+      description =
+          &quot;Maximum transaction fees (in Wei) accepted for transaction submitted through RPC (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Wei txFeeCap = TransactionPoolConfiguration.DEFAULT_RPC_TX_FEE_CAP;
+
+<span class="fc" id="L112">  @CommandLine.Option(</span>
+      names = {STRICT_TX_REPLAY_PROTECTION_ENABLED_FLAG},
+      paramLabel = &quot;&lt;Boolean&gt;&quot;,
+      description =
+          &quot;Require transactions submitted via JSON-RPC to use replay protection in accordance with EIP-155 (default: ${DEFAULT-VALUE})&quot;,
+      fallbackValue = &quot;true&quot;,
+      arity = &quot;0..1&quot;)
+<span class="fc" id="L119">  private Boolean strictTxReplayProtectionEnabled = false;</span>
+
+<span class="fc" id="L121">  @CommandLine.Option(</span>
+      names = {TX_POOL_PRIORITY_SENDERS},
+      split = &quot;,&quot;,
+      paramLabel = &quot;Comma separated list of addresses&quot;,
+      description =
+          &quot;Pending transactions sent exclusively by these addresses, from any source, are prioritized and only evicted after all others. If not specified, then only the senders submitting transactions via RPC have priority (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1..*&quot;)
+  private Set&lt;Address&gt; prioritySenders = TransactionPoolConfiguration.DEFAULT_PRIORITY_SENDERS;
+
+<span class="fc" id="L130">  @CommandLine.Option(</span>
+      names = {TX_POOL_MIN_GAS_PRICE},
+      paramLabel = &quot;&lt;Wei&gt;&quot;,
+      description =
+          &quot;Transactions with gas price (in Wei) lower than this minimum will not be accepted into the txpool&quot;
+              + &quot;(not to be confused with min-gas-price, that is applied on block creation) (default: ${DEFAULT-VALUE})&quot;,
+      arity = &quot;1&quot;)
+  private Wei minGasPrice = TransactionPoolConfiguration.DEFAULT_TX_POOL_MIN_GAS_PRICE;
+
+<span class="fc" id="L139">  @CommandLine.ArgGroup(</span>
+      validate = false,
+      heading = &quot;@|bold Tx Pool Layered Implementation Options|@%n&quot;)
+  private final Layered layeredOptions = new Layered();
+
+<span class="fc" id="L144">  static class Layered {</span>
+    private static final String TX_POOL_LAYER_MAX_CAPACITY = &quot;--tx-pool-layer-max-capacity&quot;;
+    private static final String TX_POOL_MAX_PRIORITIZED = &quot;--tx-pool-max-prioritized&quot;;
+    private static final String TX_POOL_MAX_FUTURE_BY_SENDER = &quot;--tx-pool-max-future-by-sender&quot;;
+
+<span class="fc" id="L149">    @CommandLine.Option(</span>
+        names = {TX_POOL_LAYER_MAX_CAPACITY},
+        paramLabel = MANDATORY_LONG_FORMAT_HELP,
+        description =
+            &quot;Max amount of memory space, in bytes, that any layer within the transaction pool could occupy (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    Long txPoolLayerMaxCapacity =
+<span class="fc" id="L156">        TransactionPoolConfiguration.DEFAULT_PENDING_TRANSACTIONS_LAYER_MAX_CAPACITY_BYTES;</span>
+
+<span class="fc" id="L158">    @CommandLine.Option(</span>
+        names = {TX_POOL_MAX_PRIORITIZED},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description =
+            &quot;Max number of pending transactions that are prioritized and thus kept sorted (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    Integer txPoolMaxPrioritized =
+<span class="fc" id="L165">        TransactionPoolConfiguration.DEFAULT_MAX_PRIORITIZED_TRANSACTIONS;</span>
+
+<span class="fc" id="L167">    @CommandLine.Option(</span>
+        names = {TX_POOL_MAX_FUTURE_BY_SENDER},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description =
+            &quot;Max number of future pending transactions allowed for a single sender (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L173">    Integer txPoolMaxFutureBySender = TransactionPoolConfiguration.DEFAULT_MAX_FUTURE_BY_SENDER;</span>
+  }
+
+<span class="fc" id="L176">  @CommandLine.ArgGroup(</span>
+      validate = false,
+      heading = &quot;@|bold Tx Pool Sequenced Implementation Options|@%n&quot;)
+  private final Sequenced sequencedOptions = new Sequenced();
+
+<span class="fc" id="L181">  static class Sequenced {</span>
+    private static final String TX_POOL_RETENTION_HOURS = &quot;--tx-pool-retention-hours&quot;;
+    private static final String TX_POOL_LIMIT_BY_ACCOUNT_PERCENTAGE =
+        &quot;--tx-pool-limit-by-account-percentage&quot;;
+    private static final String TX_POOL_MAX_SIZE = &quot;--tx-pool-max-size&quot;;
+
+<span class="fc" id="L187">    @CommandLine.Option(</span>
+        names = {TX_POOL_RETENTION_HOURS},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description =
+            &quot;Maximum retention period of pending transactions in hours (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L193">    Integer pendingTxRetentionPeriod = TransactionPoolConfiguration.DEFAULT_TX_RETENTION_HOURS;</span>
+
+<span class="fc" id="L195">    @CommandLine.Option(</span>
+        names = {TX_POOL_LIMIT_BY_ACCOUNT_PERCENTAGE},
+        paramLabel = MANDATORY_DOUBLE_FORMAT_HELP,
+        converter = FractionConverter.class,
+        description =
+            &quot;Maximum portion of the transaction pool which a single account may occupy with future transactions (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    Fraction txPoolLimitByAccountPercentage =
+        TransactionPoolConfiguration.DEFAULT_LIMIT_TX_POOL_BY_ACCOUNT_PERCENTAGE;
+
+<span class="fc" id="L205">    @CommandLine.Option(</span>
+        names = {TX_POOL_MAX_SIZE},
+        paramLabel = MANDATORY_INTEGER_FORMAT_HELP,
+        description =
+            &quot;Maximum number of pending transactions that will be kept in the transaction pool (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+<span class="fc" id="L211">    Integer txPoolMaxSize = TransactionPoolConfiguration.DEFAULT_MAX_PENDING_TRANSACTIONS;</span>
+  }
+
+<span class="fc" id="L214">  @CommandLine.ArgGroup(validate = false)</span>
+  private final TransactionPoolOptions.Unstable unstableOptions =
+      new TransactionPoolOptions.Unstable();
+
+<span class="fc" id="L218">  static class Unstable {</span>
+    private static final String TX_MESSAGE_KEEP_ALIVE_SEC_FLAG =
+        &quot;--Xincoming-tx-messages-keep-alive-seconds&quot;;
+
+    private static final String ETH65_TX_ANNOUNCED_BUFFERING_PERIOD_FLAG =
+        &quot;--Xeth65-tx-announced-buffering-period-milliseconds&quot;;
+
+<span class="fc" id="L225">    @CommandLine.Option(</span>
+        names = {TX_MESSAGE_KEEP_ALIVE_SEC_FLAG},
+        paramLabel = &quot;&lt;INTEGER&gt;&quot;,
+        hidden = true,
+        description =
+            &quot;Keep alive of incoming transaction messages in seconds (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private Integer txMessageKeepAliveSeconds =
+<span class="fc" id="L233">        TransactionPoolConfiguration.Unstable.DEFAULT_TX_MSG_KEEP_ALIVE;</span>
+
+<span class="fc" id="L235">    @CommandLine.Option(</span>
+        names = {ETH65_TX_ANNOUNCED_BUFFERING_PERIOD_FLAG},
+        paramLabel = &quot;&lt;LONG&gt;&quot;,
+        converter = DurationMillisConverter.class,
+        hidden = true,
+        description =
+            &quot;The period for which the announced transactions remain in the buffer before being requested from the peers in milliseconds (default: ${DEFAULT-VALUE})&quot;,
+        arity = &quot;1&quot;)
+    private Duration eth65TrxAnnouncedBufferingPeriod =
+        TransactionPoolConfiguration.Unstable.ETH65_TRX_ANNOUNCED_BUFFERING_PERIOD;
+  }
+
+<span class="fc" id="L247">  private TransactionPoolOptions() {}</span>
+
+  /**
+   * Create transaction pool options.
+   *
+   * @return the transaction pool options
+   */
+  public static TransactionPoolOptions create() {
+<span class="fc" id="L255">    return new TransactionPoolOptions();</span>
+  }
+
+  /**
+   * Set the plugin txpool validator service
+   *
+   * @param transactionPoolValidatorService the plugin txpool validator service
+   */
+  public void setPluginTransactionValidatorService(
+      final TransactionPoolValidatorService transactionPoolValidatorService) {
+<span class="fc" id="L265">    this.transactionPoolValidatorService = transactionPoolValidatorService;</span>
+<span class="fc" id="L266">  }</span>
+
+  /**
+   * Create Transaction Pool Options from Transaction Pool Configuration.
+   *
+   * @param config the Transaction Pool Configuration
+   * @return the transaction pool options
+   */
+  public static TransactionPoolOptions fromConfig(final TransactionPoolConfiguration config) {
+<span class="fc" id="L275">    final TransactionPoolOptions options = TransactionPoolOptions.create();</span>
+<span class="fc" id="L276">    options.txPoolImplementation = config.getTxPoolImplementation();</span>
+<span class="fc" id="L277">    options.saveRestoreEnabled = config.getEnableSaveRestore();</span>
+<span class="fc" id="L278">    options.noLocalPriority = config.getNoLocalPriority();</span>
+<span class="fc" id="L279">    options.priceBump = config.getPriceBump();</span>
+<span class="fc" id="L280">    options.txFeeCap = config.getTxFeeCap();</span>
+<span class="fc" id="L281">    options.saveFile = config.getSaveFile();</span>
+<span class="fc" id="L282">    options.strictTxReplayProtectionEnabled = config.getStrictTransactionReplayProtectionEnabled();</span>
+<span class="fc" id="L283">    options.prioritySenders = config.getPrioritySenders();</span>
+<span class="fc" id="L284">    options.minGasPrice = config.getMinGasPrice();</span>
+<span class="fc" id="L285">    options.layeredOptions.txPoolLayerMaxCapacity =</span>
+<span class="fc" id="L286">        config.getPendingTransactionsLayerMaxCapacityBytes();</span>
+<span class="fc" id="L287">    options.layeredOptions.txPoolMaxPrioritized = config.getMaxPrioritizedTransactions();</span>
+<span class="fc" id="L288">    options.layeredOptions.txPoolMaxFutureBySender = config.getMaxFutureBySender();</span>
+<span class="fc" id="L289">    options.sequencedOptions.txPoolLimitByAccountPercentage =</span>
+<span class="fc" id="L290">        config.getTxPoolLimitByAccountPercentage();</span>
+<span class="fc" id="L291">    options.sequencedOptions.txPoolMaxSize = config.getTxPoolMaxSize();</span>
+<span class="fc" id="L292">    options.sequencedOptions.pendingTxRetentionPeriod = config.getPendingTxRetentionPeriod();</span>
+<span class="fc" id="L293">    options.transactionPoolValidatorService = config.getTransactionPoolValidatorService();</span>
+<span class="fc" id="L294">    options.unstableOptions.txMessageKeepAliveSeconds =</span>
+<span class="fc" id="L295">        config.getUnstable().getTxMessageKeepAliveSeconds();</span>
+<span class="fc" id="L296">    options.unstableOptions.eth65TrxAnnouncedBufferingPeriod =</span>
+<span class="fc" id="L297">        config.getUnstable().getEth65TrxAnnouncedBufferingPeriod();</span>
+
+<span class="fc" id="L299">    return options;</span>
+  }
+
+  /**
+   * Validate that there are no inconsistencies in the specified options. For example that the
+   * options are valid for the selected implementation.
+   *
+   * @param commandLine the full commandLine to check all the options specified by the user
+   * @param genesisConfigOptions the genesis config options
+   */
+  public void validate(
+      final CommandLine commandLine, final GenesisConfigOptions genesisConfigOptions) {
+<span class="fc" id="L311">    CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+        commandLine,
+        &quot;Could not use legacy or sequenced transaction pool options with layered implementation&quot;,
+<span class="fc bfc" id="L314" title="All 2 branches covered.">        !txPoolImplementation.equals(LAYERED),</span>
+<span class="fc" id="L315">        CommandLineUtils.getCLIOptionNames(Sequenced.class));</span>
+
+<span class="fc" id="L317">    CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+        commandLine,
+        &quot;Could not use layered transaction pool options with legacy or sequenced implementation&quot;,
+<span class="fc bfc" id="L320" title="All 4 branches covered.">        !txPoolImplementation.equals(LEGACY) &amp;&amp; !txPoolImplementation.equals(SEQUENCED),</span>
+<span class="fc" id="L321">        CommandLineUtils.getCLIOptionNames(Layered.class));</span>
+
+<span class="fc" id="L323">    CommandLineUtils.failIfOptionDoesntMeetRequirement(</span>
+        commandLine,
+        &quot;Price bump option is not compatible with zero base fee market&quot;,
+<span class="fc bfc" id="L326" title="All 2 branches covered.">        !genesisConfigOptions.isZeroBaseFee(),</span>
+<span class="fc" id="L327">        List.of(TX_POOL_PRICE_BUMP));</span>
+<span class="fc" id="L328">  }</span>
+
+  @Override
+  public TransactionPoolConfiguration toDomainObject() {
+<span class="fc" id="L332">    return ImmutableTransactionPoolConfiguration.builder()</span>
+<span class="fc" id="L333">        .txPoolImplementation(txPoolImplementation)</span>
+<span class="fc" id="L334">        .enableSaveRestore(saveRestoreEnabled)</span>
+<span class="fc" id="L335">        .noLocalPriority(noLocalPriority)</span>
+<span class="fc" id="L336">        .priceBump(priceBump)</span>
+<span class="fc" id="L337">        .txFeeCap(txFeeCap)</span>
+<span class="fc" id="L338">        .saveFile(saveFile)</span>
+<span class="fc" id="L339">        .strictTransactionReplayProtectionEnabled(strictTxReplayProtectionEnabled)</span>
+<span class="fc" id="L340">        .prioritySenders(prioritySenders)</span>
+<span class="fc" id="L341">        .minGasPrice(minGasPrice)</span>
+<span class="fc" id="L342">        .pendingTransactionsLayerMaxCapacityBytes(layeredOptions.txPoolLayerMaxCapacity)</span>
+<span class="fc" id="L343">        .maxPrioritizedTransactions(layeredOptions.txPoolMaxPrioritized)</span>
+<span class="fc" id="L344">        .maxFutureBySender(layeredOptions.txPoolMaxFutureBySender)</span>
+<span class="fc" id="L345">        .txPoolLimitByAccountPercentage(sequencedOptions.txPoolLimitByAccountPercentage)</span>
+<span class="fc" id="L346">        .txPoolMaxSize(sequencedOptions.txPoolMaxSize)</span>
+<span class="fc" id="L347">        .pendingTxRetentionPeriod(sequencedOptions.pendingTxRetentionPeriod)</span>
+<span class="fc" id="L348">        .transactionPoolValidatorService(transactionPoolValidatorService)</span>
+<span class="fc" id="L349">        .unstable(</span>
+<span class="fc" id="L350">            ImmutableTransactionPoolConfiguration.Unstable.builder()</span>
+<span class="fc" id="L351">                .txMessageKeepAliveSeconds(unstableOptions.txMessageKeepAliveSeconds)</span>
+<span class="fc" id="L352">                .eth65TrxAnnouncedBufferingPeriod(unstableOptions.eth65TrxAnnouncedBufferingPeriod)</span>
+<span class="fc" id="L353">                .build())</span>
+<span class="fc" id="L354">        .build();</span>
+  }
+
+  @Override
+  public List&lt;String&gt; getCLIOptions() {
+<span class="fc" id="L359">    return CommandLineUtils.getCLIOptions(this, new TransactionPoolOptions());</span>
+  }
+
+  /**
+   * Is price bump option set?
+   *
+   * @param commandLine the command line
+   * @return true is tx-pool-price-bump is set
+   */
+  public boolean isPriceBumpSet(final CommandLine commandLine) {
+<span class="fc" id="L369">    return CommandLineUtils.isOptionSet(commandLine, TransactionPoolOptions.TX_POOL_PRICE_BUMP);</span>
+  }
+
+  /**
+   * Is min gas price option set?
+   *
+   * @param commandLine the command line
+   * @return true if tx-pool-min-gas-price is set
+   */
+  public boolean isMinGasPriceSet(final CommandLine commandLine) {
+<span class="fc" id="L379">    return CommandLineUtils.isOptionSet(commandLine, TransactionPoolOptions.TX_POOL_MIN_GAS_PRICE);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

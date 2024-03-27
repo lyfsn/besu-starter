@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateTransactionLocator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateTransactionLocator.java</span></div><h1>PrivateTransactionLocator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.EnclaveClientException;
+import org.hyperledger.besu.enclave.types.ReceiveResponse;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.TransactionLocation;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivacyGroupHeadBlockMap;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.util.Base64;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivateTransactionLocator {
+
+<span class="fc" id="L44">  private static final Logger LOG = LoggerFactory.getLogger(PrivateTransactionLocator.class);</span>
+
+  private final Blockchain blockchain;
+  private final Enclave enclave;
+  private final PrivateStateStorage privateStateStorage;
+
+  public PrivateTransactionLocator(
+      final Blockchain blockchain,
+      final Enclave enclave,
+<span class="fc" id="L53">      final PrivateStateStorage privateStateStorage) {</span>
+<span class="fc" id="L54">    this.blockchain = blockchain;</span>
+<span class="fc" id="L55">    this.enclave = enclave;</span>
+<span class="fc" id="L56">    this.privateStateStorage = privateStateStorage;</span>
+<span class="fc" id="L57">  }</span>
+
+  /**
+   * Returns a private transaction with extra data (block and pmt information). The private
+   * transaction is retrieved from the Enclave, either as a single transaction or from an existing
+   * &quot;blob&quot;.&lt;br&gt;
+   * In both cases, we are passing the enclaveKey (public key of the participant) down to the
+   * Enclave, with the expectation that the Enclave will only return the payload if the matching
+   * private key of the enclaveKey passed as a parameter is able to be used to decrypt the payload.
+   *
+   * &lt;p&gt;This enclaveKey &quot;validation&quot; in the Enclave makes retrieving a payload multi-tenancy safe.
+   *
+   * @param pmtHash the hash of the PMT associated with the private transaction
+   * @param enclaveKey participant public key that must match the private key used to decrypt the
+   *     payload
+   * @return An executed private transaction
+   */
+  public Optional&lt;ExecutedPrivateTransaction&gt; findByPmtHash(
+      final Hash pmtHash, final String enclaveKey) {
+<span class="fc" id="L76">    final Optional&lt;TransactionLocation&gt; maybePmtLocation =</span>
+<span class="fc" id="L77">        blockchain.getTransactionLocation(pmtHash);</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    if (maybePmtLocation.isEmpty()) {</span>
+<span class="fc" id="L79">      return Optional.empty();</span>
+    }
+
+<span class="fc" id="L82">    final TransactionLocation pmtLocation = maybePmtLocation.get();</span>
+<span class="fc" id="L83">    final Transaction pmt = blockchain.getTransactionByHash(pmtHash).orElseThrow();</span>
+<span class="fc" id="L84">    final BlockHeader blockHeader =</span>
+<span class="fc" id="L85">        blockchain.getBlockHeader(pmtLocation.getBlockHash()).orElseThrow();</span>
+<span class="fc" id="L86">    final String payloadKey = readPayloadKeyFromPmt(pmt);</span>
+
+<span class="fc" id="L88">    return tryFetchingPrivateTransactionFromEnclave(payloadKey, enclaveKey)</span>
+<span class="fc" id="L89">        .or(() -&gt; tryFetchingTransactionFromAddBlob(blockHeader.getHash(), pmtHash, enclaveKey))</span>
+<span class="fc" id="L90">        .map(</span>
+            tx -&gt;
+<span class="fc" id="L92">                new ExecutedPrivateTransaction(</span>
+<span class="fc" id="L93">                    blockHeader.getHash(),</span>
+<span class="fc" id="L94">                    blockHeader.getNumber(),</span>
+<span class="fc" id="L95">                    pmt.getHash(),</span>
+<span class="fc" id="L96">                    pmtLocation.getTransactionIndex(),</span>
+<span class="fc" id="L97">                    tx.getInternalPrivacyGroupId(),</span>
+<span class="fc" id="L98">                    tx.getPrivateTransaction()));</span>
+  }
+
+  private String readPayloadKeyFromPmt(final Transaction privacyMarkerTx) {
+<span class="fc" id="L102">    return privacyMarkerTx.getPayload().slice(0, 32).toBase64String();</span>
+  }
+
+  /**
+   * Retrieves a single private transaction from the Enclave
+   *
+   * @param payloadKey unique key identifying the payload
+   * @param enclaveKey participant public key that must match the private key used to decrypt the
+   *     payload
+   * @return an optional containing the private transaction, if found. Or an empty optional if the
+   *     private transaction couldn't be found.
+   */
+  private Optional&lt;TransactionFromEnclave&gt; tryFetchingPrivateTransactionFromEnclave(
+      final String payloadKey, final String enclaveKey) {
+<span class="fc" id="L116">    return retrievePayloadFromEnclave(payloadKey, enclaveKey)</span>
+<span class="fc" id="L117">        .map(this::readPrivateTransactionFromPayload);</span>
+  }
+
+  private Optional&lt;ReceiveResponse&gt; retrievePayloadFromEnclave(
+      final String payloadKey, final String enclaveKey) {
+    try {
+<span class="fc" id="L123">      return Optional.of(enclave.receive(payloadKey, enclaveKey));</span>
+<span class="fc" id="L124">    } catch (final EnclaveClientException e) {</span>
+      // Enclave throws an exception with a 404 status code if the payload isn't found
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">      if (e.getStatusCode() == 404) {</span>
+<span class="fc" id="L127">        return Optional.empty();</span>
+      } else {
+<span class="nc" id="L129">        throw e;</span>
+      }
+    }
+  }
+
+  private TransactionFromEnclave readPrivateTransactionFromPayload(
+      final ReceiveResponse receiveResponse) {
+    final PrivateTransaction privateTransaction;
+<span class="fc" id="L137">    final BytesValueRLPInput input =</span>
+        new BytesValueRLPInput(
+<span class="fc" id="L139">            Bytes.fromBase64String(new String(receiveResponse.getPayload(), UTF_8)), false);</span>
+
+    /*
+     When using onchain privacy groups, the payload is a list with the first element being the
+     private transaction RLP and the second element being the version. This is why we have the
+     nextIsList() check.
+    */
+    try {
+<span class="fc" id="L147">      input.enterList();</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">      if (input.nextIsList()) {</span>
+        // private transaction and version (we only read the first element in the list)
+<span class="fc" id="L150">        privateTransaction = PrivateTransaction.readFrom(input);</span>
+<span class="fc" id="L151">        input.leaveListLenient();</span>
+      } else {
+        // private transaction only (read the whole RLP)
+<span class="fc" id="L154">        input.reset();</span>
+<span class="fc" id="L155">        privateTransaction = PrivateTransaction.readFrom(input);</span>
+      }
+<span class="nc" id="L157">    } catch (final RLPException e) {</span>
+<span class="nc" id="L158">      throw new IllegalStateException(&quot;Error de-serializing private transaction from enclave&quot;, e);</span>
+<span class="fc" id="L159">    }</span>
+
+<span class="fc" id="L161">    return new TransactionFromEnclave(privateTransaction, receiveResponse.getPrivacyGroupId());</span>
+  }
+
+  private Optional&lt;TransactionFromEnclave&gt; tryFetchingTransactionFromAddBlob(
+      final Bytes32 blockHash, final Hash expectedPmtHash, final String enclaveKey) {
+<span class="fc" id="L166">    LOG.trace(&quot;Fetching transaction information from add blob&quot;);</span>
+
+<span class="fc" id="L168">    final Optional&lt;PrivacyGroupHeadBlockMap&gt; privacyGroupHeadBlockMapOptional =</span>
+<span class="fc" id="L169">        privateStateStorage.getPrivacyGroupHeadBlockMap(blockHash);</span>
+
+<span class="fc bfc" id="L171" title="All 2 branches covered.">    if (privacyGroupHeadBlockMapOptional.isPresent()) {</span>
+<span class="fc" id="L172">      final Set&lt;Bytes32&gt; mappedPrivacyGroupIds = privacyGroupHeadBlockMapOptional.get().keySet();</span>
+
+<span class="pc bpc" id="L174" title="1 of 2 branches missed.">      for (final Bytes32 privacyGroupId : mappedPrivacyGroupIds) {</span>
+<span class="fc" id="L175">        final Optional&lt;Bytes32&gt; addDataKey = privateStateStorage.getAddDataKey(privacyGroupId);</span>
+
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">        if (addDataKey.isPresent()) {</span>
+<span class="fc" id="L178">          final String payloadKey = addDataKey.get().toBase64String();</span>
+<span class="fc" id="L179">          final Optional&lt;ReceiveResponse&gt; receiveResponse =</span>
+<span class="fc" id="L180">              retrievePayloadFromEnclave(payloadKey, enclaveKey);</span>
+<span class="fc bfc" id="L181" title="All 2 branches covered.">          if (receiveResponse.isEmpty()) {</span>
+<span class="fc" id="L182">            LOG.warn(</span>
+                &quot;Unable to find private transaction with payloadKey = {} on AddBlob&quot;, payloadKey);
+<span class="fc" id="L184">            return Optional.empty();</span>
+          }
+
+          final Bytes payload =
+<span class="fc" id="L188">              Bytes.wrap(Base64.getDecoder().decode(receiveResponse.get().getPayload()));</span>
+<span class="fc" id="L189">          final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList =</span>
+<span class="fc" id="L190">              PrivateTransactionWithMetadata.readListFromPayload(payload);</span>
+
+          for (final PrivateTransactionWithMetadata privateTx :
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">              privateTransactionWithMetadataList) {</span>
+<span class="fc" id="L194">            final Hash actualPrivateMarkerTransactionHash =</span>
+<span class="fc" id="L195">                privateTx.getPrivateTransactionMetadata().getPrivateMarkerTransactionHash();</span>
+
+<span class="pc bpc" id="L197" title="1 of 2 branches missed.">            if (expectedPmtHash.equals(actualPrivateMarkerTransactionHash)) {</span>
+<span class="fc" id="L198">              return Optional.of(</span>
+                  new TransactionFromEnclave(
+<span class="fc" id="L200">                      privateTx.getPrivateTransaction(),</span>
+<span class="fc" id="L201">                      receiveResponse.get().getPrivacyGroupId()));</span>
+            }
+<span class="nc" id="L203">          }</span>
+        }
+<span class="nc" id="L205">      }</span>
+    }
+
+<span class="fc" id="L208">    return Optional.empty();</span>
+  }
+
+  private static class TransactionFromEnclave {
+    private final PrivateTransaction privateTransaction;
+    private final String internalPrivacyGroupId;
+
+    public TransactionFromEnclave(
+<span class="fc" id="L216">        final PrivateTransaction privateTransaction, final String internalPrivacyGroupId) {</span>
+<span class="fc" id="L217">      this.privateTransaction = privateTransaction;</span>
+<span class="fc" id="L218">      this.internalPrivacyGroupId = internalPrivacyGroupId;</span>
+<span class="fc" id="L219">    }</span>
+
+    public PrivateTransaction getPrivateTransaction() {
+<span class="fc" id="L222">      return privateTransaction;</span>
+    }
+
+    public String getInternalPrivacyGroupId() {
+<span class="fc" id="L226">      return internalPrivacyGroupId;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

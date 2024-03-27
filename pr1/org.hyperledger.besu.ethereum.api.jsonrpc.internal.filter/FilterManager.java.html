@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FilterManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.filter</a> &gt; <span class="el_source">FilterManager.java</span></div><h1>FilterManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.filter;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.Collections.emptyList;
+import static java.util.stream.Collectors.toUnmodifiableList;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.query.LogsQuery;
+import org.hyperledger.besu.ethereum.api.query.PrivacyQueries;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionEvent;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionObserver;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import io.vertx.core.AbstractVerticle;
+
+/** Manages JSON-RPC filter events. */
+public class FilterManager extends AbstractVerticle implements PrivateTransactionObserver {
+
+  private static final int FILTER_TIMEOUT_CHECK_TIMER = 10000;
+
+  private final FilterIdGenerator filterIdGenerator;
+  private final FilterRepository filterRepository;
+  private final BlockchainQueries blockchainQueries;
+  private final Optional&lt;PrivacyQueries&gt; privacyQueries;
+  private final List&lt;PrivateTransactionEvent&gt; removalEvents;
+
+  FilterManager(
+      final BlockchainQueries blockchainQueries,
+      final TransactionPool transactionPool,
+      final Optional&lt;PrivacyQueries&gt; privacyQueries,
+      final FilterIdGenerator filterIdGenerator,
+<span class="fc" id="L57">      final FilterRepository filterRepository) {</span>
+<span class="fc" id="L58">    this.filterIdGenerator = filterIdGenerator;</span>
+<span class="fc" id="L59">    this.filterRepository = filterRepository;</span>
+<span class="fc" id="L60">    checkNotNull(blockchainQueries.getBlockchain());</span>
+<span class="fc" id="L61">    blockchainQueries.getBlockchain().observeBlockAdded(this::recordBlockEvent);</span>
+<span class="fc" id="L62">    transactionPool.subscribePendingTransactions(this::recordPendingTransactionEvent);</span>
+<span class="fc" id="L63">    this.blockchainQueries = blockchainQueries;</span>
+<span class="fc" id="L64">    this.privacyQueries = privacyQueries;</span>
+<span class="fc" id="L65">    this.removalEvents = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L66">  }</span>
+
+  @Override
+  public void start() {
+<span class="fc" id="L70">    startFilterTimeoutTimer();</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public void stop() {
+<span class="fc" id="L75">    filterRepository.deleteAll();</span>
+<span class="fc" id="L76">  }</span>
+
+  private void startFilterTimeoutTimer() {
+<span class="fc" id="L79">    vertx.setPeriodic(</span>
+        FILTER_TIMEOUT_CHECK_TIMER,
+        timerId -&gt;
+<span class="fc" id="L82">            vertx.executeBlocking(</span>
+<span class="pc" id="L83">                future -&gt; new FilterTimeoutMonitor(filterRepository).checkFilters(), result -&gt; {}));</span>
+<span class="fc" id="L84">  }</span>
+
+  /**
+   * Installs a new block filter
+   *
+   * @return the block filter id
+   */
+  public String installBlockFilter() {
+<span class="fc" id="L92">    final String filterId = filterIdGenerator.nextId();</span>
+<span class="fc" id="L93">    filterRepository.save(new BlockFilter(filterId));</span>
+<span class="fc" id="L94">    return filterId;</span>
+  }
+
+  /**
+   * Installs a pending transaction filter
+   *
+   * @return the transaction filter id
+   */
+  public String installPendingTransactionFilter() {
+<span class="fc" id="L103">    final String filterId = filterIdGenerator.nextId();</span>
+<span class="fc" id="L104">    filterRepository.save(new PendingTransactionFilter(filterId));</span>
+<span class="fc" id="L105">    return filterId;</span>
+  }
+
+  /**
+   * Installs a new log filter
+   *
+   * @param fromBlock {@link BlockParameter} Integer block number, or latest/pending/earliest.
+   * @param toBlock {@link BlockParameter} Integer block number, or latest/pending/earliest.
+   * @param logsQuery {@link LogsQuery} Addresses and/or topics to filter by
+   * @return the log filter id
+   */
+  public String installLogFilter(
+      final BlockParameter fromBlock, final BlockParameter toBlock, final LogsQuery logsQuery) {
+<span class="fc" id="L118">    final String filterId = filterIdGenerator.nextId();</span>
+<span class="fc" id="L119">    filterRepository.save(new LogFilter(filterId, fromBlock, toBlock, logsQuery));</span>
+<span class="fc" id="L120">    return filterId;</span>
+  }
+
+  /**
+   * Installs a new private log filter
+   *
+   * @param privacyGroupId String privacyGroupId
+   * @param privacyUserId String privacyUserId of user creating the filter
+   * @param fromBlock {@link BlockParameter} Integer block number, or latest/pending/earliest.
+   * @param toBlock {@link BlockParameter} Integer block number, or latest/pending/earliest.
+   * @param logsQuery {@link LogsQuery} Addresses and/or topics to filter by
+   * @return the log filter id
+   */
+  public String installPrivateLogFilter(
+      final String privacyGroupId,
+      final String privacyUserId,
+      final BlockParameter fromBlock,
+      final BlockParameter toBlock,
+      final LogsQuery logsQuery) {
+<span class="fc" id="L139">    final String filterId = filterIdGenerator.nextId();</span>
+<span class="fc" id="L140">    filterRepository.save(</span>
+        new PrivateLogFilter(
+            filterId, privacyGroupId, privacyUserId, fromBlock, toBlock, logsQuery));
+<span class="fc" id="L143">    return filterId;</span>
+  }
+
+  /**
+   * Uninstalls the specified filter.
+   *
+   * @param filterId the id of the filter to remove
+   * @return {@code true} if the filter was successfully removed; otherwise {@code false}
+   */
+  public boolean uninstallFilter(final String filterId) {
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (filterRepository.exists(filterId)) {</span>
+<span class="fc" id="L154">      filterRepository.delete(filterId);</span>
+<span class="fc" id="L155">      return true;</span>
+    } else {
+<span class="fc" id="L157">      return false;</span>
+    }
+  }
+
+  public void recordBlockEvent(final BlockAddedEvent event) {
+<span class="fc" id="L162">    final Hash blockHash = event.getBlock().getHash();</span>
+<span class="fc" id="L163">    final Collection&lt;BlockFilter&gt; blockFilters =</span>
+<span class="fc" id="L164">        filterRepository.getFiltersOfType(BlockFilter.class);</span>
+<span class="fc" id="L165">    blockFilters.forEach(</span>
+        filter -&gt; {
+<span class="fc" id="L167">          synchronized (filter) {</span>
+<span class="fc" id="L168">            filter.addBlockHash(blockHash);</span>
+<span class="fc" id="L169">          }</span>
+<span class="fc" id="L170">        });</span>
+
+<span class="pc" id="L172">    removalEvents.stream().forEach(removalEvent -&gt; processRemovalEvent(removalEvent));</span>
+<span class="fc" id="L173">    removalEvents.clear();</span>
+
+<span class="fc" id="L175">    final List&lt;LogWithMetadata&gt; logsWithMetadata = event.getLogsWithMetadata();</span>
+<span class="fc" id="L176">    filterRepository.getFiltersOfType(LogFilter.class).stream()</span>
+<span class="fc" id="L177">        .filter(</span>
+            // Only keep filters where the &quot;to&quot; block could include the block in the event
+            filter -&gt; {
+<span class="fc" id="L180">              final Optional&lt;Long&gt; maybeToBlockNumber = filter.getToBlock().getNumber();</span>
+<span class="fc bfc" id="L181" title="All 2 branches covered.">              return maybeToBlockNumber.isEmpty()</span>
+<span class="fc bfc" id="L182" title="All 2 branches covered.">                  || maybeToBlockNumber.get() &gt;= event.getBlock().getHeader().getNumber();</span>
+            })
+<span class="fc" id="L184">        .forEach(</span>
+            filter -&gt; {
+<span class="fc" id="L186">              final LogsQuery logsQuery = filter.getLogsQuery();</span>
+<span class="fc" id="L187">              filter.addLogs(</span>
+                  // We need to use privacy queries for private log filters but for regular
+                  // log filters we already have all the info in the event
+<span class="fc bfc" id="L190" title="All 2 branches covered.">                  filter instanceof PrivateLogFilter</span>
+                      ? privacyQueries
+<span class="fc" id="L192">                          .map(</span>
+                              pq -&gt;
+<span class="fc" id="L194">                                  pq.matchingLogs(</span>
+<span class="fc" id="L195">                                      ((PrivateLogFilter) filter).getPrivacyGroupId(),</span>
+                                      blockHash,
+                                      logsQuery))
+<span class="fc" id="L198">                          .orElse(emptyList())</span>
+<span class="fc" id="L199">                      : logsWithMetadata.stream()</span>
+<span class="fc" id="L200">                          .filter(logsQuery::matches)</span>
+<span class="fc" id="L201">                          .collect(toUnmodifiableList()));</span>
+<span class="fc" id="L202">            });</span>
+<span class="fc" id="L203">  }</span>
+
+  @Override
+  public void onPrivateTransactionProcessed(final PrivateTransactionEvent event) {
+    // the list will be processed at the end of the block
+<span class="nc" id="L208">    removalEvents.add(event);</span>
+<span class="nc" id="L209">  }</span>
+
+  @VisibleForTesting
+  void recordPendingTransactionEvent(final Transaction transaction) {
+<span class="fc" id="L213">    final Collection&lt;PendingTransactionFilter&gt; pendingTransactionFilters =</span>
+<span class="fc" id="L214">        filterRepository.getFiltersOfType(PendingTransactionFilter.class);</span>
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">    if (pendingTransactionFilters.isEmpty()) {</span>
+<span class="nc" id="L216">      return;</span>
+    }
+
+<span class="fc" id="L219">    pendingTransactionFilters.forEach(</span>
+        filter -&gt; {
+<span class="fc" id="L221">          synchronized (filter) {</span>
+<span class="fc" id="L222">            filter.addTransactionHash(transaction.getHash());</span>
+<span class="fc" id="L223">          }</span>
+<span class="fc" id="L224">        });</span>
+<span class="fc" id="L225">  }</span>
+
+  @VisibleForTesting
+  void processRemovalEvent(final PrivateTransactionEvent event) {
+    // when user removed from privacy group, remove all filters created by that user in that group
+<span class="fc" id="L230">    filterRepository.getFiltersOfType(PrivateLogFilter.class).stream()</span>
+<span class="fc" id="L231">        .filter(</span>
+            privateLogFilter -&gt;
+<span class="pc bpc" id="L233" title="1 of 2 branches missed.">                privateLogFilter.getPrivacyGroupId().equals(event.getPrivacyGroupId())</span>
+<span class="pc bpc" id="L234" title="1 of 2 branches missed.">                    &amp;&amp; privateLogFilter.getPrivacyUserId().equals(event.getPrivacyUserId()))</span>
+<span class="fc" id="L235">        .forEach(</span>
+            privateLogFilter -&gt; {
+<span class="fc" id="L237">              uninstallFilter(privateLogFilter.getId());</span>
+<span class="fc" id="L238">            });</span>
+<span class="fc" id="L239">  }</span>
+
+  /**
+   * Gets the new block hashes that have occurred since the filter was last checked.
+   *
+   * @param filterId the id of the filter to get the new blocks for
+   * @return the new block hashes that have occurred since the filter was last checked
+   */
+  public List&lt;Hash&gt; blockChanges(final String filterId) {
+<span class="fc" id="L248">    final BlockFilter filter = filterRepository.getFilter(filterId, BlockFilter.class).orElse(null);</span>
+<span class="fc bfc" id="L249" title="All 2 branches covered.">    if (filter == null) {</span>
+<span class="fc" id="L250">      return null;</span>
+    }
+
+    final List&lt;Hash&gt; hashes;
+<span class="fc" id="L254">    synchronized (filter) {</span>
+<span class="fc" id="L255">      hashes = new ArrayList&lt;&gt;(filter.blockHashes());</span>
+<span class="fc" id="L256">      filter.clearBlockHashes();</span>
+<span class="fc" id="L257">      filter.resetExpireTime();</span>
+<span class="fc" id="L258">    }</span>
+<span class="fc" id="L259">    return hashes;</span>
+  }
+
+  /**
+   * Gets the pending transactions that have occurred since the filter was last checked.
+   *
+   * @param filterId the id of the filter to get the pending transactions for
+   * @return the new pending transaction hashes that have occurred since the filter was last checked
+   */
+  public List&lt;Hash&gt; pendingTransactionChanges(final String filterId) {
+<span class="fc" id="L269">    final PendingTransactionFilter filter =</span>
+<span class="fc" id="L270">        filterRepository.getFilter(filterId, PendingTransactionFilter.class).orElse(null);</span>
+<span class="fc bfc" id="L271" title="All 2 branches covered.">    if (filter == null) {</span>
+<span class="fc" id="L272">      return null;</span>
+    }
+
+    final List&lt;Hash&gt; hashes;
+<span class="fc" id="L276">    synchronized (filter) {</span>
+<span class="fc" id="L277">      hashes = new ArrayList&lt;&gt;(filter.transactionHashes());</span>
+<span class="fc" id="L278">      filter.clearTransactionHashes();</span>
+<span class="fc" id="L279">      filter.resetExpireTime();</span>
+<span class="fc" id="L280">    }</span>
+<span class="fc" id="L281">    return hashes;</span>
+  }
+
+  public List&lt;LogWithMetadata&gt; logsChanges(final String filterId) {
+<span class="fc" id="L285">    final LogFilter filter = filterRepository.getFilter(filterId, LogFilter.class).orElse(null);</span>
+<span class="fc bfc" id="L286" title="All 2 branches covered.">    if (filter == null) {</span>
+<span class="fc" id="L287">      return null;</span>
+    }
+
+    final List&lt;LogWithMetadata&gt; logs;
+<span class="fc" id="L291">    synchronized (filter) {</span>
+<span class="fc" id="L292">      logs = new ArrayList&lt;&gt;(filter.logs());</span>
+<span class="fc" id="L293">      filter.clearLogs();</span>
+<span class="fc" id="L294">      filter.resetExpireTime();</span>
+<span class="fc" id="L295">    }</span>
+<span class="fc" id="L296">    return logs;</span>
+  }
+
+  public List&lt;LogWithMetadata&gt; logs(final String filterId) {
+<span class="fc" id="L300">    final LogFilter filter = filterRepository.getFilter(filterId, LogFilter.class).orElse(null);</span>
+<span class="fc bfc" id="L301" title="All 2 branches covered.">    if (filter == null) {</span>
+<span class="fc" id="L302">      return null;</span>
+    } else {
+<span class="fc" id="L304">      filter.resetExpireTime();</span>
+    }
+
+<span class="fc" id="L307">    final long fromBlockNumber =</span>
+<span class="fc" id="L308">        filter.getFromBlock().getNumber().orElse(blockchainQueries.headBlockNumber());</span>
+<span class="fc" id="L309">    final long toBlockNumber =</span>
+<span class="fc" id="L310">        filter.getToBlock().getNumber().orElse(blockchainQueries.headBlockNumber());</span>
+
+<span class="fc" id="L312">    return findLogsWithinRange(filter, fromBlockNumber, toBlockNumber);</span>
+  }
+
+  private List&lt;LogWithMetadata&gt; findLogsWithinRange(
+      final LogFilter filter, final long fromBlockNumber, final long toBlockNumber) {
+<span class="fc bfc" id="L317" title="All 2 branches covered.">    if (filter instanceof PrivateLogFilter) {</span>
+<span class="fc" id="L318">      return privacyQueries</span>
+<span class="fc" id="L319">          .map(</span>
+              pq -&gt;
+<span class="fc" id="L321">                  pq.matchingLogs(</span>
+<span class="fc" id="L322">                      ((PrivateLogFilter) filter).getPrivacyGroupId(),</span>
+                      fromBlockNumber,
+                      toBlockNumber,
+<span class="fc" id="L325">                      filter.getLogsQuery()))</span>
+<span class="fc" id="L326">          .orElse(emptyList());</span>
+    } else {
+<span class="fc" id="L328">      return blockchainQueries.matchingLogs(</span>
+<span class="pc" id="L329">          fromBlockNumber, toBlockNumber, filter.getLogsQuery(), () -&gt; true);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

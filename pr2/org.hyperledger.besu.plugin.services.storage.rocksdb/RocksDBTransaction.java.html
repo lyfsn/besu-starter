@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RocksDBTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb</a> &gt; <span class="el_source">RocksDBTransaction.java</span></div><h1>RocksDBTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.util.function.Function;
+
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.RocksDBException;
+import org.rocksdb.Transaction;
+import org.rocksdb.WriteOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The RocksDb transaction. */
+public class RocksDBTransaction implements SegmentedKeyValueStorageTransaction {
+<span class="fc" id="L33">  private static final Logger logger = LoggerFactory.getLogger(RocksDBTransaction.class);</span>
+  private static final String NO_SPACE_LEFT_ON_DEVICE = &quot;No space left on device&quot;;
+
+  private final RocksDBMetrics metrics;
+  private final Transaction innerTx;
+  private final WriteOptions options;
+  private final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper;
+
+  /**
+   * Instantiates a new RocksDb transaction.
+   *
+   * @param columnFamilyMapper mapper from segment identifier to column family handle
+   * @param innerTx the inner tx
+   * @param options the options
+   * @param metrics the metrics
+   */
+  public RocksDBTransaction(
+      final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper,
+      final Transaction innerTx,
+      final WriteOptions options,
+<span class="fc" id="L53">      final RocksDBMetrics metrics) {</span>
+<span class="fc" id="L54">    this.columnFamilyMapper = columnFamilyMapper;</span>
+<span class="fc" id="L55">    this.innerTx = innerTx;</span>
+<span class="fc" id="L56">    this.options = options;</span>
+<span class="fc" id="L57">    this.metrics = metrics;</span>
+<span class="fc" id="L58">  }</span>
+
+  @Override
+  public void put(final SegmentIdentifier segmentId, final byte[] key, final byte[] value) {
+<span class="fc" id="L62">    try (final OperationTimer.TimingContext ignored = metrics.getWriteLatency().startTimer()) {</span>
+<span class="fc" id="L63">      innerTx.put(columnFamilyMapper.apply(segmentId), key, value);</span>
+<span class="nc" id="L64">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L65" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L66">        logger.error(e.getMessage());</span>
+<span class="nc" id="L67">        System.exit(0);</span>
+      }
+<span class="nc" id="L69">      throw new StorageException(e);</span>
+<span class="fc" id="L70">    }</span>
+<span class="fc" id="L71">  }</span>
+
+  @Override
+  public void remove(final SegmentIdentifier segmentId, final byte[] key) {
+<span class="fc" id="L75">    try (final OperationTimer.TimingContext ignored = metrics.getRemoveLatency().startTimer()) {</span>
+<span class="fc" id="L76">      innerTx.delete(columnFamilyMapper.apply(segmentId), key);</span>
+<span class="nc" id="L77">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L78" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L79">        logger.error(e.getMessage());</span>
+<span class="nc" id="L80">        System.exit(0);</span>
+      }
+<span class="nc" id="L82">      throw new StorageException(e);</span>
+<span class="fc" id="L83">    }</span>
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public void commit() throws StorageException {
+<span class="fc" id="L88">    try (final OperationTimer.TimingContext ignored = metrics.getCommitLatency().startTimer()) {</span>
+<span class="fc" id="L89">      innerTx.commit();</span>
+<span class="fc" id="L90">    } catch (final RocksDBException e) {</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L92">        logger.error(e.getMessage());</span>
+<span class="nc" id="L93">        System.exit(0);</span>
+      }
+<span class="fc" id="L95">      throw new StorageException(e);</span>
+    } finally {
+<span class="fc" id="L97">      close();</span>
+    }
+<span class="fc" id="L99">  }</span>
+
+  @Override
+  public void rollback() {
+    try {
+<span class="fc" id="L104">      innerTx.rollback();</span>
+<span class="fc" id="L105">      metrics.getRollbackCount().inc();</span>
+<span class="nc" id="L106">    } catch (final RocksDBException e) {</span>
+<span class="nc bnc" id="L107" title="All 2 branches missed.">      if (e.getMessage().contains(NO_SPACE_LEFT_ON_DEVICE)) {</span>
+<span class="nc" id="L108">        logger.error(e.getMessage());</span>
+<span class="nc" id="L109">        System.exit(0);</span>
+      }
+<span class="nc" id="L111">      throw new StorageException(e);</span>
+    } finally {
+<span class="fc" id="L113">      close();</span>
+    }
+<span class="fc" id="L115">  }</span>
+
+  private void close() {
+<span class="fc" id="L118">    innerTx.close();</span>
+<span class="fc" id="L119">    options.close();</span>
+<span class="fc" id="L120">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

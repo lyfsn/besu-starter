@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BftExecutors.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.bft</a> &gt; <span class="el_source">BftExecutors.java</span></div><h1>BftExecutors.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.consensus.common.bft;
+
+import org.hyperledger.besu.ethereum.eth.manager.MonitoredExecutors;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Bft executors. */
+public class BftExecutors {
+
+<span class="fc" id="L36">  private enum State {</span>
+    /** Idle state. */
+<span class="fc" id="L38">    IDLE,</span>
+    /** Running state. */
+<span class="fc" id="L40">    RUNNING,</span>
+    /** Stopped state. */
+<span class="fc" id="L42">    STOPPED</span>
+  }
+
+  /** The enum Consensus type. */
+<span class="fc" id="L46">  public enum ConsensusType {</span>
+    /** Ibft consensus type. */
+<span class="fc" id="L48">    IBFT,</span>
+    /** Qbft consensus type. */
+<span class="fc" id="L50">    QBFT</span>
+  }
+
+<span class="fc" id="L53">  private static final Logger LOG = LoggerFactory.getLogger(BftExecutors.class);</span>
+
+<span class="fc" id="L55">  private final Duration shutdownTimeout = Duration.ofSeconds(30);</span>
+  private final MetricsSystem metricsSystem;
+  private final ConsensusType consensusType;
+
+  private volatile ScheduledExecutorService timerExecutor;
+  private volatile ExecutorService bftProcessorExecutor;
+<span class="fc" id="L61">  private volatile State state = State.IDLE;</span>
+
+<span class="fc" id="L63">  private BftExecutors(final MetricsSystem metricsSystem, final ConsensusType consensusType) {</span>
+<span class="fc" id="L64">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L65">    this.consensusType = consensusType;</span>
+<span class="fc" id="L66">  }</span>
+
+  /**
+   * Create bft executors.
+   *
+   * @param metricsSystem the metrics system
+   * @param consensusType the consensus type
+   * @return the bft executors
+   */
+  public static BftExecutors create(
+      final MetricsSystem metricsSystem, final ConsensusType consensusType) {
+<span class="fc" id="L77">    return new BftExecutors(metricsSystem, consensusType);</span>
+  }
+
+  /** Start. */
+  public synchronized void start() {
+<span class="nc bnc" id="L82" title="All 2 branches missed.">    if (state != State.IDLE) {</span>
+      // Nothing to do
+<span class="nc" id="L84">      return;</span>
+    }
+<span class="nc" id="L86">    state = State.RUNNING;</span>
+<span class="nc" id="L87">    final ThreadFactory namedThreadFactory =</span>
+        new ThreadFactoryBuilder()
+<span class="nc" id="L89">            .setNameFormat(&quot;BftProcessorExecutor-&quot; + consensusType.name() + &quot;-%d&quot;)</span>
+<span class="nc" id="L90">            .build();</span>
+<span class="nc" id="L91">    bftProcessorExecutor = Executors.newSingleThreadExecutor(namedThreadFactory);</span>
+<span class="nc" id="L92">    timerExecutor =</span>
+<span class="nc" id="L93">        MonitoredExecutors.newScheduledThreadPool(</span>
+<span class="nc" id="L94">            &quot;BftTimerExecutor-&quot; + consensusType.name(), 1, metricsSystem);</span>
+<span class="nc" id="L95">  }</span>
+
+  /** Stop. */
+  public void stop() {
+<span class="nc" id="L99">    synchronized (this) {</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">      if (state != State.RUNNING) {</span>
+<span class="nc" id="L101">        return;</span>
+      }
+<span class="nc" id="L103">      state = State.STOPPED;</span>
+<span class="nc" id="L104">    }</span>
+<span class="nc" id="L105">    timerExecutor.shutdownNow();</span>
+<span class="nc" id="L106">    bftProcessorExecutor.shutdownNow();</span>
+<span class="nc" id="L107">  }</span>
+
+  /**
+   * Await stop.
+   *
+   * @throws InterruptedException the interrupted exception
+   */
+  public void awaitStop() throws InterruptedException {
+<span class="nc bnc" id="L115" title="All 2 branches missed.">    if (!timerExecutor.awaitTermination(shutdownTimeout.getSeconds(), TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L116">      LOG.error(&quot;{} timer executor did not shutdown cleanly.&quot;, getClass().getSimpleName());</span>
+    }
+<span class="nc bnc" id="L118" title="All 2 branches missed.">    if (!bftProcessorExecutor.awaitTermination(shutdownTimeout.getSeconds(), TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L119">      LOG.error(&quot;{} bftProcessor executor did not shutdown cleanly.&quot;, getClass().getSimpleName());</span>
+    }
+<span class="nc" id="L121">  }</span>
+
+  /**
+   * Execute bft processor.
+   *
+   * @param bftProcessor the bft processor
+   */
+  public synchronized void executeBftProcessor(final BftProcessor bftProcessor) {
+<span class="nc" id="L129">    assertRunning();</span>
+<span class="nc" id="L130">    bftProcessorExecutor.execute(bftProcessor);</span>
+<span class="nc" id="L131">  }</span>
+
+  /**
+   * Schedule task.
+   *
+   * @param command the command
+   * @param delay the delay
+   * @param unit the unit
+   * @return the scheduled future
+   */
+  public synchronized ScheduledFuture&lt;?&gt; scheduleTask(
+      final Runnable command, final long delay, final TimeUnit unit) {
+<span class="nc" id="L143">    assertRunning();</span>
+<span class="nc" id="L144">    return timerExecutor.schedule(command, delay, unit);</span>
+  }
+
+  private void assertRunning() {
+<span class="nc bnc" id="L148" title="All 2 branches missed.">    if (state != State.RUNNING) {</span>
+<span class="nc" id="L149">      throw new IllegalStateException(</span>
+          &quot;Attempt to interact with &quot;
+<span class="nc" id="L151">              + getClass().getSimpleName()</span>
+              + &quot; that is not running. Current State is &quot;
+<span class="nc" id="L153">              + state.name()</span>
+              + &quot;.&quot;);
+    }
+<span class="nc" id="L156">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

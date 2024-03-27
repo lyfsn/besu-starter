@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractPeerBlockValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.peervalidation</a> &gt; <span class="el_source">AbstractPeerBlockValidator.java</span></div><h1>AbstractPeerBlockValidator.java</h1><pre class="source lang-java linenums">/*
+ *
+ *  * Copyright 2019 ConsenSys AG.
+ *  *
+ *  * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ *  * the License. You may obtain a copy of the License at
+ *  *
+ *  * http://www.apache.org/licenses/LICENSE-2.0
+ *  *
+ *  * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ *  * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ *  * specific language governing permissions and limitations under the License.
+ *  *
+ *  * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.eth.peervalidation;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractPeerTask;
+import org.hyperledger.besu.ethereum.eth.manager.task.GetHeadersFromPeerByNumberTask;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+abstract class AbstractPeerBlockValidator implements PeerValidator {
+<span class="fc" id="L37">  private static final Logger LOG = LoggerFactory.getLogger(AbstractPeerBlockValidator.class);</span>
+<span class="fc" id="L38">  static long DEFAULT_CHAIN_HEIGHT_ESTIMATION_BUFFER = 10L;</span>
+
+  private final ProtocolSchedule protocolSchedule;
+  private final MetricsSystem metricsSystem;
+
+  final long blockNumber;
+  // Wait for peer's chainhead to advance some distance beyond blockNumber before validating
+  private final long chainHeightEstimationBuffer;
+
+  AbstractPeerBlockValidator(
+      final ProtocolSchedule protocolSchedule,
+      final MetricsSystem metricsSystem,
+      final long blockNumber,
+<span class="fc" id="L51">      final long chainHeightEstimationBuffer) {</span>
+<span class="pc bpc" id="L52" title="1 of 2 branches missed.">    checkArgument(chainHeightEstimationBuffer &gt;= 0);</span>
+<span class="fc" id="L53">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L54">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L55">    this.blockNumber = blockNumber;</span>
+<span class="fc" id="L56">    this.chainHeightEstimationBuffer = chainHeightEstimationBuffer;</span>
+<span class="fc" id="L57">  }</span>
+
+  protected AbstractPeerBlockValidator(
+      final ProtocolSchedule protocolSchedule,
+      final MetricsSystem metricsSystem,
+      final long blockNumber) {
+<span class="nc" id="L63">    this(protocolSchedule, metricsSystem, blockNumber, DEFAULT_CHAIN_HEIGHT_ESTIMATION_BUFFER);</span>
+<span class="nc" id="L64">  }</span>
+
+  @Override
+  public CompletableFuture&lt;Boolean&gt; validatePeer(
+      final EthContext ethContext, final EthPeer ethPeer) {
+<span class="fc" id="L69">    final AbstractPeerTask&lt;List&lt;BlockHeader&gt;&gt; getHeaderTask =</span>
+<span class="fc" id="L70">        GetHeadersFromPeerByNumberTask.forSingleNumber(</span>
+                protocolSchedule, ethContext, blockNumber, metricsSystem)
+<span class="fc" id="L72">            .setTimeout(Duration.ofSeconds(20))</span>
+<span class="fc" id="L73">            .assignPeer(ethPeer);</span>
+<span class="fc" id="L74">    return getHeaderTask</span>
+<span class="fc" id="L75">        .run()</span>
+<span class="fc" id="L76">        .handle(</span>
+            (res, err) -&gt; {
+<span class="fc bfc" id="L78" title="All 2 branches covered.">              if (err != null) {</span>
+                // Mark peer as invalid on error
+<span class="fc" id="L80">                LOG.debug(</span>
+                    &quot;Peer {} is invalid because required block ({}) is unavailable: {}&quot;,
+                    ethPeer,
+<span class="fc" id="L83">                    blockNumber,</span>
+<span class="fc" id="L84">                    err.toString());</span>
+<span class="fc" id="L85">                return false;</span>
+              }
+<span class="fc" id="L87">              final List&lt;BlockHeader&gt; headers = res.getResult();</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">              if (headers.size() == 0) {</span>
+<span class="fc bfc" id="L89" title="All 2 branches covered.">                if (blockIsRequired()) {</span>
+                  // If no headers are returned, fail
+<span class="fc" id="L91">                  LOG.debug(</span>
+                      &quot;Peer {} is invalid because required block ({}) is unavailable.&quot;,
+                      ethPeer,
+<span class="fc" id="L94">                      blockNumber);</span>
+<span class="fc" id="L95">                  return false;</span>
+                } else {
+<span class="fc" id="L97">                  LOG.debug(</span>
+                      &quot;Peer {} deemed valid because unavailable block ({}) is not required.&quot;,
+                      ethPeer,
+<span class="fc" id="L100">                      blockNumber);</span>
+<span class="fc" id="L101">                  return true;</span>
+                }
+              }
+<span class="fc" id="L104">              final BlockHeader header = headers.get(0);</span>
+<span class="fc" id="L105">              return validateBlockHeader(ethPeer, header);</span>
+            });
+  }
+
+  abstract boolean validateBlockHeader(EthPeer ethPeer, BlockHeader header);
+
+  @Override
+  public boolean canBeValidated(final EthPeer ethPeer) {
+<span class="fc bfc" id="L113" title="All 2 branches covered.">    return ethPeer.chainState().getEstimatedHeight() &gt;= (blockNumber + chainHeightEstimationBuffer);</span>
+  }
+
+  protected boolean blockIsRequired() {
+<span class="fc" id="L117">    return true;</span>
+  }
+
+  @Override
+  public Duration nextValidationCheckTimeout(final EthPeer ethPeer) {
+<span class="nc bnc" id="L122" title="All 2 branches missed.">    if (!ethPeer.chainState().hasEstimatedHeight()) {</span>
+<span class="nc" id="L123">      return Duration.ofSeconds(30);</span>
+    }
+<span class="nc" id="L125">    final long distanceToBlock = blockNumber - ethPeer.chainState().getEstimatedHeight();</span>
+<span class="nc bnc" id="L126" title="All 2 branches missed.">    if (distanceToBlock &lt; 100_000L) {</span>
+<span class="nc" id="L127">      return Duration.ofMinutes(1);</span>
+    }
+    // If the peer is trailing behind, give it some time to catch up before trying again.
+<span class="nc" id="L130">    return Duration.ofMinutes(10);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

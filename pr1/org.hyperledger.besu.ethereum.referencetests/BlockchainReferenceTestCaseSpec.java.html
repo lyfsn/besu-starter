@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlockchainReferenceTestCaseSpec.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.referencetests</a> &gt; <span class="el_source">BlockchainReferenceTestCaseSpec.java</span></div><h1>BlockchainReferenceTestCaseSpec.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.referencetests;
+
+import static org.hyperledger.besu.ethereum.core.InMemoryKeyValueStorageProvider.createInMemoryWorldStateArchive;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.Deposit;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.InMemoryKeyValueStorageProvider;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.ParsedExtraData;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.mainnet.MainnetBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.log.LogsBloomFilter;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.Map;
+import java.util.Optional;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class BlockchainReferenceTestCaseSpec {
+
+  private final String network;
+
+  private final CandidateBlock[] candidateBlocks;
+
+  private final ReferenceTestBlockHeader genesisBlockHeader;
+
+  private final Hash lastBlockHash;
+
+  private final WorldStateArchive worldStateArchive;
+
+  private final MutableBlockchain blockchain;
+  private final String sealEngine;
+
+  private final ProtocolContext protocolContext;
+
+  private static WorldStateArchive buildWorldStateArchive(
+      final Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts) {
+<span class="fc" id="L74">    final WorldStateArchive worldStateArchive = createInMemoryWorldStateArchive();</span>
+
+<span class="fc" id="L76">    final MutableWorldState worldState = worldStateArchive.getMutable();</span>
+<span class="fc" id="L77">    final WorldUpdater updater = worldState.updater();</span>
+
+<span class="fc bfc" id="L79" title="All 2 branches covered.">    for (final Map.Entry&lt;String, ReferenceTestWorldState.AccountMock&gt; entry : accounts.entrySet()) {</span>
+<span class="fc" id="L80">      ReferenceTestWorldState.insertAccount(</span>
+<span class="fc" id="L81">          updater, Address.fromHexString(entry.getKey()), entry.getValue());</span>
+<span class="fc" id="L82">    }</span>
+
+<span class="fc" id="L84">    updater.commit();</span>
+<span class="fc" id="L85">    worldState.persist(null);</span>
+
+<span class="fc" id="L87">    return worldStateArchive;</span>
+  }
+
+  private static MutableBlockchain buildBlockchain(final BlockHeader genesisBlockHeader) {
+<span class="fc" id="L91">    final Block genesisBlock = new Block(genesisBlockHeader, BlockBody.empty());</span>
+<span class="fc" id="L92">    return InMemoryKeyValueStorageProvider.createInMemoryBlockchain(genesisBlock);</span>
+  }
+
+  @JsonCreator
+  public BlockchainReferenceTestCaseSpec(
+      @JsonProperty(&quot;network&quot;) final String network,
+      @JsonProperty(&quot;blocks&quot;) final CandidateBlock[] candidateBlocks,
+      @JsonProperty(&quot;genesisBlockHeader&quot;) final ReferenceTestBlockHeader genesisBlockHeader,
+      @SuppressWarnings(&quot;unused&quot;) @JsonProperty(&quot;genesisRLP&quot;) final String genesisRLP,
+      @JsonProperty(&quot;pre&quot;) final Map&lt;String, ReferenceTestWorldState.AccountMock&gt; accounts,
+      @JsonProperty(&quot;lastblockhash&quot;) final String lastBlockHash,
+<span class="fc" id="L103">      @JsonProperty(&quot;sealEngine&quot;) final String sealEngine) {</span>
+<span class="fc" id="L104">    this.network = network;</span>
+<span class="fc" id="L105">    this.candidateBlocks = candidateBlocks;</span>
+<span class="fc" id="L106">    this.genesisBlockHeader = genesisBlockHeader;</span>
+<span class="fc" id="L107">    this.lastBlockHash = Hash.fromHexString(lastBlockHash);</span>
+<span class="fc" id="L108">    this.worldStateArchive = buildWorldStateArchive(accounts);</span>
+<span class="fc" id="L109">    this.blockchain = buildBlockchain(genesisBlockHeader);</span>
+<span class="fc" id="L110">    this.sealEngine = sealEngine;</span>
+<span class="fc" id="L111">    this.protocolContext =</span>
+        new ProtocolContext(this.blockchain, this.worldStateArchive, null, new BadBlockManager());
+<span class="fc" id="L113">  }</span>
+
+  public String getNetwork() {
+<span class="fc" id="L116">    return network;</span>
+  }
+
+  public CandidateBlock[] getCandidateBlocks() {
+<span class="fc" id="L120">    return candidateBlocks;</span>
+  }
+
+  public WorldStateArchive getWorldStateArchive() {
+<span class="fc" id="L124">    return worldStateArchive;</span>
+  }
+
+  public BlockHeader getGenesisBlockHeader() {
+<span class="fc" id="L128">    return genesisBlockHeader;</span>
+  }
+
+  public MutableBlockchain getBlockchain() {
+<span class="fc" id="L132">    return blockchain;</span>
+  }
+
+  public ProtocolContext getProtocolContext() {
+<span class="fc" id="L136">    return protocolContext;</span>
+  }
+
+  public Hash getLastBlockHash() {
+<span class="fc" id="L140">    return lastBlockHash;</span>
+  }
+
+  public String getSealEngine() {
+<span class="fc" id="L144">    return sealEngine;</span>
+  }
+
+  public static class ReferenceTestBlockHeader extends BlockHeader {
+
+    @JsonCreator
+    public ReferenceTestBlockHeader(
+        @JsonProperty(&quot;parentHash&quot;) final String parentHash,
+        @JsonProperty(&quot;uncleHash&quot;) final String uncleHash,
+        @JsonProperty(&quot;coinbase&quot;) final String coinbase,
+        @JsonProperty(&quot;stateRoot&quot;) final String stateRoot,
+        @JsonProperty(&quot;transactionsTrie&quot;) final String transactionsTrie,
+        @JsonProperty(&quot;receiptTrie&quot;) final String receiptTrie,
+        @JsonProperty(&quot;bloom&quot;) final String bloom,
+        @JsonProperty(&quot;difficulty&quot;) final String difficulty,
+        @JsonProperty(&quot;number&quot;) final String number,
+        @JsonProperty(&quot;gasLimit&quot;) final String gasLimit,
+        @JsonProperty(&quot;gasUsed&quot;) final String gasUsed,
+        @JsonProperty(&quot;timestamp&quot;) final String timestamp,
+        @JsonProperty(&quot;extraData&quot;) final String extraData,
+        @JsonProperty(&quot;baseFeePerGas&quot;) final String baseFee,
+        @JsonProperty(&quot;mixHash&quot;) final String mixHash,
+        @JsonProperty(&quot;nonce&quot;) final String nonce,
+        @JsonProperty(&quot;withdrawalsRoot&quot;) final String withdrawalsRoot,
+        @JsonProperty(&quot;depositsRoot&quot;) final String depositsRoot,
+        @JsonProperty(&quot;dataGasUsed&quot;)
+            final String dataGasUsed, // TODO: remove once reference tests have been updated
+        @JsonProperty(&quot;excessDataGas&quot;)
+            final String excessDataGas, // TODO: remove once reference tests have been updated
+        @JsonProperty(&quot;blobGasUsed&quot;) final String blobGasUsed,
+        @JsonProperty(&quot;excessBlobGas&quot;) final String excessBlobGas,
+        @JsonProperty(&quot;parentBeaconBlockRoot&quot;) final String parentBeaconBlockRoot,
+        @JsonProperty(&quot;hash&quot;) final String hash) {
+<span class="fc" id="L177">      super(</span>
+<span class="fc" id="L178">          Hash.fromHexString(parentHash), // parentHash</span>
+<span class="pc bpc" id="L179" title="1 of 2 branches missed.">          uncleHash == null ? Hash.EMPTY_LIST_HASH : Hash.fromHexString(uncleHash), // ommersHash</span>
+<span class="fc" id="L180">          Address.fromHexString(coinbase), // coinbase</span>
+<span class="fc" id="L181">          Hash.fromHexString(stateRoot), // stateRoot</span>
+<span class="pc bpc" id="L182" title="1 of 2 branches missed.">          transactionsTrie == null</span>
+<span class="nc" id="L183">              ? Hash.EMPTY_TRIE_HASH</span>
+<span class="fc" id="L184">              : Hash.fromHexString(transactionsTrie), // transactionsRoot</span>
+<span class="pc bpc" id="L185" title="1 of 2 branches missed.">          receiptTrie == null</span>
+<span class="nc" id="L186">              ? Hash.EMPTY_TRIE_HASH</span>
+<span class="fc" id="L187">              : Hash.fromHexString(receiptTrie), // receiptTrie</span>
+<span class="fc" id="L188">          LogsBloomFilter.fromHexString(bloom), // bloom</span>
+<span class="fc" id="L189">          Difficulty.fromHexString(difficulty), // difficulty</span>
+<span class="fc" id="L190">          Long.decode(number), // number</span>
+<span class="fc" id="L191">          Long.decode(gasLimit), // gasLimit</span>
+<span class="fc" id="L192">          Long.decode(gasUsed), // gasUsed</span>
+<span class="fc" id="L193">          Long.decode(timestamp), // timestamp</span>
+<span class="fc" id="L194">          Bytes.fromHexString(extraData), // extraData</span>
+<span class="fc bfc" id="L195" title="All 2 branches covered.">          baseFee != null ? Wei.fromHexString(baseFee) : null, // baseFee</span>
+<span class="fc" id="L196">          Hash.fromHexString(mixHash), // mixHash</span>
+<span class="fc" id="L197">          Bytes.fromHexStringLenient(nonce).toLong(),</span>
+<span class="fc bfc" id="L198" title="All 2 branches covered.">          withdrawalsRoot != null ? Hash.fromHexString(withdrawalsRoot) : null,</span>
+<span class="pc bpc" id="L199" title="1 of 2 branches missed.">          dataGasUsed != null</span>
+<span class="nc" id="L200">              ? Long.decode(dataGasUsed)</span>
+<span class="fc bfc" id="L201" title="All 2 branches covered.">              : blobGasUsed != null ? Long.decode(blobGasUsed) : 0,</span>
+<span class="pc bpc" id="L202" title="1 of 2 branches missed.">          excessDataGas != null</span>
+<span class="nc" id="L203">              ? BlobGas.fromHexString(excessDataGas)</span>
+<span class="fc bfc" id="L204" title="All 2 branches covered.">              : excessBlobGas != null ? BlobGas.fromHexString(excessBlobGas) : null,</span>
+<span class="fc bfc" id="L205" title="All 2 branches covered.">          parentBeaconBlockRoot != null ? Bytes32.fromHexString(parentBeaconBlockRoot) : null,</span>
+<span class="pc bpc" id="L206" title="1 of 2 branches missed.">          depositsRoot != null ? Hash.fromHexString(depositsRoot) : null,</span>
+<span class="fc" id="L207">          new BlockHeaderFunctions() {</span>
+            @Override
+            public Hash hash(final BlockHeader header) {
+<span class="pc bpc" id="L210" title="1 of 2 branches missed.">              return hash == null ? null : Hash.fromHexString(hash);</span>
+            }
+
+            @Override
+            public ParsedExtraData parseExtraData(final BlockHeader header) {
+<span class="nc" id="L215">              return null;</span>
+            }
+          });
+<span class="fc" id="L218">    }</span>
+  }
+
+  @JsonIgnoreProperties({
+    &quot;blocknumber&quot;,
+    &quot;chainname&quot;,
+    &quot;chainnetwork&quot;,
+    &quot;expectException&quot;,
+    &quot;expectExceptionByzantium&quot;,
+    &quot;expectExceptionConstantinople&quot;,
+    &quot;expectExceptionConstantinopleFix&quot;,
+    &quot;expectExceptionIstanbul&quot;,
+    &quot;expectExceptionEIP150&quot;,
+    &quot;expectExceptionEIP158&quot;,
+    &quot;expectExceptionFrontier&quot;,
+    &quot;expectExceptionHomestead&quot;,
+    &quot;expectExceptionALL&quot;,
+    &quot;hasBigInt&quot;,
+    &quot;rlp_decoded&quot;,
+    &quot;transactionSequence&quot;
+  })
+  public static class CandidateBlock {
+
+    private final Bytes rlp;
+
+    private final Boolean valid;
+
+    @JsonCreator
+    public CandidateBlock(
+        @JsonProperty(&quot;rlp&quot;) final String rlp,
+        @JsonProperty(&quot;blockHeader&quot;) final Object blockHeader,
+        @JsonProperty(&quot;transactions&quot;) final Object transactions,
+        @JsonProperty(&quot;uncleHeaders&quot;) final Object uncleHeaders,
+<span class="fc" id="L251">        @JsonProperty(&quot;withdrawals&quot;) final Object withdrawals) {</span>
+<span class="fc" id="L252">      boolean blockVaid = true;</span>
+      // The BLOCK__WrongCharAtRLP_0 test has an invalid character in its rlp string.
+<span class="fc" id="L254">      Bytes rlpAttempt = null;</span>
+      try {
+<span class="fc" id="L256">        rlpAttempt = Bytes.fromHexString(rlp);</span>
+<span class="nc" id="L257">      } catch (final IllegalArgumentException e) {</span>
+<span class="nc" id="L258">        blockVaid = false;</span>
+<span class="fc" id="L259">      }</span>
+<span class="fc" id="L260">      this.rlp = rlpAttempt;</span>
+
+<span class="pc bpc" id="L262" title="3 of 8 branches missed.">      if (blockHeader == null</span>
+          &amp;&amp; transactions == null
+          &amp;&amp; uncleHeaders == null
+          &amp;&amp; withdrawals == null) {
+<span class="fc" id="L266">        blockVaid = false;</span>
+      }
+
+<span class="fc" id="L269">      this.valid = blockVaid;</span>
+<span class="fc" id="L270">    }</span>
+
+    public boolean isValid() {
+<span class="fc" id="L273">      return valid;</span>
+    }
+
+    public boolean isExecutable() {
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">      return rlp != null;</span>
+    }
+
+    public Block getBlock() {
+<span class="fc" id="L281">      final RLPInput input = new BytesValueRLPInput(rlp, false);</span>
+<span class="fc" id="L282">      input.enterList();</span>
+<span class="fc" id="L283">      final MainnetBlockHeaderFunctions blockHeaderFunctions = new MainnetBlockHeaderFunctions();</span>
+<span class="fc" id="L284">      final BlockHeader header = BlockHeader.readFrom(input, blockHeaderFunctions);</span>
+<span class="fc" id="L285">      final BlockBody body =</span>
+          new BlockBody(
+<span class="fc" id="L287">              input.readList(Transaction::readFrom),</span>
+<span class="fc" id="L288">              input.readList(inputData -&gt; BlockHeader.readFrom(inputData, blockHeaderFunctions)),</span>
+<span class="fc bfc" id="L289" title="All 2 branches covered.">              input.isEndOfCurrentList()</span>
+<span class="fc" id="L290">                  ? Optional.empty()</span>
+<span class="fc" id="L291">                  : Optional.of(input.readList(Withdrawal::readFrom)),</span>
+<span class="pc bpc" id="L292" title="1 of 2 branches missed.">              input.isEndOfCurrentList()</span>
+<span class="fc" id="L293">                  ? Optional.empty()</span>
+<span class="pc" id="L294">                  : Optional.of(input.readList(Deposit::readFrom)));</span>
+<span class="fc" id="L295">      return new Block(header, body);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

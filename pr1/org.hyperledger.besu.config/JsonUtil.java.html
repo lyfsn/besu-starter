@@ -1,0 +1,469 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonUtil.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.config</a> &gt; <span class="el_source">JsonUtil.java</span></div><h1>JsonUtil.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.config;
+
+import org.hyperledger.besu.util.number.PositiveNumber;
+
+import java.io.IOException;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.OptionalLong;
+
+import com.fasterxml.jackson.core.JsonParser.Feature;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeType;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+/** The Json util class. */
+<span class="nc" id="L35">public class JsonUtil {</span>
+
+  /**
+   * Converts all the object keys (but none of the string values) to lowercase for easier lookup.
+   * This is useful in cases such as the 'genesis.json' file where all keys are assumed to be case
+   * insensitive.
+   *
+   * @param objectNode The ObjectNode to be normalized
+   * @return a copy of the json object with all keys in lower case.
+   */
+  public static ObjectNode normalizeKeys(final ObjectNode objectNode) {
+<span class="fc" id="L46">    final ObjectNode normalized = JsonUtil.createEmptyObjectNode();</span>
+<span class="fc" id="L47">    objectNode</span>
+<span class="fc" id="L48">        .fields()</span>
+<span class="fc" id="L49">        .forEachRemaining(</span>
+            entry -&gt; {
+<span class="fc" id="L51">              final String key = entry.getKey();</span>
+<span class="fc" id="L52">              final JsonNode value = entry.getValue();</span>
+<span class="fc" id="L53">              final String normalizedKey = key.toLowerCase(Locale.US);</span>
+<span class="fc bfc" id="L54" title="All 2 branches covered.">              if (value instanceof ObjectNode) {</span>
+<span class="fc" id="L55">                normalized.set(normalizedKey, normalizeKeys((ObjectNode) value));</span>
+<span class="fc bfc" id="L56" title="All 2 branches covered.">              } else if (value instanceof ArrayNode) {</span>
+<span class="fc" id="L57">                normalized.set(normalizedKey, normalizeKeysInArray((ArrayNode) value));</span>
+              } else {
+<span class="fc" id="L59">                normalized.set(normalizedKey, value);</span>
+              }
+<span class="fc" id="L61">            });</span>
+<span class="fc" id="L62">    return normalized;</span>
+  }
+
+  private static ArrayNode normalizeKeysInArray(final ArrayNode arrayNode) {
+<span class="fc" id="L66">    final ArrayNode normalizedArray = JsonUtil.createEmptyArrayNode();</span>
+<span class="fc" id="L67">    arrayNode.forEach(</span>
+        value -&gt; {
+<span class="fc bfc" id="L69" title="All 2 branches covered.">          if (value instanceof ObjectNode) {</span>
+<span class="fc" id="L70">            normalizedArray.add(normalizeKeys((ObjectNode) value));</span>
+<span class="fc bfc" id="L71" title="All 2 branches covered.">          } else if (value instanceof ArrayNode) {</span>
+<span class="fc" id="L72">            normalizedArray.add(normalizeKeysInArray((ArrayNode) value));</span>
+          } else {
+<span class="fc" id="L74">            normalizedArray.add(value);</span>
+          }
+<span class="fc" id="L76">        });</span>
+<span class="fc" id="L77">    return normalizedArray;</span>
+  }
+
+  /**
+   * Get the string representation of the value at {@code key}. For example, a numeric value like 5
+   * will be returned as &quot;5&quot;.
+   *
+   * @param node The {@code ObjectNode} from which the value will be extracted.
+   * @param key The key corresponding to the value to extract.
+   * @return The value at the given key as a string if it exists.
+   */
+  public static Optional&lt;String&gt; getValueAsString(final ObjectNode node, final String key) {
+<span class="fc" id="L89">    return getValue(node, key).map(JsonNode::asText);</span>
+  }
+
+  /**
+   * Get the string representation of the value at {@code key}. For example, a numeric value like 5
+   * will be returned as &quot;5&quot;.
+   *
+   * @param node The {@code ObjectNode} from which the value will be extracted.
+   * @param key The key corresponding to the value to extract.
+   * @param defaultValue The value to return if no value is found at {@code key}.
+   * @return The value at the given key as a string if it exists, otherwise {@code defaultValue}
+   */
+  public static String getValueAsString(
+      final ObjectNode node, final String key, final String defaultValue) {
+<span class="fc" id="L103">    return getValueAsString(node, key).orElse(defaultValue);</span>
+  }
+
+  /**
+   * Checks whether an {@code ObjectNode} contains the given key.
+   *
+   * @param node The {@code ObjectNode} to inspect.
+   * @param key The key to check.
+   * @return Returns true if the given key is set.
+   */
+  public static boolean hasKey(final ObjectNode node, final String key) {
+<span class="fc" id="L114">    return node.has(key);</span>
+  }
+
+  /**
+   * Returns textual (string) value at {@code key}. See {@link #getValueAsString} for retrieving
+   * non-textual values in string form.
+   *
+   * @param node The {@code ObjectNode} from which the value will be extracted.
+   * @param key The key corresponding to the value to extract.
+   * @return The textual value at {@code key} if it exists.
+   */
+  public static Optional&lt;String&gt; getString(final ObjectNode node, final String key) {
+<span class="fc" id="L126">    return getValue(node, key)</span>
+<span class="fc" id="L127">        .filter(jsonNode -&gt; validateType(jsonNode, JsonNodeType.STRING))</span>
+<span class="fc" id="L128">        .map(JsonNode::asText);</span>
+  }
+
+  /**
+   * Returns textual (string) value at {@code key}. See {@link #getValueAsString} for retrieving
+   * non-textual values in string form.
+   *
+   * @param node The {@code ObjectNode} from which the value will be extracted.
+   * @param key The key corresponding to the value to extract.
+   * @param defaultValue The value to return if no value is found at {@code key}.
+   * @return The textual value at {@code key} if it exists, otherwise {@code defaultValue}
+   */
+  public static String getString(
+      final ObjectNode node, final String key, final String defaultValue) {
+<span class="fc" id="L142">    return getString(node, key).orElse(defaultValue);</span>
+  }
+
+  /**
+   * Gets int.
+   *
+   * @param node the node
+   * @param key the key
+   * @return the int
+   */
+  public static OptionalInt getInt(final ObjectNode node, final String key) {
+<span class="fc" id="L153">    return getValue(node, key)</span>
+<span class="fc" id="L154">        .filter(jsonNode -&gt; validateType(jsonNode, JsonNodeType.NUMBER))</span>
+<span class="fc" id="L155">        .filter(JsonUtil::validateInt)</span>
+<span class="fc" id="L156">        .map(JsonNode::asInt)</span>
+<span class="fc" id="L157">        .map(OptionalInt::of)</span>
+<span class="fc" id="L158">        .orElse(OptionalInt.empty());</span>
+  }
+
+  /**
+   * Gets int.
+   *
+   * @param node the node
+   * @param key the key
+   * @param defaultValue the default value
+   * @return the int
+   */
+  public static int getInt(final ObjectNode node, final String key, final int defaultValue) {
+<span class="fc" id="L170">    return getInt(node, key).orElse(defaultValue);</span>
+  }
+
+  /**
+   * Gets positive int.
+   *
+   * @param node the node
+   * @param key the key
+   * @return the positive int
+   */
+  public static OptionalInt getPositiveInt(final ObjectNode node, final String key) {
+<span class="fc" id="L181">    return getValueAsString(node, key)</span>
+<span class="fc" id="L182">        .map(v -&gt; OptionalInt.of(parsePositiveInt(key, v)))</span>
+<span class="fc" id="L183">        .orElse(OptionalInt.empty());</span>
+  }
+
+  /**
+   * Gets positive int.
+   *
+   * @param node the node
+   * @param key the key
+   * @param defaultValue the default value
+   * @return the positive int
+   */
+  public static int getPositiveInt(
+      final ObjectNode node, final String key, final int defaultValue) {
+<span class="fc" id="L196">    final String value = getValueAsString(node, key, String.valueOf(defaultValue));</span>
+<span class="fc" id="L197">    return parsePositiveInt(key, value);</span>
+  }
+
+  private static int parsePositiveInt(final String key, final String value) {
+    try {
+<span class="fc" id="L202">      return PositiveNumber.fromString(value).getValue();</span>
+<span class="fc" id="L203">    } catch (IllegalArgumentException e) {</span>
+<span class="fc" id="L204">      throw new IllegalArgumentException(</span>
+          &quot;Invalid property value, &quot; + key + &quot; should be a positive integer: &quot; + value);
+    }
+  }
+
+  /**
+   * Gets long.
+   *
+   * @param json the json
+   * @param key the key
+   * @return the long
+   */
+  public static OptionalLong getLong(final ObjectNode json, final String key) {
+<span class="fc" id="L217">    return getValue(json, key)</span>
+<span class="fc" id="L218">        .filter(jsonNode -&gt; validateType(jsonNode, JsonNodeType.NUMBER))</span>
+<span class="fc" id="L219">        .filter(JsonUtil::validateLong)</span>
+<span class="fc" id="L220">        .map(JsonNode::asLong)</span>
+<span class="fc" id="L221">        .map(OptionalLong::of)</span>
+<span class="fc" id="L222">        .orElse(OptionalLong.empty());</span>
+  }
+
+  /**
+   * Gets long.
+   *
+   * @param json the json
+   * @param key the key
+   * @param defaultValue the default value
+   * @return the long
+   */
+  public static long getLong(final ObjectNode json, final String key, final long defaultValue) {
+<span class="fc" id="L234">    return getLong(json, key).orElse(defaultValue);</span>
+  }
+
+  /**
+   * Gets boolean.
+   *
+   * @param node the node
+   * @param key the key
+   * @return the boolean
+   */
+  public static Optional&lt;Boolean&gt; getBoolean(final ObjectNode node, final String key) {
+<span class="fc" id="L245">    return getValue(node, key)</span>
+<span class="fc" id="L246">        .filter(jsonNode -&gt; validateType(jsonNode, JsonNodeType.BOOLEAN))</span>
+<span class="fc" id="L247">        .map(JsonNode::asBoolean);</span>
+  }
+
+  /**
+   * Gets boolean.
+   *
+   * @param node the node
+   * @param key the key
+   * @param defaultValue the default value
+   * @return the boolean
+   */
+  public static boolean getBoolean(
+      final ObjectNode node, final String key, final boolean defaultValue) {
+<span class="fc" id="L260">    return getBoolean(node, key).orElse(defaultValue);</span>
+  }
+
+  /**
+   * Create empty object node object node.
+   *
+   * @return the object node
+   */
+  public static ObjectNode createEmptyObjectNode() {
+<span class="fc" id="L269">    final ObjectMapper mapper = getObjectMapper();</span>
+<span class="fc" id="L270">    return mapper.createObjectNode();</span>
+  }
+
+  /**
+   * Create empty array node array node.
+   *
+   * @return the array node
+   */
+  public static ArrayNode createEmptyArrayNode() {
+<span class="fc" id="L279">    final ObjectMapper mapper = getObjectMapper();</span>
+<span class="fc" id="L280">    return mapper.createArrayNode();</span>
+  }
+
+  /**
+   * Object node from map object node.
+   *
+   * @param map the map
+   * @return the object node
+   */
+  public static ObjectNode objectNodeFromMap(final Map&lt;String, Object&gt; map) {
+<span class="fc" id="L290">    return (ObjectNode) getObjectMapper().valueToTree(map);</span>
+  }
+
+  /**
+   * Object node from string object node.
+   *
+   * @param jsonData the json data
+   * @return the object node
+   */
+  public static ObjectNode objectNodeFromString(final String jsonData) {
+<span class="fc" id="L300">    return objectNodeFromString(jsonData, false);</span>
+  }
+
+  /**
+   * Object node from string object node.
+   *
+   * @param jsonData the json data
+   * @param allowComments true to allow comments
+   * @return the object node
+   */
+  public static ObjectNode objectNodeFromString(
+      final String jsonData, final boolean allowComments) {
+<span class="fc" id="L312">    final ObjectMapper objectMapper = new ObjectMapper();</span>
+<span class="fc" id="L313">    objectMapper.configure(Feature.ALLOW_COMMENTS, allowComments);</span>
+    try {
+<span class="fc" id="L315">      final JsonNode jsonNode = objectMapper.readTree(jsonData);</span>
+<span class="fc" id="L316">      validateType(jsonNode, JsonNodeType.OBJECT);</span>
+<span class="fc" id="L317">      return (ObjectNode) jsonNode;</span>
+<span class="fc" id="L318">    } catch (final IOException e) {</span>
+      // Reading directly from a string should not raise an IOException, just catch and rethrow
+<span class="fc" id="L320">      throw new RuntimeException(e);</span>
+    }
+  }
+
+  /**
+   * Gets json.
+   *
+   * @param objectNode the object node
+   * @return the json
+   * @throws JsonProcessingException the json processing exception
+   */
+  public static String getJson(final Object objectNode) throws JsonProcessingException {
+<span class="fc" id="L332">    return getJson(objectNode, true);</span>
+  }
+
+  /**
+   * Gets json.
+   *
+   * @param objectNode the object node
+   * @param prettyPrint true for pretty print
+   * @return the json
+   * @throws JsonProcessingException the json processing exception
+   */
+  public static String getJson(final Object objectNode, final boolean prettyPrint)
+      throws JsonProcessingException {
+<span class="fc" id="L345">    final ObjectMapper mapper = getObjectMapper();</span>
+<span class="fc bfc" id="L346" title="All 2 branches covered.">    if (prettyPrint) {</span>
+<span class="fc" id="L347">      return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(objectNode);</span>
+    } else {
+<span class="fc" id="L349">      return mapper.writeValueAsString(objectNode);</span>
+    }
+  }
+
+  /**
+   * Gets object mapper.
+   *
+   * @return the object mapper
+   */
+  public static ObjectMapper getObjectMapper() {
+<span class="fc" id="L359">    return new ObjectMapper();</span>
+  }
+
+  /**
+   * Gets object node.
+   *
+   * @param json the json
+   * @param fieldKey the field key
+   * @return the object node
+   */
+  public static Optional&lt;ObjectNode&gt; getObjectNode(final ObjectNode json, final String fieldKey) {
+<span class="fc" id="L370">    return getObjectNode(json, fieldKey, true);</span>
+  }
+
+  /**
+   * Gets object node.
+   *
+   * @param json the json
+   * @param fieldKey the field key
+   * @param strict true for strict mode
+   * @return the object node
+   */
+  public static Optional&lt;ObjectNode&gt; getObjectNode(
+      final ObjectNode json, final String fieldKey, final boolean strict) {
+<span class="fc" id="L383">    final JsonNode obj = json.get(fieldKey);</span>
+<span class="fc bfc" id="L384" title="All 4 branches covered.">    if (obj == null || obj.isNull()) {</span>
+<span class="fc" id="L385">      return Optional.empty();</span>
+    }
+
+<span class="fc bfc" id="L388" title="All 2 branches covered.">    if (!obj.isObject()) {</span>
+<span class="pc bpc" id="L389" title="1 of 2 branches missed.">      if (strict) {</span>
+<span class="nc" id="L390">        validateType(obj, JsonNodeType.OBJECT);</span>
+      } else {
+<span class="nc" id="L392">        return Optional.empty();</span>
+      }
+    }
+
+<span class="fc" id="L396">    return Optional.of((ObjectNode) obj);</span>
+  }
+
+  /**
+   * Gets array node.
+   *
+   * @param json the json
+   * @param fieldKey the field key
+   * @return the array node
+   */
+  public static Optional&lt;ArrayNode&gt; getArrayNode(final ObjectNode json, final String fieldKey) {
+<span class="fc" id="L407">    return getArrayNode(json, fieldKey, true);</span>
+  }
+
+  /**
+   * Gets array node.
+   *
+   * @param json the json
+   * @param fieldKey the field key
+   * @param strict true for strict mode
+   * @return the array node
+   */
+  public static Optional&lt;ArrayNode&gt; getArrayNode(
+      final ObjectNode json, final String fieldKey, final boolean strict) {
+<span class="fc" id="L420">    final JsonNode obj = json.get(fieldKey);</span>
+<span class="fc bfc" id="L421" title="All 4 branches covered.">    if (obj == null || obj.isNull()) {</span>
+<span class="fc" id="L422">      return Optional.empty();</span>
+    }
+
+<span class="fc bfc" id="L425" title="All 2 branches covered.">    if (!obj.isArray()) {</span>
+<span class="pc bpc" id="L426" title="1 of 2 branches missed.">      if (strict) {</span>
+<span class="nc" id="L427">        validateType(obj, JsonNodeType.ARRAY);</span>
+      } else {
+<span class="nc" id="L429">        return Optional.empty();</span>
+      }
+    }
+
+<span class="fc" id="L433">    return Optional.of((ArrayNode) obj);</span>
+  }
+
+  private static Optional&lt;JsonNode&gt; getValue(final ObjectNode node, final String key) {
+<span class="fc" id="L437">    final JsonNode jsonNode = node.get(key);</span>
+<span class="fc bfc" id="L438" title="All 4 branches covered.">    if (jsonNode == null || jsonNode.isNull()) {</span>
+<span class="fc" id="L439">      return Optional.empty();</span>
+    }
+<span class="fc" id="L441">    return Optional.of(jsonNode);</span>
+  }
+
+  private static boolean validateType(final JsonNode node, final JsonNodeType expectedType) {
+<span class="fc bfc" id="L445" title="All 2 branches covered.">    if (node.getNodeType() != expectedType) {</span>
+<span class="fc" id="L446">      final String errorMessage =</span>
+<span class="fc" id="L447">          String.format(</span>
+              &quot;Expected %s value but got %s&quot;,
+<span class="fc" id="L449">              expectedType.toString().toLowerCase(), node.getNodeType().toString().toLowerCase());</span>
+<span class="fc" id="L450">      throw new IllegalArgumentException(errorMessage);</span>
+    }
+<span class="fc" id="L452">    return true;</span>
+  }
+
+  private static boolean validateLong(final JsonNode node) {
+<span class="fc bfc" id="L456" title="All 2 branches covered.">    if (!node.canConvertToLong()) {</span>
+<span class="fc" id="L457">      throw new IllegalArgumentException(&quot;Cannot convert value to long: &quot; + node.toString());</span>
+    }
+<span class="fc" id="L459">    return true;</span>
+  }
+
+  private static boolean validateInt(final JsonNode node) {
+<span class="fc bfc" id="L463" title="All 2 branches covered.">    if (!node.canConvertToInt()) {</span>
+<span class="fc" id="L464">      throw new IllegalArgumentException(&quot;Cannot convert value to integer: &quot; + node.toString());</span>
+    }
+<span class="fc" id="L466">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

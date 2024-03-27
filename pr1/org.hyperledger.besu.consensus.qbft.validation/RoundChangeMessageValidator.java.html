@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RoundChangeMessageValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.qbft.validation</a> &gt; <span class="el_source">RoundChangeMessageValidator.java</span></div><h1>RoundChangeMessageValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.qbft.validation;
+
+import static org.hyperledger.besu.consensus.common.bft.validation.ValidationHelpers.hasDuplicateAuthors;
+import static org.hyperledger.besu.consensus.common.bft.validation.ValidationHelpers.hasSufficientEntries;
+
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.payload.SignedData;
+import org.hyperledger.besu.consensus.qbft.messagewrappers.RoundChange;
+import org.hyperledger.besu.consensus.qbft.payload.PreparePayload;
+import org.hyperledger.besu.consensus.qbft.payload.PreparedRoundMetadata;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.BlockValidator;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+
+import java.util.Collection;
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Round change message validator. */
+public class RoundChangeMessageValidator {
+
+  private static final String ERROR_PREFIX = &quot;Invalid RoundChange Message&quot;;
+
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(RoundChangeMessageValidator.class);</span>
+
+  private final RoundChangePayloadValidator roundChangePayloadValidator;
+  private final long quorumMessageCount;
+  private final long chainHeight;
+  private final Collection&lt;Address&gt; validators;
+  private final ProtocolContext protocolContext;
+  private final ProtocolSchedule protocolSchedule;
+
+  /**
+   * Instantiates a new Round change message validator.
+   *
+   * @param roundChangePayloadValidator the round change payload validator
+   * @param quorumMessageCount the quorum message count
+   * @param chainHeight the chain height
+   * @param validators the validators
+   * @param protocolContext the protocol context
+   * @param protocolSchedule the protocol context
+   */
+  public RoundChangeMessageValidator(
+      final RoundChangePayloadValidator roundChangePayloadValidator,
+      final long quorumMessageCount,
+      final long chainHeight,
+      final Collection&lt;Address&gt; validators,
+      final ProtocolContext protocolContext,
+<span class="fc" id="L68">      final ProtocolSchedule protocolSchedule) {</span>
+<span class="fc" id="L69">    this.roundChangePayloadValidator = roundChangePayloadValidator;</span>
+<span class="fc" id="L70">    this.quorumMessageCount = quorumMessageCount;</span>
+<span class="fc" id="L71">    this.chainHeight = chainHeight;</span>
+<span class="fc" id="L72">    this.validators = validators;</span>
+<span class="fc" id="L73">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L74">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L75">  }</span>
+
+  /**
+   * Validate.
+   *
+   * @param msg the Round Change msg
+   * @return the boolean
+   */
+  public boolean validate(final RoundChange msg) {
+
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (!roundChangePayloadValidator.validate(msg.getSignedPayload())) {</span>
+<span class="fc" id="L86">      LOG.info(&quot;{}: embedded payload was invalid&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L87">      return false;</span>
+    }
+
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (msg.getProposedBlock().isPresent()) {</span>
+<span class="fc" id="L91">      return validateWithBlock(msg);</span>
+    }
+
+<span class="fc" id="L94">    return msg.getPreparedRoundMetadata().isEmpty();</span>
+  }
+
+  private boolean validateBlock(final Block block) {
+
+<span class="fc" id="L99">    final BlockValidator blockValidator =</span>
+<span class="fc" id="L100">        protocolSchedule.getByBlockHeader(block.getHeader()).getBlockValidator();</span>
+
+<span class="fc" id="L102">    final var validationResult =</span>
+<span class="fc" id="L103">        blockValidator.validateAndProcessBlock(</span>
+            protocolContext, block, HeaderValidationMode.LIGHT, HeaderValidationMode.FULL);
+
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (!validationResult.isSuccessful()) {</span>
+<span class="fc" id="L107">      LOG.info(</span>
+          &quot;{}: block did not pass validation. Reason {}&quot;,
+          ERROR_PREFIX,
+          validationResult.errorMessage);
+<span class="fc" id="L111">      return false;</span>
+    }
+
+<span class="fc" id="L114">    return true;</span>
+  }
+
+  private boolean validateWithBlock(final RoundChange msg) {
+<span class="fc" id="L118">    final Block block = msg.getProposedBlock().get();</span>
+
+<span class="fc bfc" id="L120" title="All 2 branches covered.">    if (!validateBlock(block)) {</span>
+<span class="fc" id="L121">      return false;</span>
+    }
+
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    if (msg.getPreparedRoundMetadata().isEmpty()) {</span>
+<span class="fc" id="L125">      LOG.info(&quot;{}: Prepared block specified, but prepared metadata absent&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L126">      return false;</span>
+    }
+
+<span class="fc" id="L129">    final PreparedRoundMetadata metadata = msg.getPreparedRoundMetadata().get();</span>
+
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (!metadata.getPreparedBlockHash().equals(block.getHash())) {</span>
+<span class="fc" id="L132">      LOG.info(&quot;{}: Prepared metadata hash does not match supplied block&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L133">      return false;</span>
+    }
+
+<span class="fc" id="L136">    return validatePrepares(metadata, msg.getPrepares());</span>
+  }
+
+  private boolean validatePrepares(
+      final PreparedRoundMetadata metaData, final List&lt;SignedData&lt;PreparePayload&gt;&gt; prepares) {
+
+<span class="fc" id="L142">    final ConsensusRoundIdentifier preparedRoundIdentifier =</span>
+<span class="fc" id="L143">        new ConsensusRoundIdentifier(chainHeight, metaData.getPreparedRound());</span>
+
+<span class="fc" id="L145">    final PrepareValidator validator =</span>
+<span class="fc" id="L146">        new PrepareValidator(validators, preparedRoundIdentifier, metaData.getPreparedBlockHash());</span>
+
+<span class="fc bfc" id="L148" title="All 2 branches covered.">    if (hasDuplicateAuthors(prepares)) {</span>
+<span class="fc" id="L149">      LOG.info(&quot;{}: multiple prepares from the same author.&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L150">      return false;</span>
+    }
+
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (!hasSufficientEntries(prepares, quorumMessageCount)) {</span>
+<span class="fc" id="L154">      LOG.info(&quot;{}: insufficient Prepare messages piggybacked.&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L155">      return false;</span>
+    }
+
+<span class="fc" id="L158">    return prepares.stream().allMatch(validator::validate);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

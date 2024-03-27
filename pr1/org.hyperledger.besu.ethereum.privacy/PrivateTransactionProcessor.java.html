@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateTransactionProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateTransactionProcessor.java</span></div><h1>PrivateTransactionProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_TRANSACTION_HASH;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidatorFactory;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.code.CodeV0;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.processor.AbstractMessageProcessor;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.Deque;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivateTransactionProcessor {
+
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(PrivateTransactionProcessor.class);</span>
+
+  @SuppressWarnings(&quot;unused&quot;)
+  private final TransactionValidatorFactory transactionValidatorFactory;
+
+  private final PrivateTransactionValidator privateTransactionValidator;
+
+  private final AbstractMessageProcessor contractCreationProcessor;
+
+  private final AbstractMessageProcessor messageCallProcessor;
+
+  private final int maxStackSize;
+
+  @SuppressWarnings(&quot;unused&quot;)
+  private final boolean clearEmptyAccounts;
+
+  public PrivateTransactionProcessor(
+      final TransactionValidatorFactory transactionValidatorFactory,
+      final AbstractMessageProcessor contractCreationProcessor,
+      final AbstractMessageProcessor messageCallProcessor,
+      final boolean clearEmptyAccounts,
+      final int maxStackSize,
+<span class="fc" id="L68">      final PrivateTransactionValidator privateTransactionValidator) {</span>
+<span class="fc" id="L69">    this.transactionValidatorFactory = transactionValidatorFactory;</span>
+<span class="fc" id="L70">    this.contractCreationProcessor = contractCreationProcessor;</span>
+<span class="fc" id="L71">    this.messageCallProcessor = messageCallProcessor;</span>
+<span class="fc" id="L72">    this.clearEmptyAccounts = clearEmptyAccounts;</span>
+<span class="fc" id="L73">    this.maxStackSize = maxStackSize;</span>
+<span class="fc" id="L74">    this.privateTransactionValidator = privateTransactionValidator;</span>
+<span class="fc" id="L75">  }</span>
+
+  public TransactionProcessingResult processTransaction(
+      final WorldUpdater publicWorldState,
+      final WorldUpdater privateWorldState,
+      final ProcessableBlockHeader blockHeader,
+      final Hash pmtHash,
+      final PrivateTransaction transaction,
+      final Address miningBeneficiary,
+      final OperationTracer operationTracer,
+      final Function&lt;Long, Hash&gt; blockHashLookup,
+      final Bytes privacyGroupId) {
+    try {
+<span class="fc" id="L88">      LOG.trace(&quot;Starting private execution of {}&quot;, transaction);</span>
+
+<span class="fc" id="L90">      final Address senderAddress = transaction.getSender();</span>
+<span class="fc" id="L91">      final MutableAccount maybePrivateSender = privateWorldState.getAccount(senderAddress);</span>
+      final MutableAccount sender =
+<span class="pc bpc" id="L93" title="1 of 2 branches missed.">          maybePrivateSender != null</span>
+<span class="nc" id="L94">              ? maybePrivateSender</span>
+<span class="fc" id="L95">              : privateWorldState.createAccount(senderAddress, 0, Wei.ZERO);</span>
+
+<span class="fc" id="L97">      final ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+<span class="fc" id="L98">          privateTransactionValidator.validate(transaction, sender.getNonce(), false);</span>
+<span class="pc bpc" id="L99" title="1 of 2 branches missed.">      if (!validationResult.isValid()) {</span>
+<span class="nc" id="L100">        return TransactionProcessingResult.invalid(validationResult);</span>
+      }
+
+<span class="fc" id="L103">      final long previousNonce = sender.incrementNonce();</span>
+<span class="fc" id="L104">      LOG.trace(</span>
+          &quot;Incremented private sender {} nonce ({} -&gt; {})&quot;,
+          senderAddress,
+<span class="fc" id="L107">          previousNonce,</span>
+<span class="fc" id="L108">          sender.getNonce());</span>
+
+<span class="fc" id="L110">      final WorldUpdater mutablePrivateWorldStateUpdater =</span>
+          new PrivateMutableWorldStateUpdater(publicWorldState, privateWorldState);
+      final MessageFrame.Builder commonMessageFrameBuilder =
+<span class="fc" id="L113">          MessageFrame.builder()</span>
+<span class="fc" id="L114">              .maxStackSize(maxStackSize)</span>
+<span class="fc" id="L115">              .worldUpdater(mutablePrivateWorldStateUpdater)</span>
+<span class="fc" id="L116">              .initialGas(Long.MAX_VALUE)</span>
+<span class="fc" id="L117">              .originator(senderAddress)</span>
+<span class="fc" id="L118">              .gasPrice(transaction.getGasPrice())</span>
+<span class="fc" id="L119">              .sender(senderAddress)</span>
+<span class="fc" id="L120">              .value(transaction.getValue())</span>
+<span class="fc" id="L121">              .apparentValue(transaction.getValue())</span>
+<span class="fc" id="L122">              .blockValues(blockHeader)</span>
+<span class="fc" id="L123">              .completer(__ -&gt; {})</span>
+<span class="fc" id="L124">              .miningBeneficiary(miningBeneficiary)</span>
+<span class="fc" id="L125">              .blockHashLookup(blockHashLookup)</span>
+<span class="fc" id="L126">              .contextVariables(Map.of(KEY_TRANSACTION_HASH, pmtHash));</span>
+
+      final MessageFrame initialFrame;
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">      if (transaction.isContractCreation()) {</span>
+<span class="fc" id="L130">        final Address privateContractAddress =</span>
+<span class="fc" id="L131">            Address.privateContractAddress(senderAddress, previousNonce, privacyGroupId);</span>
+
+<span class="fc" id="L133">        LOG.debug(</span>
+            &quot;Calculated contract address {} from sender {} with nonce {} and privacy group {}&quot;,
+            privateContractAddress,
+            senderAddress,
+<span class="fc" id="L137">            previousNonce,</span>
+            privacyGroupId);
+
+<span class="fc" id="L140">        final Bytes initCodeBytes = transaction.getPayload();</span>
+<span class="fc" id="L141">        initialFrame =</span>
+            commonMessageFrameBuilder
+<span class="fc" id="L143">                .type(MessageFrame.Type.CONTRACT_CREATION)</span>
+<span class="fc" id="L144">                .address(privateContractAddress)</span>
+<span class="fc" id="L145">                .contract(privateContractAddress)</span>
+<span class="fc" id="L146">                .inputData(Bytes.EMPTY)</span>
+<span class="fc" id="L147">                .code(contractCreationProcessor.getCodeFromEVM(null, initCodeBytes))</span>
+<span class="fc" id="L148">                .build();</span>
+<span class="fc" id="L149">      } else {</span>
+<span class="nc" id="L150">        final Address to = transaction.getTo().get();</span>
+<span class="nc" id="L151">        final Optional&lt;Account&gt; maybeContract =</span>
+<span class="nc" id="L152">            Optional.ofNullable(mutablePrivateWorldStateUpdater.get(to));</span>
+<span class="nc" id="L153">        initialFrame =</span>
+            commonMessageFrameBuilder
+<span class="nc" id="L155">                .type(MessageFrame.Type.MESSAGE_CALL)</span>
+<span class="nc" id="L156">                .address(to)</span>
+<span class="nc" id="L157">                .contract(to)</span>
+<span class="nc" id="L158">                .inputData(transaction.getPayload())</span>
+<span class="nc" id="L159">                .code(</span>
+                    maybeContract
+<span class="nc" id="L161">                        .map(c -&gt; messageCallProcessor.getCodeFromEVM(c.getCodeHash(), c.getCode()))</span>
+<span class="nc" id="L162">                        .orElse(CodeV0.EMPTY_CODE))</span>
+<span class="nc" id="L163">                .build();</span>
+      }
+
+<span class="fc" id="L166">      final Deque&lt;MessageFrame&gt; messageFrameStack = initialFrame.getMessageFrameStack();</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">      while (!messageFrameStack.isEmpty()) {</span>
+<span class="fc" id="L168">        process(messageFrameStack.peekFirst(), operationTracer);</span>
+      }
+
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">      if (initialFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L172">        mutablePrivateWorldStateUpdater.commit();</span>
+      }
+
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">      if (initialFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L176">        return TransactionProcessingResult.successful(</span>
+<span class="fc" id="L177">            initialFrame.getLogs(), 0, 0, initialFrame.getOutputData(), ValidationResult.valid());</span>
+      } else {
+<span class="nc" id="L179">        return TransactionProcessingResult.failed(</span>
+            0,
+            0,
+<span class="nc" id="L182">            ValidationResult.invalid(TransactionInvalidReason.PRIVATE_TRANSACTION_FAILED),</span>
+<span class="nc" id="L183">            initialFrame.getRevertReason());</span>
+      }
+<span class="nc" id="L185">    } catch (final RuntimeException re) {</span>
+<span class="nc" id="L186">      LOG.error(&quot;Critical Exception Processing Transaction&quot;, re);</span>
+<span class="nc" id="L187">      return TransactionProcessingResult.invalid(</span>
+<span class="nc" id="L188">          ValidationResult.invalid(</span>
+              TransactionInvalidReason.INTERNAL_ERROR, &quot;Internal Error in Besu - &quot; + re));
+    }
+  }
+
+  @SuppressWarnings(&quot;unused&quot;)
+  private static void clearEmptyAccounts(final WorldUpdater worldState) {
+<span class="nc" id="L195">    worldState.getTouchedAccounts().stream()</span>
+<span class="nc" id="L196">        .filter(Account::isEmpty)</span>
+<span class="nc" id="L197">        .forEach(a -&gt; worldState.deleteAccount(a.getAddress()));</span>
+<span class="nc" id="L198">  }</span>
+
+  private void process(final MessageFrame frame, final OperationTracer operationTracer) {
+<span class="fc" id="L201">    final AbstractMessageProcessor executor = getMessageProcessor(frame.getType());</span>
+
+<span class="fc" id="L203">    executor.process(frame, operationTracer);</span>
+<span class="fc" id="L204">  }</span>
+
+  private AbstractMessageProcessor getMessageProcessor(final MessageFrame.Type type) {
+<span class="pc bpc" id="L207" title="2 of 3 branches missed.">    return switch (type) {</span>
+<span class="nc" id="L208">      case MESSAGE_CALL -&gt; messageCallProcessor;</span>
+<span class="fc" id="L209">      case CONTRACT_CREATION -&gt; contractCreationProcessor;</span>
+    };
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

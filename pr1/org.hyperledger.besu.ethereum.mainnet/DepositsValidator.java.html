@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DepositsValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">DepositsValidator.java</span></div><h1>DepositsValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.Deposit;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.core.encoding.DepositDecoder;
+import org.hyperledger.besu.evm.log.Log;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public interface DepositsValidator {
+
+  boolean validateDepositParameter(Optional&lt;List&lt;Deposit&gt;&gt; deposits);
+
+  boolean validateDeposits(Block block, List&lt;TransactionReceipt&gt; receipts);
+
+  boolean validateDepositsRoot(Block block);
+
+<span class="fc" id="L44">  class ProhibitedDeposits implements DepositsValidator {</span>
+
+<span class="fc" id="L46">    private static final Logger LOG = LoggerFactory.getLogger(ProhibitedDeposits.class);</span>
+
+    @Override
+    public boolean validateDepositParameter(final Optional&lt;List&lt;Deposit&gt;&gt; deposits) {
+<span class="fc" id="L50">      return deposits.isEmpty();</span>
+    }
+
+    @Override
+    public boolean validateDeposits(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="fc" id="L55">      Optional&lt;List&lt;Deposit&gt;&gt; deposits = block.getBody().getDeposits();</span>
+<span class="fc" id="L56">      final boolean isValid = deposits.isEmpty();</span>
+<span class="fc bfc" id="L57" title="All 2 branches covered.">      if (!isValid) {</span>
+<span class="fc" id="L58">        LOG.warn(&quot;Deposits must be empty when Deposits are prohibited but were: {}&quot;, deposits);</span>
+      }
+<span class="fc" id="L60">      return isValid;</span>
+    }
+
+    @Override
+    public boolean validateDepositsRoot(final Block block) {
+<span class="fc" id="L65">      final Optional&lt;Hash&gt; depositsRoot = block.getHeader().getDepositsRoot();</span>
+<span class="fc bfc" id="L66" title="All 2 branches covered.">      if (depositsRoot.isPresent()) {</span>
+<span class="fc" id="L67">        LOG.warn(</span>
+            &quot;DepositsRoot must be null when Deposits are prohibited but was: {}&quot;,
+<span class="fc" id="L69">            depositsRoot.get());</span>
+<span class="fc" id="L70">        return false;</span>
+      }
+
+<span class="fc" id="L73">      return true;</span>
+    }
+  }
+
+  class AllowedDeposits implements DepositsValidator {
+
+<span class="fc" id="L79">    private static final Logger LOG = LoggerFactory.getLogger(AllowedDeposits.class);</span>
+    private final Address depositContractAddress;
+
+<span class="fc" id="L82">    public AllowedDeposits(final Address depositContractAddress) {</span>
+<span class="fc" id="L83">      this.depositContractAddress = depositContractAddress;</span>
+<span class="fc" id="L84">    }</span>
+
+    @Override
+    public boolean validateDepositParameter(final Optional&lt;List&lt;Deposit&gt;&gt; deposits) {
+<span class="fc" id="L88">      return deposits.isPresent();</span>
+    }
+
+    @Override
+    public boolean validateDeposits(final Block block, final List&lt;TransactionReceipt&gt; receipts) {
+<span class="pc bpc" id="L93" title="1 of 2 branches missed.">      if (block.getBody().getDeposits().isEmpty()) {</span>
+<span class="nc" id="L94">        LOG.warn(&quot;Deposits must not be empty when Deposits are activated&quot;);</span>
+<span class="nc" id="L95">        return false;</span>
+      }
+
+<span class="fc" id="L98">      List&lt;Deposit&gt; actualDeposits = new ArrayList&lt;&gt;(block.getBody().getDeposits().get());</span>
+<span class="fc" id="L99">      List&lt;Deposit&gt; expectedDeposits = new ArrayList&lt;&gt;();</span>
+
+<span class="fc bfc" id="L101" title="All 2 branches covered.">      for (TransactionReceipt receipt : receipts) {</span>
+<span class="fc bfc" id="L102" title="All 2 branches covered.">        for (Log log : receipt.getLogsList()) {</span>
+<span class="fc bfc" id="L103" title="All 2 branches covered.">          if (depositContractAddress.equals(log.getLogger())) {</span>
+<span class="fc" id="L104">            Deposit deposit = DepositDecoder.decodeFromLog(log);</span>
+<span class="fc" id="L105">            expectedDeposits.add(deposit);</span>
+          }
+<span class="fc" id="L107">        }</span>
+<span class="fc" id="L108">      }</span>
+
+<span class="fc" id="L110">      boolean isValid = actualDeposits.equals(expectedDeposits);</span>
+
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      if (!isValid) {</span>
+<span class="fc" id="L113">        LOG.warn(</span>
+            &quot;Deposits validation failed. Deposits from block body do not match deposits from logs. Block hash: {}&quot;,
+<span class="fc" id="L115">            block.getHash());</span>
+<span class="fc" id="L116">        LOG.debug(</span>
+            &quot;Deposits from logs: {}, deposits from block body: {}&quot;,
+            expectedDeposits,
+            actualDeposits);
+      }
+
+<span class="fc" id="L122">      return isValid;</span>
+    }
+
+    @Override
+    public boolean validateDepositsRoot(final Block block) {
+<span class="fc" id="L127">      checkArgument(block.getBody().getDeposits().isPresent(), &quot;Block body must contain deposits&quot;);</span>
+<span class="fc" id="L128">      final Optional&lt;Hash&gt; depositsRoot = block.getHeader().getDepositsRoot();</span>
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">      if (depositsRoot.isEmpty()) {</span>
+<span class="nc" id="L130">        LOG.warn(&quot;depositsRoot must not be null when Deposits are activated&quot;);</span>
+<span class="nc" id="L131">        return false;</span>
+      }
+
+<span class="fc" id="L134">      final List&lt;Deposit&gt; deposits = block.getBody().getDeposits().get();</span>
+<span class="fc" id="L135">      final Hash expectedDepositsRoot = BodyValidation.depositsRoot(deposits);</span>
+<span class="fc bfc" id="L136" title="All 2 branches covered.">      if (!expectedDepositsRoot.equals(depositsRoot.get())) {</span>
+<span class="fc" id="L137">        LOG.info(</span>
+            &quot;Invalid block: depositsRoot mismatch (expected={}, actual={})&quot;,
+            expectedDepositsRoot,
+<span class="fc" id="L140">            depositsRoot.get());</span>
+<span class="fc" id="L141">        return false;</span>
+      }
+
+<span class="fc" id="L144">      return true;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

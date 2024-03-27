@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionValidatorProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.qbft.validator</a> &gt; <span class="el_source">TransactionValidatorProvider.java</span></div><h1>TransactionValidatorProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.qbft.validator;
+
+import org.hyperledger.besu.config.QbftConfigOptions;
+import org.hyperledger.besu.consensus.common.ForksSchedule;
+import org.hyperledger.besu.consensus.common.validator.ValidatorProvider;
+import org.hyperledger.besu.consensus.common.validator.VoteProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+
+import java.util.Collection;
+import java.util.Optional;
+import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
+
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+
+/** The Transaction validator provider. */
+public class TransactionValidatorProvider implements ValidatorProvider {
+
+  private final Blockchain blockchain;
+  private final ValidatorContractController validatorContractController;
+  private final ForksSchedule&lt;QbftConfigOptions&gt; forksSchedule;
+<span class="fc" id="L39">  private final Cache&lt;Long, Collection&lt;Address&gt;&gt; afterBlockValidatorCache =</span>
+<span class="fc" id="L40">      CacheBuilder.newBuilder().maximumSize(100).build();</span>
+<span class="fc" id="L41">  private final Cache&lt;Long, Collection&lt;Address&gt;&gt; forBlockValidatorCache =</span>
+<span class="fc" id="L42">      CacheBuilder.newBuilder().maximumSize(100).build();</span>
+
+  /**
+   * Instantiates a new Transaction validator provider.
+   *
+   * @param blockchain the blockchain
+   * @param validatorContractController the validator contract controller
+   * @param forksSchedule the forks schedule
+   */
+  public TransactionValidatorProvider(
+      final Blockchain blockchain,
+      final ValidatorContractController validatorContractController,
+<span class="fc" id="L54">      final ForksSchedule&lt;QbftConfigOptions&gt; forksSchedule) {</span>
+<span class="fc" id="L55">    this.blockchain = blockchain;</span>
+<span class="fc" id="L56">    this.validatorContractController = validatorContractController;</span>
+<span class="fc" id="L57">    this.forksSchedule = forksSchedule;</span>
+<span class="fc" id="L58">  }</span>
+
+  @Override
+  public Collection&lt;Address&gt; getValidatorsAtHead() {
+<span class="fc" id="L62">    return getValidatorsAfterBlock(blockchain.getChainHeadHeader());</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getValidatorsAfterBlock(final BlockHeader parentHeader) {
+    // For the validator contract we determine the validators from the previous block but the
+    // address from block about to be created
+<span class="fc" id="L69">    final long nextBlock = parentHeader.getNumber() + 1;</span>
+<span class="fc" id="L70">    final Address contractAddress = resolveContractAddress(nextBlock);</span>
+<span class="fc" id="L71">    return getValidatorsFromContract(afterBlockValidatorCache, parentHeader, contractAddress);</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getValidatorsForBlock(final BlockHeader header) {
+<span class="fc" id="L76">    final Address contractAddress = resolveContractAddress(header.getNumber());</span>
+<span class="fc" id="L77">    return getValidatorsFromContract(forBlockValidatorCache, header, contractAddress);</span>
+  }
+
+  private Collection&lt;Address&gt; getValidatorsFromContract(
+      final Cache&lt;Long, Collection&lt;Address&gt;&gt; validatorCache,
+      final BlockHeader header,
+      final Address contractAddress) {
+<span class="fc" id="L84">    final long blockNumber = header.getNumber();</span>
+    try {
+<span class="fc" id="L86">      return validatorCache.get(</span>
+<span class="fc" id="L87">          blockNumber,</span>
+          () -&gt;
+<span class="fc" id="L89">              validatorContractController.getValidators(blockNumber, contractAddress).stream()</span>
+<span class="fc" id="L90">                  .sorted()</span>
+<span class="fc" id="L91">                  .collect(Collectors.toList()));</span>
+<span class="nc" id="L92">    } catch (final ExecutionException e) {</span>
+<span class="nc" id="L93">      throw new RuntimeException(&quot;Unable to determine a validators for the requested block.&quot;);</span>
+    }
+  }
+
+  @Override
+  public Optional&lt;VoteProvider&gt; getVoteProviderAtHead() {
+<span class="fc" id="L99">    return Optional.empty();</span>
+  }
+
+  private Address resolveContractAddress(final long blockNumber) {
+<span class="fc" id="L103">    return forksSchedule</span>
+<span class="fc" id="L104">        .getFork(blockNumber)</span>
+<span class="fc" id="L105">        .getValue()</span>
+<span class="fc" id="L106">        .getValidatorContractAddress()</span>
+<span class="fc" id="L107">        .map(Address::fromHexString)</span>
+<span class="fc" id="L108">        .orElseThrow(</span>
+            () -&gt;
+<span class="nc" id="L110">                new RuntimeException(</span>
+                    &quot;Error resolving smart contract address unable to make validator contract call&quot;));
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

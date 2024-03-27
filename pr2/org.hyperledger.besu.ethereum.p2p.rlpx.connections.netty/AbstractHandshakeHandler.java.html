@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractHandshakeHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty</a> &gt; <span class="el_source">AbstractHandshakeHandler.java</span></div><h1>AbstractHandshakeHandler.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.peers.LocalNode;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnectionEventDispatcher;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.Framer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.FramerProvider;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakerProvider;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.SubProtocol;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.HelloMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.WireMessageCodes;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.handler.codec.MessageToByteEncoder;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+abstract class AbstractHandshakeHandler extends SimpleChannelInboundHandler&lt;ByteBuf&gt; {
+
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(AbstractHandshakeHandler.class);</span>
+
+  protected final Handshaker handshaker;
+
+  // The peer we are expecting to connect to, if such a peer is known
+  private final Optional&lt;Peer&gt; expectedPeer;
+  private final LocalNode localNode;
+
+  private final PeerConnectionEventDispatcher connectionEventDispatcher;
+
+  private final CompletableFuture&lt;PeerConnection&gt; connectionFuture;
+  private final List&lt;SubProtocol&gt; subProtocols;
+
+  private final MetricsSystem metricsSystem;
+
+  private final FramerProvider framerProvider;
+  private final boolean inboundInitiated;
+  private final PeerTable peerTable;
+
+  AbstractHandshakeHandler(
+      final List&lt;SubProtocol&gt; subProtocols,
+      final LocalNode localNode,
+      final Optional&lt;Peer&gt; expectedPeer,
+      final CompletableFuture&lt;PeerConnection&gt; connectionFuture,
+      final PeerConnectionEventDispatcher connectionEventDispatcher,
+      final MetricsSystem metricsSystem,
+      final HandshakerProvider handshakerProvider,
+      final FramerProvider framerProvider,
+      final boolean inboundInitiated,
+<span class="fc" id="L76">      final PeerTable peerTable) {</span>
+<span class="fc" id="L77">    this.subProtocols = subProtocols;</span>
+<span class="fc" id="L78">    this.localNode = localNode;</span>
+<span class="fc" id="L79">    this.expectedPeer = expectedPeer;</span>
+<span class="fc" id="L80">    this.connectionFuture = connectionFuture;</span>
+<span class="fc" id="L81">    this.connectionEventDispatcher = connectionEventDispatcher;</span>
+<span class="fc" id="L82">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L83">    this.handshaker = handshakerProvider.buildInstance();</span>
+<span class="fc" id="L84">    this.framerProvider = framerProvider;</span>
+<span class="fc" id="L85">    this.inboundInitiated = inboundInitiated;</span>
+<span class="fc" id="L86">    this.peerTable = peerTable;</span>
+<span class="fc" id="L87">  }</span>
+
+  /**
+   * Generates the next message in the handshake sequence.
+   *
+   * @param msg Incoming Message
+   * @return Optional of the next Handshake message that needs to be returned to the peer
+   */
+  protected abstract Optional&lt;ByteBuf&gt; nextHandshakeMessage(ByteBuf msg);
+
+  @Override
+  protected final void channelRead0(final ChannelHandlerContext ctx, final ByteBuf msg) {
+<span class="fc" id="L99">    final Optional&lt;ByteBuf&gt; nextMsg = nextHandshakeMessage(msg);</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    if (nextMsg.isPresent()) {</span>
+<span class="fc" id="L101">      ctx.writeAndFlush(nextMsg.get());</span>
+<span class="pc bpc" id="L102" title="1 of 2 branches missed.">    } else if (handshaker.getStatus() != Handshaker.HandshakeStatus.SUCCESS) {</span>
+<span class="nc" id="L103">      LOG.debug(&quot;waiting for more bytes&quot;);</span>
+    } else {
+
+<span class="fc" id="L106">      final Bytes nodeId = handshaker.partyPubKey().getEncodedBytes();</span>
+<span class="pc bpc" id="L107" title="1 of 2 branches missed.">      if (!localNode.isReady()) {</span>
+        // If we're handling a connection before the node is fully up, just disconnect
+<span class="nc" id="L109">        LOG.debug(&quot;Rejecting connection because local node is not ready {}&quot;, nodeId);</span>
+<span class="nc" id="L110">        disconnect(ctx, DisconnectMessage.DisconnectReason.UNKNOWN);</span>
+<span class="nc" id="L111">        return;</span>
+      }
+
+<span class="fc" id="L114">      LOG.trace(&quot;Sending framed hello&quot;);</span>
+
+      // Exchange keys done
+<span class="fc" id="L117">      final Framer framer = this.framerProvider.buildFramer(handshaker.secrets());</span>
+
+<span class="fc" id="L119">      final ByteToMessageDecoder deFramer =</span>
+          new DeFramer(
+              framer,
+              subProtocols,
+              localNode,
+              expectedPeer,
+              connectionEventDispatcher,
+              connectionFuture,
+              metricsSystem,
+              inboundInitiated,
+              peerTable);
+
+<span class="fc" id="L131">      ctx.channel()</span>
+<span class="fc" id="L132">          .pipeline()</span>
+<span class="fc" id="L133">          .replace(this, &quot;DeFramer&quot;, deFramer)</span>
+<span class="fc" id="L134">          .addBefore(&quot;DeFramer&quot;, &quot;validate&quot;, new ValidateFirstOutboundMessage(framer));</span>
+
+<span class="fc" id="L136">      ctx.writeAndFlush(new OutboundMessage(null, HelloMessage.create(localNode.getPeerInfo())))</span>
+<span class="fc" id="L137">          .addListener(</span>
+              ff -&gt; {
+<span class="pc bpc" id="L139" title="1 of 2 branches missed.">                if (ff.isSuccess()) {</span>
+<span class="fc" id="L140">                  LOG.trace(&quot;Successfully wrote hello message&quot;);</span>
+                }
+<span class="fc" id="L142">              });</span>
+<span class="fc" id="L143">      msg.retain();</span>
+<span class="fc" id="L144">      ctx.fireChannelRead(msg);</span>
+    }
+<span class="fc" id="L146">  }</span>
+
+  private void disconnect(
+      final ChannelHandlerContext ctx, final DisconnectMessage.DisconnectReason reason) {
+<span class="nc" id="L150">    ctx.writeAndFlush(new OutboundMessage(null, DisconnectMessage.create(reason)))</span>
+<span class="nc" id="L151">        .addListener(</span>
+            ff -&gt; {
+<span class="nc" id="L153">              ctx.close();</span>
+<span class="nc" id="L154">              connectionFuture.completeExceptionally(</span>
+<span class="nc" id="L155">                  new IllegalStateException(&quot;Disconnecting from peer: &quot; + reason.name()));</span>
+<span class="nc" id="L156">            });</span>
+<span class="nc" id="L157">  }</span>
+
+  @Override
+  public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable throwable) {
+<span class="nc" id="L161">    LOG.trace(&quot;Handshake error:&quot;, throwable);</span>
+<span class="nc" id="L162">    connectionFuture.completeExceptionally(throwable);</span>
+<span class="nc" id="L163">    ctx.close();</span>
+<span class="nc" id="L164">  }</span>
+
+  /** Ensures that wire hello message is the first message written. */
+  private static class ValidateFirstOutboundMessage extends MessageToByteEncoder&lt;OutboundMessage&gt; {
+    private final Framer framer;
+
+<span class="fc" id="L170">    private ValidateFirstOutboundMessage(final Framer framer) {</span>
+<span class="fc" id="L171">      this.framer = framer;</span>
+<span class="fc" id="L172">    }</span>
+
+    @Override
+    protected void encode(
+        final ChannelHandlerContext context,
+        final OutboundMessage outboundMessage,
+        final ByteBuf out) {
+<span class="pc bpc" id="L179" title="1 of 2 branches missed.">      if (outboundMessage.getCapability() != null</span>
+<span class="pc bpc" id="L180" title="1 of 2 branches missed.">          || outboundMessage.getData().getCode() != WireMessageCodes.HELLO) {</span>
+<span class="nc" id="L181">        throw new IllegalStateException(&quot;First wire message sent wasn't a HELLO.&quot;);</span>
+      }
+<span class="fc" id="L183">      framer.frame(outboundMessage.getData(), out);</span>
+<span class="fc" id="L184">      context.pipeline().remove(this);</span>
+<span class="fc" id="L185">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetDifficultyCalculators.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">MainnetDifficultyCalculators.java</span></div><h1>MainnetDifficultyCalculators.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Quantity;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+
+import java.math.BigInteger;
+
+import com.google.common.primitives.Ints;
+
+/** Provides the various difficultly calculates used on mainnet hard forks. */
+public abstract class MainnetDifficultyCalculators {
+
+<span class="fc" id="L28">  private static final BigInteger DIFFICULTY_BOUND_DIVISOR = BigInteger.valueOf(2_048L);</span>
+
+<span class="fc" id="L30">  private static final BigInteger MINIMUM_DIFFICULTY = BigInteger.valueOf(131_072L);</span>
+
+  private static final long EXPONENTIAL_DIFF_PERIOD = 100_000L;
+
+  private static final int DURATION_LIMIT = 13;
+
+<span class="fc" id="L36">  private static final BigInteger BIGINT_2 = BigInteger.valueOf(2L);</span>
+
+  private static final long BYZANTIUM_FAKE_BLOCK_OFFSET = 2_999_999L;
+  private static final long CONSTANTINOPLE_FAKE_BLOCK_OFFSET = 4_999_999L;
+  private static final long MUIR_GLACIER_FAKE_BLOCK_OFFSET = 8_999_999L;
+  private static final long LONDON_FAKE_BLOCK_OFFSET = 9_699_999L;
+  private static final long ARROW_GLACIER_FAKE_BLOCK_OFFSET = 10_699_999L;
+  private static final long GRAY_GLACIER_FAKE_BLOCK_OFFSET = 11_399_999L;
+
+  private MainnetDifficultyCalculators() {}
+
+<span class="fc" id="L47">  static final DifficultyCalculator FRONTIER =</span>
+      (time, parent, protocolContext) -&gt; {
+<span class="fc" id="L49">        final BigInteger parentDifficulty = difficulty(parent.getDifficulty());</span>
+<span class="fc" id="L50">        final BigInteger adjust = parentDifficulty.divide(DIFFICULTY_BOUND_DIVISOR);</span>
+        BigInteger difficulty;
+<span class="fc bfc" id="L52" title="All 2 branches covered.">        if (time - parent.getTimestamp() &lt; DURATION_LIMIT) {</span>
+<span class="fc" id="L53">          difficulty = adjust.add(parentDifficulty);</span>
+        } else {
+<span class="fc" id="L55">          difficulty = parentDifficulty.subtract(adjust);</span>
+        }
+<span class="fc" id="L57">        difficulty = ensureMinimumDifficulty(difficulty);</span>
+<span class="fc" id="L58">        final long periodCount = (parent.getNumber() + 1) / EXPONENTIAL_DIFF_PERIOD;</span>
+<span class="fc bfc" id="L59" title="All 2 branches covered.">        return periodCount &gt; 1 ? adjustForPeriod(periodCount, difficulty) : difficulty;</span>
+      };
+
+<span class="fc" id="L62">  static final DifficultyCalculator HOMESTEAD =</span>
+      (time, parent, protocolContext) -&gt; {
+<span class="fc" id="L64">        final BigInteger parentDifficulty = difficulty(parent.getDifficulty());</span>
+<span class="fc" id="L65">        final BigInteger difficulty =</span>
+<span class="fc" id="L66">            ensureMinimumDifficulty(</span>
+<span class="fc" id="L67">                BigInteger.valueOf(Math.max(1 - (time - parent.getTimestamp()) / 10, -99L))</span>
+<span class="fc" id="L68">                    .multiply(parentDifficulty.divide(DIFFICULTY_BOUND_DIVISOR))</span>
+<span class="fc" id="L69">                    .add(parentDifficulty));</span>
+<span class="fc" id="L70">        final long periodCount = (parent.getNumber() + 1) / EXPONENTIAL_DIFF_PERIOD;</span>
+<span class="fc bfc" id="L71" title="All 2 branches covered.">        return periodCount &gt; 1 ? adjustForPeriod(periodCount, difficulty) : difficulty;</span>
+      };
+
+<span class="fc" id="L74">  static final DifficultyCalculator BYZANTIUM =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L76">          calculateThawedDifficulty(time, parent, BYZANTIUM_FAKE_BLOCK_OFFSET);</span>
+
+<span class="fc" id="L78">  static final DifficultyCalculator CONSTANTINOPLE =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L80">          calculateThawedDifficulty(time, parent, CONSTANTINOPLE_FAKE_BLOCK_OFFSET);</span>
+
+<span class="fc" id="L82">  static final DifficultyCalculator MUIR_GLACIER =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L84">          calculateThawedDifficulty(time, parent, MUIR_GLACIER_FAKE_BLOCK_OFFSET);</span>
+
+  // As per https://eips.ethereum.org/EIPS/eip-3554
+<span class="fc" id="L87">  static final DifficultyCalculator LONDON =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L89">          calculateThawedDifficulty(time, parent, LONDON_FAKE_BLOCK_OFFSET);</span>
+
+  // As per https://eips.ethereum.org/EIPS/eip-4345
+<span class="fc" id="L92">  static final DifficultyCalculator ARROW_GLACIER =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L94">          calculateThawedDifficulty(time, parent, ARROW_GLACIER_FAKE_BLOCK_OFFSET);</span>
+
+  // As per https://eips.ethereum.org/EIPS/eip-5133
+<span class="fc" id="L97">  static final DifficultyCalculator GRAY_GLACIER =</span>
+      (time, parent, protocolContext) -&gt;
+<span class="fc" id="L99">          calculateThawedDifficulty(time, parent, GRAY_GLACIER_FAKE_BLOCK_OFFSET);</span>
+
+  // Proof-of-Stake difficulty must not be altered
+<span class="fc" id="L102">  static final DifficultyCalculator PROOF_OF_STAKE_DIFFICULTY =</span>
+<span class="fc" id="L103">      (time, parent, protocolContext) -&gt; BigInteger.ZERO;</span>
+
+  private static BigInteger calculateThawedDifficulty(
+      final long time, final BlockHeader parent, final long fakeBlockOffset) {
+<span class="fc" id="L107">    final BigInteger parentDifficulty = difficulty(parent.getDifficulty());</span>
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    final boolean hasOmmers = !parent.getOmmersHash().equals(Hash.EMPTY_LIST_HASH);</span>
+<span class="fc" id="L109">    final BigInteger difficulty =</span>
+<span class="fc" id="L110">        ensureMinimumDifficulty(</span>
+<span class="fc" id="L111">            BigInteger.valueOf(byzantiumX(time, parent.getTimestamp(), hasOmmers))</span>
+<span class="fc" id="L112">                .multiply(parentDifficulty.divide(DIFFICULTY_BOUND_DIVISOR))</span>
+<span class="fc" id="L113">                .add(parentDifficulty));</span>
+<span class="fc" id="L114">    final long periodCount =</span>
+<span class="fc" id="L115">        fakeBlockNum(parent.getNumber(), fakeBlockOffset) / EXPONENTIAL_DIFF_PERIOD;</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    return periodCount &gt; 1 ? adjustForPeriod(periodCount, difficulty) : difficulty;</span>
+  }
+
+  private static long fakeBlockNum(final long parentNum, final long fakeBlockOffset) {
+    final long fakeBlockNumber;
+<span class="fc bfc" id="L121" title="All 2 branches covered.">    if (Long.compareUnsigned(parentNum, fakeBlockOffset) &gt;= 0) {</span>
+<span class="fc" id="L122">      fakeBlockNumber = parentNum - fakeBlockOffset;</span>
+    } else {
+<span class="fc" id="L124">      fakeBlockNumber = 0L;</span>
+    }
+<span class="fc" id="L126">    return fakeBlockNumber;</span>
+  }
+
+  private static long byzantiumX(
+      final long blockTime, final long parentTime, final boolean hasOmmers) {
+<span class="fc" id="L131">    long x = (blockTime - parentTime) / 9L;</span>
+<span class="fc bfc" id="L132" title="All 2 branches covered.">    if (hasOmmers) {</span>
+<span class="fc" id="L133">      x = 2 - x;</span>
+    } else {
+<span class="fc" id="L135">      x = 1 - x;</span>
+    }
+<span class="fc" id="L137">    return Math.max(x, -99L);</span>
+  }
+
+  private static BigInteger adjustForPeriod(final long periodCount, final BigInteger difficulty) {
+<span class="fc" id="L141">    return difficulty.add(BIGINT_2.pow(Ints.checkedCast(periodCount - 2)));</span>
+  }
+
+  private static BigInteger ensureMinimumDifficulty(final BigInteger difficulty) {
+<span class="fc bfc" id="L145" title="All 2 branches covered.">    return difficulty.compareTo(MINIMUM_DIFFICULTY) &lt; 0 ? MINIMUM_DIFFICULTY : difficulty;</span>
+  }
+
+  private static BigInteger difficulty(final Quantity value) {
+<span class="fc" id="L149">    return value.getAsBigInteger();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

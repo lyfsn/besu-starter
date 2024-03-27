@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BackwardSyncAlgorithm.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.backwardsync</a> &gt; <span class="el_source">BackwardSyncAlgorithm.java</span></div><h1>BackwardSyncAlgorithm.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.eth.sync.backwardsync;
+
+import static org.slf4j.LoggerFactory.getLogger;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.task.WaitForPeersTask;
+import org.hyperledger.besu.plugin.services.BesuEvents;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+
+public class BackwardSyncAlgorithm implements BesuEvents.InitialSyncCompletionListener {
+<span class="fc" id="L39">  private static final Logger LOG = getLogger(BackwardSyncAlgorithm.class);</span>
+
+  private final BackwardSyncContext context;
+  private final FinalBlockConfirmation finalBlockConfirmation;
+<span class="fc" id="L43">  private final AtomicReference&lt;CountDownLatch&gt; latch =</span>
+      new AtomicReference&lt;&gt;(new CountDownLatch(1));
+<span class="fc" id="L45">  private volatile boolean finished = false;</span>
+
+  public BackwardSyncAlgorithm(
+<span class="fc" id="L48">      final BackwardSyncContext context, final FinalBlockConfirmation finalBlockConfirmation) {</span>
+<span class="fc" id="L49">    this.context = context;</span>
+<span class="fc" id="L50">    this.finalBlockConfirmation = finalBlockConfirmation;</span>
+<span class="fc" id="L51">  }</span>
+
+  public CompletableFuture&lt;Void&gt; executeBackwardsSync(final Void unused) {
+<span class="fc" id="L54">    final CompletableFuture&lt;Void&gt; nextStep = pickNextStep();</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">    if (finished) {</span>
+<span class="fc" id="L56">      return nextStep;</span>
+    }
+<span class="fc" id="L58">    return nextStep.thenCompose(this::executeBackwardsSync);</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; pickNextStep() {
+<span class="fc" id="L62">    final Optional&lt;Hash&gt; firstHash = context.getBackwardChain().getFirstHashToAppend();</span>
+<span class="fc bfc" id="L63" title="All 2 branches covered.">    if (firstHash.isPresent()) {</span>
+<span class="fc" id="L64">      return executeSyncStep(firstHash.get())</span>
+<span class="fc" id="L65">          .thenAccept(</span>
+              result -&gt; {
+<span class="fc" id="L67">                LOG.atDebug()</span>
+<span class="fc" id="L68">                    .setMessage(&quot;Backward sync target block is {}&quot;)</span>
+<span class="fc" id="L69">                    .addArgument(result::toLogString)</span>
+<span class="fc" id="L70">                    .log();</span>
+<span class="fc" id="L71">                context.getBackwardChain().removeFromHashToAppend(firstHash.get());</span>
+<span class="fc" id="L72">                context.getStatus().updateTargetHeight(result.getHeader().getNumber());</span>
+<span class="fc" id="L73">              });</span>
+    }
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    if (!context.isReady()) {</span>
+<span class="fc" id="L76">      return waitForReady();</span>
+    }
+<span class="fc" id="L78">    final Optional&lt;BlockHeader&gt; maybeFirstAncestorHeader =</span>
+<span class="fc" id="L79">        context.getBackwardChain().getFirstAncestorHeader();</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">    if (maybeFirstAncestorHeader.isEmpty()) {</span>
+<span class="fc" id="L81">      this.finished = true;</span>
+<span class="fc" id="L82">      LOG.info(&quot;Current backward sync session is done&quot;);</span>
+<span class="fc" id="L83">      context.getBackwardChain().clear();</span>
+<span class="fc" id="L84">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L87">    final MutableBlockchain blockchain = context.getProtocolContext().getBlockchain();</span>
+<span class="fc" id="L88">    final BlockHeader firstAncestorHeader = maybeFirstAncestorHeader.get();</span>
+<span class="fc" id="L89">    final BlockHeader chainHeader = blockchain.getChainHeadHeader();</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (blockchain.contains(firstAncestorHeader.getHash())</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">        &amp;&amp; firstAncestorHeader.getNumber() &lt;= chainHeader.getNumber()) {</span>
+<span class="fc" id="L92">      return executeProcessKnownAncestors();</span>
+    }
+
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    if (chainHeader.getNumber() &gt; firstAncestorHeader.getNumber()) {</span>
+<span class="fc" id="L96">      LOG.atDebug()</span>
+<span class="fc" id="L97">          .setMessage(&quot;Backward reached below current chain head {} : {}&quot;)</span>
+<span class="pc" id="L98">          .addArgument(() -&gt; blockchain.getChainHead().toLogString())</span>
+<span class="fc" id="L99">          .addArgument(firstAncestorHeader::toLogString)</span>
+<span class="fc" id="L100">          .log();</span>
+    }
+
+<span class="fc bfc" id="L103" title="All 2 branches covered.">    if (finalBlockConfirmation.ancestorHeaderReached(firstAncestorHeader)) {</span>
+<span class="fc" id="L104">      LOG.atDebug()</span>
+<span class="fc" id="L105">          .setMessage(&quot;Backward sync reached ancestor header with {}, starting forward sync&quot;)</span>
+<span class="fc" id="L106">          .addArgument(firstAncestorHeader::toLogString)</span>
+<span class="fc" id="L107">          .log();</span>
+<span class="fc" id="L108">      return executeForwardAsync();</span>
+    }
+
+<span class="fc" id="L111">    return executeBackwardAsync(firstAncestorHeader);</span>
+  }
+
+  @VisibleForTesting
+  public CompletableFuture&lt;Void&gt; executeProcessKnownAncestors() {
+<span class="fc" id="L116">    return new ProcessKnownAncestorsStep(context, context.getBackwardChain()).executeAsync();</span>
+  }
+
+  @VisibleForTesting
+  public CompletableFuture&lt;Block&gt; executeSyncStep(final Hash hash) {
+<span class="fc" id="L121">    return new SyncStepStep(context, context.getBackwardChain()).executeAsync(hash);</span>
+  }
+
+  @VisibleForTesting
+  protected CompletableFuture&lt;Void&gt; executeBackwardAsync(final BlockHeader firstHeader) {
+<span class="fc" id="L126">    return new BackwardSyncStep(context, context.getBackwardChain()).executeAsync(firstHeader);</span>
+  }
+
+  @VisibleForTesting
+  protected CompletableFuture&lt;Void&gt; executeForwardAsync() {
+<span class="fc" id="L131">    return new ForwardSyncStep(context, context.getBackwardChain()).executeAsync();</span>
+  }
+
+  @VisibleForTesting
+  protected CompletableFuture&lt;Void&gt; waitForReady() {
+<span class="fc" id="L136">    final long idTTD = context.getSyncState().subscribeTTDReached(reached -&gt; countDownIfReady());</span>
+<span class="fc" id="L137">    final long idIS = context.getSyncState().subscribeCompletionReached(this);</span>
+<span class="fc" id="L138">    return CompletableFuture.runAsync(() -&gt; checkReadiness(idTTD, idIS));</span>
+  }
+
+  private void checkReadiness(final long idTTD, final long idIS) {
+    try {
+<span class="fc bfc" id="L143" title="All 2 branches covered.">      if (!context.isReady()) {</span>
+<span class="fc" id="L144">        LOG.debug(&quot;Waiting for preconditions...&quot;);</span>
+<span class="fc" id="L145">        final boolean await = latch.get().await(2, TimeUnit.MINUTES);</span>
+<span class="fc bfc" id="L146" title="All 2 branches covered.">        if (await) {</span>
+<span class="fc" id="L147">          LOG.debug(&quot;Preconditions meet, ensure at least one peer is connected&quot;);</span>
+<span class="fc" id="L148">          waitForPeers(1).get();</span>
+        }
+      }
+<span class="nc" id="L151">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L152">      Thread.currentThread().interrupt();</span>
+<span class="nc" id="L153">      throw new BackwardSyncException(</span>
+<span class="nc" id="L154">          &quot;Wait for TTD preconditions interrupted (&quot; + e.getMessage() + &quot;)&quot;);</span>
+<span class="nc" id="L155">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L156">      throw new BackwardSyncException(</span>
+<span class="nc" id="L157">          &quot;Error while waiting for at least one connected peer (&quot; + e.getMessage() + &quot;)&quot;, true);</span>
+    } finally {
+<span class="fc" id="L159">      context.getSyncState().unsubscribeTTDReached(idTTD);</span>
+<span class="fc" id="L160">      context.getSyncState().unsubscribeInitialConditionReached(idIS);</span>
+    }
+<span class="fc" id="L162">  }</span>
+
+  private void countDownIfReady() {
+<span class="fc bfc" id="L165" title="All 2 branches covered.">    if (context.isReady()) {</span>
+<span class="fc" id="L166">      latch.get().countDown();</span>
+    }
+<span class="fc" id="L168">  }</span>
+
+  private CompletableFuture&lt;Void&gt; waitForPeers(final int count) {
+<span class="fc" id="L171">    final WaitForPeersTask waitForPeersTask =</span>
+<span class="fc" id="L172">        WaitForPeersTask.create(context.getEthContext(), count, context.getMetricsSystem());</span>
+<span class="fc" id="L173">    return waitForPeersTask.run();</span>
+  }
+
+  @Override
+  public void onInitialSyncCompleted() {
+<span class="fc" id="L178">    countDownIfReady();</span>
+<span class="fc" id="L179">  }</span>
+
+  @Override
+  public void onInitialSyncRestart() {
+<span class="nc" id="L183">    latch.set(new CountDownLatch(1));</span>
+<span class="nc" id="L184">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieLogManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai.trielog</a> &gt; <span class="el_source">TrieLogManager.java</span></div><h1>TrieLogManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.bonsai.trielog;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.bonsai.worldview.BonsaiWorldStateUpdateAccumulator;
+import org.hyperledger.besu.plugin.BesuContext;
+import org.hyperledger.besu.plugin.services.TrieLogService;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogEvent;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogFactory;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogProvider;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TrieLogManager {
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(TrieLogManager.class);</span>
+  public static final long LOG_RANGE_LIMIT = 1000; // restrict trielog range queries to 1k logs
+  protected final Blockchain blockchain;
+  protected final BonsaiWorldStateKeyValueStorage rootWorldStateStorage;
+
+  protected final long maxLayersToLoad;
+<span class="fc" id="L47">  protected final Subscribers&lt;TrieLogEvent.TrieLogObserver&gt; trieLogObservers = Subscribers.create();</span>
+
+  protected final TrieLogFactory trieLogFactory;
+
+  public TrieLogManager(
+      final Blockchain blockchain,
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final long maxLayersToLoad,
+<span class="fc" id="L55">      final BesuContext pluginContext) {</span>
+<span class="fc" id="L56">    this.blockchain = blockchain;</span>
+<span class="fc" id="L57">    this.rootWorldStateStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L58">    this.maxLayersToLoad = maxLayersToLoad;</span>
+<span class="fc" id="L59">    this.trieLogFactory = setupTrieLogFactory(pluginContext);</span>
+<span class="fc" id="L60">  }</span>
+
+  public synchronized void saveTrieLog(
+      final BonsaiWorldStateUpdateAccumulator localUpdater,
+      final Hash forWorldStateRootHash,
+      final BlockHeader forBlockHeader,
+      final BonsaiWorldState forWorldState) {
+    // do not overwrite a trielog layer that already exists in the database.
+    // if it's only in memory we need to save it
+    // for example, in case of reorg we don't replace a trielog layer
+<span class="fc bfc" id="L70" title="All 2 branches covered.">    if (rootWorldStateStorage.getTrieLog(forBlockHeader.getHash()).isEmpty()) {</span>
+<span class="fc" id="L71">      final BonsaiWorldStateKeyValueStorage.Updater stateUpdater =</span>
+<span class="fc" id="L72">          forWorldState.getWorldStateStorage().updater();</span>
+<span class="fc" id="L73">      boolean success = false;</span>
+      try {
+<span class="fc" id="L75">        final TrieLog trieLog = prepareTrieLog(forBlockHeader, localUpdater);</span>
+<span class="fc" id="L76">        persistTrieLog(forBlockHeader, forWorldStateRootHash, trieLog, stateUpdater);</span>
+
+        // notify trie log added observers, synchronously
+<span class="fc" id="L79">        trieLogObservers.forEach(o -&gt; o.onTrieLogAdded(new TrieLogAddedEvent(trieLog)));</span>
+
+<span class="fc" id="L81">        success = true;</span>
+      } finally {
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">        if (success) {</span>
+<span class="fc" id="L84">          stateUpdater.commit();</span>
+        } else {
+<span class="nc" id="L86">          stateUpdater.rollback();</span>
+        }
+      }
+    }
+<span class="fc" id="L90">  }</span>
+
+  private TrieLog prepareTrieLog(
+      final BlockHeader blockHeader, final BonsaiWorldStateUpdateAccumulator localUpdater) {
+<span class="fc" id="L94">    LOG.atDebug()</span>
+<span class="fc" id="L95">        .setMessage(&quot;Adding layered world state for {}&quot;)</span>
+<span class="fc" id="L96">        .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L97">        .log();</span>
+<span class="fc" id="L98">    final TrieLog trieLog = trieLogFactory.create(localUpdater, blockHeader);</span>
+<span class="fc" id="L99">    trieLog.freeze();</span>
+<span class="fc" id="L100">    return trieLog;</span>
+  }
+
+  private void persistTrieLog(
+      final BlockHeader blockHeader,
+      final Hash worldStateRootHash,
+      final TrieLog trieLog,
+      final BonsaiWorldStateKeyValueStorage.Updater stateUpdater) {
+<span class="fc" id="L108">    LOG.atDebug()</span>
+<span class="fc" id="L109">        .setMessage(&quot;Persisting trie log for block hash {} and world state root {}&quot;)</span>
+<span class="fc" id="L110">        .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L111">        .addArgument(worldStateRootHash::toHexString)</span>
+<span class="fc" id="L112">        .log();</span>
+
+<span class="fc" id="L114">    stateUpdater</span>
+<span class="fc" id="L115">        .getTrieLogStorageTransaction()</span>
+<span class="fc" id="L116">        .put(blockHeader.getHash().toArrayUnsafe(), trieLogFactory.serialize(trieLog));</span>
+<span class="fc" id="L117">  }</span>
+
+  public long getMaxLayersToLoad() {
+<span class="fc" id="L120">    return maxLayersToLoad;</span>
+  }
+
+  public Optional&lt;TrieLog&gt; getTrieLogLayer(final Hash blockHash) {
+<span class="fc" id="L124">    return rootWorldStateStorage.getTrieLog(blockHash).map(trieLogFactory::deserialize);</span>
+  }
+
+  public synchronized long subscribe(final TrieLogEvent.TrieLogObserver sub) {
+<span class="fc" id="L128">    return trieLogObservers.subscribe(sub);</span>
+  }
+
+  public synchronized void unsubscribe(final long id) {
+<span class="nc" id="L132">    trieLogObservers.unsubscribe(id);</span>
+<span class="nc" id="L133">  }</span>
+
+  private TrieLogFactory setupTrieLogFactory(final BesuContext pluginContext) {
+    // if we have a TrieLogService from pluginContext, use it.
+<span class="fc" id="L137">    var trieLogServicez =</span>
+<span class="fc" id="L138">        Optional.ofNullable(pluginContext)</span>
+<span class="pc" id="L139">            .flatMap(context -&gt; context.getService(TrieLogService.class));</span>
+
+<span class="pc bpc" id="L141" title="1 of 2 branches missed.">    if (trieLogServicez.isPresent()) {</span>
+<span class="nc" id="L142">      var trieLogService = trieLogServicez.get();</span>
+      // push the TrieLogProvider into the TrieLogService
+<span class="nc" id="L144">      trieLogService.configureTrieLogProvider(getTrieLogProvider());</span>
+
+      // configure plugin observers:
+<span class="nc" id="L147">      trieLogService.getObservers().forEach(trieLogObservers::subscribe);</span>
+
+      // return the TrieLogFactory implementation from the TrieLogService
+<span class="nc" id="L150">      return trieLogService.getTrieLogFactory();</span>
+    } else {
+      // Otherwise default to TrieLogFactoryImpl
+<span class="fc" id="L153">      return new TrieLogFactoryImpl();</span>
+    }
+  }
+
+  private TrieLogProvider getTrieLogProvider() {
+<span class="nc" id="L158">    return new TrieLogProvider() {</span>
+      @Override
+      public Optional&lt;TrieLog&gt; getTrieLogLayer(final Hash blockHash) {
+<span class="nc" id="L161">        return TrieLogManager.this.getTrieLogLayer(blockHash);</span>
+      }
+
+      @Override
+      public Optional&lt;TrieLog&gt; getTrieLogLayer(final long blockNumber) {
+<span class="nc" id="L166">        return TrieLogManager.this</span>
+            .blockchain
+<span class="nc" id="L168">            .getBlockHeader(blockNumber)</span>
+<span class="nc" id="L169">            .map(BlockHeader::getHash)</span>
+<span class="nc" id="L170">            .flatMap(TrieLogManager.this::getTrieLogLayer);</span>
+      }
+
+      @Override
+      public List&lt;TrieLogRangeTuple&gt; getTrieLogsByRange(
+          final long fromBlockNumber, final long toBlockNumber) {
+<span class="nc" id="L176">        return rangeAsStream(fromBlockNumber, toBlockNumber)</span>
+<span class="nc" id="L177">            .map(blockchain::getBlockHeader)</span>
+<span class="nc" id="L178">            .map(</span>
+                headerOpt -&gt;
+<span class="nc" id="L180">                    headerOpt.flatMap(</span>
+                        header -&gt;
+<span class="nc" id="L182">                            TrieLogManager.this</span>
+<span class="nc" id="L183">                                .getTrieLogLayer(header.getBlockHash())</span>
+<span class="nc" id="L184">                                .map(</span>
+                                    layer -&gt;
+<span class="nc" id="L186">                                        new TrieLogRangeTuple(</span>
+<span class="nc" id="L187">                                            header.getBlockHash(), header.getNumber(), layer))))</span>
+<span class="nc" id="L188">            .filter(Optional::isPresent)</span>
+<span class="nc" id="L189">            .map(Optional::get)</span>
+<span class="nc" id="L190">            .toList();</span>
+      }
+
+      Stream&lt;Long&gt; rangeAsStream(final long fromBlockNumber, final long toBlockNumber) {
+<span class="nc bnc" id="L194" title="All 2 branches missed.">        if (Math.abs(toBlockNumber - fromBlockNumber) &gt; LOG_RANGE_LIMIT) {</span>
+<span class="nc" id="L195">          throw new IllegalArgumentException(&quot;Requested Range too large&quot;);</span>
+        }
+<span class="nc" id="L197">        long left = Math.min(fromBlockNumber, toBlockNumber);</span>
+<span class="nc" id="L198">        long right = Math.max(fromBlockNumber, toBlockNumber);</span>
+<span class="nc" id="L199">        return LongStream.range(left, right).boxed();</span>
+      }
+    };
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

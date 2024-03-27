@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FutureMessageBuffer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.common.bft.statemachine</a> &gt; <span class="el_source">FutureMessageBuffer.java</span></div><h1>FutureMessageBuffer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.common.bft.statemachine;
+
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+
+import com.google.common.annotations.VisibleForTesting;
+
+/**
+ * Buffer which holds future IBFT messages.
+ *
+ * &lt;p&gt;This buffer only allows messages to be added which have a chain height greater than current
+ * height and up to chain futureMessagesMaxDistance from the current chain height.
+ *
+ * &lt;p&gt;When the total number of messages is greater futureMessagesLimit then messages are evicted.
+ *
+ * &lt;p&gt;If there is more than one height in the buffer then all messages for the highest chain height
+ * are removed. Otherwise if there is only one height the oldest inserted message is removed.
+ */
+public class FutureMessageBuffer {
+<span class="fc" id="L39">  private final NavigableMap&lt;Long, List&lt;Message&gt;&gt; buffer = new TreeMap&lt;&gt;();</span>
+  private final long futureMessagesMaxDistance;
+  private final long futureMessagesLimit;
+  private long chainHeight;
+
+  /**
+   * Instantiates a new Future message buffer.
+   *
+   * @param futureMessagesMaxDistance the future messages max distance
+   * @param futureMessagesLimit the future messages limit
+   * @param chainHeight the chain height
+   */
+  public FutureMessageBuffer(
+      final long futureMessagesMaxDistance,
+      final long futureMessagesLimit,
+<span class="fc" id="L54">      final long chainHeight) {</span>
+<span class="fc" id="L55">    this.futureMessagesMaxDistance = futureMessagesMaxDistance;</span>
+<span class="fc" id="L56">    this.futureMessagesLimit = futureMessagesLimit;</span>
+<span class="fc" id="L57">    this.chainHeight = chainHeight;</span>
+<span class="fc" id="L58">  }</span>
+
+  /**
+   * Add message.
+   *
+   * @param msgChainHeight the msg chain height
+   * @param rawMsg the raw msg
+   */
+  public void addMessage(final long msgChainHeight, final Message rawMsg) {
+<span class="fc bfc" id="L67" title="All 4 branches covered.">    if (futureMessagesLimit == 0 || !validMessageHeight(msgChainHeight, chainHeight)) {</span>
+<span class="fc" id="L68">      return;</span>
+    }
+
+<span class="fc" id="L71">    addMessageToBuffer(msgChainHeight, rawMsg);</span>
+
+<span class="fc bfc" id="L73" title="All 2 branches covered.">    if (totalMessagesSize() &gt; futureMessagesLimit) {</span>
+<span class="fc" id="L74">      evictMessages();</span>
+    }
+<span class="fc" id="L76">  }</span>
+
+  private void addMessageToBuffer(final long msgChainHeight, final Message rawMsg) {
+<span class="fc" id="L79">    buffer.putIfAbsent(msgChainHeight, new ArrayList&lt;&gt;());</span>
+<span class="fc" id="L80">    buffer.get(msgChainHeight).add(rawMsg);</span>
+<span class="fc" id="L81">  }</span>
+
+  private boolean validMessageHeight(final long msgChainHeight, final long currentHeight) {
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    final boolean isFutureMsg = msgChainHeight &gt; currentHeight;</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    final boolean withinMaxChainHeight =</span>
+        msgChainHeight &lt;= currentHeight + futureMessagesMaxDistance;
+<span class="fc bfc" id="L87" title="All 4 branches covered.">    return isFutureMsg &amp;&amp; withinMaxChainHeight;</span>
+  }
+
+  private void evictMessages() {
+<span class="fc bfc" id="L91" title="All 2 branches covered.">    if (buffer.size() &gt; 1) {</span>
+<span class="fc" id="L92">      buffer.remove(buffer.lastKey());</span>
+<span class="pc bpc" id="L93" title="1 of 2 branches missed.">    } else if (buffer.size() == 1) {</span>
+<span class="fc" id="L94">      List&lt;Message&gt; messages = buffer.firstEntry().getValue();</span>
+<span class="fc" id="L95">      messages.remove(0);</span>
+    }
+<span class="fc" id="L97">  }</span>
+
+  /**
+   * Retrieve messages for height.
+   *
+   * @param height the height
+   * @return the list
+   */
+  public List&lt;Message&gt; retrieveMessagesForHeight(final long height) {
+<span class="fc" id="L106">    chainHeight = height;</span>
+<span class="fc" id="L107">    final List&lt;Message&gt; messages = buffer.getOrDefault(height, Collections.emptyList());</span>
+<span class="fc" id="L108">    discardPreviousHeightMessages();</span>
+<span class="fc" id="L109">    return messages;</span>
+  }
+
+  private void discardPreviousHeightMessages() {
+<span class="fc bfc" id="L113" title="All 2 branches covered.">    if (!buffer.isEmpty()) {</span>
+<span class="fc bfc" id="L114" title="All 2 branches covered.">      for (long h = buffer.firstKey(); h &lt;= chainHeight; h++) {</span>
+<span class="fc" id="L115">        buffer.remove(h);</span>
+      }
+    }
+<span class="fc" id="L118">  }</span>
+
+  /**
+   * Total messages size.
+   *
+   * @return the long
+   */
+  @VisibleForTesting
+  long totalMessagesSize() {
+<span class="fc" id="L127">    return buffer.values().stream().map(List::size).reduce(0, Integer::sum).longValue();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

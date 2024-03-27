@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionSelectionResults.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation.txselection</a> &gt; <span class="el_source">TransactionSelectionResults.java</span></div><h1>TransactionSelectionResults.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation.txselection;
+
+import org.hyperledger.besu.datatypes.TransactionType;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.plugin.data.TransactionSelectionResult;
+
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="fc" id="L35">public class TransactionSelectionResults {</span>
+<span class="fc" id="L36">  private static final Logger LOG = LoggerFactory.getLogger(TransactionSelectionResults.class);</span>
+
+<span class="fc" id="L38">  private final List&lt;Transaction&gt; selectedTransactions = Lists.newArrayList();</span>
+<span class="fc" id="L39">  private final Map&lt;TransactionType, List&lt;Transaction&gt;&gt; transactionsByType =</span>
+      new EnumMap&lt;&gt;(TransactionType.class);
+<span class="fc" id="L41">  private final List&lt;TransactionReceipt&gt; receipts = Lists.newArrayList();</span>
+  /**
+   * Access to this field needs to be guarded, since it is possible to read it while another
+   * processing thread is writing, when the selection time is over.
+   */
+<span class="fc" id="L46">  private final Map&lt;Transaction, TransactionSelectionResult&gt; notSelectedTransactions =</span>
+      new ConcurrentHashMap&lt;&gt;();
+
+<span class="fc" id="L49">  private long cumulativeGasUsed = 0;</span>
+<span class="fc" id="L50">  private long cumulativeBlobGasUsed = 0;</span>
+
+  void updateSelected(
+      final Transaction transaction,
+      final TransactionReceipt receipt,
+      final long gasUsed,
+      final long blobGasUsed) {
+<span class="fc" id="L57">    selectedTransactions.add(transaction);</span>
+<span class="fc" id="L58">    transactionsByType</span>
+<span class="fc" id="L59">        .computeIfAbsent(transaction.getType(), type -&gt; new ArrayList&lt;&gt;())</span>
+<span class="fc" id="L60">        .add(transaction);</span>
+<span class="fc" id="L61">    receipts.add(receipt);</span>
+<span class="fc" id="L62">    cumulativeGasUsed += gasUsed;</span>
+<span class="fc" id="L63">    cumulativeBlobGasUsed += blobGasUsed;</span>
+<span class="fc" id="L64">    LOG.atTrace()</span>
+<span class="fc" id="L65">        .setMessage(</span>
+            &quot;New selected transaction {}, total transactions {}, cumulative gas used {}, cumulative blob gas used {}&quot;)
+<span class="fc" id="L67">        .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L68">        .addArgument(selectedTransactions::size)</span>
+<span class="fc" id="L69">        .addArgument(cumulativeGasUsed)</span>
+<span class="fc" id="L70">        .addArgument(cumulativeBlobGasUsed)</span>
+<span class="fc" id="L71">        .log();</span>
+<span class="fc" id="L72">  }</span>
+
+  public void updateNotSelected(
+      final Transaction transaction, final TransactionSelectionResult res) {
+<span class="fc" id="L76">    notSelectedTransactions.put(transaction, res);</span>
+<span class="fc" id="L77">  }</span>
+
+  public List&lt;Transaction&gt; getSelectedTransactions() {
+<span class="fc" id="L80">    return selectedTransactions;</span>
+  }
+
+  public List&lt;Transaction&gt; getTransactionsByType(final TransactionType type) {
+<span class="nc" id="L84">    return transactionsByType.getOrDefault(type, List.of());</span>
+  }
+
+  public List&lt;TransactionReceipt&gt; getReceipts() {
+<span class="fc" id="L88">    return receipts;</span>
+  }
+
+  public long getCumulativeGasUsed() {
+<span class="fc" id="L92">    return cumulativeGasUsed;</span>
+  }
+
+  public long getCumulativeBlobGasUsed() {
+<span class="fc" id="L96">    return cumulativeBlobGasUsed;</span>
+  }
+
+  public Map&lt;Transaction, TransactionSelectionResult&gt; getNotSelectedTransactions() {
+<span class="fc" id="L100">    return Map.copyOf(notSelectedTransactions);</span>
+  }
+
+  public void logSelectionStats() {
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">    if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L105">      final var notSelectedTxs = getNotSelectedTransactions();</span>
+<span class="nc" id="L106">      final Map&lt;TransactionSelectionResult, Long&gt; notSelectedStats =</span>
+<span class="nc" id="L107">          notSelectedTxs.values().stream()</span>
+<span class="nc" id="L108">              .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));</span>
+
+<span class="nc" id="L110">      LOG.debug(</span>
+          &quot;Selection stats: Totals[Evaluated={}, Selected={}, NotSelected={}, Discarded={}]; Detailed[{}]&quot;,
+<span class="nc" id="L112">          selectedTransactions.size() + notSelectedTxs.size(),</span>
+<span class="nc" id="L113">          selectedTransactions.size(),</span>
+<span class="nc" id="L114">          notSelectedTxs.size(),</span>
+<span class="nc" id="L115">          notSelectedStats.entrySet().stream()</span>
+<span class="nc" id="L116">              .filter(e -&gt; e.getKey().discard())</span>
+<span class="nc" id="L117">              .map(Map.Entry::getValue)</span>
+<span class="nc" id="L118">              .mapToInt(Long::intValue)</span>
+<span class="nc" id="L119">              .sum(),</span>
+<span class="nc" id="L120">          notSelectedStats.entrySet().stream()</span>
+<span class="nc" id="L121">              .map(e -&gt; e.getKey().toString() + &quot;=&quot; + e.getValue())</span>
+<span class="nc" id="L122">              .sorted()</span>
+<span class="nc" id="L123">              .collect(Collectors.joining(&quot;, &quot;)));</span>
+    }
+<span class="fc" id="L125">  }</span>
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">    if (this == o) {</span>
+<span class="nc" id="L130">      return true;</span>
+    }
+<span class="pc bpc" id="L132" title="2 of 4 branches missed.">    if (o == null || getClass() != o.getClass()) {</span>
+<span class="nc" id="L133">      return false;</span>
+    }
+<span class="fc" id="L135">    TransactionSelectionResults that = (TransactionSelectionResults) o;</span>
+<span class="pc bpc" id="L136" title="2 of 4 branches missed.">    return cumulativeGasUsed == that.cumulativeGasUsed</span>
+        &amp;&amp; cumulativeBlobGasUsed == that.cumulativeBlobGasUsed
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">        &amp;&amp; selectedTransactions.equals(that.selectedTransactions)</span>
+<span class="pc bpc" id="L139" title="1 of 2 branches missed.">        &amp;&amp; notSelectedTransactions.equals(that.notSelectedTransactions)</span>
+<span class="pc bpc" id="L140" title="1 of 2 branches missed.">        &amp;&amp; receipts.equals(that.receipts);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="nc" id="L145">    return Objects.hash(</span>
+        selectedTransactions,
+        notSelectedTransactions,
+        receipts,
+<span class="nc" id="L149">        cumulativeGasUsed,</span>
+<span class="nc" id="L150">        cumulativeBlobGasUsed);</span>
+  }
+
+  public String toTraceLog() {
+<span class="nc" id="L154">    return &quot;cumulativeGasUsed=&quot;</span>
+        + cumulativeGasUsed
+        + &quot;, cumulativeBlobGasUsed=&quot;
+        + cumulativeBlobGasUsed
+        + &quot;, selectedTransactions=&quot;
+<span class="nc" id="L159">        + selectedTransactions.stream()</span>
+<span class="nc" id="L160">            .map(Transaction::toTraceLog)</span>
+<span class="nc" id="L161">            .collect(Collectors.joining(&quot;; &quot;))</span>
+        + &quot;, notSelectedTransactions=&quot;
+<span class="nc" id="L163">        + notSelectedTransactions.entrySet().stream()</span>
+<span class="nc" id="L164">            .map(e -&gt; e.getValue() + &quot;:&quot; + e.getKey().toTraceLog())</span>
+<span class="nc" id="L165">            .collect(Collectors.joining(&quot;;&quot;));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

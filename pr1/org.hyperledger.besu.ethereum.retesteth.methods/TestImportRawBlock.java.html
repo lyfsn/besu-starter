@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TestImportRawBlock.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.retesteth.methods</a> &gt; <span class="el_source">TestImportRawBlock.java</span></div><h1>TestImportRawBlock.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.retesteth.methods;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.mainnet.BlockImportResult;
+import org.hyperledger.besu.ethereum.retesteth.RetestethContext;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.util.Collections;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TestImportRawBlock implements JsonRpcMethod {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(TestImportRawBlock.class);</span>
+
+  public static final String METHOD_NAME = &quot;test_importRawBlock&quot;;
+
+  private final RetestethContext context;
+
+<span class="fc" id="L44">  public TestImportRawBlock(final RetestethContext context) {</span>
+<span class="fc" id="L45">    this.context = context;</span>
+<span class="fc" id="L46">  }</span>
+
+  @Override
+  public String getName() {
+<span class="nc" id="L50">    return METHOD_NAME;</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L55">    final String input = requestContext.getRequiredParameter(0, String.class);</span>
+<span class="fc" id="L56">    final ProtocolContext protocolContext = this.context.getProtocolContext();</span>
+
+    final Block block;
+    try {
+<span class="fc" id="L60">      block =</span>
+<span class="fc" id="L61">          Block.readFrom(RLP.input(Bytes.fromHexString(input)), context.getBlockHeaderFunctions());</span>
+<span class="fc" id="L62">    } catch (final RLPException | IllegalArgumentException e) {</span>
+<span class="fc" id="L63">      LOG.debug(&quot;Failed to parse block RLP&quot;, e);</span>
+<span class="fc" id="L64">      return new JsonRpcErrorResponse(</span>
+<span class="fc" id="L65">          requestContext.getRequest().getId(), RpcErrorType.BLOCK_RLP_IMPORT_ERROR);</span>
+<span class="fc" id="L66">    }</span>
+
+    // retesteth expects test_rawImportBlock to not only import the block, but append it to head
+<span class="fc bfc" id="L69" title="All 2 branches covered.">    if (context.getBlockchain().contains(block.getHash())) {</span>
+      // if we already have the block but it is not head, append it:
+<span class="fc" id="L71">      context</span>
+<span class="fc" id="L72">          .getBlockchain()</span>
+<span class="fc" id="L73">          .appendBlock(</span>
+              block,
+              context
+<span class="fc" id="L76">                  .getBlockchain()</span>
+<span class="fc" id="L77">                  .getTxReceipts(block.getHash())</span>
+<span class="fc" id="L78">                  .orElse(Collections.emptyList()));</span>
+    } else {
+      // otherwise attempt to import the block
+<span class="fc" id="L81">      final BlockImporter blockImporter =</span>
+<span class="fc" id="L82">          context.getProtocolSpec(block.getHeader()).getBlockImporter();</span>
+<span class="fc" id="L83">      final BlockImportResult result =</span>
+<span class="fc" id="L84">          blockImporter.importBlock(</span>
+              protocolContext,
+              block,
+<span class="fc" id="L87">              context.getHeaderValidationMode(),</span>
+<span class="fc" id="L88">              context.getHeaderValidationMode());</span>
+<span class="fc bfc" id="L89" title="All 2 branches covered.">      if (!result.isImported()) {</span>
+<span class="fc" id="L90">        LOG.debug(&quot;Failed to import block.&quot;);</span>
+<span class="fc" id="L91">        return new JsonRpcErrorResponse(</span>
+<span class="fc" id="L92">            requestContext.getRequest().getId(), RpcErrorType.BLOCK_IMPORT_ERROR);</span>
+      }
+    }
+    // return success on append or import
+<span class="fc" id="L96">    return new JsonRpcSuccessResponse(</span>
+<span class="fc" id="L97">        requestContext.getRequest().getId(), block.getHash().toString());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

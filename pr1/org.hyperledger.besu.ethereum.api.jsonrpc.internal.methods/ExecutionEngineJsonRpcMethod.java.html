@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExecutionEngineJsonRpcMethod.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">ExecutionEngineJsonRpcMethod.java</span></div><h1>ExecutionEngineJsonRpcMethod.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import org.hyperledger.besu.consensus.merge.MergeContext;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.engine.EngineCallListener;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Supplier;
+
+import io.vertx.core.Vertx;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class ExecutionEngineJsonRpcMethod implements JsonRpcMethod {
+<span class="fc" id="L37">  public enum EngineStatus {</span>
+<span class="fc" id="L38">    VALID,</span>
+<span class="fc" id="L39">    INVALID,</span>
+<span class="fc" id="L40">    SYNCING,</span>
+<span class="fc" id="L41">    ACCEPTED,</span>
+<span class="fc" id="L42">    INVALID_BLOCK_HASH;</span>
+  }
+
+  public static final long ENGINE_API_LOGGING_THRESHOLD = 60000L;
+  private final Vertx syncVertx;
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(ExecutionEngineJsonRpcMethod.class);</span>
+  protected final Optional&lt;MergeContext&gt; mergeContextOptional;
+  protected final Supplier&lt;MergeContext&gt; mergeContext;
+  protected final Optional&lt;ProtocolSchedule&gt; protocolSchedule;
+  protected final ProtocolContext protocolContext;
+  protected final EngineCallListener engineCallListener;
+
+  protected ExecutionEngineJsonRpcMethod(
+      final Vertx vertx,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+<span class="fc" id="L58">      final EngineCallListener engineCallListener) {</span>
+<span class="fc" id="L59">    this.syncVertx = vertx;</span>
+<span class="fc" id="L60">    this.protocolSchedule = Optional.of(protocolSchedule);</span>
+<span class="fc" id="L61">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L62">    this.mergeContextOptional = protocolContext.safeConsensusContext(MergeContext.class);</span>
+<span class="fc" id="L63">    this.mergeContext = mergeContextOptional::orElseThrow;</span>
+<span class="fc" id="L64">    this.engineCallListener = engineCallListener;</span>
+<span class="fc" id="L65">  }</span>
+
+  protected ExecutionEngineJsonRpcMethod(
+      final Vertx vertx,
+      final ProtocolContext protocolContext,
+<span class="fc" id="L70">      final EngineCallListener engineCallListener) {</span>
+<span class="fc" id="L71">    this.syncVertx = vertx;</span>
+<span class="fc" id="L72">    this.protocolSchedule = Optional.empty();</span>
+<span class="fc" id="L73">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L74">    this.mergeContextOptional = protocolContext.safeConsensusContext(MergeContext.class);</span>
+<span class="fc" id="L75">    this.mergeContext = mergeContextOptional::orElseThrow;</span>
+<span class="fc" id="L76">    this.engineCallListener = engineCallListener;</span>
+<span class="fc" id="L77">  }</span>
+
+  @Override
+  public final JsonRpcResponse response(final JsonRpcRequestContext request) {
+
+<span class="fc" id="L82">    final CompletableFuture&lt;JsonRpcResponse&gt; cf = new CompletableFuture&lt;&gt;();</span>
+
+<span class="fc" id="L84">    syncVertx.&lt;JsonRpcResponse&gt;executeBlocking(</span>
+        z -&gt; {
+<span class="fc" id="L86">          LOG.trace(</span>
+              &quot;execution engine JSON-RPC request {} {}&quot;,
+<span class="fc" id="L88">              this.getName(),</span>
+<span class="fc" id="L89">              request.getRequest().getParams());</span>
+<span class="fc" id="L90">          z.tryComplete(syncResponse(request));</span>
+<span class="fc" id="L91">        },</span>
+        true,
+        resp -&gt;
+<span class="fc" id="L94">            cf.complete(</span>
+<span class="fc" id="L95">                resp.otherwise(</span>
+                        t -&gt; {
+<span class="pc bpc" id="L97" title="1 of 2 branches missed.">                          if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L98">                            LOG.atDebug()</span>
+<span class="nc" id="L99">                                .setMessage(&quot;failed to exec consensus method {}&quot;)</span>
+<span class="nc" id="L100">                                .addArgument(this.getName())</span>
+<span class="nc" id="L101">                                .setCause(t)</span>
+<span class="nc" id="L102">                                .log();</span>
+                          } else {
+<span class="fc" id="L104">                            LOG.atError()</span>
+<span class="fc" id="L105">                                .setMessage(&quot;failed to exec consensus method {}, error: {}&quot;)</span>
+<span class="fc" id="L106">                                .addArgument(this.getName())</span>
+<span class="fc" id="L107">                                .addArgument(t.getMessage())</span>
+<span class="fc" id="L108">                                .log();</span>
+                          }
+<span class="fc" id="L110">                          return new JsonRpcErrorResponse(</span>
+<span class="fc" id="L111">                              request.getRequest().getId(), RpcErrorType.INVALID_REQUEST);</span>
+                        })
+<span class="fc" id="L113">                    .result()));</span>
+    try {
+<span class="fc" id="L115">      return cf.get();</span>
+<span class="nc" id="L116">    } catch (InterruptedException e) {</span>
+<span class="nc" id="L117">      LOG.error(&quot;Failed to get execution engine response&quot;, e);</span>
+<span class="nc" id="L118">      return new JsonRpcErrorResponse(request.getRequest().getId(), RpcErrorType.TIMEOUT_ERROR);</span>
+<span class="nc" id="L119">    } catch (ExecutionException e) {</span>
+<span class="nc" id="L120">      LOG.error(&quot;Failed to get execution engine response&quot;, e);</span>
+<span class="nc" id="L121">      return new JsonRpcErrorResponse(request.getRequest().getId(), RpcErrorType.INTERNAL_ERROR);</span>
+    }
+  }
+
+  public abstract JsonRpcResponse syncResponse(final JsonRpcRequestContext request);
+
+  protected ValidationResult&lt;RpcErrorType&gt; validateForkSupported(final long blockTimestamp) {
+<span class="fc" id="L128">    return ValidationResult.valid();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

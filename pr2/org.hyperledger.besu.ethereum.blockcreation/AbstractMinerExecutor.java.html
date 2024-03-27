@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractMinerExecutor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation</a> &gt; <span class="el_source">AbstractMinerExecutor.java</span></div><h1>AbstractMinerExecutor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.MinedBlockObserver;
+import org.hyperledger.besu.ethereum.chain.PoWObserver;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.AbstractGasLimitSpecification;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractMinerExecutor&lt;M extends BlockMiner&lt;? extends AbstractBlockCreator&gt;&gt; {
+
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(AbstractMinerExecutor.class);</span>
+
+<span class="fc" id="L45">  private final ExecutorService executorService =</span>
+<span class="pc" id="L46">      Executors.newCachedThreadPool(r -&gt; new Thread(r, &quot;MinerExecutor&quot;));</span>
+  protected final ProtocolContext protocolContext;
+  protected final ProtocolSchedule protocolSchedule;
+  protected final TransactionPool transactionPool;
+  protected final AbstractBlockScheduler blockScheduler;
+  protected final MiningParameters miningParameters;
+  protected final EthScheduler ethScheduler;
+<span class="fc" id="L53">  private final AtomicBoolean stopped = new AtomicBoolean(false);</span>
+
+  protected AbstractMinerExecutor(
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParams,
+      final AbstractBlockScheduler blockScheduler,
+<span class="fc" id="L61">      final EthScheduler ethScheduler) {</span>
+<span class="fc" id="L62">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L63">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L64">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L65">    this.blockScheduler = blockScheduler;</span>
+<span class="fc" id="L66">    this.miningParameters = miningParams;</span>
+<span class="fc" id="L67">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L68">  }</span>
+
+  public Optional&lt;M&gt; startAsyncMining(
+      final Subscribers&lt;MinedBlockObserver&gt; observers,
+      final Subscribers&lt;PoWObserver&gt; ethHashObservers,
+      final BlockHeader parentHeader) {
+    try {
+<span class="nc" id="L75">      final M currentRunningMiner = createMiner(observers, ethHashObservers, parentHeader);</span>
+<span class="nc" id="L76">      executorService.execute(currentRunningMiner);</span>
+<span class="nc" id="L77">      return Optional.of(currentRunningMiner);</span>
+<span class="nc" id="L78">    } catch (RejectedExecutionException e) {</span>
+<span class="nc" id="L79">      LOG.warn(&quot;Unable to start mining.&quot;, e);</span>
+<span class="nc" id="L80">      return Optional.empty();</span>
+    }
+  }
+
+  public void shutDown() {
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">    if (stopped.compareAndSet(false, true)) {</span>
+<span class="fc" id="L86">      executorService.shutdownNow();</span>
+    }
+<span class="fc" id="L88">  }</span>
+
+  public void awaitShutdown() throws InterruptedException {
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">    if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L92">      LOG.error(&quot;Failed to shutdown {}.&quot;, this.getClass().getSimpleName());</span>
+    }
+<span class="fc" id="L94">  }</span>
+
+  public abstract M createMiner(
+      final Subscribers&lt;MinedBlockObserver&gt; subscribers,
+      final Subscribers&lt;PoWObserver&gt; ethHashObservers,
+      final BlockHeader parentHeader);
+
+  public void setExtraData(final Bytes extraData) {
+<span class="fc" id="L102">    miningParameters.setExtraData(extraData.copy());</span>
+<span class="fc" id="L103">  }</span>
+
+  public void setMinTransactionGasPrice(final Wei minTransactionGasPrice) {
+<span class="nc" id="L106">    miningParameters.setMinTransactionGasPrice(minTransactionGasPrice);</span>
+<span class="nc" id="L107">  }</span>
+
+  public Wei getMinTransactionGasPrice() {
+<span class="nc" id="L110">    return miningParameters.getMinTransactionGasPrice();</span>
+  }
+
+  public Wei getMinPriorityFeePerGas() {
+<span class="nc" id="L114">    return miningParameters.getMinPriorityFeePerGas();</span>
+  }
+
+  public abstract Optional&lt;Address&gt; getCoinbase();
+
+  public void changeTargetGasLimit(final Long newTargetGasLimit) {
+<span class="nc bnc" id="L120" title="All 2 branches missed.">    if (AbstractGasLimitSpecification.isValidTargetGasLimit(newTargetGasLimit)) {</span>
+    } else {
+<span class="nc" id="L122">      throw new UnsupportedOperationException(&quot;Specified target gas limit is invalid&quot;);</span>
+    }
+<span class="nc" id="L124">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

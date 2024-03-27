@@ -1,0 +1,463 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RocksDBColumnarKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb.segmented</a> &gt; <span class="el_source">RocksDBColumnarKeyValueStorage.java</span></div><h1>RocksDBColumnarKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors..
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb.segmented;
+
+import static java.util.stream.Collectors.toUnmodifiableSet;
+
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.metrics.OperationTimer;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDBMetrics;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDBMetricsFactory;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDbIterator;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDbSegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDbUtil;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.configuration.RocksDBConfiguration;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.base.Splitter;
+import com.google.common.collect.Streams;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.rocksdb.AbstractRocksIterator;
+import org.rocksdb.BlockBasedTableConfig;
+import org.rocksdb.BloomFilter;
+import org.rocksdb.ColumnFamilyDescriptor;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.ColumnFamilyOptions;
+import org.rocksdb.CompressionType;
+import org.rocksdb.DBOptions;
+import org.rocksdb.Env;
+import org.rocksdb.LRUCache;
+import org.rocksdb.Options;
+import org.rocksdb.ReadOptions;
+import org.rocksdb.RocksDB;
+import org.rocksdb.RocksDBException;
+import org.rocksdb.RocksIterator;
+import org.rocksdb.Statistics;
+import org.rocksdb.Status;
+import org.rocksdb.TransactionDBOptions;
+import org.rocksdb.WriteOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The RocksDb columnar key value storage. */
+public abstract class RocksDBColumnarKeyValueStorage implements SegmentedKeyValueStorage {
+
+<span class="fc" id="L72">  private static final Logger LOG = LoggerFactory.getLogger(RocksDBColumnarKeyValueStorage.class);</span>
+  private static final int ROCKSDB_FORMAT_VERSION = 5;
+  private static final long ROCKSDB_BLOCK_SIZE = 32768;
+  /** RocksDb blockcache size when using the high spec option */
+  protected static final long ROCKSDB_BLOCKCACHE_SIZE_HIGH_SPEC = 1_073_741_824L;
+  /** RocksDb memtable size when using the high spec option */
+  protected static final long ROCKSDB_MEMTABLE_SIZE_HIGH_SPEC = 536_870_912L;
+  /** Max total size of all WAL file, after which a flush is triggered */
+  protected static final long WAL_MAX_TOTAL_SIZE = 1_073_741_824L;
+  /** Expected size of a single WAL file, to determine how many WAL files to keep around */
+  protected static final long EXPECTED_WAL_FILE_SIZE = 67_108_864L;
+  /** RocksDb number of log files to keep on disk */
+  private static final long NUMBER_OF_LOG_FILES_TO_KEEP = 7;
+  /** RocksDb Time to roll a log file (1 day = 3600 * 24 seconds) */
+  private static final long TIME_TO_ROLL_LOG_FILE = 86_400L;
+
+  static {
+<span class="fc" id="L89">    RocksDbUtil.loadNativeLibrary();</span>
+<span class="fc" id="L90">  }</span>
+
+  /** atomic boolean to track if the storage is closed */
+<span class="fc" id="L93">  protected final AtomicBoolean closed = new AtomicBoolean(false);</span>
+
+<span class="fc" id="L95">  private final WriteOptions tryDeleteOptions =</span>
+<span class="fc" id="L96">      new WriteOptions().setNoSlowdown(true).setIgnoreMissingColumnFamilies(true);</span>
+<span class="fc" id="L97">  private final ReadOptions readOptions = new ReadOptions().setVerifyChecksums(false);</span>
+  private final MetricsSystem metricsSystem;
+  private final RocksDBMetricsFactory rocksDBMetricsFactory;
+  private final RocksDBConfiguration configuration;
+  /** RocksDB DB options */
+  protected DBOptions options;
+
+  /** RocksDb transactionDB options */
+  protected TransactionDBOptions txOptions;
+  /** RocksDb statistics */
+<span class="fc" id="L107">  protected final Statistics stats = new Statistics();</span>
+
+  /** RocksDB metrics */
+  protected RocksDBMetrics metrics;
+
+  /** Map of the columns handles by name */
+  protected Map&lt;SegmentIdentifier, RocksDbSegmentIdentifier&gt; columnHandlesBySegmentIdentifier;
+  /** Column descriptors */
+  protected List&lt;ColumnFamilyDescriptor&gt; columnDescriptors;
+  /** Column handles */
+  protected List&lt;ColumnFamilyHandle&gt; columnHandles;
+
+  /** Trimmed segments */
+  protected List&lt;SegmentIdentifier&gt; trimmedSegments;
+
+  /**
+   * Instantiates a new Rocks db columnar key value storage.
+   *
+   * @param configuration the configuration
+   * @param defaultSegments the segments
+   * @param ignorableSegments the ignorable segments
+   * @param metricsSystem the metrics system
+   * @param rocksDBMetricsFactory the rocks db metrics factory
+   * @throws StorageException the storage exception
+   */
+  public RocksDBColumnarKeyValueStorage(
+      final RocksDBConfiguration configuration,
+      final List&lt;SegmentIdentifier&gt; defaultSegments,
+      final List&lt;SegmentIdentifier&gt; ignorableSegments,
+      final MetricsSystem metricsSystem,
+      final RocksDBMetricsFactory rocksDBMetricsFactory)
+<span class="fc" id="L138">      throws StorageException {</span>
+
+<span class="fc" id="L140">    this.configuration = configuration;</span>
+<span class="fc" id="L141">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L142">    this.rocksDBMetricsFactory = rocksDBMetricsFactory;</span>
+
+    try {
+<span class="fc" id="L145">      trimmedSegments = new ArrayList&lt;&gt;(defaultSegments);</span>
+<span class="fc" id="L146">      final List&lt;byte[]&gt; existingColumnFamilies =</span>
+<span class="fc" id="L147">          RocksDB.listColumnFamilies(new Options(), configuration.getDatabaseDir().toString());</span>
+      // Only ignore if not existed currently
+<span class="fc" id="L149">      ignorableSegments.stream()</span>
+<span class="fc" id="L150">          .filter(</span>
+              ignorableSegment -&gt;
+<span class="fc" id="L152">                  existingColumnFamilies.stream()</span>
+<span class="fc" id="L153">                      .noneMatch(existed -&gt; Arrays.equals(existed, ignorableSegment.getId())))</span>
+<span class="fc" id="L154">          .forEach(trimmedSegments::remove);</span>
+<span class="fc" id="L155">      columnDescriptors =</span>
+<span class="fc" id="L156">          trimmedSegments.stream()</span>
+<span class="fc" id="L157">              .map(segment -&gt; createColumnDescriptor(segment, configuration))</span>
+<span class="fc" id="L158">              .collect(Collectors.toList());</span>
+
+<span class="fc" id="L160">      setGlobalOptions(configuration, stats);</span>
+
+<span class="fc" id="L162">      txOptions = new TransactionDBOptions();</span>
+<span class="fc" id="L163">      columnHandles = new ArrayList&lt;&gt;(columnDescriptors.size());</span>
+<span class="nc" id="L164">    } catch (RocksDBException e) {</span>
+<span class="nc" id="L165">      throw parseRocksDBException(e, defaultSegments, ignorableSegments);</span>
+<span class="fc" id="L166">    }</span>
+<span class="fc" id="L167">  }</span>
+
+  /**
+   * Create a Column Family Descriptor for a given segment It defines basically the different
+   * options to apply to the corresponding Column Family
+   *
+   * @param segment the segment identifier
+   * @param configuration RocksDB configuration
+   * @return a column family descriptor
+   */
+  private ColumnFamilyDescriptor createColumnDescriptor(
+      final SegmentIdentifier segment, final RocksDBConfiguration configuration) {
+
+<span class="fc" id="L180">    BlockBasedTableConfig basedTableConfig = createBlockBasedTableConfig(segment, configuration);</span>
+
+<span class="fc" id="L182">    final var options =</span>
+        new ColumnFamilyOptions()
+<span class="fc" id="L184">            .setTtl(0)</span>
+<span class="fc" id="L185">            .setCompressionType(CompressionType.LZ4_COMPRESSION)</span>
+<span class="fc" id="L186">            .setTableFormatConfig(basedTableConfig);</span>
+
+<span class="fc bfc" id="L188" title="All 2 branches covered.">    if (segment.containsStaticData()) {</span>
+<span class="fc" id="L189">      options</span>
+<span class="fc" id="L190">          .setEnableBlobFiles(true)</span>
+<span class="fc" id="L191">          .setEnableBlobGarbageCollection(segment.isStaticDataGarbageCollectionEnabled())</span>
+<span class="fc" id="L192">          .setMinBlobSize(100)</span>
+<span class="fc" id="L193">          .setBlobCompressionType(CompressionType.LZ4_COMPRESSION);</span>
+    }
+
+<span class="fc" id="L196">    return new ColumnFamilyDescriptor(segment.getId(), options);</span>
+  }
+
+  /***
+   * Create a Block Base Table configuration for each segment, depending on the configuration in place
+   * and the segment itself
+   *
+   * @param segment The segment related to the column family
+   * @param config RocksDB configuration
+   * @return Block Base Table configuration
+   */
+  private BlockBasedTableConfig createBlockBasedTableConfig(
+      final SegmentIdentifier segment, final RocksDBConfiguration config) {
+<span class="fc" id="L209">    final LRUCache cache =</span>
+        new LRUCache(
+<span class="pc bpc" id="L211" title="3 of 4 branches missed.">            config.isHighSpec() &amp;&amp; segment.isEligibleToHighSpecFlag()</span>
+<span class="nc" id="L212">                ? ROCKSDB_BLOCKCACHE_SIZE_HIGH_SPEC</span>
+<span class="fc" id="L213">                : config.getCacheCapacity());</span>
+<span class="fc" id="L214">    return new BlockBasedTableConfig()</span>
+<span class="fc" id="L215">        .setFormatVersion(ROCKSDB_FORMAT_VERSION)</span>
+<span class="fc" id="L216">        .setBlockCache(cache)</span>
+<span class="fc" id="L217">        .setFilterPolicy(new BloomFilter(10, false))</span>
+<span class="fc" id="L218">        .setPartitionFilters(true)</span>
+<span class="fc" id="L219">        .setCacheIndexAndFilterBlocks(false)</span>
+<span class="fc" id="L220">        .setBlockSize(ROCKSDB_BLOCK_SIZE);</span>
+  }
+
+  /***
+   * Set Global options (DBOptions)
+   *
+   * @param configuration RocksDB configuration
+   * @param stats The statistics object
+   */
+  private void setGlobalOptions(final RocksDBConfiguration configuration, final Statistics stats) {
+<span class="fc" id="L230">    options = new DBOptions();</span>
+<span class="fc" id="L231">    options</span>
+<span class="fc" id="L232">        .setCreateIfMissing(true)</span>
+<span class="fc" id="L233">        .setMaxOpenFiles(configuration.getMaxOpenFiles())</span>
+<span class="fc" id="L234">        .setStatistics(stats)</span>
+<span class="fc" id="L235">        .setCreateMissingColumnFamilies(true)</span>
+<span class="fc" id="L236">        .setLogFileTimeToRoll(TIME_TO_ROLL_LOG_FILE)</span>
+<span class="fc" id="L237">        .setKeepLogFileNum(NUMBER_OF_LOG_FILES_TO_KEEP)</span>
+<span class="fc" id="L238">        .setEnv(Env.getDefault().setBackgroundThreads(configuration.getBackgroundThreadCount()))</span>
+<span class="fc" id="L239">        .setMaxTotalWalSize(WAL_MAX_TOTAL_SIZE)</span>
+<span class="fc" id="L240">        .setRecycleLogFileNum(WAL_MAX_TOTAL_SIZE / EXPECTED_WAL_FILE_SIZE);</span>
+<span class="fc" id="L241">  }</span>
+
+  /**
+   * Parse RocksDBException and wrap in StorageException
+   *
+   * @param ex RocksDBException
+   * @param defaultSegments segments requested to open
+   * @param ignorableSegments segments which are ignorable if not present
+   * @return StorageException wrapping the RocksDB Exception
+   */
+  protected static StorageException parseRocksDBException(
+      final RocksDBException ex,
+      final List&lt;SegmentIdentifier&gt; defaultSegments,
+      final List&lt;SegmentIdentifier&gt; ignorableSegments) {
+<span class="fc" id="L255">    String message = ex.getMessage();</span>
+<span class="fc" id="L256">    List&lt;SegmentIdentifier&gt; knownSegments =</span>
+<span class="fc" id="L257">        Streams.concat(defaultSegments.stream(), ignorableSegments.stream()).distinct().toList();</span>
+
+    // parse out unprintable segment names for a more useful exception:
+<span class="fc" id="L260">    String columnExceptionMessagePrefix = &quot;Column families not opened: &quot;;</span>
+<span class="pc bpc" id="L261" title="1 of 2 branches missed.">    if (message.contains(columnExceptionMessagePrefix)) {</span>
+<span class="fc" id="L262">      String substring = message.substring(message.indexOf(&quot;: &quot;) + 2);</span>
+
+<span class="fc" id="L264">      List&lt;String&gt; unHandledSegments = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L265">      Splitter.on(&quot;, &quot;)</span>
+<span class="fc" id="L266">          .splitToStream(substring)</span>
+<span class="fc" id="L267">          .forEach(</span>
+              part -&gt; {
+<span class="fc" id="L269">                byte[] bytes = part.getBytes(StandardCharsets.UTF_8);</span>
+<span class="fc" id="L270">                unHandledSegments.add(</span>
+<span class="fc" id="L271">                    knownSegments.stream()</span>
+<span class="fc" id="L272">                        .filter(seg -&gt; Arrays.equals(seg.getId(), bytes))</span>
+<span class="fc" id="L273">                        .findFirst()</span>
+<span class="pc" id="L274">                        .map(seg -&gt; new SegmentRecord(seg.getName(), seg.getId()))</span>
+<span class="fc" id="L275">                        .orElse(new SegmentRecord(part, bytes))</span>
+<span class="fc" id="L276">                        .forDisplay());</span>
+<span class="fc" id="L277">              });</span>
+
+<span class="fc" id="L279">      return new StorageException(</span>
+          &quot;RocksDBException: Unhandled column families: [&quot;
+<span class="fc" id="L281">              + unHandledSegments.stream().collect(Collectors.joining(&quot;, &quot;))</span>
+              + &quot;]&quot;);
+    } else {
+<span class="nc" id="L284">      return new StorageException(ex);</span>
+    }
+  }
+
+  void initMetrics() {
+<span class="fc" id="L289">    metrics = rocksDBMetricsFactory.create(metricsSystem, configuration, getDB(), stats);</span>
+<span class="fc" id="L290">  }</span>
+
+  void initColumnHandles() throws RocksDBException {
+    // will not include the DEFAULT columnHandle, we do not use it:
+<span class="fc" id="L294">    columnHandlesBySegmentIdentifier =</span>
+<span class="fc" id="L295">        trimmedSegments.stream()</span>
+<span class="fc" id="L296">            .collect(</span>
+<span class="fc" id="L297">                Collectors.toMap(</span>
+<span class="fc" id="L298">                    segmentId -&gt; segmentId,</span>
+                    segment -&gt; {
+<span class="fc" id="L300">                      var columnHandle =</span>
+<span class="fc" id="L301">                          columnHandles.stream()</span>
+<span class="fc" id="L302">                              .filter(</span>
+                                  ch -&gt; {
+                                    try {
+<span class="fc" id="L305">                                      return Arrays.equals(ch.getName(), segment.getId());</span>
+<span class="nc" id="L306">                                    } catch (RocksDBException e) {</span>
+<span class="nc" id="L307">                                      throw new RuntimeException(e);</span>
+                                    }
+                                  })
+<span class="fc" id="L310">                              .findFirst()</span>
+<span class="fc" id="L311">                              .orElseThrow(</span>
+                                  () -&gt;
+<span class="nc" id="L313">                                      new RuntimeException(</span>
+                                          &quot;Column handle not found for segment &quot;
+<span class="nc" id="L315">                                              + segment.getName()));</span>
+<span class="fc" id="L316">                      return new RocksDbSegmentIdentifier(getDB(), columnHandle);</span>
+                    }));
+<span class="fc" id="L318">  }</span>
+
+  /**
+   * Safe method to map segment identifier to column handle.
+   *
+   * @param segment segment identifier
+   * @return column handle
+   */
+  protected ColumnFamilyHandle safeColumnHandle(final SegmentIdentifier segment) {
+<span class="fc" id="L327">    RocksDbSegmentIdentifier safeRef = columnHandlesBySegmentIdentifier.get(segment);</span>
+<span class="pc bpc" id="L328" title="1 of 2 branches missed.">    if (safeRef == null) {</span>
+<span class="nc" id="L329">      throw new RuntimeException(&quot;Column handle not found for segment &quot; + segment.getName());</span>
+    }
+<span class="fc" id="L331">    return safeRef.get();</span>
+  }
+
+  @Override
+  public Optional&lt;byte[]&gt; get(final SegmentIdentifier segment, final byte[] key)
+      throws StorageException {
+<span class="fc" id="L337">    throwIfClosed();</span>
+
+<span class="fc" id="L339">    try (final OperationTimer.TimingContext ignored = metrics.getReadLatency().startTimer()) {</span>
+<span class="fc" id="L340">      return Optional.ofNullable(getDB().get(safeColumnHandle(segment), readOptions, key));</span>
+<span class="nc" id="L341">    } catch (final RocksDBException e) {</span>
+<span class="nc" id="L342">      throw new StorageException(e);</span>
+    }
+  }
+
+  @Override
+  public Optional&lt;NearestKeyValue&gt; getNearestTo(
+      final SegmentIdentifier segmentIdentifier, final Bytes key) throws StorageException {
+
+<span class="nc" id="L350">    try (final RocksIterator rocksIterator =</span>
+<span class="nc" id="L351">        getDB().newIterator(safeColumnHandle(segmentIdentifier))) {</span>
+<span class="nc" id="L352">      rocksIterator.seekForPrev(key.toArrayUnsafe());</span>
+<span class="nc" id="L353">      return Optional.of(rocksIterator)</span>
+<span class="nc" id="L354">          .filter(AbstractRocksIterator::isValid)</span>
+<span class="nc" id="L355">          .map(it -&gt; new NearestKeyValue(Bytes.of(it.key()), Optional.of(it.value())));</span>
+    }
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream(final SegmentIdentifier segmentIdentifier) {
+<span class="fc" id="L361">    final RocksIterator rocksIterator = getDB().newIterator(safeColumnHandle(segmentIdentifier));</span>
+<span class="fc" id="L362">    rocksIterator.seekToFirst();</span>
+<span class="fc" id="L363">    return RocksDbIterator.create(rocksIterator).toStream();</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segmentIdentifier, final byte[] startKey) {
+<span class="nc" id="L369">    final RocksIterator rocksIterator = getDB().newIterator(safeColumnHandle(segmentIdentifier));</span>
+<span class="nc" id="L370">    rocksIterator.seek(startKey);</span>
+<span class="nc" id="L371">    return RocksDbIterator.create(rocksIterator).toStream();</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segmentIdentifier, final byte[] startKey, final byte[] endKey) {
+<span class="nc" id="L377">    final Bytes endKeyBytes = Bytes.wrap(endKey);</span>
+<span class="nc" id="L378">    final RocksIterator rocksIterator = getDB().newIterator(safeColumnHandle(segmentIdentifier));</span>
+<span class="nc" id="L379">    rocksIterator.seek(startKey);</span>
+<span class="nc" id="L380">    return RocksDbIterator.create(rocksIterator)</span>
+<span class="nc" id="L381">        .toStream()</span>
+<span class="nc bnc" id="L382" title="All 2 branches missed.">        .takeWhile(e -&gt; endKeyBytes.compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
+  }
+
+  @Override
+  public Stream&lt;byte[]&gt; streamKeys(final SegmentIdentifier segmentIdentifier) {
+<span class="nc" id="L387">    final RocksIterator rocksIterator = getDB().newIterator(safeColumnHandle(segmentIdentifier));</span>
+<span class="nc" id="L388">    rocksIterator.seekToFirst();</span>
+<span class="nc" id="L389">    return RocksDbIterator.create(rocksIterator).toStreamKeys();</span>
+  }
+
+  @Override
+  public boolean tryDelete(final SegmentIdentifier segmentIdentifier, final byte[] key) {
+    try {
+<span class="fc" id="L395">      getDB().delete(safeColumnHandle(segmentIdentifier), tryDeleteOptions, key);</span>
+<span class="fc" id="L396">      return true;</span>
+<span class="nc" id="L397">    } catch (RocksDBException e) {</span>
+<span class="nc bnc" id="L398" title="All 2 branches missed.">      if (e.getStatus().getCode() == Status.Code.Incomplete) {</span>
+<span class="nc" id="L399">        return false;</span>
+      } else {
+<span class="nc" id="L401">        throw new StorageException(e);</span>
+      }
+    }
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllKeysThat(
+      final SegmentIdentifier segmentIdentifier, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="fc" id="L409">    return stream(segmentIdentifier)</span>
+<span class="fc" id="L410">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="fc" id="L411">        .map(Pair::getKey)</span>
+<span class="fc" id="L412">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllValuesFromKeysThat(
+      final SegmentIdentifier segmentIdentifier, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="nc" id="L418">    return stream(segmentIdentifier)</span>
+<span class="nc" id="L419">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="nc" id="L420">        .map(Pair::getValue)</span>
+<span class="nc" id="L421">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public void clear(final SegmentIdentifier segmentIdentifier) {
+<span class="fc" id="L426">    Optional.ofNullable(columnHandlesBySegmentIdentifier.get(segmentIdentifier))</span>
+<span class="fc" id="L427">        .ifPresent(RocksDbSegmentIdentifier::reset);</span>
+<span class="fc" id="L428">  }</span>
+
+  @Override
+  public void close() {
+<span class="fc bfc" id="L432" title="All 2 branches covered.">    if (closed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L433">      txOptions.close();</span>
+<span class="fc" id="L434">      options.close();</span>
+<span class="fc" id="L435">      tryDeleteOptions.close();</span>
+<span class="fc" id="L436">      columnHandlesBySegmentIdentifier.values().stream()</span>
+<span class="fc" id="L437">          .map(RocksDbSegmentIdentifier::get)</span>
+<span class="fc" id="L438">          .forEach(ColumnFamilyHandle::close);</span>
+<span class="fc" id="L439">      getDB().close();</span>
+    }
+<span class="fc" id="L441">  }</span>
+
+  @Override
+  public boolean isClosed() {
+<span class="fc" id="L445">    return closed.get();</span>
+  }
+
+  void throwIfClosed() {
+<span class="pc bpc" id="L449" title="1 of 2 branches missed.">    if (closed.get()) {</span>
+<span class="nc" id="L450">      LOG.error(&quot;Attempting to use a closed RocksDbKeyValueStorage&quot;);</span>
+<span class="nc" id="L451">      throw new IllegalStateException(&quot;Storage has been closed&quot;);</span>
+    }
+<span class="fc" id="L453">  }</span>
+
+  abstract RocksDB getDB();
+
+<span class="pc" id="L457">  record SegmentRecord(String name, byte[] id) {</span>
+    public String forDisplay() {
+<span class="fc" id="L459">      return String.format(&quot;'%s'(%s)&quot;, name, Bytes.of(id).toHexString());</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

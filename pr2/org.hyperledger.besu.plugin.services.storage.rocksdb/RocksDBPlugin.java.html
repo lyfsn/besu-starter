@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RocksDBPlugin.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb</a> &gt; <span class="el_source">RocksDBPlugin.java</span></div><h1>RocksDBPlugin.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb;
+
+import org.hyperledger.besu.plugin.BesuContext;
+import org.hyperledger.besu.plugin.BesuPlugin;
+import org.hyperledger.besu.plugin.services.PicoCLIOptions;
+import org.hyperledger.besu.plugin.services.StorageService;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.configuration.RocksDBCLIOptions;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.configuration.RocksDBFactoryConfiguration;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The RocksDb plugin. */
+public class RocksDBPlugin implements BesuPlugin {
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(RocksDBPlugin.class);</span>
+  private static final String NAME = &quot;rocksdb&quot;;
+
+  private final RocksDBCLIOptions options;
+<span class="fc" id="L42">  private final List&lt;SegmentIdentifier&gt; ignorableSegments = new ArrayList&lt;&gt;();</span>
+  private BesuContext context;
+  private RocksDBKeyValueStorageFactory factory;
+  private RocksDBKeyValuePrivacyStorageFactory privacyFactory;
+
+  /** Instantiates a newRocksDb plugin. */
+<span class="fc" id="L48">  public RocksDBPlugin() {</span>
+<span class="fc" id="L49">    this.options = RocksDBCLIOptions.create();</span>
+<span class="fc" id="L50">  }</span>
+
+  /**
+   * Add ignorable segment identifier.
+   *
+   * @param ignorable the ignorable
+   */
+  public void addIgnorableSegmentIdentifier(final SegmentIdentifier ignorable) {
+<span class="fc" id="L58">    ignorableSegments.add(ignorable);</span>
+<span class="fc" id="L59">  }</span>
+
+  @Override
+  public void register(final BesuContext context) {
+<span class="fc" id="L63">    LOG.debug(&quot;Registering plugin&quot;);</span>
+<span class="fc" id="L64">    this.context = context;</span>
+
+<span class="fc" id="L66">    final Optional&lt;PicoCLIOptions&gt; cmdlineOptions = context.getService(PicoCLIOptions.class);</span>
+
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">    if (cmdlineOptions.isEmpty()) {</span>
+<span class="nc" id="L69">      throw new IllegalStateException(</span>
+          &quot;Expecting a PicoCLI options to register CLI options with, but none found.&quot;);
+    }
+
+<span class="fc" id="L73">    cmdlineOptions.get().addPicoCLIOptions(NAME, options);</span>
+<span class="fc" id="L74">    createFactoriesAndRegisterWithStorageService();</span>
+
+<span class="fc" id="L76">    LOG.debug(&quot;Plugin registered.&quot;);</span>
+<span class="fc" id="L77">  }</span>
+
+  @Override
+  public void start() {
+<span class="nc" id="L81">    LOG.debug(&quot;Starting plugin.&quot;);</span>
+<span class="nc bnc" id="L82" title="All 2 branches missed.">    if (factory == null) {</span>
+<span class="nc" id="L83">      LOG.trace(&quot;Applied configuration: {}&quot;, options.toString());</span>
+<span class="nc" id="L84">      createFactoriesAndRegisterWithStorageService();</span>
+    }
+<span class="nc" id="L86">  }</span>
+
+  @Override
+  public void stop() {
+<span class="nc" id="L90">    LOG.debug(&quot;Stopping plugin.&quot;);</span>
+
+    try {
+<span class="nc bnc" id="L93" title="All 2 branches missed.">      if (factory != null) {</span>
+<span class="nc" id="L94">        factory.close();</span>
+<span class="nc" id="L95">        factory = null;</span>
+      }
+<span class="nc" id="L97">    } catch (final IOException e) {</span>
+<span class="nc" id="L98">      LOG.error(&quot;Failed to stop plugin: {}&quot;, e.getMessage(), e);</span>
+<span class="nc" id="L99">    }</span>
+
+    try {
+<span class="nc bnc" id="L102" title="All 2 branches missed.">      if (privacyFactory != null) {</span>
+<span class="nc" id="L103">        privacyFactory.close();</span>
+<span class="nc" id="L104">        privacyFactory = null;</span>
+      }
+<span class="nc" id="L106">    } catch (final IOException e) {</span>
+<span class="nc" id="L107">      LOG.error(&quot;Failed to stop plugin: {}&quot;, e.getMessage(), e);</span>
+<span class="nc" id="L108">    }</span>
+<span class="nc" id="L109">  }</span>
+
+  /**
+   * Is high spec enabled.
+   *
+   * @return the boolean
+   */
+  public boolean isHighSpecEnabled() {
+<span class="fc" id="L117">    return options.isHighSpec();</span>
+  }
+
+  private void createAndRegister(final StorageService service) {
+<span class="fc" id="L121">    final List&lt;SegmentIdentifier&gt; segments = service.getAllSegmentIdentifiers();</span>
+
+<span class="fc" id="L123">    final Supplier&lt;RocksDBFactoryConfiguration&gt; configuration =</span>
+<span class="fc" id="L124">        Suppliers.memoize(options::toDomainObject);</span>
+<span class="fc" id="L125">    factory =</span>
+        new RocksDBKeyValueStorageFactory(
+            configuration,
+            segments,
+            ignorableSegments,
+            RocksDBMetricsFactory.PUBLIC_ROCKS_DB_METRICS);
+<span class="fc" id="L131">    privacyFactory = new RocksDBKeyValuePrivacyStorageFactory(factory);</span>
+
+<span class="fc" id="L133">    service.registerKeyValueStorage(factory);</span>
+<span class="fc" id="L134">    service.registerKeyValueStorage(privacyFactory);</span>
+<span class="fc" id="L135">  }</span>
+
+  private void createFactoriesAndRegisterWithStorageService() {
+<span class="fc" id="L138">    context</span>
+<span class="fc" id="L139">        .getService(StorageService.class)</span>
+<span class="fc" id="L140">        .ifPresentOrElse(</span>
+            this::createAndRegister,
+<span class="nc" id="L142">            () -&gt; LOG.error(&quot;Failed to register KeyValueFactory due to missing StorageService.&quot;));</span>
+<span class="fc" id="L143">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

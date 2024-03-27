@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BaseFeePendingTransactionsSorter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions.sorter</a> &gt; <span class="el_source">BaseFeePendingTransactionsSorter.java</span></div><h1>BaseFeePendingTransactionsSorter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions.sorter;
+
+import static java.util.Comparator.comparing;
+import static java.util.stream.Collectors.toUnmodifiableList;
+
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.transactions.PendingTransaction;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.time.Clock;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.NavigableSet;
+import java.util.NoSuchElementException;
+import java.util.Optional;
+import java.util.TreeSet;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Holds the current set of pending transactions with the ability to iterate them based on priority
+ * for mining or look-up by hash.
+ *
+ * &lt;p&gt;This class is safe for use across multiple threads.
+ */
+public class BaseFeePendingTransactionsSorter extends AbstractPendingTransactionsSorter {
+
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(BaseFeePendingTransactionsSorter.class);</span>
+
+  private Optional&lt;Wei&gt; baseFee;
+
+  public BaseFeePendingTransactionsSorter(
+      final TransactionPoolConfiguration poolConfig,
+      final Clock clock,
+      final MetricsSystem metricsSystem,
+      final Supplier&lt;BlockHeader&gt; chainHeadHeaderSupplier) {
+<span class="fc" id="L56">    super(poolConfig, clock, metricsSystem, chainHeadHeaderSupplier);</span>
+<span class="fc" id="L57">    this.baseFee = chainHeadHeaderSupplier.get().getBaseFee();</span>
+<span class="fc" id="L58">  }</span>
+
+  /**
+   * See this post for an explainer about these data structures:
+   * https://hackmd.io/@adietrichs/1559-transaction-sorting
+   */
+<span class="fc" id="L64">  private final NavigableSet&lt;PendingTransaction&gt; prioritizedTransactionsStaticRange =</span>
+      new TreeSet&lt;&gt;(
+<span class="fc" id="L66">          comparing(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L67">              .thenComparing(</span>
+                  pendingTx -&gt;
+                      pendingTx
+<span class="fc" id="L70">                          .getTransaction()</span>
+<span class="fc" id="L71">                          .getMaxPriorityFeePerGas()</span>
+                          // just in case we attempt to compare non-1559 transaction
+<span class="fc" id="L73">                          .orElse(Wei.ZERO)</span>
+<span class="fc" id="L74">                          .getAsBigInteger()</span>
+<span class="fc" id="L75">                          .longValue())</span>
+<span class="fc" id="L76">              .thenComparing(PendingTransaction::getSequence, Comparator.reverseOrder())</span>
+<span class="fc" id="L77">              .reversed());</span>
+
+<span class="fc" id="L79">  private final NavigableSet&lt;PendingTransaction&gt; prioritizedTransactionsDynamicRange =</span>
+      new TreeSet&lt;&gt;(
+<span class="fc" id="L81">          comparing(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L82">              .thenComparing(</span>
+                  pendingTx -&gt;
+                      pendingTx
+<span class="fc" id="L85">                          .getTransaction()</span>
+<span class="fc" id="L86">                          .getMaxFeePerGas()</span>
+<span class="fc" id="L87">                          .map(maxFeePerGas -&gt; maxFeePerGas.getAsBigInteger().longValue())</span>
+<span class="fc" id="L88">                          .orElse(pendingTx.getGasPrice().toLong()))</span>
+<span class="fc" id="L89">              .thenComparing(PendingTransaction::getSequence, Comparator.reverseOrder())</span>
+<span class="fc" id="L90">              .reversed());</span>
+
+  @Override
+  public void reset() {
+<span class="nc" id="L94">    super.reset();</span>
+<span class="nc" id="L95">    prioritizedTransactionsStaticRange.clear();</span>
+<span class="nc" id="L96">    prioritizedTransactionsDynamicRange.clear();</span>
+<span class="nc" id="L97">  }</span>
+
+  @Override
+  public void manageBlockAdded(final BlockHeader blockHeader) {
+<span class="fc" id="L101">    blockHeader.getBaseFee().ifPresent(this::updateBaseFee);</span>
+<span class="fc" id="L102">  }</span>
+
+  @Override
+  protected void removePrioritizedTransaction(final PendingTransaction removedPendingTx) {
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (prioritizedTransactionsDynamicRange.remove(removedPendingTx)) {</span>
+<span class="fc" id="L107">      LOG.atTrace()</span>
+<span class="fc" id="L108">          .setMessage(&quot;Removed dynamic range transaction {}&quot;)</span>
+<span class="fc" id="L109">          .addArgument(removedPendingTx::toTraceLog)</span>
+<span class="fc" id="L110">          .log();</span>
+    } else {
+<span class="fc" id="L112">      removedPendingTx</span>
+<span class="fc" id="L113">          .getTransaction()</span>
+<span class="fc" id="L114">          .getMaxPriorityFeePerGas()</span>
+<span class="fc" id="L115">          .ifPresent(</span>
+              __ -&gt; {
+<span class="pc bpc" id="L117" title="1 of 2 branches missed.">                if (prioritizedTransactionsStaticRange.remove(removedPendingTx)) {</span>
+<span class="fc" id="L118">                  LOG.atTrace()</span>
+<span class="fc" id="L119">                      .setMessage(&quot;Removed static range transaction {}&quot;)</span>
+<span class="fc" id="L120">                      .addArgument(removedPendingTx::toTraceLog)</span>
+<span class="fc" id="L121">                      .log();</span>
+                }
+<span class="fc" id="L123">              });</span>
+    }
+<span class="fc" id="L125">  }</span>
+
+  @Override
+  protected Iterator&lt;PendingTransaction&gt; prioritizedTransactions() {
+<span class="fc" id="L129">    return new Iterator&lt;&gt;() {</span>
+<span class="fc" id="L130">      final Iterator&lt;PendingTransaction&gt; staticRangeIterable =</span>
+<span class="fc" id="L131">          prioritizedTransactionsStaticRange.iterator();</span>
+<span class="fc" id="L132">      final Iterator&lt;PendingTransaction&gt; dynamicRangeIterable =</span>
+<span class="fc" id="L133">          prioritizedTransactionsDynamicRange.iterator();</span>
+
+<span class="fc" id="L135">      Optional&lt;PendingTransaction&gt; currentStaticRangeTransaction =</span>
+<span class="fc" id="L136">          getNextOptional(staticRangeIterable);</span>
+<span class="fc" id="L137">      Optional&lt;PendingTransaction&gt; currentDynamicRangeTransaction =</span>
+<span class="fc" id="L138">          getNextOptional(dynamicRangeIterable);</span>
+
+      @Override
+      public boolean hasNext() {
+<span class="fc bfc" id="L142" title="All 2 branches covered.">        return currentStaticRangeTransaction.isPresent()</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">            || currentDynamicRangeTransaction.isPresent();</span>
+      }
+
+      @Override
+      public PendingTransaction next() {
+<span class="pc bpc" id="L148" title="1 of 4 branches missed.">        if (currentStaticRangeTransaction.isEmpty() &amp;&amp; currentDynamicRangeTransaction.isEmpty()) {</span>
+<span class="nc" id="L149">          throw new NoSuchElementException(&quot;Tried to iterate past end of iterator.&quot;);</span>
+<span class="fc bfc" id="L150" title="All 2 branches covered.">        } else if (currentStaticRangeTransaction.isEmpty()) {</span>
+          // only dynamic range txs left
+<span class="fc" id="L152">          final PendingTransaction best = currentDynamicRangeTransaction.get();</span>
+<span class="fc" id="L153">          currentDynamicRangeTransaction = getNextOptional(dynamicRangeIterable);</span>
+<span class="fc" id="L154">          return best;</span>
+<span class="fc bfc" id="L155" title="All 2 branches covered.">        } else if (currentDynamicRangeTransaction.isEmpty()) {</span>
+          // only static range txs left
+<span class="fc" id="L157">          final PendingTransaction best = currentStaticRangeTransaction.get();</span>
+<span class="fc" id="L158">          currentStaticRangeTransaction = getNextOptional(staticRangeIterable);</span>
+<span class="fc" id="L159">          return best;</span>
+        } else {
+          // there are both static and dynamic txs remaining, so we need to compare them by their
+          // effective priority fees
+<span class="fc" id="L163">          final Wei dynamicRangeEffectivePriorityFee =</span>
+              currentDynamicRangeTransaction
+<span class="fc" id="L165">                  .get()</span>
+<span class="fc" id="L166">                  .getTransaction()</span>
+<span class="fc" id="L167">                  .getEffectivePriorityFeePerGas(baseFee);</span>
+<span class="fc" id="L168">          final Wei staticRangeEffectivePriorityFee =</span>
+              currentStaticRangeTransaction
+<span class="fc" id="L170">                  .get()</span>
+<span class="fc" id="L171">                  .getTransaction()</span>
+<span class="fc" id="L172">                  .getEffectivePriorityFeePerGas(baseFee);</span>
+          final PendingTransaction best;
+<span class="fc bfc" id="L174" title="All 2 branches covered.">          if (dynamicRangeEffectivePriorityFee.compareTo(staticRangeEffectivePriorityFee) &gt; 0) {</span>
+<span class="fc" id="L175">            best = currentDynamicRangeTransaction.get();</span>
+<span class="fc" id="L176">            currentDynamicRangeTransaction = getNextOptional(dynamicRangeIterable);</span>
+          } else {
+<span class="fc" id="L178">            best = currentStaticRangeTransaction.get();</span>
+<span class="fc" id="L179">            currentStaticRangeTransaction = getNextOptional(staticRangeIterable);</span>
+          }
+<span class="fc" id="L181">          return best;</span>
+        }
+      }
+
+      private Optional&lt;PendingTransaction&gt; getNextOptional(
+          final Iterator&lt;PendingTransaction&gt; pendingTxsIterator) {
+<span class="fc bfc" id="L187" title="All 2 branches covered.">        return pendingTxsIterator.hasNext()</span>
+<span class="fc" id="L188">            ? Optional.of(pendingTxsIterator.next())</span>
+<span class="fc" id="L189">            : Optional.empty();</span>
+      }
+    };
+  }
+
+  @Override
+  protected void prioritizeTransaction(final PendingTransaction pendingTransaction) {
+    // check if it's in static or dynamic range
+    final String kind;
+<span class="fc bfc" id="L198" title="All 2 branches covered.">    if (isInStaticRange(pendingTransaction.getTransaction(), baseFee)) {</span>
+<span class="fc" id="L199">      kind = &quot;static&quot;;</span>
+<span class="fc" id="L200">      prioritizedTransactionsStaticRange.add(pendingTransaction);</span>
+    } else {
+<span class="fc" id="L202">      kind = &quot;dynamic&quot;;</span>
+<span class="fc" id="L203">      prioritizedTransactionsDynamicRange.add(pendingTransaction);</span>
+    }
+<span class="fc" id="L205">    LOG.atTrace()</span>
+<span class="fc" id="L206">        .setMessage(&quot;Adding {} to pending transactions, range type {}&quot;)</span>
+<span class="fc" id="L207">        .addArgument(pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L208">        .addArgument(kind)</span>
+<span class="fc" id="L209">        .log();</span>
+<span class="fc" id="L210">  }</span>
+
+  @Override
+  protected PendingTransaction getLeastPriorityTransaction() {
+    final var lastStatic =
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">        prioritizedTransactionsStaticRange.isEmpty()</span>
+<span class="fc" id="L216">            ? null</span>
+<span class="pc" id="L217">            : prioritizedTransactionsStaticRange.last();</span>
+    final var lastDynamic =
+<span class="pc bpc" id="L219" title="1 of 2 branches missed.">        prioritizedTransactionsDynamicRange.isEmpty()</span>
+<span class="nc" id="L220">            ? null</span>
+<span class="fc" id="L221">            : prioritizedTransactionsDynamicRange.last();</span>
+
+<span class="pc bpc" id="L223" title="1 of 2 branches missed.">    if (lastDynamic == null) {</span>
+<span class="nc" id="L224">      return lastStatic;</span>
+    }
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">    if (lastStatic == null) {</span>
+<span class="fc" id="L227">      return lastDynamic;</span>
+    }
+
+<span class="nc" id="L230">    final Comparator&lt;PendingTransaction&gt; compareByValue =</span>
+<span class="nc" id="L231">        Comparator.comparing(</span>
+            txInfo -&gt;
+<span class="nc" id="L233">                txInfo.getTransaction().getEffectivePriorityFeePerGas(baseFee).getAsBigInteger());</span>
+
+<span class="nc bnc" id="L235" title="All 2 branches missed.">    return compareByValue.compare(lastStatic, lastDynamic) &lt; 0 ? lastStatic : lastDynamic;</span>
+  }
+
+  private boolean isInStaticRange(final Transaction transaction, final Optional&lt;Wei&gt; baseFee) {
+<span class="fc" id="L239">    return transaction</span>
+<span class="fc" id="L240">        .getMaxPriorityFeePerGas()</span>
+<span class="fc" id="L241">        .map(</span>
+            maxPriorityFeePerGas -&gt;
+<span class="fc bfc" id="L243" title="All 2 branches covered.">                transaction.getEffectivePriorityFeePerGas(baseFee).compareTo(maxPriorityFeePerGas)</span>
+                    &gt;= 0)
+<span class="fc" id="L245">        .orElse(</span>
+            // non-eip-1559 txs can't be in static range
+<span class="fc" id="L247">            false);</span>
+  }
+
+  public void updateBaseFee(final Wei newBaseFee) {
+<span class="fc" id="L251">    LOG.atTrace()</span>
+<span class="fc" id="L252">        .setMessage(&quot;Updating base fee from {} to {}&quot;)</span>
+<span class="fc" id="L253">        .addArgument(this.baseFee)</span>
+<span class="fc" id="L254">        .addArgument(newBaseFee::toShortHexString)</span>
+<span class="fc" id="L255">        .log();</span>
+<span class="fc bfc" id="L256" title="All 2 branches covered.">    if (this.baseFee.orElse(Wei.ZERO).equals(newBaseFee)) {</span>
+<span class="fc" id="L257">      return;</span>
+    }
+<span class="fc" id="L259">    synchronized (lock) {</span>
+<span class="fc bfc" id="L260" title="All 2 branches covered.">      final boolean baseFeeIncreased = newBaseFee.compareTo(this.baseFee.orElse(Wei.ZERO)) &gt; 0;</span>
+<span class="fc" id="L261">      this.baseFee = Optional.of(newBaseFee);</span>
+<span class="fc bfc" id="L262" title="All 2 branches covered.">      if (baseFeeIncreased) {</span>
+        // base fee increases can only cause transactions to go from static to dynamic range
+<span class="fc" id="L264">        prioritizedTransactionsStaticRange.stream()</span>
+<span class="fc" id="L265">            .filter(</span>
+                // these are the transactions whose effective priority fee have now dropped
+                // below their max priority fee
+<span class="nc bnc" id="L268" title="All 2 branches missed.">                pendingTx -&gt; !isInStaticRange(pendingTx.getTransaction(), baseFee))</span>
+<span class="fc" id="L269">            .collect(toUnmodifiableList())</span>
+<span class="fc" id="L270">            .forEach(</span>
+                pendingTx -&gt; {
+<span class="nc" id="L272">                  LOG.atTrace()</span>
+<span class="nc" id="L273">                      .setMessage(&quot;Moving {} from static to dynamic gas fee paradigm&quot;)</span>
+<span class="nc" id="L274">                      .addArgument(pendingTx::toTraceLog)</span>
+<span class="nc" id="L275">                      .log();</span>
+<span class="nc" id="L276">                  prioritizedTransactionsStaticRange.remove(pendingTx);</span>
+<span class="nc" id="L277">                  prioritizedTransactionsDynamicRange.add(pendingTx);</span>
+<span class="nc" id="L278">                });</span>
+      } else {
+        // base fee decreases can only cause transactions to go from dynamic to static range
+<span class="fc" id="L281">        prioritizedTransactionsDynamicRange.stream()</span>
+<span class="fc" id="L282">            .filter(</span>
+                // these are the transactions whose effective priority fee are now above their
+                // max priority fee
+<span class="nc" id="L285">                pendingTx -&gt; isInStaticRange(pendingTx.getTransaction(), baseFee))</span>
+<span class="fc" id="L286">            .collect(toUnmodifiableList())</span>
+<span class="fc" id="L287">            .forEach(</span>
+                pendingTx -&gt; {
+<span class="nc" id="L289">                  LOG.atTrace()</span>
+<span class="nc" id="L290">                      .setMessage(&quot;Moving {} from dynamic to static gas fee paradigm&quot;)</span>
+<span class="nc" id="L291">                      .addArgument(pendingTx::toTraceLog)</span>
+<span class="nc" id="L292">                      .log();</span>
+<span class="nc" id="L293">                  prioritizedTransactionsDynamicRange.remove(pendingTx);</span>
+<span class="nc" id="L294">                  prioritizedTransactionsStaticRange.add(pendingTx);</span>
+<span class="nc" id="L295">                });</span>
+      }
+<span class="fc" id="L297">    }</span>
+<span class="fc" id="L298">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

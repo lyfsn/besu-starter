@@ -1,0 +1,569 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetTransactionProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">MainnetTransactionProcessor.java</span></div><h1>MainnetTransactionProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_IS_PERSISTING_PRIVATE_STATE;
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_PRIVATE_METADATA_UPDATER;
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_TRANSACTION;
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_TRANSACTION_HASH;
+
+import org.hyperledger.besu.collections.trie.BytesTrieSet;
+import org.hyperledger.besu.datatypes.AccessListEntry;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.feemarket.CoinbaseFeePriceCalculator;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.vm.BlockHashLookup;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.code.CodeV0;
+import org.hyperledger.besu.evm.frame.ExceptionalHaltReason;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.processor.AbstractMessageProcessor;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.Deque;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Multimap;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class MainnetTransactionProcessor {
+
+<span class="fc" id="L61">  private static final Logger LOG = LoggerFactory.getLogger(MainnetTransactionProcessor.class);</span>
+
+  protected final GasCalculator gasCalculator;
+
+  protected final TransactionValidatorFactory transactionValidatorFactory;
+
+  private final AbstractMessageProcessor contractCreationProcessor;
+
+  private final AbstractMessageProcessor messageCallProcessor;
+
+  private final int maxStackSize;
+
+  private final boolean clearEmptyAccounts;
+
+  protected final boolean warmCoinbase;
+
+  protected final FeeMarket feeMarket;
+  private final CoinbaseFeePriceCalculator coinbaseFeePriceCalculator;
+
+  public MainnetTransactionProcessor(
+      final GasCalculator gasCalculator,
+      final TransactionValidatorFactory transactionValidatorFactory,
+      final AbstractMessageProcessor contractCreationProcessor,
+      final AbstractMessageProcessor messageCallProcessor,
+      final boolean clearEmptyAccounts,
+      final boolean warmCoinbase,
+      final int maxStackSize,
+      final FeeMarket feeMarket,
+<span class="fc" id="L89">      final CoinbaseFeePriceCalculator coinbaseFeePriceCalculator) {</span>
+<span class="fc" id="L90">    this.gasCalculator = gasCalculator;</span>
+<span class="fc" id="L91">    this.transactionValidatorFactory = transactionValidatorFactory;</span>
+<span class="fc" id="L92">    this.contractCreationProcessor = contractCreationProcessor;</span>
+<span class="fc" id="L93">    this.messageCallProcessor = messageCallProcessor;</span>
+<span class="fc" id="L94">    this.clearEmptyAccounts = clearEmptyAccounts;</span>
+<span class="fc" id="L95">    this.warmCoinbase = warmCoinbase;</span>
+<span class="fc" id="L96">    this.maxStackSize = maxStackSize;</span>
+<span class="fc" id="L97">    this.feeMarket = feeMarket;</span>
+<span class="fc" id="L98">    this.coinbaseFeePriceCalculator = coinbaseFeePriceCalculator;</span>
+<span class="fc" id="L99">  }</span>
+
+  /**
+   * Applies a transaction to the current system state.
+   *
+   * @param blockchain The current blockchain
+   * @param worldState The current world state
+   * @param blockHeader The current block header
+   * @param transaction The transaction to process
+   * @param miningBeneficiary The address which is to receive the transaction fee
+   * @param blockHashLookup The {@link BlockHashLookup} to use for BLOCKHASH operations
+   * @param isPersistingPrivateState Whether the resulting private state will be persisted
+   * @param transactionValidationParams Validation parameters that will be used by the {@link
+   *     MainnetTransactionValidator}
+   * @return the transaction result
+   * @see MainnetTransactionValidator
+   * @see TransactionValidationParams
+   */
+  public TransactionProcessingResult processTransaction(
+      final Blockchain blockchain,
+      final WorldUpdater worldState,
+      final ProcessableBlockHeader blockHeader,
+      final Transaction transaction,
+      final Address miningBeneficiary,
+      final BlockHashLookup blockHashLookup,
+      final Boolean isPersistingPrivateState,
+      final TransactionValidationParams transactionValidationParams,
+      final Wei blobGasPrice) {
+<span class="fc" id="L127">    return processTransaction(</span>
+        blockchain,
+        worldState,
+        blockHeader,
+        transaction,
+        miningBeneficiary,
+        OperationTracer.NO_TRACING,
+        blockHashLookup,
+        isPersistingPrivateState,
+        transactionValidationParams,
+        null,
+        blobGasPrice);
+  }
+
+  /**
+   * Applies a transaction to the current system state.
+   *
+   * @param blockchain The current blockchain
+   * @param worldState The current world state
+   * @param blockHeader The current block header
+   * @param transaction The transaction to process
+   * @param miningBeneficiary The address which is to receive the transaction fee
+   * @param blockHashLookup The {@link BlockHashLookup} to use for BLOCKHASH operations
+   * @param isPersistingPrivateState Whether the resulting private state will be persisted
+   * @param transactionValidationParams Validation parameters that will be used by the {@link
+   *     MainnetTransactionValidator}
+   * @param operationTracer operation tracer {@link OperationTracer}
+   * @return the transaction result
+   * @see MainnetTransactionValidator
+   * @see TransactionValidationParams
+   */
+  public TransactionProcessingResult processTransaction(
+      final Blockchain blockchain,
+      final WorldUpdater worldState,
+      final ProcessableBlockHeader blockHeader,
+      final Transaction transaction,
+      final Address miningBeneficiary,
+      final BlockHashLookup blockHashLookup,
+      final Boolean isPersistingPrivateState,
+      final TransactionValidationParams transactionValidationParams,
+      final OperationTracer operationTracer,
+      final Wei blobGasPrice) {
+<span class="fc" id="L169">    return processTransaction(</span>
+        blockchain,
+        worldState,
+        blockHeader,
+        transaction,
+        miningBeneficiary,
+        operationTracer,
+        blockHashLookup,
+        isPersistingPrivateState,
+        transactionValidationParams,
+        null,
+        blobGasPrice);
+  }
+
+  /**
+   * Applies a transaction to the current system state.
+   *
+   * @param blockchain The current blockchain
+   * @param worldState The current world state
+   * @param blockHeader The current block header
+   * @param transaction The transaction to process
+   * @param operationTracer The tracer to record results of each EVM operation
+   * @param miningBeneficiary The address which is to receive the transaction fee
+   * @param blockHashLookup The {@link BlockHashLookup} to use for BLOCKHASH operations
+   * @param isPersistingPrivateState Whether the resulting private state will be persisted
+   * @return the transaction result
+   */
+  public TransactionProcessingResult processTransaction(
+      final Blockchain blockchain,
+      final WorldUpdater worldState,
+      final ProcessableBlockHeader blockHeader,
+      final Transaction transaction,
+      final Address miningBeneficiary,
+      final OperationTracer operationTracer,
+      final BlockHashLookup blockHashLookup,
+      final Boolean isPersistingPrivateState,
+      final Wei blobGasPrice) {
+<span class="fc" id="L206">    return processTransaction(</span>
+        blockchain,
+        worldState,
+        blockHeader,
+        transaction,
+        miningBeneficiary,
+        operationTracer,
+        blockHashLookup,
+        isPersistingPrivateState,
+<span class="fc" id="L215">        ImmutableTransactionValidationParams.builder().build(),</span>
+        null,
+        blobGasPrice);
+  }
+
+  /**
+   * Applies a transaction to the current system state.
+   *
+   * @param blockchain The current blockchain
+   * @param worldState The current world state
+   * @param blockHeader The current block header
+   * @param transaction The transaction to process
+   * @param operationTracer The tracer to record results of each EVM operation
+   * @param miningBeneficiary The address which is to receive the transaction fee
+   * @param blockHashLookup The {@link BlockHashLookup} to use for BLOCKHASH operations
+   * @param isPersistingPrivateState Whether the resulting private state will be persisted
+   * @param transactionValidationParams The transaction validation parameters to use
+   * @return the transaction result
+   */
+  public TransactionProcessingResult processTransaction(
+      final Blockchain blockchain,
+      final WorldUpdater worldState,
+      final ProcessableBlockHeader blockHeader,
+      final Transaction transaction,
+      final Address miningBeneficiary,
+      final OperationTracer operationTracer,
+      final BlockHashLookup blockHashLookup,
+      final Boolean isPersistingPrivateState,
+      final TransactionValidationParams transactionValidationParams,
+      final Wei blobGasPrice) {
+<span class="fc" id="L245">    return processTransaction(</span>
+        blockchain,
+        worldState,
+        blockHeader,
+        transaction,
+        miningBeneficiary,
+        operationTracer,
+        blockHashLookup,
+        isPersistingPrivateState,
+        transactionValidationParams,
+        null,
+        blobGasPrice);
+  }
+
+  public TransactionProcessingResult processTransaction(
+      final Blockchain ignoredBlockchain,
+      final WorldUpdater worldState,
+      final ProcessableBlockHeader blockHeader,
+      final Transaction transaction,
+      final Address miningBeneficiary,
+      final OperationTracer operationTracer,
+      final BlockHashLookup blockHashLookup,
+      final Boolean isPersistingPrivateState,
+      final TransactionValidationParams transactionValidationParams,
+      final PrivateMetadataUpdater privateMetadataUpdater,
+      final Wei blobGasPrice) {
+    try {
+<span class="fc" id="L272">      final var transactionValidator = transactionValidatorFactory.get();</span>
+<span class="fc" id="L273">      LOG.trace(&quot;Starting execution of {}&quot;, transaction);</span>
+<span class="fc" id="L274">      ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+<span class="fc" id="L275">          transactionValidator.validate(</span>
+              transaction,
+<span class="fc" id="L277">              blockHeader.getBaseFee(),</span>
+<span class="fc" id="L278">              Optional.ofNullable(blobGasPrice),</span>
+              transactionValidationParams);
+      // Make sure the transaction is intrinsically valid before trying to
+      // compare against a sender account (because the transaction may not
+      // be signed correctly to extract the sender).
+<span class="fc bfc" id="L283" title="All 2 branches covered.">      if (!validationResult.isValid()) {</span>
+<span class="fc" id="L284">        LOG.debug(&quot;Invalid transaction: {}&quot;, validationResult.getErrorMessage());</span>
+<span class="fc" id="L285">        return TransactionProcessingResult.invalid(validationResult);</span>
+      }
+
+<span class="fc" id="L288">      final Address senderAddress = transaction.getSender();</span>
+
+<span class="fc" id="L290">      final MutableAccount sender = worldState.getOrCreateSenderAccount(senderAddress);</span>
+
+<span class="fc" id="L292">      validationResult =</span>
+<span class="fc" id="L293">          transactionValidator.validateForSender(transaction, sender, transactionValidationParams);</span>
+<span class="fc bfc" id="L294" title="All 2 branches covered.">      if (!validationResult.isValid()) {</span>
+<span class="fc" id="L295">        LOG.debug(&quot;Invalid transaction: {}&quot;, validationResult.getErrorMessage());</span>
+<span class="fc" id="L296">        return TransactionProcessingResult.invalid(validationResult);</span>
+      }
+
+<span class="fc" id="L299">      operationTracer.tracePrepareTransaction(worldState, transaction);</span>
+
+<span class="fc" id="L301">      final long previousNonce = sender.incrementNonce();</span>
+<span class="fc" id="L302">      LOG.trace(</span>
+          &quot;Incremented sender {} nonce ({} -&gt; {})&quot;,
+          senderAddress,
+<span class="fc" id="L305">          previousNonce,</span>
+<span class="fc" id="L306">          sender.getNonce());</span>
+
+<span class="fc" id="L308">      final Wei transactionGasPrice =</span>
+<span class="fc" id="L309">          feeMarket.getTransactionPriceCalculator().price(transaction, blockHeader.getBaseFee());</span>
+
+<span class="fc" id="L311">      final long blobGas = gasCalculator.blobGasCost(transaction.getBlobCount());</span>
+
+<span class="fc" id="L313">      final Wei upfrontGasCost =</span>
+<span class="fc" id="L314">          transaction.getUpfrontGasCost(transactionGasPrice, blobGasPrice, blobGas);</span>
+<span class="fc" id="L315">      final Wei previousBalance = sender.decrementBalance(upfrontGasCost);</span>
+<span class="fc" id="L316">      LOG.trace(</span>
+          &quot;Deducted sender {} upfront gas cost {} ({} -&gt; {})&quot;,
+          senderAddress,
+          upfrontGasCost,
+          previousBalance,
+<span class="fc" id="L321">          sender.getBalance());</span>
+
+<span class="fc" id="L323">      final List&lt;AccessListEntry&gt; accessListEntries = transaction.getAccessList().orElse(List.of());</span>
+      // we need to keep a separate hash set of addresses in case they specify no storage.
+      // No-storage is a common pattern, especially for Externally Owned Accounts
+<span class="fc" id="L326">      final Set&lt;Address&gt; addressList = new BytesTrieSet&lt;&gt;(Address.SIZE);</span>
+<span class="fc" id="L327">      final Multimap&lt;Address, Bytes32&gt; storageList = HashMultimap.create();</span>
+<span class="fc" id="L328">      int accessListStorageCount = 0;</span>
+<span class="fc bfc" id="L329" title="All 2 branches covered.">      for (final var entry : accessListEntries) {</span>
+<span class="fc" id="L330">        final Address address = entry.address();</span>
+<span class="fc" id="L331">        addressList.add(address);</span>
+<span class="fc" id="L332">        final List&lt;Bytes32&gt; storageKeys = entry.storageKeys();</span>
+<span class="fc" id="L333">        storageList.putAll(address, storageKeys);</span>
+<span class="fc" id="L334">        accessListStorageCount += storageKeys.size();</span>
+<span class="fc" id="L335">      }</span>
+<span class="fc bfc" id="L336" title="All 2 branches covered.">      if (warmCoinbase) {</span>
+<span class="fc" id="L337">        addressList.add(miningBeneficiary);</span>
+      }
+
+<span class="fc" id="L340">      final long intrinsicGas =</span>
+<span class="fc" id="L341">          gasCalculator.transactionIntrinsicGasCost(</span>
+<span class="fc" id="L342">              transaction.getPayload(), transaction.isContractCreation());</span>
+<span class="fc" id="L343">      final long accessListGas =</span>
+<span class="fc" id="L344">          gasCalculator.accessListGasCost(accessListEntries.size(), accessListStorageCount);</span>
+<span class="fc" id="L345">      final long gasAvailable = transaction.getGasLimit() - intrinsicGas - accessListGas;</span>
+<span class="fc" id="L346">      LOG.trace(</span>
+          &quot;Gas available for execution {} = {} - {} - {} (limit - intrinsic - accessList)&quot;,
+<span class="fc" id="L348">          gasAvailable,</span>
+<span class="fc" id="L349">          transaction.getGasLimit(),</span>
+<span class="fc" id="L350">          intrinsicGas,</span>
+<span class="fc" id="L351">          accessListGas);</span>
+
+<span class="fc" id="L353">      final WorldUpdater worldUpdater = worldState.updater();</span>
+      final ImmutableMap.Builder&lt;String, Object&gt; contextVariablesBuilder =
+<span class="fc" id="L355">          ImmutableMap.&lt;String, Object&gt;builder()</span>
+<span class="fc" id="L356">              .put(KEY_IS_PERSISTING_PRIVATE_STATE, isPersistingPrivateState)</span>
+<span class="fc" id="L357">              .put(KEY_TRANSACTION, transaction)</span>
+<span class="fc" id="L358">              .put(KEY_TRANSACTION_HASH, transaction.getHash());</span>
+<span class="fc bfc" id="L359" title="All 2 branches covered.">      if (privateMetadataUpdater != null) {</span>
+<span class="fc" id="L360">        contextVariablesBuilder.put(KEY_PRIVATE_METADATA_UPDATER, privateMetadataUpdater);</span>
+      }
+
+<span class="fc" id="L363">      operationTracer.traceStartTransaction(worldUpdater, transaction);</span>
+
+      final MessageFrame.Builder commonMessageFrameBuilder =
+<span class="fc" id="L366">          MessageFrame.builder()</span>
+<span class="fc" id="L367">              .maxStackSize(maxStackSize)</span>
+<span class="fc" id="L368">              .worldUpdater(worldUpdater.updater())</span>
+<span class="fc" id="L369">              .initialGas(gasAvailable)</span>
+<span class="fc" id="L370">              .originator(senderAddress)</span>
+<span class="fc" id="L371">              .gasPrice(transactionGasPrice)</span>
+<span class="fc" id="L372">              .blobGasPrice(blobGasPrice)</span>
+<span class="fc" id="L373">              .sender(senderAddress)</span>
+<span class="fc" id="L374">              .value(transaction.getValue())</span>
+<span class="fc" id="L375">              .apparentValue(transaction.getValue())</span>
+<span class="fc" id="L376">              .blockValues(blockHeader)</span>
+<span class="fc" id="L377">              .completer(__ -&gt; {})</span>
+<span class="fc" id="L378">              .miningBeneficiary(miningBeneficiary)</span>
+<span class="fc" id="L379">              .blockHashLookup(blockHashLookup)</span>
+<span class="fc" id="L380">              .contextVariables(contextVariablesBuilder.build())</span>
+<span class="fc" id="L381">              .accessListWarmAddresses(addressList)</span>
+<span class="fc" id="L382">              .accessListWarmStorage(storageList);</span>
+
+<span class="fc bfc" id="L384" title="All 2 branches covered.">      if (transaction.getVersionedHashes().isPresent()) {</span>
+<span class="fc" id="L385">        commonMessageFrameBuilder.versionedHashes(</span>
+<span class="fc" id="L386">            Optional.of(transaction.getVersionedHashes().get().stream().toList()));</span>
+      } else {
+<span class="fc" id="L388">        commonMessageFrameBuilder.versionedHashes(Optional.empty());</span>
+      }
+
+      final MessageFrame initialFrame;
+<span class="fc bfc" id="L392" title="All 2 branches covered.">      if (transaction.isContractCreation()) {</span>
+<span class="fc" id="L393">        final Address contractAddress =</span>
+<span class="fc" id="L394">            Address.contractAddress(senderAddress, sender.getNonce() - 1L);</span>
+
+<span class="fc" id="L396">        final Bytes initCodeBytes = transaction.getPayload();</span>
+<span class="fc" id="L397">        initialFrame =</span>
+            commonMessageFrameBuilder
+<span class="fc" id="L399">                .type(MessageFrame.Type.CONTRACT_CREATION)</span>
+<span class="fc" id="L400">                .address(contractAddress)</span>
+<span class="fc" id="L401">                .contract(contractAddress)</span>
+<span class="fc" id="L402">                .inputData(Bytes.EMPTY)</span>
+<span class="fc" id="L403">                .code(contractCreationProcessor.getCodeFromEVM(null, initCodeBytes))</span>
+<span class="fc" id="L404">                .build();</span>
+<span class="fc" id="L405">      } else {</span>
+        @SuppressWarnings(&quot;OptionalGetWithoutIsPresent&quot;) // isContractCall tests isPresent
+<span class="fc" id="L407">        final Address to = transaction.getTo().get();</span>
+<span class="fc" id="L408">        final Optional&lt;Account&gt; maybeContract = Optional.ofNullable(worldState.get(to));</span>
+<span class="fc" id="L409">        initialFrame =</span>
+            commonMessageFrameBuilder
+<span class="fc" id="L411">                .type(MessageFrame.Type.MESSAGE_CALL)</span>
+<span class="fc" id="L412">                .address(to)</span>
+<span class="fc" id="L413">                .contract(to)</span>
+<span class="fc" id="L414">                .inputData(transaction.getPayload())</span>
+<span class="fc" id="L415">                .code(</span>
+                    maybeContract
+<span class="fc" id="L417">                        .map(c -&gt; messageCallProcessor.getCodeFromEVM(c.getCodeHash(), c.getCode()))</span>
+<span class="fc" id="L418">                        .orElse(CodeV0.EMPTY_CODE))</span>
+<span class="fc" id="L419">                .build();</span>
+      }
+<span class="fc" id="L421">      Deque&lt;MessageFrame&gt; messageFrameStack = initialFrame.getMessageFrameStack();</span>
+
+<span class="pc bpc" id="L423" title="1 of 2 branches missed.">      if (initialFrame.getCode().isValid()) {</span>
+<span class="fc bfc" id="L424" title="All 2 branches covered.">        while (!messageFrameStack.isEmpty()) {</span>
+<span class="fc" id="L425">          process(messageFrameStack.peekFirst(), operationTracer);</span>
+        }
+      } else {
+<span class="nc" id="L428">        initialFrame.setState(MessageFrame.State.EXCEPTIONAL_HALT);</span>
+<span class="nc" id="L429">        initialFrame.setExceptionalHaltReason(Optional.of(ExceptionalHaltReason.INVALID_CODE));</span>
+      }
+
+<span class="fc bfc" id="L432" title="All 2 branches covered.">      if (initialFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L433">        worldUpdater.commit();</span>
+      } else {
+<span class="fc bfc" id="L435" title="All 2 branches covered.">        if (initialFrame.getExceptionalHaltReason().isPresent()) {</span>
+<span class="fc" id="L436">          validationResult =</span>
+<span class="fc" id="L437">              ValidationResult.invalid(</span>
+                  TransactionInvalidReason.EXECUTION_HALTED,
+<span class="fc" id="L439">                  initialFrame.getExceptionalHaltReason().get().toString());</span>
+        }
+      }
+
+<span class="pc bpc" id="L443" title="1 of 2 branches missed.">      if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L444">        LOG.trace(</span>
+            &quot;Gas used by transaction: {}, by message call/contract creation: {}&quot;,
+<span class="nc" id="L446">            transaction.getGasLimit() - initialFrame.getRemainingGas(),</span>
+<span class="nc" id="L447">            gasAvailable - initialFrame.getRemainingGas());</span>
+      }
+
+      // Refund the sender by what we should and pay the miner fee (note that we're doing them one
+      // after the other so that if it is the same account somehow, we end up with the right result)
+<span class="fc" id="L452">      final long selfDestructRefund =</span>
+<span class="fc" id="L453">          gasCalculator.getSelfDestructRefundAmount() * initialFrame.getSelfDestructs().size();</span>
+<span class="fc" id="L454">      final long baseRefundGas = initialFrame.getGasRefund() + selfDestructRefund;</span>
+<span class="fc" id="L455">      final long refundedGas = refunded(transaction, initialFrame.getRemainingGas(), baseRefundGas);</span>
+<span class="fc" id="L456">      final Wei refundedWei = transactionGasPrice.multiply(refundedGas);</span>
+<span class="fc" id="L457">      final Wei balancePriorToRefund = sender.getBalance();</span>
+<span class="fc" id="L458">      sender.incrementBalance(refundedWei);</span>
+<span class="fc" id="L459">      LOG.atTrace()</span>
+<span class="fc" id="L460">          .setMessage(&quot;refunded sender {}  {} wei ({} -&gt; {})&quot;)</span>
+<span class="fc" id="L461">          .addArgument(senderAddress)</span>
+<span class="fc" id="L462">          .addArgument(refundedWei)</span>
+<span class="fc" id="L463">          .addArgument(balancePriorToRefund)</span>
+<span class="fc" id="L464">          .addArgument(sender.getBalance())</span>
+<span class="fc" id="L465">          .log();</span>
+<span class="fc" id="L466">      final long gasUsedByTransaction = transaction.getGasLimit() - initialFrame.getRemainingGas();</span>
+
+<span class="fc" id="L468">      operationTracer.traceEndTransaction(</span>
+          worldUpdater,
+          transaction,
+<span class="fc bfc" id="L471" title="All 2 branches covered.">          initialFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS,</span>
+<span class="fc" id="L472">          initialFrame.getOutputData(),</span>
+<span class="fc" id="L473">          initialFrame.getLogs(),</span>
+          gasUsedByTransaction,
+          0L);
+
+      // update the coinbase
+<span class="fc" id="L478">      final var coinbase = worldState.getOrCreate(miningBeneficiary);</span>
+<span class="fc" id="L479">      final long usedGas = transaction.getGasLimit() - refundedGas;</span>
+      final CoinbaseFeePriceCalculator coinbaseCalculator;
+<span class="fc bfc" id="L481" title="All 2 branches covered.">      if (blockHeader.getBaseFee().isPresent()) {</span>
+<span class="fc" id="L482">        final Wei baseFee = blockHeader.getBaseFee().get();</span>
+<span class="pc bpc" id="L483" title="1 of 2 branches missed.">        if (transactionGasPrice.compareTo(baseFee) &lt; 0) {</span>
+<span class="nc" id="L484">          return TransactionProcessingResult.failed(</span>
+              gasUsedByTransaction,
+              refundedGas,
+<span class="nc" id="L487">              ValidationResult.invalid(</span>
+                  TransactionInvalidReason.TRANSACTION_PRICE_TOO_LOW,
+                  &quot;transaction price must be greater than base fee&quot;),
+<span class="nc" id="L490">              Optional.empty());</span>
+        }
+<span class="fc" id="L492">        coinbaseCalculator = coinbaseFeePriceCalculator;</span>
+<span class="fc" id="L493">      } else {</span>
+<span class="fc" id="L494">        coinbaseCalculator = CoinbaseFeePriceCalculator.frontier();</span>
+      }
+
+<span class="fc" id="L497">      final Wei coinbaseWeiDelta =</span>
+<span class="fc" id="L498">          coinbaseCalculator.price(usedGas, transactionGasPrice, blockHeader.getBaseFee());</span>
+
+<span class="fc" id="L500">      coinbase.incrementBalance(coinbaseWeiDelta);</span>
+
+<span class="fc" id="L502">      initialFrame.getSelfDestructs().forEach(worldState::deleteAccount);</span>
+
+<span class="fc bfc" id="L504" title="All 2 branches covered.">      if (clearEmptyAccounts) {</span>
+<span class="fc" id="L505">        worldState.clearAccountsThatAreEmpty();</span>
+      }
+
+<span class="fc bfc" id="L508" title="All 2 branches covered.">      if (initialFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L509">        return TransactionProcessingResult.successful(</span>
+<span class="fc" id="L510">            initialFrame.getLogs(),</span>
+            gasUsedByTransaction,
+            refundedGas,
+<span class="fc" id="L513">            initialFrame.getOutputData(),</span>
+            validationResult);
+      } else {
+<span class="fc" id="L516">        return TransactionProcessingResult.failed(</span>
+<span class="fc" id="L517">            gasUsedByTransaction, refundedGas, validationResult, initialFrame.getRevertReason());</span>
+      }
+<span class="fc" id="L519">    } catch (final MerkleTrieException re) {</span>
+<span class="fc" id="L520">      operationTracer.traceEndTransaction(</span>
+<span class="fc" id="L521">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
+
+      // need to throw to trigger the heal
+<span class="fc" id="L524">      throw re;</span>
+<span class="fc" id="L525">    } catch (final RuntimeException re) {</span>
+<span class="fc" id="L526">      operationTracer.traceEndTransaction(</span>
+<span class="fc" id="L527">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
+
+<span class="fc" id="L529">      LOG.error(&quot;Critical Exception Processing Transaction&quot;, re);</span>
+<span class="fc" id="L530">      return TransactionProcessingResult.invalid(</span>
+<span class="fc" id="L531">          ValidationResult.invalid(</span>
+              TransactionInvalidReason.INTERNAL_ERROR,
+<span class="fc" id="L533">              &quot;Internal Error in Besu - &quot; + re + &quot;\n&quot; + printableStackTraceFromThrowable(re)));</span>
+    }
+  }
+
+  public void process(final MessageFrame frame, final OperationTracer operationTracer) {
+<span class="fc" id="L538">    final AbstractMessageProcessor executor = getMessageProcessor(frame.getType());</span>
+
+<span class="fc" id="L540">    executor.process(frame, operationTracer);</span>
+<span class="fc" id="L541">  }</span>
+
+  private AbstractMessageProcessor getMessageProcessor(final MessageFrame.Type type) {
+<span class="pc bpc" id="L544" title="1 of 3 branches missed.">    return switch (type) {</span>
+<span class="fc" id="L545">      case MESSAGE_CALL -&gt; messageCallProcessor;</span>
+<span class="fc" id="L546">      case CONTRACT_CREATION -&gt; contractCreationProcessor;</span>
+    };
+  }
+
+  protected long refunded(
+      final Transaction transaction, final long gasRemaining, final long gasRefund) {
+    // Integer truncation takes care of the floor calculation needed after the divide.
+<span class="fc" id="L553">    final long maxRefundAllowance =</span>
+<span class="fc" id="L554">        (transaction.getGasLimit() - gasRemaining) / gasCalculator.getMaxRefundQuotient();</span>
+<span class="fc" id="L555">    final long refundAllowance = Math.min(maxRefundAllowance, gasRefund);</span>
+<span class="fc" id="L556">    return gasRemaining + refundAllowance;</span>
+  }
+
+  private String printableStackTraceFromThrowable(final RuntimeException re) {
+<span class="fc" id="L560">    final StringBuilder builder = new StringBuilder();</span>
+
+<span class="fc bfc" id="L562" title="All 2 branches covered.">    for (final StackTraceElement stackTraceElement : re.getStackTrace()) {</span>
+<span class="fc" id="L563">      builder.append(&quot;\tat &quot;).append(stackTraceElement.toString()).append(&quot;\n&quot;);</span>
+    }
+
+<span class="fc" id="L566">    return builder.toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

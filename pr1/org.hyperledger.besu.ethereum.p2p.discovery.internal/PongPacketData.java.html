@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PongPacketData.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.discovery.internal</a> &gt; <span class="el_source">PongPacketData.java</span></div><h1>PongPacketData.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.discovery.internal;
+
+import org.hyperledger.besu.ethereum.p2p.discovery.Endpoint;
+import org.hyperledger.besu.ethereum.rlp.MalformedRLPInputException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+
+import java.util.Optional;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt64;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PongPacketData implements PacketData {
+
+  /* Destination. */
+  private final Endpoint to;
+
+  /* Hash of the PING packet. */
+  private final Bytes pingHash;
+
+  /* In seconds after epoch. */
+  private final long expiration;
+
+  /* Current sequence number of the sending node’s record */
+  private final UInt64 enrSeq;
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(PongPacketData.class);</span>
+
+  private PongPacketData(
+<span class="fc" id="L45">      final Endpoint to, final Bytes pingHash, final long expiration, final UInt64 enrSeq) {</span>
+<span class="fc" id="L46">    this.to = to;</span>
+<span class="fc" id="L47">    this.pingHash = pingHash;</span>
+<span class="fc" id="L48">    this.expiration = expiration;</span>
+<span class="fc" id="L49">    this.enrSeq = enrSeq;</span>
+<span class="fc" id="L50">  }</span>
+
+  public static PongPacketData create(
+      final Endpoint to, final Bytes pingHash, final UInt64 enrSeq) {
+<span class="fc" id="L54">    return new PongPacketData(to, pingHash, PacketData.defaultExpiration(), enrSeq);</span>
+  }
+
+  public static PongPacketData readFrom(final RLPInput in) {
+<span class="fc" id="L58">    in.enterList();</span>
+<span class="fc" id="L59">    final Endpoint to = Endpoint.decodeStandalone(in);</span>
+<span class="fc" id="L60">    final Bytes hash = in.readBytes();</span>
+<span class="fc" id="L61">    final long expiration = in.readLongScalar();</span>
+<span class="fc" id="L62">    UInt64 enrSeq = null;</span>
+<span class="pc bpc" id="L63" title="1 of 2 branches missed.">    if (!in.isEndOfCurrentList()) {</span>
+      try {
+<span class="fc" id="L65">        enrSeq = UInt64.valueOf(in.readBigIntegerScalar());</span>
+<span class="fc" id="L66">        LOG.trace(&quot;read PONG enr from scalar&quot;);</span>
+<span class="fc" id="L67">      } catch (final MalformedRLPInputException malformed) {</span>
+<span class="fc" id="L68">        LOG.trace(&quot;failed to read PONG enr from scalar, trying as byte array&quot;);</span>
+<span class="fc" id="L69">        enrSeq = UInt64.fromBytes(in.readBytes());</span>
+<span class="fc" id="L70">      }</span>
+    }
+<span class="fc" id="L72">    in.leaveListLenient();</span>
+<span class="fc" id="L73">    return new PongPacketData(to, hash, expiration, enrSeq);</span>
+  }
+
+  @Override
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L78">    out.startList();</span>
+<span class="fc" id="L79">    to.encodeStandalone(out);</span>
+<span class="fc" id="L80">    out.writeBytes(pingHash);</span>
+<span class="fc" id="L81">    out.writeLongScalar(expiration);</span>
+<span class="fc" id="L82">    out.writeBigIntegerScalar(enrSeq.toBigInteger());</span>
+<span class="fc" id="L83">    out.endList();</span>
+<span class="fc" id="L84">  }</span>
+
+  /**
+   * Used by test classes to read legacy encodes of Pongs which used a byte array for the ENR field
+   *
+   * @deprecated Only to be used by internal tests to confirm backward compatibility.
+   * @param in input stream being read from
+   * @return PongPacketData parsed from input, using legacy encode
+   */
+  @Deprecated
+  public static PongPacketData legacyReadFrom(final RLPInput in) {
+<span class="fc" id="L95">    in.enterList();</span>
+<span class="fc" id="L96">    final Endpoint to = Endpoint.decodeStandalone(in);</span>
+<span class="fc" id="L97">    final Bytes hash = in.readBytes();</span>
+<span class="fc" id="L98">    final long expiration = in.readLongScalar();</span>
+<span class="fc" id="L99">    UInt64 enrSeq = null;</span>
+<span class="pc bpc" id="L100" title="1 of 2 branches missed.">    if (!in.isEndOfCurrentList()) {</span>
+<span class="fc" id="L101">      enrSeq = UInt64.fromBytes(in.readBytes());</span>
+    }
+<span class="fc" id="L103">    in.leaveListLenient();</span>
+<span class="fc" id="L104">    return new PongPacketData(to, hash, expiration, enrSeq);</span>
+  }
+
+  /**
+   * @deprecated Only to be used by internal tests to confirm backward compatibility.
+   * @param out output stream being written to
+   */
+  @Deprecated
+  public void legacyWriteTo(final RLPOutput out) {
+<span class="nc" id="L113">    out.startList();</span>
+<span class="nc" id="L114">    to.encodeStandalone(out);</span>
+<span class="nc" id="L115">    out.writeBytes(pingHash);</span>
+<span class="nc" id="L116">    out.writeLongScalar(expiration);</span>
+<span class="nc" id="L117">    out.writeBytes(</span>
+<span class="nc" id="L118">        getEnrSeq()</span>
+<span class="nc" id="L119">            .orElseThrow(</span>
+                () -&gt;
+<span class="nc" id="L121">                    new IllegalStateException(</span>
+                        &quot;Attempting to serialize invalid PONG packet. Missing 'enrSeq' field&quot;))
+<span class="nc" id="L123">            .toBytes());</span>
+<span class="nc" id="L124">    out.endList();</span>
+<span class="nc" id="L125">  }</span>
+
+  @Override
+  public String toString() {
+<span class="nc" id="L129">    return &quot;PongPacketData{&quot;</span>
+        + &quot;to=&quot;
+        + to
+        + &quot;, pingHash=&quot;
+        + pingHash
+        + &quot;, expiration=&quot;
+        + expiration
+        + &quot;, enrSeq=&quot;
+        + enrSeq
+        + '}';
+  }
+
+  public Endpoint getTo() {
+<span class="fc" id="L142">    return to;</span>
+  }
+
+  public Bytes getPingHash() {
+<span class="fc" id="L146">    return pingHash;</span>
+  }
+
+  public long getExpiration() {
+<span class="fc" id="L150">    return expiration;</span>
+  }
+
+  public Optional&lt;UInt64&gt; getEnrSeq() {
+<span class="fc" id="L154">    return Optional.ofNullable(enrSeq);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WebSocketService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.websocket</a> &gt; <span class="el_source">WebSocketService.java</span></div><h1>WebSocketService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.websocket;
+
+import static com.google.common.collect.Streams.stream;
+import static org.hyperledger.besu.ethereum.api.jsonrpc.authentication.AuthenticationUtils.truncToken;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.AuthenticationService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.AuthenticationUtils;
+import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.DefaultAuthenticationService;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.exception.Logging403ErrorHandler;
+import org.hyperledger.besu.ethereum.api.jsonrpc.websocket.subscription.SubscriptionManager;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.net.InetSocketAddress;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Splitter;
+import com.google.common.collect.Iterables;
+import io.vertx.core.AsyncResult;
+import io.vertx.core.Handler;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.http.HttpConnection;
+import io.vertx.core.http.HttpServer;
+import io.vertx.core.http.HttpServerOptions;
+import io.vertx.core.http.HttpServerRequest;
+import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.http.ServerWebSocket;
+import io.vertx.core.net.SocketAddress;
+import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.handler.BodyHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class WebSocketService {
+
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(WebSocketService.class);</span>
+
+<span class="fc" id="L57">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
+  private static final String APPLICATION_JSON = &quot;application/json&quot;;
+
+  private final int maxActiveConnections;
+<span class="fc" id="L61">  private final AtomicInteger activeConnectionsCount = new AtomicInteger();</span>
+
+  private final Vertx vertx;
+  private final WebSocketConfiguration configuration;
+  private final WebSocketMessageHandler websocketMessageHandler;
+
+  private HttpServer httpServer;
+
+  @VisibleForTesting public final Optional&lt;AuthenticationService&gt; authenticationService;
+
+  public WebSocketService(
+      final Vertx vertx,
+      final WebSocketConfiguration configuration,
+      final WebSocketMessageHandler websocketMessageHandler,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L76">    this(</span>
+        vertx,
+        configuration,
+        websocketMessageHandler,
+<span class="fc" id="L80">        DefaultAuthenticationService.create(vertx, configuration),</span>
+        metricsSystem);
+<span class="fc" id="L82">  }</span>
+
+  public WebSocketService(
+      final Vertx vertx,
+      final WebSocketConfiguration configuration,
+      final WebSocketMessageHandler websocketMessageHandler,
+      final Optional&lt;AuthenticationService&gt; authenticationService,
+<span class="fc" id="L89">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L90">    this.vertx = vertx;</span>
+<span class="fc" id="L91">    this.configuration = configuration;</span>
+<span class="fc" id="L92">    this.websocketMessageHandler = websocketMessageHandler;</span>
+<span class="fc" id="L93">    this.authenticationService = authenticationService;</span>
+<span class="fc" id="L94">    this.maxActiveConnections = configuration.getMaxActiveConnections();</span>
+
+<span class="fc" id="L96">    metricsSystem.createIntegerGauge(</span>
+        BesuMetricCategory.RPC,
+        &quot;active_ws_connection_count&quot;,
+        &quot;Total no of active rpc ws connections&quot;,
+<span class="fc" id="L100">        activeConnectionsCount::intValue);</span>
+<span class="fc" id="L101">  }</span>
+
+  public CompletableFuture&lt;?&gt; start() {
+<span class="fc" id="L104">    LOG.info(</span>
+<span class="fc" id="L105">        &quot;Starting Websocket service on {}:{}&quot;, configuration.getHost(), configuration.getPort());</span>
+
+<span class="fc" id="L107">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L108">    httpServer =</span>
+        vertx
+<span class="fc" id="L110">            .createHttpServer(</span>
+                new HttpServerOptions()
+<span class="fc" id="L112">                    .setHost(configuration.getHost())</span>
+<span class="fc" id="L113">                    .setPort(configuration.getPort())</span>
+<span class="fc" id="L114">                    .setHandle100ContinueAutomatically(true)</span>
+<span class="fc" id="L115">                    .setCompressionSupported(true)</span>
+<span class="fc" id="L116">                    .addWebSocketSubProtocol(&quot;undefined&quot;)</span>
+<span class="fc" id="L117">                    .setMaxWebSocketFrameSize(configuration.getMaxFrameSize())</span>
+<span class="fc" id="L118">                    .setMaxWebSocketMessageSize(configuration.getMaxFrameSize() * 4)</span>
+<span class="fc" id="L119">                    .setRegisterWebSocketWriteHandlers(true))</span>
+<span class="fc" id="L120">            .webSocketHandler(websocketHandler())</span>
+<span class="fc" id="L121">            .connectionHandler(connectionHandler())</span>
+<span class="fc" id="L122">            .requestHandler(httpHandler())</span>
+<span class="fc" id="L123">            .listen(startHandler(resultFuture));</span>
+
+<span class="fc" id="L125">    return resultFuture;</span>
+  }
+
+  private Handler&lt;ServerWebSocket&gt; websocketHandler() {
+<span class="fc" id="L129">    return websocket -&gt; {</span>
+<span class="fc" id="L130">      final SocketAddress socketAddress = websocket.remoteAddress();</span>
+<span class="fc" id="L131">      final String connectionId = websocket.textHandlerID();</span>
+<span class="fc" id="L132">      final String token = getAuthToken(websocket);</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">      if (token != null) {</span>
+<span class="fc" id="L134">        LOG.atTrace()</span>
+<span class="fc" id="L135">            .setMessage(&quot;Websocket authentication token {}&quot;)</span>
+<span class="pc" id="L136">            .addArgument(() -&gt; truncToken(token))</span>
+<span class="fc" id="L137">            .log();</span>
+      }
+
+<span class="pc bpc" id="L140" title="1 of 2 branches missed.">      if (!hasAllowedHostnameHeader(Optional.ofNullable(websocket.headers().get(&quot;Host&quot;)))) {</span>
+<span class="nc" id="L141">        websocket.reject(403);</span>
+      }
+
+<span class="fc" id="L144">      LOG.debug(&quot;Websocket Connected ({})&quot;, socketAddressAsString(socketAddress));</span>
+
+<span class="fc" id="L146">      final Handler&lt;Buffer&gt; socketHandler =</span>
+          buffer -&gt; {
+<span class="fc" id="L148">            LOG.debug(</span>
+                &quot;Received Websocket request (binary frame) {} ({})&quot;,
+<span class="fc" id="L150">                buffer.toString(),</span>
+<span class="fc" id="L151">                socketAddressAsString(socketAddress));</span>
+
+<span class="fc bfc" id="L153" title="All 2 branches covered.">            if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L154">              authenticationService</span>
+<span class="fc" id="L155">                  .get()</span>
+<span class="fc" id="L156">                  .authenticate(</span>
+<span class="fc" id="L157">                      token, user -&gt; websocketMessageHandler.handle(websocket, buffer, user));</span>
+            } else {
+<span class="fc" id="L159">              websocketMessageHandler.handle(websocket, buffer, Optional.empty());</span>
+            }
+<span class="fc" id="L161">          };</span>
+<span class="fc" id="L162">      websocket.textMessageHandler(text -&gt; socketHandler.handle(Buffer.buffer(text)));</span>
+<span class="fc" id="L163">      websocket.binaryMessageHandler(socketHandler);</span>
+
+<span class="fc" id="L165">      websocket.closeHandler(</span>
+          v -&gt; {
+<span class="fc" id="L167">            LOG.debug(&quot;Websocket Disconnected ({})&quot;, socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L168">            vertx</span>
+<span class="fc" id="L169">                .eventBus()</span>
+<span class="fc" id="L170">                .publish(SubscriptionManager.EVENTBUS_REMOVE_SUBSCRIPTIONS_ADDRESS, connectionId);</span>
+<span class="fc" id="L171">          });</span>
+
+<span class="fc" id="L173">      websocket.exceptionHandler(</span>
+          t -&gt; {
+<span class="fc" id="L175">            LOG.debug(</span>
+                &quot;Unrecoverable error on Websocket: {} ({})&quot;,
+<span class="fc" id="L177">                t.getMessage(),</span>
+<span class="fc" id="L178">                socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L179">            websocket.close();</span>
+<span class="fc" id="L180">          });</span>
+<span class="fc" id="L181">    };</span>
+  }
+
+  private Handler&lt;HttpConnection&gt; connectionHandler() {
+
+<span class="fc" id="L186">    return connection -&gt; {</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">      if (activeConnectionsCount.get() &gt;= maxActiveConnections) {</span>
+        // disallow new connections to prevent DoS
+<span class="fc" id="L189">        LOG.warn(</span>
+            &quot;Rejecting new connection from {}. {}/{} max active connections limit reached.&quot;,
+<span class="fc" id="L191">            connection.remoteAddress(),</span>
+<span class="fc" id="L192">            activeConnectionsCount.getAndIncrement(),</span>
+<span class="fc" id="L193">            maxActiveConnections);</span>
+<span class="fc" id="L194">        connection.close();</span>
+      } else {
+<span class="fc" id="L196">        LOG.debug(</span>
+            &quot;Opened connection from {}. Total of active connections: {}/{}&quot;,
+<span class="fc" id="L198">            connection.remoteAddress(),</span>
+<span class="fc" id="L199">            activeConnectionsCount.incrementAndGet(),</span>
+<span class="fc" id="L200">            maxActiveConnections);</span>
+      }
+<span class="fc" id="L202">      connection.closeHandler(</span>
+          c -&gt;
+<span class="fc" id="L204">              LOG.debug(</span>
+                  &quot;Connection closed from {}. Total of active connections: {}/{}&quot;,
+<span class="fc" id="L206">                  connection.remoteAddress(),</span>
+<span class="fc" id="L207">                  activeConnectionsCount.decrementAndGet(),</span>
+<span class="fc" id="L208">                  maxActiveConnections));</span>
+<span class="fc" id="L209">    };</span>
+  }
+
+  private Handler&lt;HttpServerRequest&gt; httpHandler() {
+<span class="fc" id="L213">    final Router router = Router.router(vertx);</span>
+
+    // Verify Host header to avoid rebind attack.
+<span class="fc" id="L216">    router.route().handler(checkAllowlistHostHeader());</span>
+
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L219">      router.route(&quot;/login&quot;).handler(BodyHandler.create());</span>
+<span class="fc" id="L220">      router</span>
+<span class="fc" id="L221">          .post(&quot;/login&quot;)</span>
+<span class="fc" id="L222">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L223">          .handler(authenticationService.get()::handleLogin);</span>
+    } else {
+<span class="fc" id="L225">      router</span>
+<span class="fc" id="L226">          .post(&quot;/login&quot;)</span>
+<span class="fc" id="L227">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L228">          .handler(DefaultAuthenticationService::handleDisabledLogin);</span>
+    }
+<span class="fc" id="L230">    router.errorHandler(403, new Logging403ErrorHandler());</span>
+<span class="fc" id="L231">    router.route().handler(WebSocketService::handleHttpNotSupported);</span>
+<span class="fc" id="L232">    return router;</span>
+  }
+
+  private static void handleHttpNotSupported(final RoutingContext http) {
+<span class="fc" id="L236">    final HttpServerResponse response = http.response();</span>
+<span class="pc bpc" id="L237" title="1 of 2 branches missed.">    if (!response.closed()) {</span>
+<span class="fc" id="L238">      response.setStatusCode(400).end(&quot;Websocket endpoint can't handle HTTP requests&quot;);</span>
+    }
+<span class="fc" id="L240">  }</span>
+
+  private Handler&lt;AsyncResult&lt;HttpServer&gt;&gt; startHandler(final CompletableFuture&lt;?&gt; resultFuture) {
+<span class="fc" id="L243">    return res -&gt; {</span>
+<span class="pc bpc" id="L244" title="1 of 2 branches missed.">      if (res.succeeded()) {</span>
+
+<span class="fc" id="L246">        final int actualPort = res.result().actualPort();</span>
+<span class="fc" id="L247">        LOG.info(</span>
+            &quot;Websocket service started and listening on {}:{}&quot;,
+<span class="fc" id="L249">            configuration.getHost(),</span>
+<span class="fc" id="L250">            actualPort);</span>
+<span class="fc" id="L251">        configuration.setPort(actualPort);</span>
+<span class="fc" id="L252">        resultFuture.complete(null);</span>
+<span class="fc" id="L253">      } else {</span>
+<span class="nc" id="L254">        resultFuture.completeExceptionally(res.cause());</span>
+      }
+<span class="fc" id="L256">    };</span>
+  }
+
+  public CompletableFuture&lt;?&gt; stop() {
+<span class="pc bpc" id="L260" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L261">      return CompletableFuture.completedFuture(null);</span>
+    }
+
+<span class="fc" id="L264">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+
+<span class="fc" id="L266">    httpServer.close(</span>
+        res -&gt; {
+<span class="pc bpc" id="L268" title="1 of 2 branches missed.">          if (res.succeeded()) {</span>
+<span class="fc" id="L269">            httpServer = null;</span>
+<span class="fc" id="L270">            resultFuture.complete(null);</span>
+          } else {
+<span class="nc" id="L272">            resultFuture.completeExceptionally(res.cause());</span>
+          }
+<span class="fc" id="L274">        });</span>
+
+<span class="fc" id="L276">    return resultFuture;</span>
+  }
+
+  public InetSocketAddress socketAddress() {
+<span class="pc bpc" id="L280" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L281">      return EMPTY_SOCKET_ADDRESS;</span>
+    }
+<span class="fc" id="L283">    return new InetSocketAddress(configuration.getHost(), httpServer.actualPort());</span>
+  }
+
+  private String socketAddressAsString(final SocketAddress socketAddress) {
+<span class="fc" id="L287">    return String.format(&quot;host=%s, port=%d&quot;, socketAddress.host(), socketAddress.port());</span>
+  }
+
+  private String getAuthToken(final ServerWebSocket websocket) {
+<span class="fc" id="L291">    return AuthenticationUtils.getJwtTokenFromAuthorizationHeaderValue(</span>
+<span class="fc" id="L292">        websocket.headers().get(&quot;Authorization&quot;));</span>
+  }
+
+  private Handler&lt;RoutingContext&gt; checkAllowlistHostHeader() {
+<span class="fc" id="L296">    return event -&gt; {</span>
+<span class="fc bfc" id="L297" title="All 2 branches covered.">      if (hasAllowedHostnameHeader(Optional.ofNullable(event.request().host()))) {</span>
+<span class="fc" id="L298">        event.next();</span>
+      } else {
+<span class="fc" id="L300">        final HttpServerResponse response = event.response();</span>
+<span class="pc bpc" id="L301" title="1 of 2 branches missed.">        if (!response.closed()) {</span>
+<span class="fc" id="L302">          response</span>
+<span class="fc" id="L303">              .setStatusCode(403)</span>
+<span class="fc" id="L304">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
+<span class="fc" id="L305">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
+        }
+      }
+<span class="fc" id="L308">    };</span>
+  }
+
+  @VisibleForTesting
+  public boolean hasAllowedHostnameHeader(final Optional&lt;String&gt; header) {
+<span class="fc bfc" id="L313" title="All 2 branches covered.">    return configuration.getHostsAllowlist().contains(&quot;*&quot;)</span>
+<span class="fc bfc" id="L314" title="All 2 branches covered.">        || header.map(value -&gt; checkHostInAllowlist(validateHostHeader(value))).orElse(false);</span>
+  }
+
+  private Optional&lt;String&gt; validateHostHeader(final String header) {
+<span class="fc" id="L318">    final Iterable&lt;String&gt; splitHostHeader = Splitter.on(':').split(header);</span>
+<span class="fc" id="L319">    final long hostPieces = stream(splitHostHeader).count();</span>
+<span class="fc bfc" id="L320" title="All 2 branches covered.">    if (hostPieces &gt; 1) {</span>
+      // If the host contains a colon, verify the host is correctly formed - host [ &quot;:&quot; port ]
+<span class="fc bfc" id="L322" title="All 4 branches covered.">      if (hostPieces &gt; 2 || !Iterables.get(splitHostHeader, 1).matches(&quot;\\d{1,5}+&quot;)) {</span>
+<span class="fc" id="L323">        return Optional.empty();</span>
+      }
+    }
+<span class="fc" id="L326">    return Optional.ofNullable(Iterables.get(splitHostHeader, 0));</span>
+  }
+
+  private boolean checkHostInAllowlist(final Optional&lt;String&gt; hostHeader) {
+<span class="fc" id="L330">    return hostHeader</span>
+<span class="fc" id="L331">        .map(</span>
+            header -&gt;
+<span class="fc" id="L333">                configuration.getHostsAllowlist().stream()</span>
+<span class="fc" id="L334">                    .anyMatch(</span>
+                        allowlistEntry -&gt;
+<span class="fc" id="L336">                            allowlistEntry.toLowerCase().equals(header.toLowerCase())))</span>
+<span class="fc" id="L337">        .orElse(false);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

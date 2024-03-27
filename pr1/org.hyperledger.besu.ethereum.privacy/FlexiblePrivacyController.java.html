@@ -1,0 +1,348 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlexiblePrivacyController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">FlexiblePrivacyController.java</span></div><h1>FlexiblePrivacyController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.hyperledger.besu.ethereum.core.PrivacyParameters.FLEXIBLE_PRIVACY_PROXY;
+import static org.hyperledger.besu.ethereum.privacy.group.FlexibleGroupManagement.GET_PARTICIPANTS_METHOD_SIGNATURE;
+import static org.hyperledger.besu.ethereum.privacy.group.FlexibleGroupManagement.GET_VERSION_METHOD_SIGNATURE;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.types.PrivacyGroup;
+import org.hyperledger.besu.enclave.types.ReceiveResponse;
+import org.hyperledger.besu.enclave.types.SendResponse;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivacyGroupHeadBlockMap;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateTransactionMetadata;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.transaction.CallParameter;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FlexiblePrivacyController extends AbstractRestrictedPrivacyController {
+
+<span class="fc" id="L56">  private static final Logger LOG = LoggerFactory.getLogger(FlexiblePrivacyController.class);</span>
+
+  private FlexiblePrivacyGroupContract flexiblePrivacyGroupContract;
+
+  public FlexiblePrivacyController(
+      final Blockchain blockchain,
+      final PrivacyParameters privacyParameters,
+      final Optional&lt;BigInteger&gt; chainId,
+      final PrivateTransactionSimulator privateTransactionSimulator,
+      final PrivateNonceProvider privateNonceProvider,
+      final PrivateWorldStateReader privateWorldStateReader) {
+<span class="fc" id="L67">    this(</span>
+        blockchain,
+<span class="fc" id="L69">        privacyParameters.getPrivateStateStorage(),</span>
+<span class="fc" id="L70">        privacyParameters.getEnclave(),</span>
+        new PrivateTransactionValidator(chainId),
+        privateTransactionSimulator,
+        privateNonceProvider,
+        privateWorldStateReader,
+<span class="fc" id="L75">        privacyParameters.getPrivateStateRootResolver());</span>
+<span class="fc" id="L76">  }</span>
+
+  public FlexiblePrivacyController(
+      final Blockchain blockchain,
+      final PrivateStateStorage privateStateStorage,
+      final Enclave enclave,
+      final PrivateTransactionValidator privateTransactionValidator,
+      final PrivateTransactionSimulator privateTransactionSimulator,
+      final PrivateNonceProvider privateNonceProvider,
+      final PrivateWorldStateReader privateWorldStateReader,
+      final PrivateStateRootResolver privateStateRootResolver) {
+<span class="fc" id="L87">    super(</span>
+        blockchain,
+        privateStateStorage,
+        enclave,
+        privateTransactionValidator,
+        privateTransactionSimulator,
+        privateNonceProvider,
+        privateWorldStateReader,
+        privateStateRootResolver);
+
+<span class="fc" id="L97">    flexiblePrivacyGroupContract = new FlexiblePrivacyGroupContract(privateTransactionSimulator);</span>
+<span class="fc" id="L98">  }</span>
+
+  @Override
+  public String createPrivateMarkerTransactionPayload(
+      final PrivateTransaction privateTransaction,
+      final String privacyUserId,
+      final Optional&lt;PrivacyGroup&gt; privacyGroup) {
+<span class="fc" id="L105">    LOG.trace(&quot;Storing private transaction in enclave&quot;);</span>
+<span class="fc" id="L106">    final SendResponse sendResponse = sendRequest(privateTransaction, privacyGroup);</span>
+<span class="fc" id="L107">    final String firstPart = sendResponse.getKey();</span>
+<span class="fc" id="L108">    final Optional&lt;String&gt; optionalSecondPart =</span>
+<span class="fc" id="L109">        buildAndSendAddPayload(</span>
+            privateTransaction,
+<span class="fc" id="L111">            Bytes32.wrap(privateTransaction.getPrivacyGroupId().orElseThrow()),</span>
+            privacyUserId);
+
+<span class="fc" id="L114">    return buildCompoundLookupId(firstPart, optionalSecondPart);</span>
+  }
+
+  @Override
+  public Optional&lt;PrivacyGroup&gt; findPrivacyGroupByGroupId(
+      final String privacyGroupId, final String enclaveKey) {
+    // get the privateFor list from the management contract
+<span class="fc" id="L121">    final Optional&lt;TransactionProcessingResult&gt; privateTransactionSimulatorResultOptional =</span>
+<span class="fc" id="L122">        privateTransactionSimulator.process(</span>
+<span class="fc" id="L123">            privacyGroupId, buildCallParams(GET_PARTICIPANTS_METHOD_SIGNATURE));</span>
+
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    if (privateTransactionSimulatorResultOptional.isPresent()</span>
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">        &amp;&amp; privateTransactionSimulatorResultOptional.get().isSuccessful()) {</span>
+<span class="fc" id="L127">      final RLPInput rlpInput =</span>
+<span class="fc" id="L128">          RLP.input(privateTransactionSimulatorResultOptional.get().getOutput());</span>
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">      if (rlpInput.nextSize() &gt; 0) {</span>
+<span class="fc" id="L130">        return Optional.of(</span>
+            new PrivacyGroup(
+                privacyGroupId,
+                PrivacyGroup.Type.FLEXIBLE,
+                &quot;&quot;,
+                &quot;&quot;,
+<span class="fc" id="L136">                FlexibleUtil.decodeList(rlpInput.raw())));</span>
+      }
+    }
+<span class="fc" id="L139">    return Optional.empty();</span>
+  }
+
+  @Override
+  public PrivacyGroup[] findPrivacyGroupByMembers(
+      final List&lt;String&gt; addresses, final String privacyUserId) {
+<span class="fc" id="L145">    final ArrayList&lt;PrivacyGroup&gt; privacyGroups = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L146">    final PrivacyGroupHeadBlockMap privacyGroupHeadBlockMap =</span>
+        privateStateStorage
+<span class="fc" id="L148">            .getPrivacyGroupHeadBlockMap(blockchain.getChainHeadHash())</span>
+<span class="fc" id="L149">            .orElse(PrivacyGroupHeadBlockMap.empty());</span>
+<span class="fc" id="L150">    privacyGroupHeadBlockMap</span>
+<span class="fc" id="L151">        .keySet()</span>
+<span class="fc" id="L152">        .forEach(</span>
+            c -&gt; {
+<span class="fc" id="L154">              final Optional&lt;PrivacyGroup&gt; maybePrivacyGroup =</span>
+<span class="fc" id="L155">                  findPrivacyGroupByGroupId(c.toBase64String(), privacyUserId);</span>
+<span class="pc bpc" id="L156" title="1 of 2 branches missed.">              if (maybePrivacyGroup.isPresent()</span>
+<span class="pc bpc" id="L157" title="1 of 2 branches missed.">                  &amp;&amp; maybePrivacyGroup.get().getMembers().containsAll(addresses)) {</span>
+<span class="fc" id="L158">                privacyGroups.add(maybePrivacyGroup.get());</span>
+              }
+<span class="fc" id="L160">            });</span>
+<span class="fc" id="L161">    return privacyGroups.toArray(new PrivacyGroup[0]);</span>
+  }
+
+  @Override
+  public PrivacyGroup createPrivacyGroup(
+      final List&lt;String&gt; addresses,
+      final String name,
+      final String description,
+      final String privacyUserId) {
+<span class="fc" id="L170">    throw new PrivacyConfigurationNotSupportedException(</span>
+        &quot;Method not supported when using flexible privacy&quot;);
+  }
+
+  @Override
+  public String deletePrivacyGroup(final String privacyGroupId, final String privacyUserId) {
+<span class="fc" id="L176">    throw new PrivacyConfigurationNotSupportedException(</span>
+        &quot;Method not supported when using flexible privacy&quot;);
+  }
+
+  @Override
+  public void verifyPrivacyGroupContainsPrivacyUserId(
+      final String privacyGroupId, final String privacyUserId) {
+<span class="fc" id="L183">    verifyPrivacyGroupContainsPrivacyUserId(privacyGroupId, privacyUserId, Optional.empty());</span>
+<span class="fc" id="L184">  }</span>
+
+  @Override
+  public void verifyPrivacyGroupContainsPrivacyUserId(
+      final String privacyGroupId, final String privacyUserId, final Optional&lt;Long&gt; blockNumber) {
+<span class="fc" id="L189">    final Optional&lt;PrivacyGroup&gt; maybePrivacyGroup =</span>
+<span class="fc" id="L190">        flexiblePrivacyGroupContract.getPrivacyGroupByIdAndBlockNumber(privacyGroupId, blockNumber);</span>
+    // IF the group exists, check member
+    // ELSE member is valid if the group doesn't exist yet - this is normal for flexible privacy
+    // groups
+<span class="fc" id="L194">    maybePrivacyGroup.ifPresent(</span>
+        group -&gt; {
+<span class="pc bpc" id="L196" title="1 of 2 branches missed.">          if (!group.getMembers().contains(privacyUserId)) {</span>
+<span class="nc" id="L197">            throw new MultiTenancyValidationException(</span>
+                &quot;Privacy group must contain the enclave public key&quot;);
+          }
+<span class="fc" id="L200">        });</span>
+<span class="fc" id="L201">  }</span>
+
+  private List&lt;PrivateTransactionMetadata&gt; buildTransactionMetadataList(
+      final Bytes privacyGroupId) {
+<span class="fc" id="L205">    final List&lt;PrivateTransactionMetadata&gt; pmtHashes = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L206">    PrivacyGroupHeadBlockMap privacyGroupHeadBlockMap =</span>
+        privateStateStorage
+<span class="fc" id="L208">            .getPrivacyGroupHeadBlockMap(blockchain.getChainHeadHash())</span>
+<span class="fc" id="L209">            .orElse(PrivacyGroupHeadBlockMap.empty());</span>
+<span class="pc bpc" id="L210" title="1 of 2 branches missed.">    if (privacyGroupHeadBlockMap.containsKey(privacyGroupId)) {</span>
+<span class="fc" id="L211">      Hash blockHash = privacyGroupHeadBlockMap.get(privacyGroupId);</span>
+<span class="pc bpc" id="L212" title="1 of 2 branches missed.">      while (blockHash != null) {</span>
+<span class="fc" id="L213">        pmtHashes.addAll(</span>
+            0,
+            privateStateStorage
+<span class="fc" id="L216">                .getPrivateBlockMetadata(blockHash, Bytes32.wrap(privacyGroupId))</span>
+<span class="fc" id="L217">                .orElseThrow()</span>
+<span class="fc" id="L218">                .getPrivateTransactionMetadataList());</span>
+<span class="fc" id="L219">        blockHash = blockchain.getBlockHeader(blockHash).orElseThrow().getParentHash();</span>
+<span class="fc" id="L220">        privacyGroupHeadBlockMap =</span>
+            privateStateStorage
+<span class="fc" id="L222">                .getPrivacyGroupHeadBlockMap(blockHash)</span>
+<span class="fc" id="L223">                .orElse(PrivacyGroupHeadBlockMap.empty());</span>
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">        if (privacyGroupHeadBlockMap.containsKey(privacyGroupId)) {</span>
+<span class="nc" id="L225">          blockHash = privacyGroupHeadBlockMap.get(privacyGroupId);</span>
+        } else {
+          break;
+        }
+      }
+    }
+<span class="fc" id="L231">    return pmtHashes;</span>
+  }
+
+  private List&lt;PrivateTransactionWithMetadata&gt; retrievePrivateTransactions(
+      final Bytes32 privacyGroupId,
+      final List&lt;PrivateTransactionMetadata&gt; privateTransactionMetadataList,
+      final String privacyUserId) {
+<span class="fc" id="L238">    final ArrayList&lt;PrivateTransactionWithMetadata&gt; privateTransactions = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L239">    privateStateStorage</span>
+<span class="fc" id="L240">        .getAddDataKey(privacyGroupId)</span>
+<span class="pc" id="L241">        .ifPresent(key -&gt; privateTransactions.addAll(retrieveAddBlob(key.toBase64String())));</span>
+<span class="fc bfc" id="L242" title="All 2 branches covered.">    for (int i = privateTransactions.size(); i &lt; privateTransactionMetadataList.size(); i++) {</span>
+<span class="fc" id="L243">      final PrivateTransactionMetadata privateTransactionMetadata =</span>
+<span class="fc" id="L244">          privateTransactionMetadataList.get(i);</span>
+<span class="fc" id="L245">      final Transaction privateMarkerTransaction =</span>
+          blockchain
+<span class="fc" id="L247">              .getTransactionByHash(privateTransactionMetadata.getPrivateMarkerTransactionHash())</span>
+<span class="fc" id="L248">              .orElseThrow();</span>
+<span class="fc" id="L249">      final ReceiveResponse receiveResponse =</span>
+<span class="fc" id="L250">          retrieveTransaction(</span>
+<span class="fc" id="L251">              privateMarkerTransaction.getPayload().slice(0, 32).toBase64String(), privacyUserId);</span>
+<span class="fc" id="L252">      final BytesValueRLPInput input =</span>
+          new BytesValueRLPInput(
+<span class="fc" id="L254">              Bytes.fromBase64String(new String(receiveResponse.getPayload(), UTF_8)), false);</span>
+<span class="fc" id="L255">      input.enterList();</span>
+<span class="fc" id="L256">      privateTransactions.add(</span>
+          new PrivateTransactionWithMetadata(
+<span class="fc" id="L258">              PrivateTransaction.readFrom(input), privateTransactionMetadata));</span>
+<span class="fc" id="L259">      input.leaveListLenient();</span>
+    }
+
+<span class="fc" id="L262">    return privateTransactions;</span>
+  }
+
+  private List&lt;PrivateTransactionWithMetadata&gt; retrieveAddBlob(final String addDataKey) {
+<span class="nc" id="L266">    final ReceiveResponse addReceiveResponse = enclave.receive(addDataKey);</span>
+<span class="nc" id="L267">    return PrivateTransactionWithMetadata.readListFromPayload(</span>
+<span class="nc" id="L268">        Bytes.wrap(Base64.getDecoder().decode(addReceiveResponse.getPayload())));</span>
+  }
+
+  private Optional&lt;String&gt; buildAndSendAddPayload(
+      final PrivateTransaction privateTransaction,
+      final Bytes32 privacyGroupId,
+      final String privacyUserId) {
+<span class="fc bfc" id="L275" title="All 2 branches covered.">    if (FlexibleUtil.isGroupAdditionTransaction(privateTransaction)) {</span>
+<span class="fc" id="L276">      final List&lt;PrivateTransactionMetadata&gt; privateTransactionMetadataList =</span>
+<span class="fc" id="L277">          buildTransactionMetadataList(privacyGroupId);</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">      if (!privateTransactionMetadataList.isEmpty()) {</span>
+<span class="fc" id="L279">        final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList =</span>
+<span class="fc" id="L280">            retrievePrivateTransactions(</span>
+                privacyGroupId, privateTransactionMetadataList, privacyUserId);
+<span class="fc" id="L282">        final Bytes bytes = serializeAddToGroupPayload(privateTransactionWithMetadataList);</span>
+<span class="fc" id="L283">        final List&lt;String&gt; privateFor =</span>
+<span class="fc" id="L284">            FlexibleUtil.getParticipantsFromParameter(privateTransaction.getPayload());</span>
+<span class="fc" id="L285">        return Optional.of(</span>
+<span class="fc" id="L286">            enclave.send(bytes.toBase64String(), privacyUserId, privateFor).getKey());</span>
+      }
+    }
+
+<span class="fc" id="L290">    return Optional.empty();</span>
+  }
+
+  private String buildCompoundLookupId(
+      final String privateTransactionLookupId,
+      final Optional&lt;String&gt; maybePrivateTransactionLookupId) {
+<span class="fc bfc" id="L296" title="All 2 branches covered.">    return maybePrivateTransactionLookupId.isPresent()</span>
+<span class="fc" id="L297">        ? Bytes.concatenate(</span>
+<span class="fc" id="L298">                Bytes.fromBase64String(privateTransactionLookupId),</span>
+<span class="fc" id="L299">                Bytes.fromBase64String(maybePrivateTransactionLookupId.get()))</span>
+<span class="fc" id="L300">            .toBase64String()</span>
+<span class="fc" id="L301">        : privateTransactionLookupId;</span>
+  }
+
+  private Bytes serializeAddToGroupPayload(
+      final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList) {
+
+<span class="fc" id="L307">    final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+<span class="fc" id="L308">    rlpOutput.startList();</span>
+<span class="fc" id="L309">    privateTransactionWithMetadataList.forEach(</span>
+<span class="fc" id="L310">        privateTransactionWithMetadata -&gt; privateTransactionWithMetadata.writeTo(rlpOutput));</span>
+<span class="fc" id="L311">    rlpOutput.endList();</span>
+
+<span class="fc" id="L313">    return rlpOutput.encoded();</span>
+  }
+
+  private SendResponse sendRequest(
+      final PrivateTransaction privateTransaction, final Optional&lt;PrivacyGroup&gt; maybePrivacyGroup) {
+<span class="fc" id="L318">    final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+
+<span class="fc" id="L320">    final PrivacyGroup privacyGroup = maybePrivacyGroup.orElseThrow();</span>
+<span class="fc" id="L321">    final Optional&lt;TransactionProcessingResult&gt; version =</span>
+<span class="fc" id="L322">        privateTransactionSimulator.process(</span>
+<span class="fc" id="L323">            privateTransaction.getPrivacyGroupId().orElseThrow().toBase64String(),</span>
+<span class="fc" id="L324">            buildCallParams(GET_VERSION_METHOD_SIGNATURE));</span>
+<span class="fc" id="L325">    new VersionedPrivateTransaction(privateTransaction, version).writeTo(rlpOutput);</span>
+<span class="fc" id="L326">    final List&lt;String&gt; flexiblePrivateFor = privacyGroup.getMembers();</span>
+<span class="fc" id="L327">    return enclave.send(</span>
+<span class="fc" id="L328">        rlpOutput.encoded().toBase64String(),</span>
+<span class="fc" id="L329">        privateTransaction.getPrivateFrom().toBase64String(),</span>
+        flexiblePrivateFor);
+  }
+
+  CallParameter buildCallParams(final Bytes methodCall) {
+<span class="fc" id="L334">    return new CallParameter(</span>
+<span class="fc" id="L335">        Address.ZERO, FLEXIBLE_PRIVACY_PROXY, 3000000, Wei.of(1000), Wei.ZERO, methodCall);</span>
+  }
+
+  ReceiveResponse retrieveTransaction(final String enclaveKey, final String privacyUserId) {
+<span class="fc" id="L339">    return enclave.receive(enclaveKey, privacyUserId);</span>
+  }
+
+  @VisibleForTesting
+  public void setFlexiblePrivacyGroupContract(
+      final FlexiblePrivacyGroupContract flexiblePrivacyGroupContract) {
+<span class="fc" id="L345">    this.flexiblePrivacyGroupContract = flexiblePrivacyGroupContract;</span>
+<span class="fc" id="L346">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

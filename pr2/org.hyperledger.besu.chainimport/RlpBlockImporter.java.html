@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RlpBlockImporter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.chainimport</a> &gt; <span class="el_source">RlpBlockImporter.java</span></div><h1>RlpBlockImporter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.chainimport;
+
+import static java.util.concurrent.TimeUnit.SECONDS;
+
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.BlockImporter;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.BlockHeaderValidator;
+import org.hyperledger.besu.ethereum.mainnet.BlockImportResult;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.util.RawBlockIterator;
+
+import java.io.Closeable;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.google.common.base.MoreObjects;
+import com.google.common.base.Stopwatch;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Tool for importing rlp-encoded block data from files. */
+<span class="fc" id="L54">public class RlpBlockImporter implements Closeable {</span>
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(RlpBlockImporter.class);</span>
+
+<span class="fc" id="L57">  private final Semaphore blockBacklog = new Semaphore(2);</span>
+
+<span class="fc" id="L59">  private final ExecutorService validationExecutor = Executors.newCachedThreadPool();</span>
+<span class="fc" id="L60">  private final ExecutorService importExecutor = Executors.newSingleThreadExecutor();</span>
+
+  private long cumulativeGas;
+  private long segmentGas;
+<span class="fc" id="L64">  private final Stopwatch cumulativeTimer = Stopwatch.createUnstarted();</span>
+<span class="fc" id="L65">  private final Stopwatch segmentTimer = Stopwatch.createUnstarted();</span>
+  private static final long SEGMENT_SIZE = 1000;
+
+  /**
+   * Imports blocks that are stored as concatenated RLP sections in the given file into Besu's block
+   * storage.
+   *
+   * @param blocks Path to the file containing the blocks
+   * @param besuController the BesuController that defines blockchain behavior
+   * @param skipPowValidation Skip proof of work validation (correct mix hash and difficulty)
+   * @return the import result
+   * @throws IOException On Failure
+   */
+  public RlpBlockImporter.ImportResult importBlockchain(
+      final Path blocks, final BesuController besuController, final boolean skipPowValidation)
+      throws IOException {
+<span class="fc" id="L81">    return importBlockchain(blocks, besuController, skipPowValidation, 0L, Long.MAX_VALUE);</span>
+  }
+
+  /**
+   * Import blockchain.
+   *
+   * @param blocks the blocks
+   * @param besuController the besu controller
+   * @param skipPowValidation the skip pow validation
+   * @param startBlock the start block
+   * @param endBlock the end block
+   * @return the rlp block importer - import result
+   * @throws IOException the io exception
+   */
+  public RlpBlockImporter.ImportResult importBlockchain(
+      final Path blocks,
+      final BesuController besuController,
+      final boolean skipPowValidation,
+      final long startBlock,
+      final long endBlock)
+      throws IOException {
+<span class="fc" id="L102">    final ProtocolSchedule protocolSchedule = besuController.getProtocolSchedule();</span>
+<span class="fc" id="L103">    final ProtocolContext context = besuController.getProtocolContext();</span>
+<span class="fc" id="L104">    final MutableBlockchain blockchain = context.getBlockchain();</span>
+<span class="fc" id="L105">    int count = 0;</span>
+<span class="fc" id="L106">    final BlockHeaderFunctions blockHeaderFunctions =</span>
+<span class="fc" id="L107">        ScheduleBasedBlockHeaderFunctions.create(protocolSchedule);</span>
+<span class="fc" id="L108">    try (final RawBlockIterator iterator = new RawBlockIterator(blocks, blockHeaderFunctions)) {</span>
+<span class="fc" id="L109">      BlockHeader previousHeader = null;</span>
+<span class="fc" id="L110">      CompletableFuture&lt;Void&gt; previousBlockFuture = null;</span>
+<span class="fc" id="L111">      final AtomicReference&lt;Throwable&gt; threadedException = new AtomicReference&lt;&gt;();</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      while (iterator.hasNext()) {</span>
+<span class="fc" id="L113">        final Block block = iterator.next();</span>
+<span class="fc" id="L114">        final BlockHeader header = block.getHeader();</span>
+<span class="fc" id="L115">        final long blockNumber = header.getNumber();</span>
+<span class="pc bpc" id="L116" title="2 of 6 branches missed.">        if (blockNumber == BlockHeader.GENESIS_BLOCK_NUMBER</span>
+            || blockNumber &lt; startBlock
+            || blockNumber &gt;= endBlock) {
+<span class="nc" id="L119">          continue;</span>
+        }
+<span class="pc bpc" id="L121" title="1 of 2 branches missed.">        if (blockchain.contains(header.getHash())) {</span>
+<span class="nc" id="L122">          continue;</span>
+        }
+<span class="fc bfc" id="L124" title="All 2 branches covered.">        if (previousHeader == null) {</span>
+<span class="fc" id="L125">          previousHeader = lookupPreviousHeader(blockchain, header);</span>
+        }
+<span class="fc" id="L127">        final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(header);</span>
+<span class="fc" id="L128">        final BlockHeader lastHeader = previousHeader;</span>
+
+<span class="fc" id="L130">        final CompletableFuture&lt;Void&gt; validationFuture =</span>
+<span class="fc" id="L131">            CompletableFuture.runAsync(</span>
+<span class="fc" id="L132">                () -&gt; validateBlock(protocolSpec, context, lastHeader, header, skipPowValidation),</span>
+                validationExecutor);
+
+<span class="fc" id="L135">        final CompletableFuture&lt;Void&gt; extractingFuture =</span>
+<span class="fc" id="L136">            CompletableFuture.runAsync(() -&gt; extractSignatures(block));</span>
+
+        final CompletableFuture&lt;Void&gt; calculationFutures;
+<span class="fc bfc" id="L139" title="All 2 branches covered.">        if (previousBlockFuture == null) {</span>
+<span class="fc" id="L140">          calculationFutures = extractingFuture;</span>
+        } else {
+<span class="fc" id="L142">          calculationFutures = CompletableFuture.allOf(extractingFuture, previousBlockFuture);</span>
+        }
+
+        try {
+          do {
+<span class="fc" id="L147">            final Throwable t = (Exception) threadedException.get();</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">            if (t != null) {</span>
+<span class="nc" id="L149">              throw new RuntimeException(&quot;Error importing block &quot; + header.getNumber(), t);</span>
+            }
+<span class="fc bfc" id="L151" title="All 2 branches covered.">          } while (!blockBacklog.tryAcquire(1, SECONDS));</span>
+<span class="nc" id="L152">        } catch (final InterruptedException e) {</span>
+<span class="nc" id="L153">          LOG.error(&quot;Interrupted adding to backlog.&quot;, e);</span>
+<span class="nc" id="L154">          break;</span>
+<span class="fc" id="L155">        }</span>
+<span class="fc" id="L156">        previousBlockFuture =</span>
+<span class="fc" id="L157">            validationFuture.runAfterBothAsync(</span>
+                calculationFutures,
+                () -&gt;
+<span class="fc" id="L160">                    evaluateBlock(</span>
+                        context,
+                        block,
+                        header,
+<span class="fc" id="L164">                        protocolSchedule.getByBlockHeader(header),</span>
+                        skipPowValidation),
+                importExecutor);
+<span class="fc" id="L167">        previousBlockFuture.exceptionally(</span>
+            exception -&gt; {
+<span class="fc" id="L169">              threadedException.set(exception);</span>
+<span class="fc" id="L170">              return null;</span>
+            });
+
+<span class="fc" id="L173">        ++count;</span>
+<span class="fc" id="L174">        previousHeader = header;</span>
+<span class="fc" id="L175">      }</span>
+<span class="pc bpc" id="L176" title="1 of 2 branches missed.">      if (previousBlockFuture != null) {</span>
+<span class="fc" id="L177">        previousBlockFuture.join();</span>
+      }
+<span class="fc" id="L179">      logProgress(blockchain.getChainHeadBlockNumber());</span>
+<span class="fc" id="L180">      return new RlpBlockImporter.ImportResult(</span>
+<span class="fc" id="L181">          blockchain.getChainHead().getTotalDifficulty(), count);</span>
+    }
+  }
+
+  private void extractSignatures(final Block block) {
+<span class="fc" id="L186">    final List&lt;CompletableFuture&lt;Void&gt;&gt; futures =</span>
+<span class="fc" id="L187">        new ArrayList&lt;&gt;(block.getBody().getTransactions().size());</span>
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">    for (final Transaction tx : block.getBody().getTransactions()) {</span>
+<span class="nc" id="L189">      futures.add(CompletableFuture.runAsync(tx::getSender, validationExecutor));</span>
+<span class="nc" id="L190">    }</span>
+<span class="pc bpc" id="L191" title="1 of 2 branches missed.">    for (final CompletableFuture&lt;Void&gt; future : futures) {</span>
+<span class="nc" id="L192">      future.join();</span>
+<span class="nc" id="L193">    }</span>
+<span class="fc" id="L194">  }</span>
+
+  private void validateBlock(
+      final ProtocolSpec protocolSpec,
+      final ProtocolContext context,
+      final BlockHeader previousHeader,
+      final BlockHeader header,
+      final boolean skipPowValidation) {
+<span class="fc" id="L202">    final BlockHeaderValidator blockHeaderValidator = protocolSpec.getBlockHeaderValidator();</span>
+<span class="fc" id="L203">    final boolean validHeader =</span>
+<span class="fc" id="L204">        blockHeaderValidator.validateHeader(</span>
+            header,
+            previousHeader,
+            context,
+<span class="fc bfc" id="L208" title="All 2 branches covered.">            skipPowValidation</span>
+<span class="fc" id="L209">                ? HeaderValidationMode.LIGHT_DETACHED_ONLY</span>
+<span class="fc" id="L210">                : HeaderValidationMode.DETACHED_ONLY);</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">    if (!validHeader) {</span>
+<span class="fc" id="L212">      throw new IllegalStateException(&quot;Invalid header at block number &quot; + header.getNumber() + &quot;.&quot;);</span>
+    }
+<span class="fc" id="L214">  }</span>
+
+  private void evaluateBlock(
+      final ProtocolContext context,
+      final Block block,
+      final BlockHeader header,
+      final ProtocolSpec protocolSpec,
+      final boolean skipPowValidation) {
+    try {
+<span class="fc" id="L223">      cumulativeTimer.start();</span>
+<span class="fc" id="L224">      segmentTimer.start();</span>
+<span class="fc" id="L225">      final BlockImporter blockImporter = protocolSpec.getBlockImporter();</span>
+<span class="fc" id="L226">      final BlockImportResult blockImported =</span>
+<span class="fc" id="L227">          blockImporter.importBlock(</span>
+              context,
+              block,
+<span class="fc bfc" id="L230" title="All 2 branches covered.">              skipPowValidation</span>
+<span class="fc" id="L231">                  ? HeaderValidationMode.LIGHT_SKIP_DETACHED</span>
+<span class="fc" id="L232">                  : HeaderValidationMode.SKIP_DETACHED,</span>
+<span class="fc bfc" id="L233" title="All 2 branches covered.">              skipPowValidation ? HeaderValidationMode.LIGHT : HeaderValidationMode.FULL);</span>
+<span class="pc bpc" id="L234" title="1 of 2 branches missed.">      if (!blockImported.isImported()) {</span>
+<span class="nc" id="L235">        throw new IllegalStateException(</span>
+<span class="nc" id="L236">            &quot;Invalid block at block number &quot; + header.getNumber() + &quot;.&quot;);</span>
+      }
+    } finally {
+<span class="fc" id="L239">      blockBacklog.release();</span>
+<span class="fc" id="L240">      cumulativeTimer.stop();</span>
+<span class="fc" id="L241">      segmentTimer.stop();</span>
+<span class="fc" id="L242">      final long thisGas = block.getHeader().getGasUsed();</span>
+<span class="fc" id="L243">      cumulativeGas += thisGas;</span>
+<span class="fc" id="L244">      segmentGas += thisGas;</span>
+<span class="pc bpc" id="L245" title="1 of 2 branches missed.">      if (header.getNumber() % SEGMENT_SIZE == 0) {</span>
+<span class="nc" id="L246">        logProgress(header.getNumber());</span>
+      }
+    }
+<span class="fc" id="L249">  }</span>
+
+  private void logProgress(final long blockNum) {
+<span class="fc" id="L252">    final long elapseMicros = segmentTimer.elapsed(TimeUnit.MICROSECONDS);</span>
+    //noinspection PlaceholderCountMatchesArgumentCount
+<span class="fc" id="L254">    LOG.info(</span>
+        &quot;Import at block {} / {} gas {} micros / Mgps {} segment {} cumulative&quot;,
+<span class="fc" id="L256">        blockNum,</span>
+<span class="fc" id="L257">        segmentGas,</span>
+<span class="fc" id="L258">        elapseMicros,</span>
+<span class="fc" id="L259">        segmentGas / (double) elapseMicros,</span>
+<span class="fc" id="L260">        cumulativeGas / (double) cumulativeTimer.elapsed(TimeUnit.MICROSECONDS));</span>
+<span class="fc" id="L261">    segmentGas = 0;</span>
+<span class="fc" id="L262">    segmentTimer.reset();</span>
+<span class="fc" id="L263">  }</span>
+
+  private BlockHeader lookupPreviousHeader(
+      final MutableBlockchain blockchain, final BlockHeader header) {
+<span class="fc" id="L267">    return blockchain</span>
+<span class="fc" id="L268">        .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L269">        .orElseThrow(</span>
+            () -&gt;
+<span class="nc" id="L271">                new IllegalStateException(</span>
+<span class="nc" id="L272">                    String.format(</span>
+                        &quot;Block %s does not connect to the existing chain. Current chain head %s&quot;,
+<span class="nc" id="L274">                        header.getNumber(), blockchain.getChainHeadBlockNumber())));</span>
+  }
+
+  @Override
+  public void close() {
+<span class="nc" id="L279">    validationExecutor.shutdownNow();</span>
+    try {
+      //noinspection ResultOfMethodCallIgnored
+<span class="nc" id="L282">      validationExecutor.awaitTermination(5, SECONDS);</span>
+<span class="nc" id="L283">    } catch (final Exception e) {</span>
+<span class="nc" id="L284">      LOG.error(&quot;Error shutting down validatorExecutor.&quot;, e);</span>
+<span class="nc" id="L285">    }</span>
+
+<span class="nc" id="L287">    importExecutor.shutdownNow();</span>
+    try {
+      //noinspection ResultOfMethodCallIgnored
+<span class="nc" id="L290">      importExecutor.awaitTermination(5, SECONDS);</span>
+<span class="nc" id="L291">    } catch (final Exception e) {</span>
+<span class="nc" id="L292">      LOG.error(&quot;Error shutting down importExecutor&quot;, e);</span>
+<span class="nc" id="L293">    }</span>
+<span class="nc" id="L294">  }</span>
+
+  /** The Import result. */
+  public static final class ImportResult {
+
+    /** The difficulty. */
+    public final Difficulty td;
+
+    /** The Count. */
+    final int count;
+
+    /**
+     * Instantiates a new Import result.
+     *
+     * @param td the td
+     * @param count the count
+     */
+<span class="fc" id="L311">    ImportResult(final Difficulty td, final int count) {</span>
+<span class="fc" id="L312">      this.td = td;</span>
+<span class="fc" id="L313">      this.count = count;</span>
+<span class="fc" id="L314">    }</span>
+
+    @Override
+    public String toString() {
+<span class="nc" id="L318">      return MoreObjects.toStringHelper(this).add(&quot;td&quot;, td).add(&quot;count&quot;, count).toString();</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

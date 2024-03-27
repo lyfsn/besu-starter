@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionTracer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor</a> &gt; <span class="el_source">TransactionTracer.java</span></div><h1>TransactionTracer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.processor;
+
+import static java.util.function.Predicate.isEqual;
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.BlobGas;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.TransactionTraceParams;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.debug.TraceOptions;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.MainnetTransactionProcessor;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.vm.CachingBlockHashLookup;
+import org.hyperledger.besu.ethereum.vm.DebugOperationTracer;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.tracing.StandardJsonTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.google.common.base.Stopwatch;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/** Used to produce debug traces of transactions */
+public class TransactionTracer {
+
+  public static final String TRACE_PATH = &quot;traces&quot;;
+<span class="fc" id="L58">  private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();</span>
+
+  private final BlockReplay blockReplay;
+
+<span class="fc" id="L62">  public TransactionTracer(final BlockReplay blockReplay) {</span>
+<span class="fc" id="L63">    this.blockReplay = blockReplay;</span>
+<span class="fc" id="L64">  }</span>
+
+  public Optional&lt;TransactionTrace&gt; traceTransaction(
+      final Tracer.TraceableState mutableWorldState,
+      final Hash blockHash,
+      final Hash transactionHash,
+      final DebugOperationTracer tracer) {
+<span class="fc" id="L71">    return blockReplay.beforeTransactionInBlock(</span>
+        mutableWorldState,
+        blockHash,
+        transactionHash,
+        (transaction, header, blockchain, transactionProcessor, blobGasPrice) -&gt; {
+<span class="fc" id="L76">          final TransactionProcessingResult result =</span>
+<span class="fc" id="L77">              processTransaction(</span>
+                  header,
+                  blockchain,
+<span class="fc" id="L80">                  mutableWorldState.updater(),</span>
+                  transaction,
+                  transactionProcessor,
+                  tracer,
+                  blobGasPrice);
+<span class="fc" id="L85">          return new TransactionTrace(transaction, result, tracer.getTraceFrames());</span>
+        });
+  }
+
+  public List&lt;String&gt; traceTransactionToFile(
+      final MutableWorldState mutableWorldState,
+      final Hash blockHash,
+      final Optional&lt;TransactionTraceParams&gt; transactionTraceParams,
+      final Path traceDir) {
+
+<span class="fc" id="L95">    final Optional&lt;Hash&gt; selectedHash =</span>
+        transactionTraceParams
+<span class="fc" id="L97">            .map(TransactionTraceParams::getTransactionHash)</span>
+<span class="fc" id="L98">            .map(Hash::fromHexString);</span>
+<span class="fc" id="L99">    final boolean showMemory =</span>
+        transactionTraceParams
+<span class="fc" id="L101">            .map(TransactionTraceParams::traceOptions)</span>
+<span class="fc" id="L102">            .map(TraceOptions::isMemoryEnabled)</span>
+<span class="fc" id="L103">            .orElse(true);</span>
+
+<span class="pc bpc" id="L105" title="3 of 4 branches missed.">    if (!Files.isDirectory(traceDir) &amp;&amp; !traceDir.toFile().mkdirs()) {</span>
+<span class="nc" id="L106">      throw new RuntimeException(</span>
+<span class="nc" id="L107">          String.format(&quot;Trace directory '%s' does not exist and could not be made.&quot;, traceDir));</span>
+    }
+
+<span class="fc" id="L110">    return blockReplay</span>
+<span class="fc" id="L111">        .performActionWithBlock(</span>
+            blockHash,
+            (body, header, blockchain, transactionProcessor, protocolSpec) -&gt; {
+<span class="fc" id="L114">              WorldUpdater stackedUpdater = mutableWorldState.updater().updater();</span>
+<span class="fc" id="L115">              final List&lt;String&gt; traces = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L116">              final Wei blobGasPrice =</span>
+                  protocolSpec
+<span class="fc" id="L118">                      .getFeeMarket()</span>
+<span class="fc" id="L119">                      .blobGasPricePerGas(</span>
+                          blockchain
+<span class="fc" id="L121">                              .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L122">                              .map(parent -&gt; calculateExcessBlobGasForParent(protocolSpec, parent))</span>
+<span class="fc" id="L123">                              .orElse(BlobGas.ZERO));</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">              for (int i = 0; i &lt; body.getTransactions().size(); i++) {</span>
+<span class="fc" id="L125">                stackedUpdater.markTransactionBoundary();</span>
+<span class="fc" id="L126">                final Transaction transaction = body.getTransactions().get(i);</span>
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">                if (selectedHash.isEmpty()</span>
+<span class="nc bnc" id="L128" title="All 2 branches missed.">                    || selectedHash.filter(isEqual(transaction.getHash())).isPresent()) {</span>
+<span class="fc" id="L129">                  final File traceFile = generateTraceFile(traceDir, blockHash, i, transaction);</span>
+<span class="fc" id="L130">                  try (PrintStream out = new PrintStream(new FileOutputStream(traceFile))) {</span>
+<span class="fc" id="L131">                    final Stopwatch timer = Stopwatch.createStarted();</span>
+<span class="fc" id="L132">                    final TransactionProcessingResult result =</span>
+<span class="fc" id="L133">                        processTransaction(</span>
+                            header,
+                            blockchain,
+                            stackedUpdater,
+                            transaction,
+                            transactionProcessor,
+                            new StandardJsonTracer(out, showMemory, true, true, false),
+                            blobGasPrice);
+<span class="fc" id="L141">                    out.println(</span>
+<span class="fc" id="L142">                        summaryTrace(</span>
+<span class="fc" id="L143">                            transaction, timer.stop().elapsed(TimeUnit.NANOSECONDS), result));</span>
+<span class="fc" id="L144">                    traces.add(traceFile.getPath());</span>
+<span class="nc" id="L145">                  } catch (FileNotFoundException e) {</span>
+<span class="nc" id="L146">                    throw new RuntimeException(</span>
+<span class="nc" id="L147">                        &quot;Unable to create transaction trace : &quot; + e.getMessage());</span>
+<span class="fc" id="L148">                  }</span>
+<span class="fc" id="L149">                } else {</span>
+<span class="nc" id="L150">                  processTransaction(</span>
+                      header,
+                      blockchain,
+                      stackedUpdater,
+                      transaction,
+                      transactionProcessor,
+                      OperationTracer.NO_TRACING,
+                      blobGasPrice);
+                }
+              }
+<span class="fc" id="L160">              return Optional.of(traces);</span>
+            })
+<span class="fc" id="L162">        .orElse(new ArrayList&lt;&gt;());</span>
+  }
+
+  private File generateTraceFile(
+      final Path traceDir,
+      final Hash blockHash,
+      final int indexTransaction,
+      final Transaction transaction) {
+<span class="fc" id="L170">    return traceDir</span>
+<span class="fc" id="L171">        .resolve(</span>
+<span class="fc" id="L172">            String.format(</span>
+                &quot;block_%.10s-%d-%.10s-%s&quot;,
+<span class="fc" id="L174">                blockHash.toHexString(),</span>
+<span class="fc" id="L175">                indexTransaction,</span>
+<span class="fc" id="L176">                transaction.getHash().toHexString(),</span>
+<span class="fc" id="L177">                System.currentTimeMillis()))</span>
+<span class="fc" id="L178">        .toFile();</span>
+  }
+
+  private TransactionProcessingResult processTransaction(
+      final BlockHeader header,
+      final Blockchain blockchain,
+      final WorldUpdater worldUpdater,
+      final Transaction transaction,
+      final MainnetTransactionProcessor transactionProcessor,
+      final OperationTracer tracer,
+      final Wei blobGasPrice) {
+<span class="fc" id="L189">    return transactionProcessor.processTransaction(</span>
+        blockchain,
+        worldUpdater,
+        header,
+        transaction,
+<span class="fc" id="L194">        header.getCoinbase(),</span>
+        tracer,
+        new CachingBlockHashLookup(header, blockchain),
+<span class="fc" id="L197">        false,</span>
+<span class="fc" id="L198">        ImmutableTransactionValidationParams.builder().isAllowFutureNonce(true).build(),</span>
+        blobGasPrice);
+  }
+
+  public static String summaryTrace(
+      final Transaction transaction, final long timer, final TransactionProcessingResult result) {
+<span class="fc" id="L204">    final ObjectNode summaryLine = OBJECT_MAPPER.createObjectNode();</span>
+<span class="fc" id="L205">    summaryLine.put(&quot;output&quot;, result.getOutput().toUnprefixedHexString());</span>
+<span class="fc" id="L206">    summaryLine.put(</span>
+        &quot;gasUsed&quot;,
+<span class="fc" id="L208">        StandardJsonTracer.shortNumber(</span>
+<span class="fc" id="L209">            UInt256.valueOf(transaction.getGasLimit() - result.getGasRemaining())));</span>
+<span class="fc" id="L210">    summaryLine.put(&quot;time&quot;, timer);</span>
+<span class="fc" id="L211">    return summaryLine.toString();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

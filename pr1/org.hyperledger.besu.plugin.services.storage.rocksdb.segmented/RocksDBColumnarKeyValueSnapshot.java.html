@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RocksDBColumnarKeyValueSnapshot.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.plugin.services.storage.rocksdb.segmented</a> &gt; <span class="el_source">RocksDBColumnarKeyValueSnapshot.java</span></div><h1>RocksDBColumnarKeyValueSnapshot.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.plugin.services.storage.rocksdb.segmented;
+
+import static java.util.stream.Collectors.toUnmodifiableSet;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.SnappedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.rocksdb.RocksDBMetrics;
+
+import java.io.IOException;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.rocksdb.AbstractRocksIterator;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.OptimisticTransactionDB;
+import org.rocksdb.RocksIterator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The RocksDb columnar key value snapshot. */
+public class RocksDBColumnarKeyValueSnapshot
+    implements SegmentedKeyValueStorage, SnappedKeyValueStorage {
+
+<span class="fc" id="L48">  private static final Logger LOG = LoggerFactory.getLogger(RocksDBColumnarKeyValueSnapshot.class);</span>
+
+  /** The Db. */
+  final OptimisticTransactionDB db;
+
+  /** The Snap tx. */
+  final RocksDBSnapshotTransaction snapTx;
+
+<span class="fc" id="L56">  private final AtomicBoolean closed = new AtomicBoolean(false);</span>
+
+  /**
+   * Instantiates a new RocksDb columnar key value snapshot.
+   *
+   * @param db the db
+   * @param metrics the metrics
+   */
+  RocksDBColumnarKeyValueSnapshot(
+      final OptimisticTransactionDB db,
+      final Function&lt;SegmentIdentifier, ColumnFamilyHandle&gt; columnFamilyMapper,
+<span class="fc" id="L67">      final RocksDBMetrics metrics) {</span>
+<span class="fc" id="L68">    this.db = db;</span>
+<span class="fc" id="L69">    this.snapTx = new RocksDBSnapshotTransaction(db, columnFamilyMapper, metrics);</span>
+<span class="fc" id="L70">  }</span>
+
+  @Override
+  public Optional&lt;byte[]&gt; get(final SegmentIdentifier segment, final byte[] key)
+      throws StorageException {
+<span class="fc" id="L75">    throwIfClosed();</span>
+<span class="fc" id="L76">    return snapTx.get(segment, key);</span>
+  }
+
+  @Override
+  public Optional&lt;NearestKeyValue&gt; getNearestTo(
+      final SegmentIdentifier segmentIdentifier, final Bytes key) throws StorageException {
+
+<span class="nc" id="L83">    try (final RocksIterator rocksIterator = snapTx.getIterator(segmentIdentifier)) {</span>
+<span class="nc" id="L84">      rocksIterator.seekForPrev(key.toArrayUnsafe());</span>
+<span class="nc" id="L85">      return Optional.of(rocksIterator)</span>
+<span class="nc" id="L86">          .filter(AbstractRocksIterator::isValid)</span>
+<span class="nc" id="L87">          .map(it -&gt; new NearestKeyValue(Bytes.of(it.key()), Optional.of(it.value())));</span>
+    }
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream(final SegmentIdentifier segment) {
+<span class="nc" id="L93">    throwIfClosed();</span>
+<span class="nc" id="L94">    return snapTx.stream(segment);</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segment, final byte[] startKey) {
+<span class="nc" id="L100">    return snapTx.streamFromKey(segment, startKey);</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segment, final byte[] startKey, final byte[] endKey) {
+<span class="nc" id="L106">    return snapTx.streamFromKey(segment, startKey, endKey);</span>
+  }
+
+  @Override
+  public Stream&lt;byte[]&gt; streamKeys(final SegmentIdentifier segment) {
+<span class="nc" id="L111">    throwIfClosed();</span>
+<span class="nc" id="L112">    return snapTx.streamKeys(segment);</span>
+  }
+
+  @Override
+  public boolean tryDelete(final SegmentIdentifier segment, final byte[] key)
+      throws StorageException {
+<span class="nc" id="L118">    throwIfClosed();</span>
+<span class="nc" id="L119">    snapTx.remove(segment, key);</span>
+<span class="nc" id="L120">    return true;</span>
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllKeysThat(
+      final SegmentIdentifier segment, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="nc" id="L126">    return streamKeys(segment).filter(returnCondition).collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllValuesFromKeysThat(
+      final SegmentIdentifier segment, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="nc" id="L132">    return stream(segment)</span>
+<span class="nc" id="L133">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="nc" id="L134">        .map(Pair::getValue)</span>
+<span class="nc" id="L135">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public SegmentedKeyValueStorageTransaction startTransaction() throws StorageException {
+    // The use of a transaction on a transaction based key value store is dubious
+    // at best.  return our snapshot transaction instead.
+<span class="nc" id="L142">    return snapTx;</span>
+  }
+
+  @Override
+  public boolean isClosed() {
+<span class="fc" id="L147">    return closed.get();</span>
+  }
+
+  @Override
+  public void clear(final SegmentIdentifier segment) {
+<span class="nc" id="L152">    throw new UnsupportedOperationException(</span>
+        &quot;RocksDBColumnarKeyValueSnapshot does not support clear&quot;);
+  }
+
+  @Override
+  public boolean containsKey(final SegmentIdentifier segment, final byte[] key)
+      throws StorageException {
+<span class="nc" id="L159">    throwIfClosed();</span>
+<span class="nc" id="L160">    return snapTx.get(segment, key).isPresent();</span>
+  }
+
+  @Override
+  public void close() throws IOException {
+<span class="pc bpc" id="L165" title="1 of 2 branches missed.">    if (closed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L166">      snapTx.close();</span>
+    }
+<span class="fc" id="L168">  }</span>
+
+  private void throwIfClosed() {
+<span class="pc bpc" id="L171" title="1 of 2 branches missed.">    if (closed.get()) {</span>
+<span class="nc" id="L172">      LOG.error(&quot;Attempting to use a closed RocksDBKeyValueStorage&quot;);</span>
+<span class="nc" id="L173">      throw new IllegalStateException(&quot;Storage has been closed&quot;);</span>
+    }
+<span class="fc" id="L175">  }</span>
+
+  @Override
+  public SegmentedKeyValueStorageTransaction getSnapshotTransaction() {
+<span class="nc" id="L179">    return snapTx;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

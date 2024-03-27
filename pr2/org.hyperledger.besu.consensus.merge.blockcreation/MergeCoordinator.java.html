@@ -1,0 +1,893 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MergeCoordinator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.merge.blockcreation</a> &gt; <span class="el_source">MergeCoordinator.java</span></div><h1>MergeCoordinator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.merge.blockcreation;
+
+import static java.util.stream.Collectors.joining;
+import static org.hyperledger.besu.consensus.merge.blockcreation.MergeMiningCoordinator.ForkchoiceResult.Status.INVALID;
+
+import org.hyperledger.besu.consensus.merge.MergeContext;
+import org.hyperledger.besu.consensus.merge.PayloadWrapper;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.BlockProcessingResult;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.BlockCreator.BlockCreationResult;
+import org.hyperledger.besu.ethereum.chain.BadBlockCause;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockWithReceipts;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.Withdrawal;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.BackwardSyncContext;
+import org.hyperledger.besu.ethereum.eth.sync.backwardsync.BadChainListener;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.AbstractGasLimitSpecification;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Merge coordinator. */
+public class MergeCoordinator implements MergeMiningCoordinator, BadChainListener {
+<span class="fc" id="L71">  private static final Logger LOG = LoggerFactory.getLogger(MergeCoordinator.class);</span>
+  /**
+   * On PoS you do not need to compete with other nodes for block production, since you have an
+   * allocated slot for that, so in this case make sense to always try to fill the block, if there
+   * are enough pending transactions, until the remaining gas is less than the minimum needed for
+   * the smaller transaction. So for PoS the min-block-occupancy-ratio option is set to always try
+   * to fill 100% of the block.
+   */
+  private static final double TRY_FILL_BLOCK = 1.0;
+
+  private static final long DEFAULT_TARGET_GAS_LIMIT = 30000000L;
+  /** The Mining parameters. */
+  protected final MiningParameters miningParameters;
+  /** The Merge block creator factory. */
+  protected final MergeBlockCreatorFactory mergeBlockCreatorFactory;
+  /** The Merge context. */
+  protected final MergeContext mergeContext;
+  /** The Protocol context. */
+  protected final ProtocolContext protocolContext;
+  /** The Block builder executor. */
+  protected final EthScheduler ethScheduler;
+  /** The Backward sync context. */
+  protected final BackwardSyncContext backwardSyncContext;
+  /** The Protocol schedule. */
+  protected final ProtocolSchedule protocolSchedule;
+
+<span class="fc" id="L97">  private final Map&lt;PayloadIdentifier, BlockCreationTask&gt; blockCreationTasks =</span>
+      new ConcurrentHashMap&lt;&gt;();
+
+  /**
+   * Instantiates a new Merge coordinator.
+   *
+   * @param protocolContext the protocol context
+   * @param protocolSchedule the protocol schedule
+   * @param ethScheduler the block builder executor
+   * @param transactionPool the pending transactions
+   * @param miningParams the mining params
+   * @param backwardSyncContext the backward sync context
+   * @param depositContractAddress the address of the deposit contract
+   */
+  public MergeCoordinator(
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final EthScheduler ethScheduler,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParams,
+      final BackwardSyncContext backwardSyncContext,
+<span class="fc" id="L118">      final Optional&lt;Address&gt; depositContractAddress) {</span>
+<span class="fc" id="L119">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L120">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L121">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L122">    this.mergeContext = protocolContext.getConsensusContext(MergeContext.class);</span>
+<span class="fc" id="L123">    this.backwardSyncContext = backwardSyncContext;</span>
+
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    if (miningParams.getCoinbase().isEmpty()) {</span>
+<span class="fc" id="L126">      miningParams.setCoinbase(Address.ZERO);</span>
+    }
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">    if (miningParams.getTargetGasLimit().isEmpty()) {</span>
+<span class="fc" id="L129">      miningParams.setTargetGasLimit(DEFAULT_TARGET_GAS_LIMIT);</span>
+    }
+<span class="fc" id="L131">    miningParams.setMinBlockOccupancyRatio(TRY_FILL_BLOCK);</span>
+
+<span class="fc" id="L133">    this.miningParameters = miningParams;</span>
+
+<span class="fc" id="L135">    this.mergeBlockCreatorFactory =</span>
+        (parentHeader, address) -&gt; {
+<span class="fc" id="L137">          address.ifPresent(miningParams::setCoinbase);</span>
+<span class="fc" id="L138">          return new MergeBlockCreator(</span>
+              miningParameters,
+<span class="fc" id="L140">              parent -&gt; miningParameters.getExtraData(),</span>
+              transactionPool,
+              protocolContext,
+              protocolSchedule,
+              parentHeader,
+              depositContractAddress,
+              ethScheduler);
+        };
+
+<span class="fc" id="L149">    this.backwardSyncContext.subscribeBadChainListener(this);</span>
+<span class="fc" id="L150">  }</span>
+
+  /**
+   * Instantiates a new Merge coordinator.
+   *
+   * @param protocolContext the protocol context
+   * @param protocolSchedule the protocol schedule
+   * @param ethScheduler the block builder executor
+   * @param miningParams the mining params
+   * @param backwardSyncContext the backward sync context
+   * @param mergeBlockCreatorFactory the merge block creator factory
+   */
+  public MergeCoordinator(
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final EthScheduler ethScheduler,
+      final MiningParameters miningParams,
+      final BackwardSyncContext backwardSyncContext,
+<span class="fc" id="L168">      final MergeBlockCreatorFactory mergeBlockCreatorFactory) {</span>
+
+<span class="fc" id="L170">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L171">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L172">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L173">    this.mergeContext = protocolContext.getConsensusContext(MergeContext.class);</span>
+<span class="fc" id="L174">    this.backwardSyncContext = backwardSyncContext;</span>
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">    if (miningParams.getTargetGasLimit().isEmpty()) {</span>
+<span class="nc" id="L176">      miningParams.setTargetGasLimit(DEFAULT_TARGET_GAS_LIMIT);</span>
+    }
+<span class="fc" id="L178">    miningParams.setMinBlockOccupancyRatio(TRY_FILL_BLOCK);</span>
+<span class="fc" id="L179">    this.miningParameters = miningParams;</span>
+
+<span class="fc" id="L181">    this.mergeBlockCreatorFactory = mergeBlockCreatorFactory;</span>
+
+<span class="fc" id="L183">    this.backwardSyncContext.subscribeBadChainListener(this);</span>
+<span class="fc" id="L184">  }</span>
+
+  @Override
+<span class="nc" id="L187">  public void start() {}</span>
+
+  @Override
+<span class="nc" id="L190">  public void stop() {}</span>
+
+  @Override
+<span class="nc" id="L193">  public void awaitStop() throws InterruptedException {}</span>
+
+  @Override
+  public boolean enable() {
+<span class="nc" id="L197">    return false;</span>
+  }
+
+  @Override
+  public boolean disable() {
+<span class="nc" id="L202">    return true;</span>
+  }
+
+  @Override
+  public boolean isMining() {
+<span class="nc" id="L207">    return true;</span>
+  }
+
+  @Override
+  public Wei getMinTransactionGasPrice() {
+<span class="nc" id="L212">    return miningParameters.getMinTransactionGasPrice();</span>
+  }
+
+  @Override
+  public Wei getMinPriorityFeePerGas() {
+<span class="nc" id="L217">    return miningParameters.getMinPriorityFeePerGas();</span>
+  }
+
+  @Override
+  public void setExtraData(final Bytes extraData) {
+<span class="nc" id="L222">    this.miningParameters.setExtraData(extraData);</span>
+<span class="nc" id="L223">  }</span>
+
+  @Override
+  public Optional&lt;Address&gt; getCoinbase() {
+<span class="nc" id="L227">    return miningParameters.getCoinbase();</span>
+  }
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(
+      final BlockHeader parentHeader,
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;BlockHeader&gt; ommers) {
+<span class="nc" id="L235">    throw new UnsupportedOperationException(&quot;random is required&quot;);</span>
+  }
+
+  @Override
+  public Optional&lt;Block&gt; createBlock(final BlockHeader parentHeader, final long timestamp) {
+<span class="nc" id="L240">    throw new UnsupportedOperationException(&quot;random is required&quot;);</span>
+  }
+
+  @Override
+  public void changeTargetGasLimit(final Long newTargetGasLimit) {
+<span class="nc bnc" id="L245" title="All 2 branches missed.">    if (AbstractGasLimitSpecification.isValidTargetGasLimit(newTargetGasLimit)) {</span>
+<span class="nc" id="L246">      this.miningParameters.setTargetGasLimit(newTargetGasLimit);</span>
+    } else {
+<span class="nc" id="L248">      throw new IllegalArgumentException(&quot;Specified target gas limit is invalid&quot;);</span>
+    }
+<span class="nc" id="L250">  }</span>
+
+  @Override
+  public PayloadIdentifier preparePayload(
+      final BlockHeader parentHeader,
+      final Long timestamp,
+      final Bytes32 prevRandao,
+      final Address feeRecipient,
+      final Optional&lt;List&lt;Withdrawal&gt;&gt; withdrawals,
+      final Optional&lt;Bytes32&gt; parentBeaconBlockRoot) {
+
+    // we assume that preparePayload is always called sequentially, since the RPC Engine calls
+    // are sequential, if this assumption changes then more synchronization should be added to
+    // shared data structures
+
+<span class="fc" id="L265">    final PayloadIdentifier payloadIdentifier =</span>
+<span class="fc" id="L266">        PayloadIdentifier.forPayloadParams(</span>
+<span class="fc" id="L267">            parentHeader.getBlockHash(),</span>
+            timestamp,
+            prevRandao,
+            feeRecipient,
+            withdrawals,
+            parentBeaconBlockRoot);
+
+<span class="fc bfc" id="L274" title="All 2 branches covered.">    if (blockCreationTasks.containsKey(payloadIdentifier)) {</span>
+<span class="fc" id="L275">      LOG.debug(</span>
+          &quot;Block proposal for the same payload id {} already present, nothing to do&quot;,
+          payloadIdentifier);
+<span class="fc" id="L278">      return payloadIdentifier;</span>
+    }
+    // it's a new payloadId so...
+<span class="fc" id="L281">    cancelAnyExistingBlockCreationTasks(payloadIdentifier);</span>
+
+<span class="fc" id="L283">    final MergeBlockCreator mergeBlockCreator =</span>
+<span class="fc" id="L284">        this.mergeBlockCreatorFactory.forParams(parentHeader, Optional.ofNullable(feeRecipient));</span>
+
+<span class="fc" id="L286">    blockCreationTasks.put(payloadIdentifier, new BlockCreationTask(mergeBlockCreator));</span>
+
+    // put the empty block in first
+<span class="fc" id="L289">    final Block emptyBlock =</span>
+        mergeBlockCreator
+<span class="fc" id="L291">            .createBlock(</span>
+<span class="fc" id="L292">                Optional.of(Collections.emptyList()),</span>
+                prevRandao,
+<span class="fc" id="L294">                timestamp,</span>
+                withdrawals,
+                parentBeaconBlockRoot)
+<span class="fc" id="L297">            .getBlock();</span>
+
+<span class="fc" id="L299">    BlockProcessingResult result = validateProposedBlock(emptyBlock);</span>
+<span class="fc bfc" id="L300" title="All 2 branches covered.">    if (result.isSuccessful()) {</span>
+<span class="fc" id="L301">      mergeContext.putPayloadById(</span>
+          new PayloadWrapper(
+<span class="fc" id="L303">              payloadIdentifier, new BlockWithReceipts(emptyBlock, result.getReceipts())));</span>
+<span class="fc" id="L304">      LOG.info(</span>
+          &quot;Start building proposals for block {} identified by {}&quot;,
+<span class="fc" id="L306">          emptyBlock.getHeader().getNumber(),</span>
+          payloadIdentifier);
+    } else {
+<span class="fc" id="L309">      LOG.warn(</span>
+          &quot;failed to validate empty block proposal {}, reason {}&quot;,
+<span class="fc" id="L311">          emptyBlock.getHash(),</span>
+          result.errorMessage);
+<span class="pc bpc" id="L313" title="1 of 2 branches missed.">      if (result.causedBy().isPresent()) {</span>
+<span class="nc" id="L314">        LOG.warn(&quot;caused by&quot;, result.causedBy().get());</span>
+      }
+    }
+
+<span class="fc" id="L318">    tryToBuildBetterBlock(</span>
+        timestamp,
+        prevRandao,
+        payloadIdentifier,
+        mergeBlockCreator,
+        withdrawals,
+        parentBeaconBlockRoot);
+
+<span class="fc" id="L326">    return payloadIdentifier;</span>
+  }
+
+  private void cancelAnyExistingBlockCreationTasks(final PayloadIdentifier payloadIdentifier) {
+<span class="fc bfc" id="L330" title="All 2 branches covered.">    if (blockCreationTasks.size() &gt; 0) {</span>
+<span class="fc" id="L331">      String existingPayloadIdsBeingBuilt =</span>
+<span class="fc" id="L332">          blockCreationTasks.keySet().stream()</span>
+<span class="fc" id="L333">              .map(PayloadIdentifier::toHexString)</span>
+<span class="fc" id="L334">              .collect(joining(&quot;,&quot;));</span>
+<span class="fc" id="L335">      LOG.warn(</span>
+          &quot;New payloadId {} received so cancelling block creation tasks for the following payloadIds: {}&quot;,
+          payloadIdentifier,
+          existingPayloadIdsBeingBuilt);
+
+<span class="fc" id="L340">      blockCreationTasks.keySet().forEach(this::cleanupBlockCreationTask);</span>
+    }
+<span class="fc" id="L342">  }</span>
+
+  private void cleanupBlockCreationTask(final PayloadIdentifier payloadIdentifier) {
+<span class="fc" id="L345">    blockCreationTasks.computeIfPresent(</span>
+        payloadIdentifier,
+        (pid, blockCreationTask) -&gt; {
+<span class="fc" id="L348">          blockCreationTask.cancel();</span>
+<span class="fc" id="L349">          return null;</span>
+        });
+<span class="fc" id="L351">  }</span>
+
+  @Override
+  public void finalizeProposalById(final PayloadIdentifier payloadId) {
+<span class="fc" id="L355">    LOG.debug(&quot;Finalizing block proposal for payload id {}&quot;, payloadId);</span>
+<span class="fc" id="L356">    cleanupBlockCreationTask(payloadId);</span>
+<span class="fc" id="L357">  }</span>
+
+  private void tryToBuildBetterBlock(
+      final Long timestamp,
+      final Bytes32 random,
+      final PayloadIdentifier payloadIdentifier,
+      final MergeBlockCreator mergeBlockCreator,
+      final Optional&lt;List&lt;Withdrawal&gt;&gt; withdrawals,
+      final Optional&lt;Bytes32&gt; parentBeaconBlockRoot) {
+
+<span class="fc" id="L367">    final Supplier&lt;BlockCreationResult&gt; blockCreator =</span>
+        () -&gt;
+<span class="fc" id="L369">            mergeBlockCreator.createBlock(</span>
+<span class="fc" id="L370">                Optional.empty(), random, timestamp, withdrawals, parentBeaconBlockRoot);</span>
+
+<span class="fc" id="L372">    LOG.debug(</span>
+        &quot;Block creation started for payload id {}, remaining time is {}ms&quot;,
+        payloadIdentifier,
+<span class="fc" id="L375">        miningParameters.getUnstable().getPosBlockCreationMaxTime());</span>
+
+<span class="fc" id="L377">    ethScheduler</span>
+<span class="fc" id="L378">        .scheduleBlockCreationTask(</span>
+<span class="fc" id="L379">            () -&gt; retryBlockCreationUntilUseful(payloadIdentifier, blockCreator))</span>
+<span class="fc" id="L380">        .orTimeout(</span>
+<span class="fc" id="L381">            miningParameters.getUnstable().getPosBlockCreationMaxTime(), TimeUnit.MILLISECONDS)</span>
+<span class="fc" id="L382">        .whenComplete(</span>
+            (unused, throwable) -&gt; {
+<span class="fc bfc" id="L384" title="All 2 branches covered.">              if (throwable != null) {</span>
+<span class="fc" id="L385">                LOG.atDebug()</span>
+<span class="fc" id="L386">                    .setMessage(&quot;Exception building block for payload id {}, reason {}&quot;)</span>
+<span class="fc" id="L387">                    .addArgument(payloadIdentifier)</span>
+<span class="pc" id="L388">                    .addArgument(() -&gt; logException(throwable))</span>
+<span class="fc" id="L389">                    .log();</span>
+              }
+<span class="fc" id="L391">              cleanupBlockCreationTask(payloadIdentifier);</span>
+<span class="fc" id="L392">            });</span>
+<span class="fc" id="L393">  }</span>
+
+  private Void retryBlockCreationUntilUseful(
+      final PayloadIdentifier payloadIdentifier, final Supplier&lt;BlockCreationResult&gt; blockCreator) {
+
+    long lastStartAt;
+
+<span class="fc bfc" id="L400" title="All 2 branches covered.">    while (!isBlockCreationCancelled(payloadIdentifier)) {</span>
+      try {
+<span class="fc" id="L402">        lastStartAt = System.currentTimeMillis();</span>
+<span class="fc" id="L403">        recoverableBlockCreation(payloadIdentifier, blockCreator, lastStartAt);</span>
+<span class="fc" id="L404">        final long lastDuration = System.currentTimeMillis() - lastStartAt;</span>
+<span class="fc" id="L405">        final long waitBeforeRepetition =</span>
+<span class="fc" id="L406">            Math.max(</span>
+                100,
+<span class="fc" id="L408">                miningParameters.getUnstable().getPosBlockCreationRepetitionMinDuration()</span>
+                    - lastDuration);
+<span class="fc" id="L410">        LOG.debug(&quot;Waiting {}ms before repeating block creation&quot;, waitBeforeRepetition);</span>
+<span class="fc" id="L411">        Thread.sleep(waitBeforeRepetition);</span>
+<span class="fc" id="L412">      } catch (final CancellationException | InterruptedException ce) {</span>
+<span class="fc" id="L413">        LOG.atDebug()</span>
+<span class="fc" id="L414">            .setMessage(&quot;Block creation for payload id {} has been cancelled, reason {}&quot;)</span>
+<span class="fc" id="L415">            .addArgument(payloadIdentifier)</span>
+<span class="pc" id="L416">            .addArgument(() -&gt; logException(ce))</span>
+<span class="fc" id="L417">            .log();</span>
+<span class="fc" id="L418">        return null;</span>
+<span class="nc" id="L419">      } catch (final Throwable e) {</span>
+<span class="nc" id="L420">        LOG.warn(</span>
+            &quot;Something went wrong creating block for payload id {}, error {}&quot;,
+            payloadIdentifier,
+<span class="nc" id="L423">            logException(e));</span>
+<span class="nc" id="L424">        return null;</span>
+<span class="fc" id="L425">      }</span>
+    }
+<span class="fc" id="L427">    return null;</span>
+  }
+
+  private void recoverableBlockCreation(
+      final PayloadIdentifier payloadIdentifier,
+      final Supplier&lt;BlockCreationResult&gt; blockCreator,
+      final long startedAt) {
+
+    try {
+<span class="fc" id="L436">      evaluateNewBlock(blockCreator.get().getBlock(), payloadIdentifier, startedAt);</span>
+<span class="fc" id="L437">    } catch (final Throwable throwable) {</span>
+<span class="pc bpc" id="L438" title="1 of 4 branches missed.">      if (canRetryBlockCreation(throwable) &amp;&amp; !isBlockCreationCancelled(payloadIdentifier)) {</span>
+<span class="fc" id="L439">        LOG.atDebug()</span>
+<span class="fc" id="L440">            .setMessage(&quot;Retrying block creation for payload id {} after recoverable error {}&quot;)</span>
+<span class="fc" id="L441">            .addArgument(payloadIdentifier)</span>
+<span class="pc" id="L442">            .addArgument(() -&gt; logException(throwable))</span>
+<span class="fc" id="L443">            .log();</span>
+<span class="fc" id="L444">        recoverableBlockCreation(payloadIdentifier, blockCreator, startedAt);</span>
+      } else {
+<span class="fc" id="L446">        throw throwable;</span>
+      }
+<span class="fc" id="L448">    }</span>
+<span class="fc" id="L449">  }</span>
+
+  private void evaluateNewBlock(
+      final Block bestBlock, final PayloadIdentifier payloadIdentifier, final long startedAt) {
+
+<span class="pc bpc" id="L454" title="1 of 2 branches missed.">    if (isBlockCreationCancelled(payloadIdentifier)) return;</span>
+
+<span class="fc" id="L456">    final var resultBest = validateProposedBlock(bestBlock);</span>
+<span class="fc bfc" id="L457" title="All 2 branches covered.">    if (resultBest.isSuccessful()) {</span>
+
+<span class="fc bfc" id="L459" title="All 2 branches covered.">      if (isBlockCreationCancelled(payloadIdentifier)) return;</span>
+
+<span class="fc" id="L461">      mergeContext.putPayloadById(</span>
+          new PayloadWrapper(
+<span class="fc" id="L463">              payloadIdentifier, new BlockWithReceipts(bestBlock, resultBest.getReceipts())));</span>
+<span class="fc" id="L464">      LOG.atDebug()</span>
+<span class="fc" id="L465">          .setMessage(</span>
+              &quot;Successfully built block {} for proposal identified by {}, with {} transactions, in {}ms&quot;)
+<span class="fc" id="L467">          .addArgument(bestBlock::toLogString)</span>
+<span class="fc" id="L468">          .addArgument(payloadIdentifier)</span>
+<span class="fc" id="L469">          .addArgument(bestBlock.getBody().getTransactions()::size)</span>
+<span class="pc" id="L470">          .addArgument(() -&gt; System.currentTimeMillis() - startedAt)</span>
+<span class="fc" id="L471">          .log();</span>
+    } else {
+<span class="fc" id="L473">      LOG.warn(</span>
+          &quot;Block {} built for proposal identified by {}, is not valid reason {}&quot;,
+<span class="fc" id="L475">          bestBlock.getHash(),</span>
+<span class="fc" id="L476">          payloadIdentifier.toString(),</span>
+          resultBest.errorMessage);
+<span class="fc bfc" id="L478" title="All 2 branches covered.">      if (resultBest.causedBy().isPresent()) {</span>
+<span class="fc" id="L479">        LOG.warn(&quot;caused by&quot;, resultBest.cause.get());</span>
+      }
+    }
+<span class="fc" id="L482">  }</span>
+
+  private boolean canRetryBlockCreation(final Throwable throwable) {
+<span class="pc bpc" id="L485" title="1 of 2 branches missed.">    if (throwable instanceof StorageException) {</span>
+<span class="nc" id="L486">      return true;</span>
+<span class="fc bfc" id="L487" title="All 2 branches covered.">    } else if (throwable instanceof MerkleTrieException) {</span>
+<span class="fc" id="L488">      return true;</span>
+    }
+<span class="fc" id="L490">    return false;</span>
+  }
+
+  @Override
+  public Optional&lt;BlockHeader&gt; getOrSyncHeadByHash(final Hash headHash, final Hash finalizedHash) {
+<span class="fc" id="L495">    final var chain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L496">    final var maybeHeadHeader = chain.getBlockHeader(headHash);</span>
+
+<span class="fc bfc" id="L498" title="All 2 branches covered.">    if (maybeHeadHeader.isPresent()) {</span>
+<span class="fc" id="L499">      LOG.atDebug()</span>
+<span class="fc" id="L500">          .setMessage(&quot;BlockHeader {} is already present in blockchain&quot;)</span>
+<span class="fc" id="L501">          .addArgument(maybeHeadHeader.get()::toLogString)</span>
+<span class="fc" id="L502">          .log();</span>
+    } else {
+<span class="fc" id="L504">      LOG.atDebug()</span>
+<span class="fc" id="L505">          .setMessage(&quot;Appending new head block hash {} to backward sync&quot;)</span>
+<span class="fc" id="L506">          .addArgument(headHash::toHexString)</span>
+<span class="fc" id="L507">          .log();</span>
+<span class="fc" id="L508">      backwardSyncContext.maybeUpdateTargetHeight(headHash);</span>
+<span class="fc" id="L509">      backwardSyncContext</span>
+<span class="fc" id="L510">          .syncBackwardsUntil(headHash)</span>
+<span class="fc" id="L511">          .thenRun(() -&gt; updateFinalized(finalizedHash));</span>
+    }
+<span class="fc" id="L513">    return maybeHeadHeader;</span>
+  }
+
+  private void updateFinalized(final Hash finalizedHash) {
+<span class="pc bpc" id="L517" title="1 of 2 branches missed.">    if (mergeContext</span>
+<span class="fc" id="L518">        .getFinalized()</span>
+<span class="fc" id="L519">        .map(BlockHeader::getHash)</span>
+<span class="fc" id="L520">        .map(finalizedHash::equals)</span>
+<span class="fc" id="L521">        .orElse(Boolean.FALSE)) {</span>
+<span class="nc" id="L522">      LOG.atDebug()</span>
+<span class="nc" id="L523">          .setMessage(&quot;Finalized block already set to {}, nothing to do&quot;)</span>
+<span class="nc" id="L524">          .addArgument(finalizedHash)</span>
+<span class="nc" id="L525">          .log();</span>
+<span class="nc" id="L526">      return;</span>
+    }
+
+<span class="fc" id="L529">    protocolContext</span>
+<span class="fc" id="L530">        .getBlockchain()</span>
+<span class="fc" id="L531">        .getBlockHeader(finalizedHash)</span>
+<span class="fc" id="L532">        .ifPresentOrElse(</span>
+            finalizedHeader -&gt; {
+<span class="nc" id="L534">              LOG.atDebug()</span>
+<span class="nc" id="L535">                  .setMessage(&quot;Setting finalized block header to {}&quot;)</span>
+<span class="nc" id="L536">                  .addArgument(finalizedHeader::toLogString)</span>
+<span class="nc" id="L537">                  .log();</span>
+<span class="nc" id="L538">              mergeContext.setFinalized(finalizedHeader);</span>
+<span class="nc" id="L539">            },</span>
+            () -&gt;
+<span class="fc" id="L541">                LOG.warn(</span>
+                    &quot;Internal error, backward sync completed but failed to import finalized block {}&quot;,
+                    finalizedHash));
+<span class="fc" id="L544">  }</span>
+
+  @Override
+  public BlockProcessingResult validateBlock(final Block block) {
+<span class="fc" id="L548">    final var validationResult =</span>
+        protocolSchedule
+<span class="fc" id="L550">            .getByBlockHeader(block.getHeader())</span>
+<span class="fc" id="L551">            .getBlockValidator()</span>
+<span class="fc" id="L552">            .validateAndProcessBlock(</span>
+                protocolContext,
+                block,
+                HeaderValidationMode.FULL,
+                HeaderValidationMode.NONE,
+                false);
+
+<span class="fc" id="L559">    return validationResult;</span>
+  }
+
+  private BlockProcessingResult validateProposedBlock(final Block block) {
+<span class="fc" id="L563">    final var validationResult =</span>
+        protocolSchedule
+<span class="fc" id="L565">            .getByBlockHeader(block.getHeader())</span>
+<span class="fc" id="L566">            .getBlockValidator()</span>
+<span class="fc" id="L567">            .validateAndProcessBlock(</span>
+                protocolContext,
+                block,
+                HeaderValidationMode.FULL,
+                HeaderValidationMode.NONE,
+                false,
+                false);
+
+<span class="fc" id="L575">    return validationResult;</span>
+  }
+
+  @Override
+  public BlockProcessingResult rememberBlock(final Block block) {
+<span class="fc" id="L580">    LOG.atDebug().setMessage(&quot;Remember block {}&quot;).addArgument(block::toLogString).log();</span>
+<span class="fc" id="L581">    final var chain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L582">    final var validationResult = validateBlock(block);</span>
+<span class="fc" id="L583">    validationResult</span>
+<span class="fc" id="L584">        .getYield()</span>
+<span class="fc" id="L585">        .ifPresentOrElse(</span>
+<span class="fc" id="L586">            result -&gt; chain.storeBlock(block, result.getReceipts()),</span>
+<span class="nc" id="L587">            () -&gt; LOG.debug(&quot;empty yield in blockProcessingResult&quot;));</span>
+<span class="fc" id="L588">    return validationResult;</span>
+  }
+
+  @Override
+  public ForkchoiceResult updateForkChoice(
+      final BlockHeader newHead, final Hash finalizedBlockHash, final Hash safeBlockHash) {
+<span class="fc" id="L594">    MutableBlockchain blockchain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L595">    final Optional&lt;BlockHeader&gt; newFinalized = blockchain.getBlockHeader(finalizedBlockHash);</span>
+
+<span class="fc bfc" id="L597" title="All 2 branches covered.">    if (newHead.getNumber() &lt; blockchain.getChainHeadBlockNumber()</span>
+<span class="fc bfc" id="L598" title="All 2 branches covered.">        &amp;&amp; isDescendantOf(newHead, blockchain.getChainHeadHeader())) {</span>
+<span class="fc" id="L599">      LOG.atDebug()</span>
+<span class="fc" id="L600">          .setMessage(&quot;Ignoring update to old head {}&quot;)</span>
+<span class="fc" id="L601">          .addArgument(newHead::toLogString)</span>
+<span class="fc" id="L602">          .log();</span>
+<span class="fc" id="L603">      return ForkchoiceResult.withIgnoreUpdateToOldHead(newHead);</span>
+    }
+
+<span class="fc" id="L606">    final Optional&lt;Hash&gt; latestValid = getLatestValidAncestor(newHead);</span>
+
+<span class="fc" id="L608">    Optional&lt;BlockHeader&gt; parentOfNewHead = blockchain.getBlockHeader(newHead.getParentHash());</span>
+<span class="pc bpc" id="L609" title="1 of 2 branches missed.">    if (parentOfNewHead.isPresent()</span>
+<span class="fc bfc" id="L610" title="All 2 branches covered.">        &amp;&amp; Long.compareUnsigned(newHead.getTimestamp(), parentOfNewHead.get().getTimestamp())</span>
+            &lt;= 0) {
+<span class="fc" id="L612">      return ForkchoiceResult.withFailure(</span>
+          INVALID, &quot;new head timestamp not greater than parent&quot;, latestValid);
+    }
+
+<span class="fc" id="L616">    setNewHead(blockchain, newHead);</span>
+
+    // set and persist the new finalized block if it is present
+<span class="fc" id="L619">    newFinalized.ifPresent(</span>
+        blockHeader -&gt; {
+<span class="fc" id="L621">          blockchain.setFinalized(blockHeader.getHash());</span>
+<span class="fc" id="L622">          mergeContext.setFinalized(blockHeader);</span>
+<span class="fc" id="L623">        });</span>
+
+<span class="fc" id="L625">    blockchain</span>
+<span class="fc" id="L626">        .getBlockHeader(safeBlockHash)</span>
+<span class="fc" id="L627">        .ifPresent(</span>
+            newSafeBlock -&gt; {
+<span class="fc" id="L629">              blockchain.setSafeBlock(safeBlockHash);</span>
+<span class="fc" id="L630">              mergeContext.setSafeBlock(newSafeBlock);</span>
+<span class="fc" id="L631">            });</span>
+
+<span class="fc" id="L633">    return ForkchoiceResult.withResult(newFinalized, Optional.of(newHead));</span>
+  }
+
+  private boolean setNewHead(final MutableBlockchain blockchain, final BlockHeader newHead) {
+
+<span class="pc bpc" id="L638" title="1 of 2 branches missed.">    if (newHead.getHash().equals(blockchain.getChainHeadHash())) {</span>
+<span class="nc" id="L639">      LOG.atDebug()</span>
+<span class="nc" id="L640">          .setMessage(&quot;Nothing to do new head {} is already chain head&quot;)</span>
+<span class="nc" id="L641">          .addArgument(newHead::toLogString)</span>
+<span class="nc" id="L642">          .log();</span>
+<span class="nc" id="L643">      return true;</span>
+    }
+
+<span class="pc bpc" id="L646" title="1 of 2 branches missed.">    if (moveWorldStateTo(newHead)) {</span>
+<span class="fc bfc" id="L647" title="All 2 branches covered.">      if (newHead.getParentHash().equals(blockchain.getChainHeadHash())) {</span>
+<span class="fc" id="L648">        LOG.atDebug()</span>
+<span class="fc" id="L649">            .setMessage(</span>
+                &quot;Forwarding chain head to the block {} saved from a previous newPayload invocation&quot;)
+<span class="fc" id="L651">            .addArgument(newHead::toLogString)</span>
+<span class="fc" id="L652">            .log();</span>
+<span class="fc" id="L653">        return blockchain.forwardToBlock(newHead);</span>
+      } else {
+<span class="fc" id="L655">        LOG.atDebug()</span>
+<span class="fc" id="L656">            .setMessage(&quot;New head {} is a chain reorg, rewind chain head to it&quot;)</span>
+<span class="fc" id="L657">            .addArgument(newHead::toLogString)</span>
+<span class="fc" id="L658">            .log();</span>
+<span class="fc" id="L659">        return blockchain.rewindToBlock(newHead.getHash());</span>
+      }
+    }
+<span class="nc" id="L662">    LOG.atDebug()</span>
+<span class="nc" id="L663">        .setMessage(&quot;Failed to move the worldstate forward to hash {}, not moving chain head&quot;)</span>
+<span class="nc" id="L664">        .addArgument(newHead::toLogString)</span>
+<span class="nc" id="L665">        .log();</span>
+<span class="nc" id="L666">    return false;</span>
+  }
+
+  private boolean moveWorldStateTo(final BlockHeader newHead) {
+<span class="fc" id="L670">    Optional&lt;MutableWorldState&gt; newWorldState =</span>
+        protocolContext
+<span class="fc" id="L672">            .getWorldStateArchive()</span>
+<span class="fc" id="L673">            .getMutable(newHead.getStateRoot(), newHead.getHash());</span>
+
+<span class="fc" id="L675">    newWorldState.ifPresentOrElse(</span>
+        mutableWorldState -&gt;
+<span class="fc" id="L677">            LOG.atDebug()</span>
+<span class="fc" id="L678">                .setMessage(</span>
+                    &quot;World state for state root hash {} and block hash {} persisted successfully&quot;)
+<span class="fc" id="L680">                .addArgument(mutableWorldState::rootHash)</span>
+<span class="fc" id="L681">                .addArgument(newHead::getHash)</span>
+<span class="fc" id="L682">                .log(),</span>
+        () -&gt;
+<span class="nc" id="L684">            LOG.error(</span>
+                &quot;Could not persist world for root hash {} and block hash {}&quot;,
+<span class="nc" id="L686">                newHead.getStateRoot(),</span>
+<span class="nc" id="L687">                newHead.getHash()));</span>
+<span class="fc" id="L688">    return newWorldState.isPresent();</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getLatestValidAncestor(final Hash blockHash) {
+<span class="nc" id="L693">    final var chain = protocolContext.getBlockchain();</span>
+<span class="nc" id="L694">    return findValidAncestor(chain, blockHash);</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getLatestValidAncestor(final BlockHeader blockHeader) {
+<span class="fc" id="L699">    final var chain = protocolContext.getBlockchain();</span>
+<span class="fc" id="L700">    final var self = chain.getBlockHeader(blockHeader.getHash());</span>
+
+<span class="fc bfc" id="L702" title="All 2 branches covered.">    if (self.isEmpty()) {</span>
+<span class="fc" id="L703">      return findValidAncestor(chain, blockHeader.getParentHash());</span>
+    }
+<span class="fc" id="L705">    return self.map(BlockHeader::getHash);</span>
+  }
+
+  @Override
+  public boolean isBackwardSyncing() {
+<span class="nc" id="L710">    return backwardSyncContext.isSyncing();</span>
+  }
+
+  @Override
+  public CompletableFuture&lt;Void&gt; appendNewPayloadToSync(final Block newPayload) {
+<span class="nc" id="L715">    return backwardSyncContext.syncBackwardsUntil(newPayload);</span>
+  }
+
+  @Override
+  public boolean isMiningBeforeMerge() {
+<span class="fc" id="L720">    return miningParameters.isMiningEnabled();</span>
+  }
+
+  private Optional&lt;Hash&gt; findValidAncestor(final Blockchain chain, final Hash parentHash) {
+
+    // check chain first
+<span class="fc" id="L726">    return chain</span>
+<span class="fc" id="L727">        .getBlockHeader(parentHash)</span>
+<span class="fc" id="L728">        .map(</span>
+            header -&gt; {
+              // if block is PoW, return ZERO hash
+<span class="fc bfc" id="L731" title="All 2 branches covered.">              if (header.getDifficulty().greaterThan(Difficulty.ZERO)) {</span>
+<span class="fc" id="L732">                return Hash.ZERO;</span>
+              } else {
+<span class="fc" id="L734">                return header.getHash();</span>
+              }
+            })
+<span class="fc" id="L737">        .map(Optional::of)</span>
+<span class="fc" id="L738">        .orElseGet(</span>
+            () -&gt;
+                protocolContext
+<span class="nc" id="L741">                    .getBadBlockManager()</span>
+<span class="nc" id="L742">                    .getBadBlock(parentHash)</span>
+<span class="nc" id="L743">                    .map(</span>
+                        badParent -&gt;
+<span class="nc" id="L745">                            findValidAncestor(chain, badParent.getHeader().getParentHash()))</span>
+<span class="nc" id="L746">                    .orElse(Optional.empty()));</span>
+  }
+
+  @Override
+  public boolean isDescendantOf(final BlockHeader ancestorBlock, final BlockHeader newBlock) {
+<span class="fc" id="L751">    LOG.atDebug()</span>
+<span class="fc" id="L752">        .setMessage(&quot;checking if block {} is ancestor of {}&quot;)</span>
+<span class="fc" id="L753">        .addArgument(ancestorBlock::toLogString)</span>
+<span class="fc" id="L754">        .addArgument(newBlock::toLogString)</span>
+<span class="fc" id="L755">        .log();</span>
+
+    // start with self, because descending from yourself is valid
+<span class="fc" id="L758">    Optional&lt;BlockHeader&gt; parentOf = Optional.of(newBlock);</span>
+
+<span class="pc bpc" id="L760" title="1 of 2 branches missed.">    while (parentOf.isPresent()</span>
+<span class="fc bfc" id="L761" title="All 2 branches covered.">        &amp;&amp; !parentOf.get().getBlockHash().equals(ancestorBlock.getBlockHash())</span>
+<span class="fc" id="L762">        &amp;&amp; parentOf.get().getNumber()</span>
+<span class="fc bfc" id="L763" title="All 2 branches covered.">            &gt;= ancestorBlock.getNumber()) { // if on a fork, don't go further back than ancestor</span>
+<span class="fc" id="L764">      parentOf = protocolContext.getBlockchain().getBlockHeader(parentOf.get().getParentHash());</span>
+    }
+
+<span class="pc bpc" id="L767" title="1 of 2 branches missed.">    if (parentOf.isPresent()</span>
+<span class="fc bfc" id="L768" title="All 2 branches covered.">        &amp;&amp; ancestorBlock.getBlockHash().equals(parentOf.get().getBlockHash())) {</span>
+<span class="fc" id="L769">      return true;</span>
+    } else {
+<span class="fc" id="L771">      LOG.atDebug()</span>
+<span class="fc" id="L772">          .setMessage(&quot;looped all the way back, did not find ancestor {} of child {}&quot;)</span>
+<span class="fc" id="L773">          .addArgument(ancestorBlock::toLogString)</span>
+<span class="fc" id="L774">          .addArgument(newBlock::toLogString)</span>
+<span class="fc" id="L775">          .log();</span>
+<span class="fc" id="L776">      return false;</span>
+    }
+  }
+
+  @Override
+  public void onBadChain(
+      final Block badBlock,
+      final List&lt;Block&gt; badBlockDescendants,
+      final List&lt;BlockHeader&gt; badBlockHeaderDescendants) {
+<span class="nc" id="L785">    LOG.trace(&quot;Mark descendents of bad block {} as bad&quot;, badBlock.getHash());</span>
+<span class="nc" id="L786">    final BadBlockManager badBlockManager = protocolContext.getBadBlockManager();</span>
+
+<span class="nc" id="L788">    final Optional&lt;BlockHeader&gt; parentHeader =</span>
+<span class="nc" id="L789">        protocolContext.getBlockchain().getBlockHeader(badBlock.getHeader().getParentHash());</span>
+    final Optional&lt;Hash&gt; maybeLatestValidHash =
+<span class="nc bnc" id="L791" title="All 4 branches missed.">        parentHeader.isPresent() &amp;&amp; isPoSHeader(parentHeader.get())</span>
+<span class="nc" id="L792">            ? Optional.of(parentHeader.get().getHash())</span>
+<span class="nc" id="L793">            : Optional.empty();</span>
+
+    // Bad block has already been marked, but we need to mark the bad block's descendants
+<span class="nc" id="L796">    badBlockDescendants.forEach(</span>
+        block -&gt; {
+<span class="nc" id="L798">          LOG.trace(&quot;Add descendant block {} to bad blocks&quot;, block.getHash());</span>
+<span class="nc" id="L799">          badBlockManager.addBadBlock(block, BadBlockCause.fromBadAncestorBlock(badBlock));</span>
+<span class="nc" id="L800">          maybeLatestValidHash.ifPresent(</span>
+              latestValidHash -&gt;
+<span class="nc" id="L802">                  badBlockManager.addLatestValidHash(block.getHash(), latestValidHash));</span>
+<span class="nc" id="L803">        });</span>
+
+<span class="nc" id="L805">    badBlockHeaderDescendants.forEach(</span>
+        header -&gt; {
+<span class="nc" id="L807">          LOG.trace(&quot;Add descendant header {} to bad blocks&quot;, header.getHash());</span>
+<span class="nc" id="L808">          badBlockManager.addBadHeader(header, BadBlockCause.fromBadAncestorBlock(badBlock));</span>
+<span class="nc" id="L809">          maybeLatestValidHash.ifPresent(</span>
+              latestValidHash -&gt;
+<span class="nc" id="L811">                  badBlockManager.addLatestValidHash(header.getHash(), latestValidHash));</span>
+<span class="nc" id="L812">        });</span>
+<span class="nc" id="L813">  }</span>
+
+  /**
+   * returns the instance of ethScheduler
+   *
+   * @return get the Eth scheduler
+   */
+  @Override
+  public EthScheduler getEthScheduler() {
+<span class="nc" id="L822">    return ethScheduler;</span>
+  }
+
+  /** The interface Merge block creator factory. */
+  @FunctionalInterface
+  protected interface MergeBlockCreatorFactory {
+    /**
+     * Create merge block creator for block header and fee recipient.
+     *
+     * @param header the header
+     * @param feeRecipient the fee recipient
+     * @return the merge block creator
+     */
+    MergeBlockCreator forParams(BlockHeader header, Optional&lt;Address&gt; feeRecipient);
+  }
+
+  @Override
+  public boolean isBadBlock(final Hash blockHash) {
+<span class="nc" id="L840">    final BadBlockManager badBlockManager = protocolContext.getBadBlockManager();</span>
+<span class="nc" id="L841">    return badBlockManager.isBadBlock(blockHash);</span>
+  }
+
+  @Override
+  public Optional&lt;Hash&gt; getLatestValidHashOfBadBlock(Hash blockHash) {
+<span class="nc" id="L846">    return protocolContext.getBadBlockManager().getLatestValidHash(blockHash);</span>
+  }
+
+  private boolean isPoSHeader(final BlockHeader header) {
+<span class="nc" id="L850">    return header.getDifficulty().equals(Difficulty.ZERO);</span>
+  }
+
+  private String logException(final Throwable throwable) {
+<span class="nc" id="L854">    final StringWriter sw = new StringWriter();</span>
+<span class="nc" id="L855">    final PrintWriter pw = new PrintWriter(sw);</span>
+<span class="nc" id="L856">    throwable.printStackTrace(pw);</span>
+<span class="nc" id="L857">    pw.flush();</span>
+<span class="nc" id="L858">    return sw.toString();</span>
+  }
+
+  @VisibleForTesting
+  boolean isBlockCreationCancelled(final PayloadIdentifier payloadId) {
+<span class="fc" id="L863">    final BlockCreationTask job = blockCreationTasks.get(payloadId);</span>
+<span class="fc bfc" id="L864" title="All 2 branches covered.">    if (job == null) {</span>
+<span class="fc" id="L865">      return true;</span>
+    }
+<span class="fc" id="L867">    return job.cancelled.get();</span>
+  }
+
+  private static class BlockCreationTask {
+    /** The Block creator. */
+    final MergeBlockCreator blockCreator;
+    /** The Cancelled. */
+    final AtomicBoolean cancelled;
+
+    /**
+     * Instantiates a new Block creation task.
+     *
+     * @param blockCreator the block creator
+     */
+<span class="fc" id="L881">    public BlockCreationTask(final MergeBlockCreator blockCreator) {</span>
+<span class="fc" id="L882">      this.blockCreator = blockCreator;</span>
+<span class="fc" id="L883">      this.cancelled = new AtomicBoolean(false);</span>
+<span class="fc" id="L884">    }</span>
+
+    /** Cancel. */
+    public void cancel() {
+<span class="fc" id="L888">      cancelled.set(true);</span>
+<span class="fc" id="L889">      blockCreator.cancel();</span>
+<span class="fc" id="L890">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

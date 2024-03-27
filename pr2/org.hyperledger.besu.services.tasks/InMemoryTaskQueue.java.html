@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InMemoryTaskQueue.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.tasks</a> &gt; <span class="el_source">InMemoryTaskQueue.java</span></div><h1>InMemoryTaskQueue.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.tasks;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * The InMemory task queue.
+ *
+ * @param &lt;T&gt; the type parameter
+ */
+<span class="fc" id="L30">public class InMemoryTaskQueue&lt;T&gt; implements TaskCollection&lt;T&gt; {</span>
+<span class="fc" id="L31">  private final Queue&lt;T&gt; internalQueue = new ArrayDeque&lt;&gt;();</span>
+<span class="fc" id="L32">  private final Set&lt;InMemoryTask&lt;T&gt;&gt; unfinishedOutstandingTasks = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L33">  private final AtomicBoolean closed = new AtomicBoolean(false);</span>
+
+  @Override
+  public synchronized void add(final T taskData) {
+<span class="fc" id="L37">    assertNotClosed();</span>
+<span class="fc" id="L38">    internalQueue.add(taskData);</span>
+<span class="fc" id="L39">  }</span>
+
+  @Override
+  public synchronized Task&lt;T&gt; remove() {
+<span class="fc" id="L43">    assertNotClosed();</span>
+<span class="fc" id="L44">    T data = internalQueue.poll();</span>
+<span class="fc bfc" id="L45" title="All 2 branches covered.">    if (data == null) {</span>
+<span class="fc" id="L46">      return null;</span>
+    }
+<span class="fc" id="L48">    InMemoryTask&lt;T&gt; task = new InMemoryTask&lt;&gt;(this, data);</span>
+<span class="fc" id="L49">    unfinishedOutstandingTasks.add(task);</span>
+<span class="fc" id="L50">    return task;</span>
+  }
+
+  @Override
+  public synchronized long size() {
+<span class="fc" id="L55">    assertNotClosed();</span>
+<span class="fc" id="L56">    return internalQueue.size();</span>
+  }
+
+  @Override
+  public synchronized boolean isEmpty() {
+<span class="fc" id="L61">    assertNotClosed();</span>
+<span class="fc bfc" id="L62" title="All 2 branches covered.">    return size() == 0;</span>
+  }
+
+  @Override
+  public synchronized void clear() {
+<span class="fc" id="L67">    assertNotClosed();</span>
+
+<span class="fc" id="L69">    unfinishedOutstandingTasks.clear();</span>
+<span class="fc" id="L70">    internalQueue.clear();</span>
+<span class="fc" id="L71">  }</span>
+
+  /** Clear internal queue. */
+  public void clearInternalQueue() {
+<span class="nc" id="L75">    internalQueue.clear();</span>
+<span class="nc" id="L76">  }</span>
+
+  @Override
+  public synchronized boolean allTasksCompleted() {
+<span class="fc" id="L80">    assertNotClosed();</span>
+<span class="fc bfc" id="L81" title="All 4 branches covered.">    return isEmpty() &amp;&amp; unfinishedOutstandingTasks.size() == 0;</span>
+  }
+
+  @Override
+  public synchronized void close() {
+<span class="fc" id="L86">    closed.set(true);</span>
+<span class="fc" id="L87">    internalQueue.clear();</span>
+<span class="fc" id="L88">  }</span>
+
+  private void assertNotClosed() {
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">    if (closed.get()) {</span>
+<span class="nc" id="L92">      throw new IllegalStateException(&quot;Attempt to access closed &quot; + getClass().getSimpleName());</span>
+    }
+<span class="fc" id="L94">  }</span>
+
+  /**
+   * Return task queue as list.
+   *
+   * @return the list
+   */
+  public synchronized List&lt;T&gt; asList() {
+<span class="nc" id="L102">    return new ArrayList&lt;&gt;(internalQueue);</span>
+  }
+
+  private synchronized void handleFailedTask(final InMemoryTask&lt;T&gt; task) {
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (markTaskCompleted(task)) {</span>
+<span class="fc" id="L107">      add(task.getData());</span>
+    }
+<span class="fc" id="L109">  }</span>
+
+  private synchronized boolean markTaskCompleted(final InMemoryTask&lt;T&gt; task) {
+<span class="fc" id="L112">    return unfinishedOutstandingTasks.remove(task);</span>
+  }
+
+  private static class InMemoryTask&lt;T&gt; implements Task&lt;T&gt; {
+    private final T data;
+    private final InMemoryTaskQueue&lt;T&gt; queue;
+<span class="fc" id="L118">    private final AtomicBoolean completed = new AtomicBoolean(false);</span>
+
+    /**
+     * Instantiates a new InMemory task.
+     *
+     * @param queue the queue
+     * @param data the data
+     */
+<span class="fc" id="L126">    public InMemoryTask(final InMemoryTaskQueue&lt;T&gt; queue, final T data) {</span>
+<span class="fc" id="L127">      this.queue = queue;</span>
+<span class="fc" id="L128">      this.data = data;</span>
+<span class="fc" id="L129">    }</span>
+
+    @Override
+    public T getData() {
+<span class="fc" id="L133">      return data;</span>
+    }
+
+    @Override
+    public void markCompleted() {
+<span class="fc bfc" id="L138" title="All 2 branches covered.">      if (completed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L139">        queue.markTaskCompleted(this);</span>
+      }
+<span class="fc" id="L141">    }</span>
+
+    @Override
+    public void markFailed() {
+<span class="fc bfc" id="L145" title="All 2 branches covered.">      if (completed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L146">        queue.handleFailedTask(this);</span>
+      }
+<span class="fc" id="L148">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

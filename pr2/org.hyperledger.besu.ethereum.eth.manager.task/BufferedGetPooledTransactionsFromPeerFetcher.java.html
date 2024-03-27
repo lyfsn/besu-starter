@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BufferedGetPooledTransactionsFromPeerFetcher.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">BufferedGetPooledTransactionsFromPeerFetcher.java</span></div><h1>BufferedGetPooledTransactionsFromPeerFetcher.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import static org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration.DEFAULT_MAX_PENDING_TRANSACTIONS;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.transactions.PeerTransactionTracker;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolMetrics;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ScheduledFuture;
+
+import com.google.common.collect.EvictingQueue;
+import com.google.common.collect.Queues;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@SuppressWarnings(&quot;UnstableApiUsage&quot;)
+public class BufferedGetPooledTransactionsFromPeerFetcher {
+<span class="fc" id="L40">  private static final Logger LOG =</span>
+<span class="fc" id="L41">      LoggerFactory.getLogger(BufferedGetPooledTransactionsFromPeerFetcher.class);</span>
+  private static final int MAX_HASHES = 256;
+
+  private final TransactionPool transactionPool;
+  private final PeerTransactionTracker transactionTracker;
+  private final EthContext ethContext;
+  private final TransactionPoolMetrics metrics;
+  private final String metricLabel;
+  private final ScheduledFuture&lt;?&gt; scheduledFuture;
+  private final EthPeer peer;
+  private final Queue&lt;Hash&gt; txAnnounces;
+
+  public BufferedGetPooledTransactionsFromPeerFetcher(
+      final EthContext ethContext,
+      final ScheduledFuture&lt;?&gt; scheduledFuture,
+      final EthPeer peer,
+      final TransactionPool transactionPool,
+      final PeerTransactionTracker transactionTracker,
+      final TransactionPoolMetrics metrics,
+<span class="fc" id="L60">      final String metricLabel) {</span>
+<span class="fc" id="L61">    this.ethContext = ethContext;</span>
+<span class="fc" id="L62">    this.scheduledFuture = scheduledFuture;</span>
+<span class="fc" id="L63">    this.peer = peer;</span>
+<span class="fc" id="L64">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L65">    this.transactionTracker = transactionTracker;</span>
+<span class="fc" id="L66">    this.metrics = metrics;</span>
+<span class="fc" id="L67">    this.metricLabel = metricLabel;</span>
+<span class="fc" id="L68">    this.txAnnounces =</span>
+<span class="fc" id="L69">        Queues.synchronizedQueue(EvictingQueue.create(DEFAULT_MAX_PENDING_TRANSACTIONS));</span>
+<span class="fc" id="L70">  }</span>
+
+  public ScheduledFuture&lt;?&gt; getScheduledFuture() {
+<span class="fc" id="L73">    return scheduledFuture;</span>
+  }
+
+  public void requestTransactions() {
+    List&lt;Hash&gt; txHashesAnnounced;
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    while (!(txHashesAnnounced = getTxHashesAnnounced()).isEmpty()) {</span>
+<span class="fc" id="L79">      final GetPooledTransactionsFromPeerTask task =</span>
+<span class="fc" id="L80">          GetPooledTransactionsFromPeerTask.forHashes(</span>
+<span class="fc" id="L81">              ethContext, txHashesAnnounced, metrics.getMetricsSystem());</span>
+<span class="fc" id="L82">      task.assignPeer(peer);</span>
+<span class="fc" id="L83">      ethContext</span>
+<span class="fc" id="L84">          .getScheduler()</span>
+<span class="fc" id="L85">          .scheduleSyncWorkerTask(task)</span>
+<span class="fc" id="L86">          .thenAccept(</span>
+              result -&gt; {
+<span class="fc" id="L88">                List&lt;Transaction&gt; retrievedTransactions = result.getResult();</span>
+<span class="fc" id="L89">                transactionTracker.markTransactionsAsSeen(peer, retrievedTransactions);</span>
+
+<span class="fc" id="L91">                LOG.atTrace()</span>
+<span class="fc" id="L92">                    .setMessage(&quot;Got {} transactions of {} hashes requested from peer {}...&quot;)</span>
+<span class="fc" id="L93">                    .addArgument(retrievedTransactions::size)</span>
+<span class="fc" id="L94">                    .addArgument(task.getTransactionHashes()::size)</span>
+<span class="fc" id="L95">                    .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L96">                    .log();</span>
+
+<span class="fc" id="L98">                transactionPool.addRemoteTransactions(retrievedTransactions);</span>
+<span class="fc" id="L99">              });</span>
+<span class="fc" id="L100">    }</span>
+<span class="fc" id="L101">  }</span>
+
+  public void addHashes(final Collection&lt;Hash&gt; hashes) {
+<span class="fc" id="L104">    txAnnounces.addAll(hashes);</span>
+<span class="fc" id="L105">  }</span>
+
+  private List&lt;Hash&gt; getTxHashesAnnounced() {
+<span class="fc" id="L108">    final List&lt;Hash&gt; toRetrieve = new ArrayList&lt;&gt;(MAX_HASHES);</span>
+<span class="fc" id="L109">    int discarded = 0;</span>
+<span class="fc bfc" id="L110" title="All 4 branches covered.">    while (toRetrieve.size() &lt; MAX_HASHES &amp;&amp; !txAnnounces.isEmpty()) {</span>
+<span class="fc" id="L111">      final Hash txHashAnnounced = txAnnounces.poll();</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      if (!transactionTracker.hasSeenTransaction(txHashAnnounced)) {</span>
+<span class="fc" id="L113">        toRetrieve.add(txHashAnnounced);</span>
+      } else {
+<span class="fc" id="L115">        discarded++;</span>
+      }
+<span class="fc" id="L117">    }</span>
+
+<span class="fc" id="L119">    final int alreadySeenCount = discarded;</span>
+<span class="fc" id="L120">    metrics.incrementAlreadySeenTransactions(metricLabel, alreadySeenCount);</span>
+<span class="fc" id="L121">    LOG.atTrace()</span>
+<span class="fc" id="L122">        .setMessage(</span>
+            &quot;Transaction hashes to request from peer {}... fresh count {}, already seen count {}&quot;)
+<span class="fc" id="L124">        .addArgument(peer::getLoggableId)</span>
+<span class="fc" id="L125">        .addArgument(toRetrieve::size)</span>
+<span class="fc" id="L126">        .addArgument(alreadySeenCount)</span>
+<span class="fc" id="L127">        .log();</span>
+
+<span class="fc" id="L129">    return toRetrieve;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

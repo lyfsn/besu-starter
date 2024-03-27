@@ -1,0 +1,1174 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BesuControllerBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">BesuControllerBuilder.java</span></div><h1>BesuControllerBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import org.hyperledger.besu.components.BesuComponent;
+import org.hyperledger.besu.config.CheckpointConfigOptions;
+import org.hyperledger.besu.config.GenesisConfigFile;
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.merge.MergeContext;
+import org.hyperledger.besu.consensus.merge.UnverifiedForkchoiceSupplier;
+import org.hyperledger.besu.consensus.qbft.pki.PkiBlockCreationConfiguration;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ConsensusContext;
+import org.hyperledger.besu.ethereum.ConsensusContextFactory;
+import org.hyperledger.besu.ethereum.GasLimitCalculator;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.methods.JsonRpcMethods;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.BadBlockManager;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.BlockchainStorage;
+import org.hyperledger.besu.ethereum.chain.ChainDataPruner;
+import org.hyperledger.besu.ethereum.chain.ChainDataPrunerStorage;
+import org.hyperledger.besu.ethereum.chain.ChainPrunerConfiguration;
+import org.hyperledger.besu.ethereum.chain.DefaultBlockchain;
+import org.hyperledger.besu.ethereum.chain.GenesisState;
+import org.hyperledger.besu.ethereum.chain.MutableBlockchain;
+import org.hyperledger.besu.ethereum.chain.VariablesStorage;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+import org.hyperledger.besu.ethereum.eth.EthProtocol;
+import org.hyperledger.besu.ethereum.eth.EthProtocolConfiguration;
+import org.hyperledger.besu.ethereum.eth.SnapProtocol;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.manager.MergePeerFilter;
+import org.hyperledger.besu.ethereum.eth.manager.MonitoredExecutors;
+import org.hyperledger.besu.ethereum.eth.manager.snap.SnapProtocolManager;
+import org.hyperledger.besu.ethereum.eth.peervalidation.CheckpointBlocksPeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.ClassicForkPeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.DaoForkPeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.eth.peervalidation.RequiredBlocksPeerValidator;
+import org.hyperledger.besu.ethereum.eth.sync.DefaultSynchronizer;
+import org.hyperledger.besu.ethereum.eth.sync.PivotBlockSelector;
+import org.hyperledger.besu.ethereum.eth.sync.SyncMode;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.PivotSelectorFromPeers;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.PivotSelectorFromSafeBlock;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.checkpoint.Checkpoint;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.checkpoint.ImmutableCheckpoint;
+import org.hyperledger.besu.ethereum.eth.sync.fullsync.SyncTerminationCondition;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolFactory;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.p2p.config.NetworkingConfiguration;
+import org.hyperledger.besu.ethereum.p2p.config.SubProtocolConfiguration;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+import org.hyperledger.besu.ethereum.trie.bonsai.BonsaiWorldStateProvider;
+import org.hyperledger.besu.ethereum.trie.bonsai.cache.CachedMerkleTrieLoader;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.bonsai.trielog.TrieLogPruner;
+import org.hyperledger.besu.ethereum.trie.forest.ForestWorldStateArchive;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.MarkSweepPruner;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.Pruner;
+import org.hyperledger.besu.ethereum.trie.forest.pruner.PrunerConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStatePreimageStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.metrics.ObservableMetricsSystem;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.permissioning.NodeMessagePermissioningProvider;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+
+import java.io.Closeable;
+import java.math.BigInteger;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Besu controller builder that builds Besu Controller. */
+<span class="fc" id="L120">public abstract class BesuControllerBuilder implements MiningParameterOverrides {</span>
+<span class="fc" id="L121">  private static final Logger LOG = LoggerFactory.getLogger(BesuControllerBuilder.class);</span>
+
+  private GenesisConfigFile genesisConfig;
+<span class="fc" id="L124">  private Map&lt;String, String&gt; genesisConfigOverrides = Collections.emptyMap();</span>
+
+  /** The Config options supplier. */
+<span class="fc" id="L127">  protected Supplier&lt;GenesisConfigOptions&gt; configOptionsSupplier =</span>
+      () -&gt;
+<span class="fc" id="L129">          Optional.ofNullable(genesisConfig)</span>
+<span class="fc" id="L130">              .map(conf -&gt; conf.getConfigOptions(genesisConfigOverrides))</span>
+<span class="fc" id="L131">              .orElseThrow();</span>
+
+  /** The is genesis state hash from data. */
+  protected boolean genesisStateHashCacheEnabled;
+
+  /** The Sync config. */
+  protected SynchronizerConfiguration syncConfig;
+  /** The Ethereum wire protocol configuration. */
+  protected EthProtocolConfiguration ethereumWireProtocolConfiguration;
+  /** The Transaction pool configuration. */
+  protected TransactionPoolConfiguration transactionPoolConfiguration;
+  /** The Network id. */
+  protected BigInteger networkId;
+  /** The Mining parameters. */
+  protected MiningParameters miningParameters;
+  /** The Metrics system. */
+  protected ObservableMetricsSystem metricsSystem;
+  /** The Privacy parameters. */
+  protected PrivacyParameters privacyParameters;
+  /** The Pki block creation configuration. */
+<span class="fc" id="L151">  protected Optional&lt;PkiBlockCreationConfiguration&gt; pkiBlockCreationConfiguration =</span>
+<span class="fc" id="L152">      Optional.empty();</span>
+  /** The Data directory. */
+  protected Path dataDirectory;
+  /** The Clock. */
+  protected Clock clock;
+  /** The Node key. */
+  protected NodeKey nodeKey;
+  /** The Is revert reason enabled. */
+  protected boolean isRevertReasonEnabled;
+  /** The Gas limit calculator. */
+  GasLimitCalculator gasLimitCalculator;
+  /** The Storage provider. */
+  protected StorageProvider storageProvider;
+  /** The Is pruning enabled. */
+  protected boolean isPruningEnabled;
+  /** The Pruner configuration. */
+  protected PrunerConfiguration prunerConfiguration;
+  /** The Required blocks. */
+<span class="fc" id="L170">  protected Map&lt;Long, Hash&gt; requiredBlocks = Collections.emptyMap();</span>
+  /** The Reorg logging threshold. */
+  protected long reorgLoggingThreshold;
+  /** The Data storage configuration. */
+<span class="fc" id="L174">  protected DataStorageConfiguration dataStorageConfiguration =</span>
+      DataStorageConfiguration.DEFAULT_CONFIG;
+  /** The Message permissioning providers. */
+<span class="fc" id="L177">  protected List&lt;NodeMessagePermissioningProvider&gt; messagePermissioningProviders =</span>
+<span class="fc" id="L178">      Collections.emptyList();</span>
+  /** The Evm configuration. */
+  protected EvmConfiguration evmConfiguration;
+  /** The Max peers. */
+  protected int maxPeers;
+  /** Manages a cache of bad blocks globally */
+<span class="fc" id="L184">  protected final BadBlockManager badBlockManager = new BadBlockManager();</span>
+
+  private int maxRemotelyInitiatedPeers;
+  /** The Chain pruner configuration. */
+<span class="fc" id="L188">  protected ChainPrunerConfiguration chainPrunerConfiguration = ChainPrunerConfiguration.DEFAULT;</span>
+
+  private NetworkingConfiguration networkingConfiguration;
+  private Boolean randomPeerPriority;
+  /** the Dagger configured context that can provide dependencies */
+<span class="fc" id="L193">  protected Optional&lt;BesuComponent&gt; besuComponent = Optional.empty();</span>
+
+<span class="fc" id="L195">  private int numberOfBlocksToCache = 0;</span>
+
+  /**
+   * Provide a BesuComponent which can be used to get other dependencies
+   *
+   * @param besuComponent application context that can be used to get other dependencies
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder besuComponent(final BesuComponent besuComponent) {
+<span class="nc" id="L204">    this.besuComponent = Optional.ofNullable(besuComponent);</span>
+<span class="nc" id="L205">    return this;</span>
+  }
+
+  /**
+   * Storage provider besu controller builder.
+   *
+   * @param storageProvider the storage provider
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder storageProvider(final StorageProvider storageProvider) {
+<span class="fc" id="L215">    this.storageProvider = storageProvider;</span>
+<span class="fc" id="L216">    return this;</span>
+  }
+
+  /**
+   * Genesis config file besu controller builder.
+   *
+   * @param genesisConfig the genesis config
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder genesisConfigFile(final GenesisConfigFile genesisConfig) {
+<span class="fc" id="L226">    this.genesisConfig = genesisConfig;</span>
+<span class="fc" id="L227">    return this;</span>
+  }
+
+  /**
+   * Genesis state hash from data besu controller builder.
+   *
+   * @param genesisStateHashCacheEnabled the is genesis state hash from data
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder genesisStateHashCacheEnabled(
+      final Boolean genesisStateHashCacheEnabled) {
+<span class="fc" id="L238">    this.genesisStateHashCacheEnabled = genesisStateHashCacheEnabled;</span>
+<span class="fc" id="L239">    return this;</span>
+  }
+
+  /**
+   * Synchronizer configuration besu controller builder.
+   *
+   * @param synchronizerConfig the synchronizer config
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder synchronizerConfiguration(
+      final SynchronizerConfiguration synchronizerConfig) {
+<span class="fc" id="L250">    this.syncConfig = synchronizerConfig;</span>
+<span class="fc" id="L251">    return this;</span>
+  }
+
+  /**
+   * Eth protocol configuration besu controller builder.
+   *
+   * @param ethProtocolConfiguration the eth protocol configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder ethProtocolConfiguration(
+      final EthProtocolConfiguration ethProtocolConfiguration) {
+<span class="fc" id="L262">    this.ethereumWireProtocolConfiguration = ethProtocolConfiguration;</span>
+<span class="fc" id="L263">    return this;</span>
+  }
+
+  /**
+   * Network id besu controller builder.
+   *
+   * @param networkId the network id
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder networkId(final BigInteger networkId) {
+<span class="fc" id="L273">    this.networkId = networkId;</span>
+<span class="fc" id="L274">    return this;</span>
+  }
+
+  /**
+   * Mining parameters besu controller builder.
+   *
+   * @param miningParameters the mining parameters
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder miningParameters(final MiningParameters miningParameters) {
+<span class="fc" id="L284">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L285">    return this;</span>
+  }
+
+  /**
+   * Message permissioning providers besu controller builder.
+   *
+   * @param messagePermissioningProviders the message permissioning providers
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder messagePermissioningProviders(
+      final List&lt;NodeMessagePermissioningProvider&gt; messagePermissioningProviders) {
+<span class="nc" id="L296">    this.messagePermissioningProviders = messagePermissioningProviders;</span>
+<span class="nc" id="L297">    return this;</span>
+  }
+
+  /**
+   * Node key besu controller builder.
+   *
+   * @param nodeKey the node key
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder nodeKey(final NodeKey nodeKey) {
+<span class="fc" id="L307">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L308">    return this;</span>
+  }
+
+  /**
+   * Metrics system besu controller builder.
+   *
+   * @param metricsSystem the metrics system
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder metricsSystem(final ObservableMetricsSystem metricsSystem) {
+<span class="fc" id="L318">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L319">    return this;</span>
+  }
+
+  /**
+   * Privacy parameters besu controller builder.
+   *
+   * @param privacyParameters the privacy parameters
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder privacyParameters(final PrivacyParameters privacyParameters) {
+<span class="fc" id="L329">    this.privacyParameters = privacyParameters;</span>
+<span class="fc" id="L330">    return this;</span>
+  }
+
+  /**
+   * Pki block creation configuration besu controller builder.
+   *
+   * @param pkiBlockCreationConfiguration the pki block creation configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder pkiBlockCreationConfiguration(
+      final Optional&lt;PkiBlockCreationConfiguration&gt; pkiBlockCreationConfiguration) {
+<span class="fc" id="L341">    this.pkiBlockCreationConfiguration = pkiBlockCreationConfiguration;</span>
+<span class="fc" id="L342">    return this;</span>
+  }
+
+  /**
+   * Data directory besu controller builder.
+   *
+   * @param dataDirectory the data directory
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder dataDirectory(final Path dataDirectory) {
+<span class="fc" id="L352">    this.dataDirectory = dataDirectory;</span>
+<span class="fc" id="L353">    return this;</span>
+  }
+
+  /**
+   * Clock besu controller builder.
+   *
+   * @param clock the clock
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder clock(final Clock clock) {
+<span class="fc" id="L363">    this.clock = clock;</span>
+<span class="fc" id="L364">    return this;</span>
+  }
+
+  /**
+   * Transaction pool configuration besu controller builder.
+   *
+   * @param transactionPoolConfiguration the transaction pool configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder transactionPoolConfiguration(
+      final TransactionPoolConfiguration transactionPoolConfiguration) {
+<span class="fc" id="L375">    this.transactionPoolConfiguration = transactionPoolConfiguration;</span>
+<span class="fc" id="L376">    return this;</span>
+  }
+
+  /**
+   * Is revert reason enabled besu controller builder.
+   *
+   * @param isRevertReasonEnabled the is revert reason enabled
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder isRevertReasonEnabled(final boolean isRevertReasonEnabled) {
+<span class="fc" id="L386">    this.isRevertReasonEnabled = isRevertReasonEnabled;</span>
+<span class="fc" id="L387">    return this;</span>
+  }
+
+  /**
+   * Is pruning enabled besu controller builder.
+   *
+   * @param isPruningEnabled the is pruning enabled
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder isPruningEnabled(final boolean isPruningEnabled) {
+<span class="fc" id="L397">    this.isPruningEnabled = isPruningEnabled;</span>
+<span class="fc" id="L398">    return this;</span>
+  }
+
+  /**
+   * Pruning configuration besu controller builder.
+   *
+   * @param prunerConfiguration the pruner configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder pruningConfiguration(final PrunerConfiguration prunerConfiguration) {
+<span class="fc" id="L408">    this.prunerConfiguration = prunerConfiguration;</span>
+<span class="fc" id="L409">    return this;</span>
+  }
+
+  /**
+   * Genesis config overrides besu controller builder.
+   *
+   * @param genesisConfigOverrides the genesis config overrides
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder genesisConfigOverrides(
+      final Map&lt;String, String&gt; genesisConfigOverrides) {
+<span class="nc" id="L420">    this.genesisConfigOverrides = genesisConfigOverrides;</span>
+<span class="nc" id="L421">    return this;</span>
+  }
+
+  /**
+   * Gas limit calculator besu controller builder.
+   *
+   * @param gasLimitCalculator the gas limit calculator
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder gasLimitCalculator(final GasLimitCalculator gasLimitCalculator) {
+<span class="fc" id="L431">    this.gasLimitCalculator = gasLimitCalculator;</span>
+<span class="fc" id="L432">    return this;</span>
+  }
+
+  /**
+   * Required blocks besu controller builder.
+   *
+   * @param requiredBlocks the required blocks
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder requiredBlocks(final Map&lt;Long, Hash&gt; requiredBlocks) {
+<span class="nc" id="L442">    this.requiredBlocks = requiredBlocks;</span>
+<span class="nc" id="L443">    return this;</span>
+  }
+
+  /**
+   * Reorg logging threshold besu controller builder.
+   *
+   * @param reorgLoggingThreshold the reorg logging threshold
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder reorgLoggingThreshold(final long reorgLoggingThreshold) {
+<span class="nc" id="L453">    this.reorgLoggingThreshold = reorgLoggingThreshold;</span>
+<span class="nc" id="L454">    return this;</span>
+  }
+
+  /**
+   * Data storage configuration besu controller builder.
+   *
+   * @param dataStorageConfiguration the data storage configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder dataStorageConfiguration(
+      final DataStorageConfiguration dataStorageConfiguration) {
+<span class="fc" id="L465">    this.dataStorageConfiguration = dataStorageConfiguration;</span>
+<span class="fc" id="L466">    return this;</span>
+  }
+
+  /**
+   * Evm configuration besu controller builder.
+   *
+   * @param evmConfiguration the evm configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder evmConfiguration(final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L476">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L477">    return this;</span>
+  }
+
+  /**
+   * Max peers besu controller builder.
+   *
+   * @param maxPeers the max peers
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder maxPeers(final int maxPeers) {
+<span class="fc" id="L487">    this.maxPeers = maxPeers;</span>
+<span class="fc" id="L488">    return this;</span>
+  }
+
+  /**
+   * Maximum number of remotely initiated peer connections
+   *
+   * @param maxRemotelyInitiatedPeers maximum number of remotely initiated peer connections
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder maxRemotelyInitiatedPeers(final int maxRemotelyInitiatedPeers) {
+<span class="fc" id="L498">    this.maxRemotelyInitiatedPeers = maxRemotelyInitiatedPeers;</span>
+<span class="fc" id="L499">    return this;</span>
+  }
+
+  /**
+   * Chain pruning configuration besu controller builder.
+   *
+   * @param chainPrunerConfiguration the chain pruner configuration
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder chainPruningConfiguration(
+      final ChainPrunerConfiguration chainPrunerConfiguration) {
+<span class="nc" id="L510">    this.chainPrunerConfiguration = chainPrunerConfiguration;</span>
+<span class="nc" id="L511">    return this;</span>
+  }
+
+  /**
+   * Sets the number of blocks to cache.
+   *
+   * @param numberOfBlocksToCache the number of blocks to cache
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder cacheLastBlocks(final Integer numberOfBlocksToCache) {
+<span class="nc" id="L521">    this.numberOfBlocksToCache = numberOfBlocksToCache;</span>
+<span class="nc" id="L522">    return this;</span>
+  }
+
+  /**
+   * sets the networkConfiguration in the builder
+   *
+   * @param networkingConfiguration the networking config
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder networkConfiguration(
+      final NetworkingConfiguration networkingConfiguration) {
+<span class="fc" id="L533">    this.networkingConfiguration = networkingConfiguration;</span>
+<span class="fc" id="L534">    return this;</span>
+  }
+
+  /**
+   * sets the randomPeerPriority flag in the builder
+   *
+   * @param randomPeerPriority the random peer priority flag
+   * @return the besu controller builder
+   */
+  public BesuControllerBuilder randomPeerPriority(final Boolean randomPeerPriority) {
+<span class="fc" id="L544">    this.randomPeerPriority = randomPeerPriority;</span>
+<span class="fc" id="L545">    return this;</span>
+  }
+
+  /**
+   * Build besu controller.
+   *
+   * @return the besu controller
+   */
+  public BesuController build() {
+<span class="fc" id="L554">    checkNotNull(genesisConfig, &quot;Missing genesis config&quot;);</span>
+<span class="fc" id="L555">    checkNotNull(syncConfig, &quot;Missing sync config&quot;);</span>
+<span class="fc" id="L556">    checkNotNull(ethereumWireProtocolConfiguration, &quot;Missing ethereum protocol configuration&quot;);</span>
+<span class="fc" id="L557">    checkNotNull(networkId, &quot;Missing network ID&quot;);</span>
+<span class="fc" id="L558">    checkNotNull(miningParameters, &quot;Missing mining parameters&quot;);</span>
+<span class="fc" id="L559">    checkNotNull(metricsSystem, &quot;Missing metrics system&quot;);</span>
+<span class="fc" id="L560">    checkNotNull(privacyParameters, &quot;Missing privacy parameters&quot;);</span>
+<span class="fc" id="L561">    checkNotNull(dataDirectory, &quot;Missing data directory&quot;); // Why do we need this?</span>
+<span class="fc" id="L562">    checkNotNull(clock, &quot;Missing clock&quot;);</span>
+<span class="fc" id="L563">    checkNotNull(transactionPoolConfiguration, &quot;Missing transaction pool configuration&quot;);</span>
+<span class="fc" id="L564">    checkNotNull(nodeKey, &quot;Missing node key&quot;);</span>
+<span class="fc" id="L565">    checkNotNull(storageProvider, &quot;Must supply a storage provider&quot;);</span>
+<span class="fc" id="L566">    checkNotNull(gasLimitCalculator, &quot;Missing gas limit calculator&quot;);</span>
+<span class="fc" id="L567">    checkNotNull(evmConfiguration, &quot;Missing evm config&quot;);</span>
+<span class="fc" id="L568">    checkNotNull(networkingConfiguration, &quot;Missing network configuration&quot;);</span>
+<span class="fc" id="L569">    checkNotNull(dataStorageConfiguration, &quot;Missing data storage configuration&quot;);</span>
+<span class="fc" id="L570">    prepForBuild();</span>
+
+<span class="fc" id="L572">    final ProtocolSchedule protocolSchedule = createProtocolSchedule();</span>
+    final GenesisState genesisState;
+
+<span class="fc" id="L575">    final VariablesStorage variablesStorage = storageProvider.createVariablesStorage();</span>
+
+<span class="fc" id="L577">    Optional&lt;Hash&gt; genesisStateHash = Optional.empty();</span>
+<span class="fc bfc" id="L578" title="All 4 branches covered.">    if (variablesStorage != null &amp;&amp; this.genesisStateHashCacheEnabled) {</span>
+<span class="fc" id="L579">      genesisStateHash = variablesStorage.getGenesisStateHash();</span>
+    }
+
+<span class="fc bfc" id="L582" title="All 2 branches covered.">    if (genesisStateHash.isPresent()) {</span>
+<span class="fc" id="L583">      genesisState =</span>
+<span class="fc" id="L584">          GenesisState.fromConfig(genesisStateHash.get(), genesisConfig, protocolSchedule);</span>
+    } else {
+<span class="fc" id="L586">      genesisState =</span>
+<span class="fc" id="L587">          GenesisState.fromConfig(dataStorageConfiguration, genesisConfig, protocolSchedule);</span>
+<span class="fc bfc" id="L588" title="All 2 branches covered.">      if (variablesStorage != null) {</span>
+<span class="fc" id="L589">        VariablesStorage.Updater updater = variablesStorage.updater();</span>
+<span class="pc bpc" id="L590" title="1 of 2 branches missed.">        if (updater != null) {</span>
+<span class="fc" id="L591">          updater.setGenesisStateHash(genesisState.getBlock().getHeader().getStateRoot());</span>
+<span class="fc" id="L592">          updater.commit();</span>
+        }
+      }
+    }
+
+<span class="fc" id="L597">    final WorldStateStorageCoordinator worldStateStorageCoordinator =</span>
+<span class="fc" id="L598">        storageProvider.createWorldStateStorageCoordinator(dataStorageConfiguration);</span>
+
+<span class="fc" id="L600">    final BlockchainStorage blockchainStorage =</span>
+<span class="fc" id="L601">        storageProvider.createBlockchainStorage(protocolSchedule, variablesStorage);</span>
+
+<span class="fc" id="L603">    final MutableBlockchain blockchain =</span>
+<span class="fc" id="L604">        DefaultBlockchain.createMutable(</span>
+<span class="fc" id="L605">            genesisState.getBlock(),</span>
+            blockchainStorage,
+            metricsSystem,
+            reorgLoggingThreshold,
+<span class="fc" id="L609">            dataDirectory.toString(),</span>
+            numberOfBlocksToCache);
+
+<span class="fc" id="L612">    final CachedMerkleTrieLoader cachedMerkleTrieLoader =</span>
+        besuComponent
+<span class="fc" id="L614">            .map(BesuComponent::getCachedMerkleTrieLoader)</span>
+<span class="fc" id="L615">            .orElseGet(() -&gt; new CachedMerkleTrieLoader(metricsSystem));</span>
+
+<span class="fc" id="L617">    final WorldStateArchive worldStateArchive =</span>
+<span class="fc" id="L618">        createWorldStateArchive(worldStateStorageCoordinator, blockchain, cachedMerkleTrieLoader);</span>
+
+<span class="pc bpc" id="L620" title="1 of 2 branches missed.">    if (blockchain.getChainHeadBlockNumber() &lt; 1) {</span>
+<span class="fc" id="L621">      genesisState.writeStateTo(worldStateArchive.getMutable());</span>
+    }
+
+<span class="fc" id="L624">    final ProtocolContext protocolContext =</span>
+<span class="fc" id="L625">        createProtocolContext(</span>
+            blockchain, worldStateArchive, protocolSchedule, this::createConsensusContext);
+<span class="fc" id="L627">    validateContext(protocolContext);</span>
+
+<span class="pc bpc" id="L629" title="1 of 2 branches missed.">    if (chainPrunerConfiguration.getChainPruningEnabled()) {</span>
+<span class="nc" id="L630">      final ChainDataPruner chainDataPruner = createChainPruner(blockchainStorage);</span>
+<span class="nc" id="L631">      blockchain.observeBlockAdded(chainDataPruner);</span>
+<span class="nc" id="L632">      LOG.info(</span>
+          &quot;Chain data pruning enabled with recent blocks retained to be: &quot;
+<span class="nc" id="L634">              + chainPrunerConfiguration.getChainPruningBlocksRetained()</span>
+              + &quot; and frequency to be: &quot;
+<span class="nc" id="L636">              + chainPrunerConfiguration.getChainPruningBlocksFrequency());</span>
+    }
+
+<span class="fc" id="L639">    protocolSchedule.setPublicWorldStateArchiveForPrivacyBlockProcessor(</span>
+<span class="fc" id="L640">        protocolContext.getWorldStateArchive());</span>
+
+<span class="fc" id="L642">    Optional&lt;Pruner&gt; maybePruner = Optional.empty();</span>
+<span class="fc bfc" id="L643" title="All 2 branches covered.">    if (isPruningEnabled) {</span>
+<span class="fc bfc" id="L644" title="All 2 branches covered.">      if (dataStorageConfiguration.getDataStorageFormat().equals(DataStorageFormat.BONSAI)) {</span>
+<span class="fc" id="L645">        LOG.warn(</span>
+            &quot;Cannot enable pruning with Bonsai data storage format. Disabling. Change the data storage format or disable pruning explicitly on the command line to remove this warning.&quot;);
+      } else {
+<span class="fc" id="L648">        maybePruner =</span>
+<span class="fc" id="L649">            Optional.of(</span>
+                new Pruner(
+                    new MarkSweepPruner(
+<span class="fc" id="L652">                        ((ForestWorldStateArchive) worldStateArchive).getWorldStateStorage(),</span>
+                        blockchain,
+<span class="fc" id="L654">                        storageProvider.getStorageBySegmentIdentifier(</span>
+                            KeyValueSegmentIdentifier.PRUNING_STATE),
+                        metricsSystem),
+                    blockchain,
+                    prunerConfiguration));
+      }
+    }
+<span class="fc" id="L661">    final int maxMessageSize = ethereumWireProtocolConfiguration.getMaxMessageSize();</span>
+<span class="fc" id="L662">    final Supplier&lt;ProtocolSpec&gt; currentProtocolSpecSupplier =</span>
+<span class="fc" id="L663">        () -&gt; protocolSchedule.getByBlockHeader(blockchain.getChainHeadHeader());</span>
+<span class="fc" id="L664">    final EthPeers ethPeers =</span>
+        new EthPeers(
+<span class="fc" id="L666">            getSupportedProtocol(),</span>
+            currentProtocolSpecSupplier,
+            clock,
+            metricsSystem,
+            maxMessageSize,
+            messagePermissioningProviders,
+<span class="fc" id="L672">            nodeKey.getPublicKey().getEncodedBytes(),</span>
+            maxPeers,
+            maxRemotelyInitiatedPeers,
+            randomPeerPriority);
+
+<span class="fc" id="L677">    final EthMessages ethMessages = new EthMessages();</span>
+<span class="fc" id="L678">    final EthMessages snapMessages = new EthMessages();</span>
+
+<span class="fc" id="L680">    final EthScheduler scheduler =</span>
+        new EthScheduler(
+<span class="fc" id="L682">            syncConfig.getDownloaderParallelism(),</span>
+<span class="fc" id="L683">            syncConfig.getTransactionsParallelism(),</span>
+<span class="fc" id="L684">            syncConfig.getComputationParallelism(),</span>
+            metricsSystem);
+
+<span class="fc" id="L687">    final GenesisConfigOptions configOptions =</span>
+<span class="fc" id="L688">        genesisConfig.getConfigOptions(genesisConfigOverrides);</span>
+
+<span class="fc" id="L690">    Optional&lt;Checkpoint&gt; checkpoint = Optional.empty();</span>
+<span class="fc bfc" id="L691" title="All 2 branches covered.">    if (configOptions.getCheckpointOptions().isValid()) {</span>
+      checkpoint =
+<span class="fc" id="L693">          Optional.of(</span>
+<span class="fc" id="L694">              ImmutableCheckpoint.builder()</span>
+<span class="fc" id="L695">                  .blockHash(</span>
+<span class="fc" id="L696">                      Hash.fromHexString(configOptions.getCheckpointOptions().getHash().get()))</span>
+<span class="fc" id="L697">                  .blockNumber(configOptions.getCheckpointOptions().getNumber().getAsLong())</span>
+<span class="fc" id="L698">                  .totalDifficulty(</span>
+<span class="fc" id="L699">                      Difficulty.fromHexString(</span>
+<span class="fc" id="L700">                          configOptions.getCheckpointOptions().getTotalDifficulty().get()))</span>
+<span class="fc" id="L701">                  .build());</span>
+    }
+
+<span class="fc" id="L704">    final EthContext ethContext = new EthContext(ethPeers, ethMessages, snapMessages, scheduler);</span>
+<span class="fc bfc" id="L705" title="All 2 branches covered.">    final boolean fullSyncDisabled = !SyncMode.isFullSync(syncConfig.getSyncMode());</span>
+<span class="fc" id="L706">    final SyncState syncState = new SyncState(blockchain, ethPeers, fullSyncDisabled, checkpoint);</span>
+
+<span class="fc" id="L708">    final TransactionPool transactionPool =</span>
+<span class="fc" id="L709">        TransactionPoolFactory.createTransactionPool(</span>
+            protocolSchedule,
+            protocolContext,
+            ethContext,
+            clock,
+            metricsSystem,
+            syncState,
+            transactionPoolConfiguration,
+<span class="fc" id="L717">            besuComponent.map(BesuComponent::getBlobCache).orElse(new BlobCache()),</span>
+            miningParameters);
+
+<span class="fc" id="L720">    final List&lt;PeerValidator&gt; peerValidators = createPeerValidators(protocolSchedule);</span>
+
+<span class="fc" id="L722">    final EthProtocolManager ethProtocolManager =</span>
+<span class="fc" id="L723">        createEthProtocolManager(</span>
+            protocolContext,
+            syncConfig,
+            transactionPool,
+            ethereumWireProtocolConfiguration,
+            ethPeers,
+            ethContext,
+            ethMessages,
+            scheduler,
+            peerValidators,
+<span class="fc" id="L733">            Optional.empty());</span>
+
+<span class="fc" id="L735">    final Optional&lt;SnapProtocolManager&gt; maybeSnapProtocolManager =</span>
+<span class="fc" id="L736">        createSnapProtocolManager(peerValidators, ethPeers, snapMessages, worldStateArchive);</span>
+
+<span class="fc" id="L738">    final PivotBlockSelector pivotBlockSelector =</span>
+<span class="fc" id="L739">        createPivotSelector(</span>
+            protocolSchedule, protocolContext, ethContext, syncState, metricsSystem);
+
+<span class="fc" id="L742">    final Synchronizer synchronizer =</span>
+<span class="fc" id="L743">        createSynchronizer(</span>
+            protocolSchedule,
+            worldStateStorageCoordinator,
+            protocolContext,
+            maybePruner,
+            ethContext,
+            syncState,
+            ethProtocolManager,
+            pivotBlockSelector);
+
+<span class="fc" id="L753">    protocolContext.setSynchronizer(Optional.of(synchronizer));</span>
+
+<span class="fc" id="L755">    final MiningCoordinator miningCoordinator =</span>
+<span class="fc" id="L756">        createMiningCoordinator(</span>
+            protocolSchedule,
+            protocolContext,
+            transactionPool,
+            miningParameters,
+            syncState,
+            ethProtocolManager);
+
+<span class="fc" id="L764">    final PluginServiceFactory additionalPluginServices =</span>
+<span class="fc" id="L765">        createAdditionalPluginServices(blockchain, protocolContext);</span>
+
+<span class="fc" id="L767">    final SubProtocolConfiguration subProtocolConfiguration =</span>
+<span class="fc" id="L768">        createSubProtocolConfiguration(ethProtocolManager, maybeSnapProtocolManager);</span>
+
+<span class="fc" id="L770">    final JsonRpcMethods additionalJsonRpcMethodFactory =</span>
+<span class="fc" id="L771">        createAdditionalJsonRpcMethodFactory(protocolContext);</span>
+
+<span class="pc bpc" id="L773" title="1 of 2 branches missed.">    if (dataStorageConfiguration.getUnstable().getBonsaiLimitTrieLogsEnabled()</span>
+<span class="nc bnc" id="L774" title="All 2 branches missed.">        &amp;&amp; DataStorageFormat.BONSAI.equals(dataStorageConfiguration.getDataStorageFormat())) {</span>
+<span class="nc" id="L775">      final TrieLogManager trieLogManager =</span>
+<span class="nc" id="L776">          ((BonsaiWorldStateProvider) worldStateArchive).getTrieLogManager();</span>
+<span class="nc" id="L777">      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage =</span>
+<span class="nc" id="L778">          worldStateStorageCoordinator.getStrategy(BonsaiWorldStateKeyValueStorage.class);</span>
+<span class="nc" id="L779">      final TrieLogPruner trieLogPruner =</span>
+<span class="nc" id="L780">          createTrieLogPruner(worldStateKeyValueStorage, blockchain, scheduler);</span>
+<span class="nc" id="L781">      trieLogManager.subscribe(trieLogPruner);</span>
+    }
+
+<span class="fc" id="L784">    final List&lt;Closeable&gt; closeables = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L785">    closeables.add(protocolContext.getWorldStateArchive());</span>
+<span class="fc" id="L786">    closeables.add(storageProvider);</span>
+<span class="fc bfc" id="L787" title="All 2 branches covered.">    if (privacyParameters.getPrivateStorageProvider() != null) {</span>
+<span class="fc" id="L788">      closeables.add(privacyParameters.getPrivateStorageProvider());</span>
+    }
+
+<span class="fc" id="L791">    return new BesuController(</span>
+        protocolSchedule,
+        protocolContext,
+        ethProtocolManager,
+<span class="fc" id="L795">        configOptionsSupplier.get(),</span>
+        subProtocolConfiguration,
+        synchronizer,
+        syncState,
+        transactionPool,
+        miningCoordinator,
+        privacyParameters,
+        miningParameters,
+        additionalJsonRpcMethodFactory,
+        nodeKey,
+        closeables,
+        additionalPluginServices,
+        ethPeers,
+        storageProvider,
+        dataStorageConfiguration);
+  }
+
+  private TrieLogPruner createTrieLogPruner(
+      final WorldStateKeyValueStorage worldStateStorage,
+      final Blockchain blockchain,
+      final EthScheduler scheduler) {
+<span class="nc" id="L816">    final GenesisConfigOptions genesisConfigOptions = configOptionsSupplier.get();</span>
+<span class="nc" id="L817">    final boolean isProofOfStake = genesisConfigOptions.getTerminalTotalDifficulty().isPresent();</span>
+
+<span class="nc" id="L819">    final TrieLogPruner trieLogPruner =</span>
+        new TrieLogPruner(
+            (BonsaiWorldStateKeyValueStorage) worldStateStorage,
+            blockchain,
+<span class="nc" id="L823">            scheduler::executeServiceTask,</span>
+<span class="nc" id="L824">            dataStorageConfiguration.getBonsaiMaxLayersToLoad(),</span>
+<span class="nc" id="L825">            dataStorageConfiguration.getUnstable().getBonsaiTrieLogPruningWindowSize(),</span>
+            isProofOfStake);
+<span class="nc" id="L827">    trieLogPruner.initialize();</span>
+
+<span class="nc" id="L829">    return trieLogPruner;</span>
+  }
+
+  /**
+   * Create synchronizer synchronizer.
+   *
+   * @param protocolSchedule the protocol schedule
+   * @param worldStateStorageCoordinator the world state storage
+   * @param protocolContext the protocol context
+   * @param maybePruner the maybe pruner
+   * @param ethContext the eth context
+   * @param syncState the sync state
+   * @param ethProtocolManager the eth protocol manager
+   * @param pivotBlockSelector the pivot block selector
+   * @return the synchronizer
+   */
+  protected Synchronizer createSynchronizer(
+      final ProtocolSchedule protocolSchedule,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final ProtocolContext protocolContext,
+      final Optional&lt;Pruner&gt; maybePruner,
+      final EthContext ethContext,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager,
+      final PivotBlockSelector pivotBlockSelector) {
+
+<span class="fc" id="L855">    return new DefaultSynchronizer(</span>
+        syncConfig,
+        protocolSchedule,
+        protocolContext,
+        worldStateStorageCoordinator,
+<span class="fc" id="L860">        ethProtocolManager.getBlockBroadcaster(),</span>
+        maybePruner,
+        ethContext,
+        syncState,
+        dataDirectory,
+        storageProvider,
+        clock,
+        metricsSystem,
+<span class="fc" id="L868">        getFullSyncTerminationCondition(protocolContext.getBlockchain()),</span>
+        pivotBlockSelector);
+  }
+
+  private PivotBlockSelector createPivotSelector(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final SyncState syncState,
+      final MetricsSystem metricsSystem) {
+
+<span class="fc" id="L879">    final GenesisConfigOptions genesisConfigOptions = configOptionsSupplier.get();</span>
+
+<span class="fc bfc" id="L881" title="All 2 branches covered.">    if (genesisConfigOptions.getTerminalTotalDifficulty().isPresent()) {</span>
+<span class="fc" id="L882">      LOG.info(&quot;TTD difficulty is present, creating initial sync for PoS&quot;);</span>
+
+<span class="fc" id="L884">      final MergeContext mergeContext = protocolContext.getConsensusContext(MergeContext.class);</span>
+<span class="fc" id="L885">      final UnverifiedForkchoiceSupplier unverifiedForkchoiceSupplier =</span>
+          new UnverifiedForkchoiceSupplier();
+<span class="fc" id="L887">      final long subscriptionId =</span>
+<span class="fc" id="L888">          mergeContext.addNewUnverifiedForkchoiceListener(unverifiedForkchoiceSupplier);</span>
+
+<span class="fc" id="L890">      final Runnable unsubscribeForkchoiceListener =</span>
+          () -&gt; {
+<span class="nc" id="L892">            mergeContext.removeNewUnverifiedForkchoiceListener(subscriptionId);</span>
+<span class="nc" id="L893">            LOG.info(&quot;Initial sync done, unsubscribe forkchoice supplier&quot;);</span>
+<span class="nc" id="L894">          };</span>
+
+<span class="fc" id="L896">      return new PivotSelectorFromSafeBlock(</span>
+          protocolContext,
+          protocolSchedule,
+          ethContext,
+          metricsSystem,
+          genesisConfigOptions,
+          unverifiedForkchoiceSupplier,
+          unsubscribeForkchoiceListener);
+    } else {
+<span class="fc" id="L905">      LOG.info(&quot;TTD difficulty is not present, creating initial sync phase for PoW&quot;);</span>
+<span class="fc" id="L906">      return new PivotSelectorFromPeers(ethContext, syncConfig, syncState, metricsSystem);</span>
+    }
+  }
+
+  /**
+   * Gets full sync termination condition.
+   *
+   * @param blockchain the blockchain
+   * @return the full sync termination condition
+   */
+  protected SyncTerminationCondition getFullSyncTerminationCondition(final Blockchain blockchain) {
+<span class="fc" id="L917">    return configOptionsSupplier</span>
+<span class="fc" id="L918">        .get()</span>
+<span class="fc" id="L919">        .getTerminalTotalDifficulty()</span>
+<span class="fc" id="L920">        .map(difficulty -&gt; SyncTerminationCondition.difficulty(difficulty, blockchain))</span>
+<span class="fc" id="L921">        .orElse(SyncTerminationCondition.never());</span>
+  }
+
+  /** Prep for build. */
+<span class="fc" id="L925">  protected void prepForBuild() {}</span>
+
+  /**
+   * Create additional json rpc method factory json rpc methods.
+   *
+   * @param protocolContext the protocol context
+   * @return the json rpc methods
+   */
+  protected JsonRpcMethods createAdditionalJsonRpcMethodFactory(
+      final ProtocolContext protocolContext) {
+<span class="fc" id="L935">    return apis -&gt; Collections.emptyMap();</span>
+  }
+
+  /**
+   * Create sub protocol configuration sub protocol configuration.
+   *
+   * @param ethProtocolManager the eth protocol manager
+   * @param maybeSnapProtocolManager the maybe snap protocol manager
+   * @return the sub protocol configuration
+   */
+  protected SubProtocolConfiguration createSubProtocolConfiguration(
+      final EthProtocolManager ethProtocolManager,
+      final Optional&lt;SnapProtocolManager&gt; maybeSnapProtocolManager) {
+<span class="fc" id="L948">    final SubProtocolConfiguration subProtocolConfiguration =</span>
+<span class="fc" id="L949">        new SubProtocolConfiguration().withSubProtocol(EthProtocol.get(), ethProtocolManager);</span>
+<span class="fc" id="L950">    maybeSnapProtocolManager.ifPresent(</span>
+        snapProtocolManager -&gt;
+<span class="fc" id="L952">            subProtocolConfiguration.withSubProtocol(SnapProtocol.get(), snapProtocolManager));</span>
+<span class="fc" id="L953">    return subProtocolConfiguration;</span>
+  }
+
+  /**
+   * Create mining coordinator mining coordinator.
+   *
+   * @param protocolSchedule the protocol schedule
+   * @param protocolContext the protocol context
+   * @param transactionPool the transaction pool
+   * @param miningParameters the mining parameters
+   * @param syncState the sync state
+   * @param ethProtocolManager the eth protocol manager
+   * @return the mining coordinator
+   */
+  protected abstract MiningCoordinator createMiningCoordinator(
+      ProtocolSchedule protocolSchedule,
+      ProtocolContext protocolContext,
+      TransactionPool transactionPool,
+      MiningParameters miningParameters,
+      SyncState syncState,
+      EthProtocolManager ethProtocolManager);
+
+  /**
+   * Create protocol schedule protocol schedule.
+   *
+   * @return the protocol schedule
+   */
+  protected abstract ProtocolSchedule createProtocolSchedule();
+
+  /**
+   * Validate context.
+   *
+   * @param context the context
+   */
+<span class="fc" id="L987">  protected void validateContext(final ProtocolContext context) {}</span>
+
+  /**
+   * Create consensus context consensus context.
+   *
+   * @param blockchain the blockchain
+   * @param worldStateArchive the world state archive
+   * @param protocolSchedule the protocol schedule
+   * @return the consensus context
+   */
+  protected abstract ConsensusContext createConsensusContext(
+      Blockchain blockchain,
+      WorldStateArchive worldStateArchive,
+      ProtocolSchedule protocolSchedule);
+
+  /**
+   * Gets supported protocol.
+   *
+   * @return the supported protocol
+   */
+  protected String getSupportedProtocol() {
+<span class="fc" id="L1008">    return EthProtocol.NAME;</span>
+  }
+
+  /**
+   * Create eth protocol manager eth protocol manager.
+   *
+   * @param protocolContext the protocol context
+   * @param synchronizerConfiguration the synchronizer configuration
+   * @param transactionPool the transaction pool
+   * @param ethereumWireProtocolConfiguration the ethereum wire protocol configuration
+   * @param ethPeers the eth peers
+   * @param ethContext the eth context
+   * @param ethMessages the eth messages
+   * @param scheduler the scheduler
+   * @param peerValidators the peer validators
+   * @param mergePeerFilter the merge peer filter
+   * @return the eth protocol manager
+   */
+  protected EthProtocolManager createEthProtocolManager(
+      final ProtocolContext protocolContext,
+      final SynchronizerConfiguration synchronizerConfiguration,
+      final TransactionPool transactionPool,
+      final EthProtocolConfiguration ethereumWireProtocolConfiguration,
+      final EthPeers ethPeers,
+      final EthContext ethContext,
+      final EthMessages ethMessages,
+      final EthScheduler scheduler,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final Optional&lt;MergePeerFilter&gt; mergePeerFilter) {
+<span class="fc" id="L1037">    return new EthProtocolManager(</span>
+<span class="fc" id="L1038">        protocolContext.getBlockchain(),</span>
+        networkId,
+<span class="fc" id="L1040">        protocolContext.getWorldStateArchive(),</span>
+        transactionPool,
+        ethereumWireProtocolConfiguration,
+        ethPeers,
+        ethMessages,
+        ethContext,
+        peerValidators,
+        mergePeerFilter,
+        synchronizerConfiguration,
+        scheduler,
+<span class="fc" id="L1050">        genesisConfig.getForkBlockNumbers(),</span>
+<span class="fc" id="L1051">        genesisConfig.getForkTimestamps());</span>
+  }
+
+  /**
+   * Create protocol context protocol context.
+   *
+   * @param blockchain the blockchain
+   * @param worldStateArchive the world state archive
+   * @param protocolSchedule the protocol schedule
+   * @param consensusContextFactory the consensus context factory
+   * @return the protocol context
+   */
+  protected ProtocolContext createProtocolContext(
+      final MutableBlockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule,
+      final ConsensusContextFactory consensusContextFactory) {
+<span class="fc" id="L1068">    return ProtocolContext.init(</span>
+        blockchain, worldStateArchive, protocolSchedule, consensusContextFactory, badBlockManager);
+  }
+
+  private Optional&lt;SnapProtocolManager&gt; createSnapProtocolManager(
+      final List&lt;PeerValidator&gt; peerValidators,
+      final EthPeers ethPeers,
+      final EthMessages snapMessages,
+      final WorldStateArchive worldStateArchive) {
+<span class="fc" id="L1077">    return Optional.of(</span>
+        new SnapProtocolManager(peerValidators, ethPeers, snapMessages, worldStateArchive));
+  }
+
+  WorldStateArchive createWorldStateArchive(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final Blockchain blockchain,
+      final CachedMerkleTrieLoader cachedMerkleTrieLoader) {
+<span class="pc bpc" id="L1085" title="1 of 3 branches missed.">    return switch (dataStorageConfiguration.getDataStorageFormat()) {</span>
+      case BONSAI -&gt; {
+<span class="fc" id="L1087">        final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage =</span>
+<span class="fc" id="L1088">            worldStateStorageCoordinator.getStrategy(BonsaiWorldStateKeyValueStorage.class);</span>
+<span class="fc" id="L1089">        yield new BonsaiWorldStateProvider(</span>
+            worldStateKeyValueStorage,
+            blockchain,
+<span class="fc" id="L1092">            Optional.of(dataStorageConfiguration.getBonsaiMaxLayersToLoad()),</span>
+            cachedMerkleTrieLoader,
+<span class="fc" id="L1094">            besuComponent.map(BesuComponent::getBesuPluginContext).orElse(null),</span>
+            evmConfiguration);
+      }
+      case FOREST -&gt; {
+<span class="fc" id="L1098">        final WorldStatePreimageStorage preimageStorage =</span>
+<span class="fc" id="L1099">            storageProvider.createWorldStatePreimageStorage();</span>
+<span class="fc" id="L1100">        yield new ForestWorldStateArchive(</span>
+            worldStateStorageCoordinator, preimageStorage, evmConfiguration);
+      }
+    };
+  }
+
+  private ChainDataPruner createChainPruner(final BlockchainStorage blockchainStorage) {
+<span class="nc" id="L1107">    return new ChainDataPruner(</span>
+        blockchainStorage,
+        new ChainDataPrunerStorage(
+<span class="nc" id="L1110">            storageProvider.getStorageBySegmentIdentifier(</span>
+                KeyValueSegmentIdentifier.CHAIN_PRUNER_STATE)),
+<span class="nc" id="L1112">        chainPrunerConfiguration.getChainPruningBlocksRetained(),</span>
+<span class="nc" id="L1113">        chainPrunerConfiguration.getChainPruningBlocksFrequency(),</span>
+<span class="nc" id="L1114">        MonitoredExecutors.newBoundedThreadPool(</span>
+<span class="nc" id="L1115">            ChainDataPruner.class.getSimpleName(),</span>
+            1,
+            1,
+            ChainDataPruner.MAX_PRUNING_THREAD_QUEUE_SIZE,
+            metricsSystem));
+  }
+
+  /**
+   * Create peer validators list.
+   *
+   * @param protocolSchedule the protocol schedule
+   * @return the list
+   */
+  protected List&lt;PeerValidator&gt; createPeerValidators(final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L1129">    final List&lt;PeerValidator&gt; validators = new ArrayList&lt;&gt;();</span>
+
+<span class="fc" id="L1131">    final OptionalLong daoBlock = configOptionsSupplier.get().getDaoForkBlock();</span>
+<span class="fc bfc" id="L1132" title="All 2 branches covered.">    if (daoBlock.isPresent()) {</span>
+      // Setup dao validator
+<span class="fc" id="L1134">      validators.add(</span>
+<span class="fc" id="L1135">          new DaoForkPeerValidator(protocolSchedule, metricsSystem, daoBlock.getAsLong()));</span>
+    }
+
+<span class="fc" id="L1138">    final OptionalLong classicBlock = configOptionsSupplier.get().getClassicForkBlock();</span>
+    // setup classic validator
+<span class="pc bpc" id="L1140" title="1 of 2 branches missed.">    if (classicBlock.isPresent()) {</span>
+<span class="nc" id="L1141">      validators.add(</span>
+<span class="nc" id="L1142">          new ClassicForkPeerValidator(protocolSchedule, metricsSystem, classicBlock.getAsLong()));</span>
+    }
+
+<span class="pc bpc" id="L1145" title="1 of 2 branches missed.">    for (final Map.Entry&lt;Long, Hash&gt; requiredBlock : requiredBlocks.entrySet()) {</span>
+<span class="nc" id="L1146">      validators.add(</span>
+          new RequiredBlocksPeerValidator(
+<span class="nc" id="L1148">              protocolSchedule, metricsSystem, requiredBlock.getKey(), requiredBlock.getValue()));</span>
+<span class="nc" id="L1149">    }</span>
+
+<span class="fc" id="L1151">    final CheckpointConfigOptions checkpointConfigOptions =</span>
+<span class="fc" id="L1152">        genesisConfig.getConfigOptions(genesisConfigOverrides).getCheckpointOptions();</span>
+<span class="pc bpc" id="L1153" title="3 of 4 branches missed.">    if (SyncMode.isCheckpointSync(syncConfig.getSyncMode()) &amp;&amp; checkpointConfigOptions.isValid()) {</span>
+<span class="nc" id="L1154">      validators.add(</span>
+          new CheckpointBlocksPeerValidator(
+              protocolSchedule,
+              metricsSystem,
+<span class="nc" id="L1158">              checkpointConfigOptions.getNumber().orElseThrow(),</span>
+<span class="nc" id="L1159">              checkpointConfigOptions.getHash().map(Hash::fromHexString).orElseThrow()));</span>
+    }
+<span class="fc" id="L1161">    return validators;</span>
+  }
+
+  /**
+   * Create additional plugin services plugin service factory.
+   *
+   * @param blockchain the blockchain
+   * @param protocolContext the protocol context
+   * @return the plugin service factory
+   */
+  protected abstract PluginServiceFactory createAdditionalPluginServices(
+      final Blockchain blockchain, final ProtocolContext protocolContext);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

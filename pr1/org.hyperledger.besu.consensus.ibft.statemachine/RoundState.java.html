@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RoundState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.ibft.statemachine</a> &gt; <span class="el_source">RoundState.java</span></div><h1>RoundState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.ibft.statemachine;
+
+import org.hyperledger.besu.consensus.common.bft.BftHelpers;
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Commit;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Prepare;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Proposal;
+import org.hyperledger.besu.consensus.ibft.validation.MessageValidator;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.ethereum.core.Block;
+
+import java.util.Collection;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import com.google.common.collect.Sets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Round state defines how a round will operate. */
+// Data items used to define how a round will operate
+public class RoundState {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(RoundState.class);</span>
+
+  private final ConsensusRoundIdentifier roundIdentifier;
+  private final MessageValidator validator;
+  private final long quorum;
+
+<span class="fc" id="L44">  private Optional&lt;Proposal&gt; proposalMessage = Optional.empty();</span>
+
+  // Must track the actual Prepare message, not just the sender, as these may need to be reused
+  // to send out in a PrepareCertificate.
+<span class="fc" id="L48">  private final Set&lt;Prepare&gt; prepareMessages = Sets.newLinkedHashSet();</span>
+<span class="fc" id="L49">  private final Set&lt;Commit&gt; commitMessages = Sets.newLinkedHashSet();</span>
+
+<span class="fc" id="L51">  private boolean prepared = false;</span>
+<span class="fc" id="L52">  private boolean committed = false;</span>
+
+  /**
+   * Instantiates a new Round state.
+   *
+   * @param roundIdentifier the round identifier
+   * @param quorum the quorum
+   * @param validator the validator
+   */
+  public RoundState(
+      final ConsensusRoundIdentifier roundIdentifier,
+      final int quorum,
+<span class="fc" id="L64">      final MessageValidator validator) {</span>
+<span class="fc" id="L65">    this.roundIdentifier = roundIdentifier;</span>
+<span class="fc" id="L66">    this.quorum = quorum;</span>
+<span class="fc" id="L67">    this.validator = validator;</span>
+<span class="fc" id="L68">  }</span>
+
+  /**
+   * Gets round identifier.
+   *
+   * @return the round identifier
+   */
+  public ConsensusRoundIdentifier getRoundIdentifier() {
+<span class="fc" id="L76">    return roundIdentifier;</span>
+  }
+
+  /**
+   * Sets proposed block.
+   *
+   * @param msg the msg
+   * @return the proposed block
+   */
+  public boolean setProposedBlock(final Proposal msg) {
+
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">    if (!proposalMessage.isPresent()) {</span>
+<span class="fc bfc" id="L88" title="All 2 branches covered.">      if (validator.validateProposal(msg)) {</span>
+<span class="fc" id="L89">        proposalMessage = Optional.of(msg);</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">        prepareMessages.removeIf(p -&gt; !validator.validatePrepare(p));</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">        commitMessages.removeIf(p -&gt; !validator.validateCommit(p));</span>
+<span class="fc" id="L92">        updateState();</span>
+<span class="fc" id="L93">        return true;</span>
+      }
+    }
+
+<span class="fc" id="L97">    return false;</span>
+  }
+
+  /**
+   * Add prepare message.
+   *
+   * @param msg the msg
+   */
+  public void addPrepareMessage(final Prepare msg) {
+<span class="fc bfc" id="L106" title="All 4 branches covered.">    if (!proposalMessage.isPresent() || validator.validatePrepare(msg)) {</span>
+<span class="fc" id="L107">      prepareMessages.add(msg);</span>
+<span class="fc" id="L108">      LOG.trace(&quot;Round state added prepare message prepare={}&quot;, msg);</span>
+    }
+<span class="fc" id="L110">    updateState();</span>
+<span class="fc" id="L111">  }</span>
+
+  /**
+   * Add commit message.
+   *
+   * @param msg the msg
+   */
+  public void addCommitMessage(final Commit msg) {
+<span class="pc bpc" id="L119" title="1 of 4 branches missed.">    if (!proposalMessage.isPresent() || validator.validateCommit(msg)) {</span>
+<span class="fc" id="L120">      commitMessages.add(msg);</span>
+<span class="fc" id="L121">      LOG.trace(&quot;Round state added commit message commit={}&quot;, msg);</span>
+    }
+
+<span class="fc" id="L124">    updateState();</span>
+<span class="fc" id="L125">  }</span>
+
+  private void updateState() {
+    // NOTE: The quorum for Prepare messages is 1 less than the quorum size as the proposer
+    // does not supply a prepare message
+<span class="fc" id="L130">    final long prepareQuorum = BftHelpers.prepareMessageCountForQuorum(quorum);</span>
+<span class="fc bfc" id="L131" title="All 4 branches covered.">    prepared = (prepareMessages.size() &gt;= prepareQuorum) &amp;&amp; proposalMessage.isPresent();</span>
+<span class="fc bfc" id="L132" title="All 4 branches covered.">    committed = (commitMessages.size() &gt;= quorum) &amp;&amp; proposalMessage.isPresent();</span>
+<span class="fc" id="L133">    LOG.trace(</span>
+        &quot;Round state updated prepared={} committed={} preparedQuorum={}/{} committedQuorum={}/{}&quot;,
+<span class="fc" id="L135">        prepared,</span>
+<span class="fc" id="L136">        committed,</span>
+<span class="fc" id="L137">        prepareMessages.size(),</span>
+<span class="fc" id="L138">        prepareQuorum,</span>
+<span class="fc" id="L139">        commitMessages.size(),</span>
+<span class="fc" id="L140">        quorum);</span>
+<span class="fc" id="L141">  }</span>
+
+  /**
+   * Gets proposed block.
+   *
+   * @return the proposed block
+   */
+  public Optional&lt;Block&gt; getProposedBlock() {
+<span class="fc" id="L149">    return proposalMessage.map(Proposal::getBlock);</span>
+  }
+
+  /**
+   * Is prepared.
+   *
+   * @return the boolean
+   */
+  public boolean isPrepared() {
+<span class="fc" id="L158">    return prepared;</span>
+  }
+
+  /**
+   * Is committed.
+   *
+   * @return the boolean
+   */
+  public boolean isCommitted() {
+<span class="fc" id="L167">    return committed;</span>
+  }
+
+  /**
+   * Gets commit seals.
+   *
+   * @return the commit seals
+   */
+  public Collection&lt;SECPSignature&gt; getCommitSeals() {
+<span class="fc" id="L176">    return commitMessages.stream()</span>
+<span class="fc" id="L177">        .map(cp -&gt; cp.getSignedPayload().getPayload().getCommitSeal())</span>
+<span class="fc" id="L178">        .collect(Collectors.toList());</span>
+  }
+
+  /**
+   * Construct prepared round artifacts.
+   *
+   * @return the optional Prepared Round Artifacts
+   */
+  public Optional&lt;PreparedRoundArtifacts&gt; constructPreparedRoundArtifacts() {
+<span class="fc bfc" id="L187" title="All 2 branches covered.">    if (isPrepared()) {</span>
+<span class="fc" id="L188">      return Optional.of(new PreparedRoundArtifacts(proposalMessage.get(), prepareMessages));</span>
+    }
+<span class="fc" id="L190">    return Optional.empty();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

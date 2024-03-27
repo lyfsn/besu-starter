@@ -1,0 +1,465 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BlocksSubCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.cli.subcommands.blocks</a> &gt; <span class="el_source">BlocksSubCommand.java</span></div><h1>BlocksSubCommand.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.cli.subcommands.blocks;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.hyperledger.besu.cli.subcommands.blocks.BlocksSubCommand.COMMAND_NAME;
+
+import org.hyperledger.besu.chainexport.RlpBlockExporter;
+import org.hyperledger.besu.chainimport.JsonBlockImporter;
+import org.hyperledger.besu.chainimport.RlpBlockImporter;
+import org.hyperledger.besu.cli.BesuCommand;
+import org.hyperledger.besu.cli.DefaultCommandValues;
+import org.hyperledger.besu.cli.subcommands.blocks.BlocksSubCommand.ExportSubCommand;
+import org.hyperledger.besu.cli.subcommands.blocks.BlocksSubCommand.ImportSubCommand;
+import org.hyperledger.besu.cli.util.VersionProvider;
+import org.hyperledger.besu.controller.BesuController;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.IncrementingNonceGenerator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters;
+import org.hyperledger.besu.ethereum.core.ImmutableMiningParameters.MutableInitValues;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.metrics.MetricsService;
+import org.hyperledger.besu.metrics.prometheus.MetricsConfiguration;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import io.vertx.core.Vertx;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.ExecutionException;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.ParameterException;
+import picocli.CommandLine.Parameters;
+import picocli.CommandLine.ParentCommand;
+import picocli.CommandLine.Spec;
+
+/** Blocks related sub-command */
+@Command(
+    name = COMMAND_NAME,
+    description = &quot;This command provides blocks related actions.&quot;,
+    mixinStandardHelpOptions = true,
+    versionProvider = VersionProvider.class,
+    subcommands = {ImportSubCommand.class, ExportSubCommand.class})
+public class BlocksSubCommand implements Runnable {
+
+<span class="fc" id="L79">  private static final Logger LOG = LoggerFactory.getLogger(BlocksSubCommand.class);</span>
+
+  /** The constant COMMAND_NAME. */
+  public static final String COMMAND_NAME = &quot;blocks&quot;;
+
+  @SuppressWarnings(&quot;unused&quot;)
+  @ParentCommand
+  private BesuCommand parentCommand; // Picocli injects reference to parent command
+
+  @SuppressWarnings(&quot;unused&quot;)
+  @Spec
+  private CommandSpec spec; // Picocli injects reference to command spec
+
+  private final Supplier&lt;RlpBlockImporter&gt; rlpBlockImporter;
+  private final Function&lt;BesuController, JsonBlockImporter&gt; jsonBlockImporterFactory;
+  private final Function&lt;Blockchain, RlpBlockExporter&gt; rlpBlockExporterFactory;
+
+  private final PrintWriter out;
+
+  /**
+   * Instantiates a new Blocks sub command.
+   *
+   * @param rlpBlockImporter the RLP block importer
+   * @param jsonBlockImporterFactory the Json block importer factory
+   * @param rlpBlockExporterFactory the RLP block exporter factory
+   * @param out Instance of PrintWriter where command usage will be written.
+   */
+  public BlocksSubCommand(
+      final Supplier&lt;RlpBlockImporter&gt; rlpBlockImporter,
+      final Function&lt;BesuController, JsonBlockImporter&gt; jsonBlockImporterFactory,
+      final Function&lt;Blockchain, RlpBlockExporter&gt; rlpBlockExporterFactory,
+<span class="fc" id="L110">      final PrintWriter out) {</span>
+<span class="fc" id="L111">    this.rlpBlockImporter = rlpBlockImporter;</span>
+<span class="fc" id="L112">    this.rlpBlockExporterFactory = rlpBlockExporterFactory;</span>
+<span class="fc" id="L113">    this.jsonBlockImporterFactory = jsonBlockImporterFactory;</span>
+<span class="fc" id="L114">    this.out = out;</span>
+<span class="fc" id="L115">  }</span>
+
+  @Override
+  public void run() {
+<span class="fc" id="L119">    spec.commandLine().usage(out);</span>
+<span class="fc" id="L120">  }</span>
+
+  /**
+   * blocks import sub-command
+   *
+   * &lt;p&gt;Imports blocks from a file into the database
+   */
+  @Command(
+      name = &quot;import&quot;,
+      description = &quot;This command imports blocks from a file into the database.&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L132">  static class ImportSubCommand implements Runnable {</span>
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private BlocksSubCommand parentCommand; // Picocli injects reference to parent command
+
+<span class="fc" id="L137">    @Parameters(</span>
+        paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;Files containing blocks to import.&quot;,
+        arity = &quot;0..*&quot;)
+    private final List&lt;Path&gt; blockImportFiles = new ArrayList&lt;&gt;();
+
+<span class="fc" id="L143">    @Option(</span>
+        names = &quot;--from&quot;,
+        paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;File containing blocks to import.&quot;,
+        arity = &quot;0..*&quot;)
+    private final List&lt;Path&gt; blockImportFileOption = new ArrayList&lt;&gt;();
+
+<span class="fc" id="L150">    @Option(</span>
+        names = &quot;--format&quot;,
+        description =
+            &quot;The type of data to be imported, possible values are: ${COMPLETION-CANDIDATES} (default: ${DEFAULT-VALUE}).&quot;,
+        arity = &quot;1..1&quot;)
+    private final BlockImportFormat format = BlockImportFormat.RLP;
+
+<span class="fc" id="L157">    @Option(</span>
+        names = &quot;--start-time&quot;,
+        description =
+            &quot;The timestamp in seconds of the first block for JSON imports. Subsequent blocks will be 1 second later. (default: current time)&quot;,
+        arity = &quot;1..1&quot;)
+<span class="fc" id="L162">    private final Long startTime = System.currentTimeMillis() / 1000;</span>
+
+<span class="fc" id="L164">    @Option(</span>
+        names = &quot;--skip-pow-validation-enabled&quot;,
+        description = &quot;Skip proof of work validation when importing.&quot;)
+<span class="fc" id="L167">    private final Boolean skipPow = false;</span>
+
+<span class="fc" id="L169">    @Option(names = &quot;--run&quot;, description = &quot;Start besu after importing.&quot;)</span>
+<span class="fc" id="L170">    private final Boolean runBesu = false;</span>
+
+<span class="fc" id="L172">    @Option(</span>
+        names = &quot;--start-block&quot;,
+        paramLabel = DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP,
+        description =
+            &quot;The starting index of the block, or block list to import.  If not specified all blocks before the end block will be imported&quot;,
+        arity = &quot;1..1&quot;)
+<span class="fc" id="L178">    private final Long startBlock = 0L;</span>
+
+<span class="fc" id="L180">    @Option(</span>
+        names = &quot;--end-block&quot;,
+        paramLabel = DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP,
+        description =
+            &quot;The ending index of the block list to import (exclusive).  If not specified all blocks after the start block will be imported.&quot;,
+        arity = &quot;1..1&quot;)
+<span class="fc" id="L186">    private final Long endBlock = Long.MAX_VALUE;</span>
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @Spec
+    private CommandSpec spec;
+
+    @Override
+    public void run() {
+<span class="fc" id="L194">      parentCommand.parentCommand.configureLogging(false);</span>
+<span class="fc" id="L195">      blockImportFiles.addAll(blockImportFileOption);</span>
+
+<span class="fc" id="L197">      checkCommand(parentCommand);</span>
+<span class="fc" id="L198">      checkNotNull(parentCommand.rlpBlockImporter);</span>
+<span class="fc" id="L199">      checkNotNull(parentCommand.jsonBlockImporterFactory);</span>
+<span class="fc bfc" id="L200" title="All 2 branches covered.">      if (blockImportFiles.isEmpty()) {</span>
+<span class="fc" id="L201">        throw new ParameterException(spec.commandLine(), &quot;No files specified to import.&quot;);</span>
+      }
+<span class="pc bpc" id="L203" title="1 of 4 branches missed.">      if (skipPow &amp;&amp; format.equals(BlockImportFormat.JSON)) {</span>
+<span class="fc" id="L204">        throw new ParameterException(</span>
+<span class="fc" id="L205">            spec.commandLine(), &quot;Can't skip proof of work validation for JSON blocks&quot;);</span>
+      }
+<span class="fc" id="L207">      LOG.info(&quot;Import {} block data from {} files&quot;, format, blockImportFiles.size());</span>
+<span class="fc" id="L208">      final Optional&lt;MetricsService&gt; metricsService = initMetrics(parentCommand);</span>
+
+<span class="fc" id="L210">      try (final BesuController controller = createController()) {</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">        for (final Path path : blockImportFiles) {</span>
+          try {
+<span class="fc" id="L213">            LOG.info(&quot;Importing from {}&quot;, path);</span>
+<span class="pc bpc" id="L214" title="1 of 3 branches missed.">            switch (format) {</span>
+              case RLP:
+<span class="fc" id="L216">                importRlpBlocks(controller, path);</span>
+<span class="fc" id="L217">                break;</span>
+              case JSON:
+<span class="fc" id="L219">                importJsonBlocks(controller, path);</span>
+                break;
+            }
+<span class="nc" id="L222">          } catch (final FileNotFoundException e) {</span>
+<span class="nc bnc" id="L223" title="All 2 branches missed.">            if (blockImportFiles.size() == 1) {</span>
+<span class="nc" id="L224">              throw new ExecutionException(</span>
+<span class="nc" id="L225">                  spec.commandLine(), &quot;Could not find file to import: &quot; + path);</span>
+            } else {
+<span class="nc" id="L227">              LOG.error(&quot;Could not find file to import: {}&quot;, path);</span>
+            }
+<span class="nc" id="L229">          } catch (final Exception e) {</span>
+<span class="nc bnc" id="L230" title="All 2 branches missed.">            if (blockImportFiles.size() == 1) {</span>
+<span class="nc" id="L231">              throw new ExecutionException(</span>
+<span class="nc" id="L232">                  spec.commandLine(), &quot;Unable to import blocks from &quot; + path, e);</span>
+            } else {
+<span class="nc" id="L234">              LOG.error(&quot;Unable to import blocks from &quot; + path, e);</span>
+            }
+<span class="pc" id="L236">          }</span>
+<span class="fc" id="L237">        }</span>
+
+<span class="pc bpc" id="L239" title="1 of 2 branches missed.">        if (runBesu) {</span>
+<span class="nc" id="L240">          parentCommand.parentCommand.run();</span>
+        }
+      } finally {
+<span class="fc" id="L243">        metricsService.ifPresent(MetricsService::stop);</span>
+      }
+<span class="fc" id="L245">    }</span>
+
+    private static void checkCommand(final BlocksSubCommand parentCommand) {
+<span class="fc" id="L248">      checkNotNull(parentCommand);</span>
+<span class="fc" id="L249">      checkNotNull(parentCommand.parentCommand);</span>
+<span class="fc" id="L250">    }</span>
+
+    private BesuController createController() {
+      try {
+        // Set some defaults
+<span class="fc" id="L255">        return parentCommand</span>
+            .parentCommand
+<span class="fc" id="L257">            .getControllerBuilder()</span>
+            // set to mainnet genesis block so validation rules won't reject it.
+<span class="fc" id="L259">            .clock(Clock.fixed(Instant.ofEpochSecond(startTime), ZoneOffset.UTC))</span>
+<span class="fc" id="L260">            .miningParameters(getMiningParameters())</span>
+<span class="fc" id="L261">            .build();</span>
+<span class="nc" id="L262">      } catch (final Exception e) {</span>
+<span class="nc" id="L263">        throw new ExecutionException(parentCommand.spec.commandLine(), e.getMessage(), e);</span>
+      }
+    }
+
+    private MiningParameters getMiningParameters() {
+<span class="fc" id="L268">      final Wei minTransactionGasPrice = Wei.ZERO;</span>
+      // Extradata and coinbase can be configured on a per-block level via the json file
+<span class="fc" id="L270">      final Address coinbase = Address.ZERO;</span>
+<span class="fc" id="L271">      final Bytes extraData = Bytes.EMPTY;</span>
+<span class="fc" id="L272">      return ImmutableMiningParameters.builder()</span>
+<span class="fc" id="L273">          .mutableInitValues(</span>
+<span class="fc" id="L274">              MutableInitValues.builder()</span>
+<span class="fc" id="L275">                  .nonceGenerator(new IncrementingNonceGenerator(0))</span>
+<span class="fc" id="L276">                  .extraData(extraData)</span>
+<span class="fc" id="L277">                  .minTransactionGasPrice(minTransactionGasPrice)</span>
+<span class="fc" id="L278">                  .coinbase(coinbase)</span>
+<span class="fc" id="L279">                  .build())</span>
+<span class="fc" id="L280">          .build();</span>
+    }
+
+    private void importJsonBlocks(final BesuController controller, final Path path)
+        throws IOException {
+
+<span class="fc" id="L286">      final JsonBlockImporter importer = parentCommand.jsonBlockImporterFactory.apply(controller);</span>
+<span class="fc" id="L287">      final String jsonData = Files.readString(path);</span>
+<span class="fc" id="L288">      importer.importChain(jsonData);</span>
+<span class="fc" id="L289">    }</span>
+
+    private void importRlpBlocks(final BesuController controller, final Path path)
+        throws IOException {
+<span class="fc" id="L293">      parentCommand</span>
+          .rlpBlockImporter
+<span class="fc" id="L295">          .get()</span>
+<span class="fc" id="L296">          .importBlockchain(path, controller, skipPow, startBlock, endBlock);</span>
+<span class="fc" id="L297">    }</span>
+  }
+
+  /**
+   * blocks export sub-command
+   *
+   * &lt;p&gt;Export a block list from storage
+   */
+  @Command(
+      name = &quot;export&quot;,
+      description = &quot;This command exports a specific block, or list of blocks from storage.&quot;,
+      mixinStandardHelpOptions = true,
+      versionProvider = VersionProvider.class)
+<span class="fc" id="L310">  static class ExportSubCommand implements Runnable {</span>
+    @SuppressWarnings(&quot;unused&quot;)
+    @ParentCommand
+    private BlocksSubCommand parentCommand; // Picocli injects reference to parent command
+
+<span class="fc" id="L315">    @Option(</span>
+        names = &quot;--start-block&quot;,
+        paramLabel = DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP,
+        description = &quot;The starting index of the block, or block list to export.&quot;,
+        arity = &quot;1..1&quot;)
+    private final Long startBlock = null;
+
+<span class="fc" id="L322">    @Option(</span>
+        names = &quot;--end-block&quot;,
+        paramLabel = DefaultCommandValues.MANDATORY_LONG_FORMAT_HELP,
+        description =
+            &quot;The ending index of the block list to export (exclusive). If not specified a single block will be exported.&quot;,
+        arity = &quot;1..1&quot;)
+    private final Long endBlock = null;
+
+<span class="fc" id="L330">    @Option(</span>
+        names = &quot;--format&quot;,
+        hidden = true,
+        description =
+            &quot;The format to export, possible values are: ${COMPLETION-CANDIDATES} (default: ${DEFAULT-VALUE}).&quot;,
+        arity = &quot;1..1&quot;)
+    private final BlockExportFormat format = BlockExportFormat.RLP;
+
+<span class="fc" id="L338">    @Option(</span>
+        names = &quot;--to&quot;,
+        required = true,
+        paramLabel = DefaultCommandValues.MANDATORY_FILE_FORMAT_HELP,
+        description = &quot;File to write the block list to.&quot;,
+        arity = &quot;1..1&quot;)
+    private final File blocksExportFile = null;
+
+    @SuppressWarnings(&quot;unused&quot;)
+    @Spec
+    private CommandSpec spec;
+
+    @Override
+    public void run() {
+<span class="fc" id="L352">      parentCommand.parentCommand.configureLogging(false);</span>
+<span class="fc" id="L353">      LOG.info(&quot;Export {} block data to file {}&quot;, format, blocksExportFile.toPath());</span>
+
+<span class="fc" id="L355">      checkCommand(this, startBlock, endBlock);</span>
+<span class="fc" id="L356">      final Optional&lt;MetricsService&gt; metricsService = initMetrics(parentCommand);</span>
+
+<span class="fc" id="L358">      final BesuController controller = createBesuController();</span>
+      try {
+<span class="pc bpc" id="L360" title="1 of 2 branches missed.">        if (format == BlockExportFormat.RLP) {</span>
+<span class="fc" id="L361">          exportRlpFormat(controller);</span>
+        } else {
+<span class="nc" id="L363">          throw new ParameterException(</span>
+<span class="nc" id="L364">              spec.commandLine(), &quot;Unsupported format: &quot; + format.toString());</span>
+        }
+<span class="nc" id="L366">      } catch (final IOException e) {</span>
+<span class="nc" id="L367">        throw new ExecutionException(</span>
+<span class="nc" id="L368">            spec.commandLine(), &quot;An error occurred while exporting blocks.&quot;, e);</span>
+      } finally {
+<span class="fc" id="L370">        metricsService.ifPresent(MetricsService::stop);</span>
+      }
+<span class="fc" id="L372">    }</span>
+
+    private BesuController createBesuController() {
+<span class="fc" id="L375">      return parentCommand</span>
+          .parentCommand
+<span class="fc" id="L377">          .getControllerBuilder()</span>
+<span class="fc" id="L378">          .miningParameters(MiningParameters.newDefault())</span>
+<span class="fc" id="L379">          .build();</span>
+    }
+
+    private void exportRlpFormat(final BesuController controller) throws IOException {
+<span class="fc" id="L383">      final ProtocolContext context = controller.getProtocolContext();</span>
+<span class="fc" id="L384">      final RlpBlockExporter exporter =</span>
+<span class="fc" id="L385">          parentCommand.rlpBlockExporterFactory.apply(context.getBlockchain());</span>
+<span class="fc" id="L386">      exporter.exportBlocks(blocksExportFile, getStartBlock(), getEndBlock());</span>
+<span class="fc" id="L387">    }</span>
+
+    private void checkCommand(
+        final ExportSubCommand exportSubCommand, final Long startBlock, final Long endBlock) {
+<span class="fc" id="L391">      checkNotNull(exportSubCommand.parentCommand);</span>
+
+<span class="fc" id="L393">      final Optional&lt;Long&gt; maybeStartBlock = getStartBlock();</span>
+<span class="fc" id="L394">      final Optional&lt;Long&gt; maybeEndBlock = getEndBlock();</span>
+
+<span class="fc" id="L396">      maybeStartBlock</span>
+<span class="fc bfc" id="L397" title="All 2 branches covered.">          .filter(blockNum -&gt; blockNum &lt; 0)</span>
+<span class="fc" id="L398">          .ifPresent(</span>
+              (blockNum) -&gt; {
+<span class="fc" id="L400">                throw new CommandLine.ParameterException(</span>
+<span class="fc" id="L401">                    spec.commandLine(),</span>
+                    &quot;Parameter --start-block (&quot;
+                        + blockNum
+                        + &quot;) must be greater than or equal to zero.&quot;);
+              });
+
+<span class="fc" id="L407">      maybeEndBlock</span>
+<span class="fc bfc" id="L408" title="All 2 branches covered.">          .filter(blockNum -&gt; blockNum &lt; 0)</span>
+<span class="fc" id="L409">          .ifPresent(</span>
+              (blockNum) -&gt; {
+<span class="fc" id="L411">                throw new CommandLine.ParameterException(</span>
+<span class="fc" id="L412">                    spec.commandLine(),</span>
+                    &quot;Parameter --end-block (&quot;
+                        + blockNum
+                        + &quot;) must be greater than or equal to zero.&quot;);
+              });
+
+<span class="fc bfc" id="L418" title="All 4 branches covered.">      if (maybeStartBlock.isPresent() &amp;&amp; maybeEndBlock.isPresent()) {</span>
+<span class="fc bfc" id="L419" title="All 2 branches covered.">        if (endBlock &lt;= startBlock) {</span>
+<span class="fc" id="L420">          throw new CommandLine.ParameterException(</span>
+<span class="fc" id="L421">              spec.commandLine(),</span>
+              &quot;Parameter --end-block (&quot;
+                  + endBlock
+                  + &quot;) must be greater start block (&quot;
+                  + startBlock
+                  + &quot;).&quot;);
+        }
+      }
+
+      // Error if data directory is empty
+<span class="fc" id="L431">      final Path databasePath =</span>
+<span class="fc" id="L432">          Paths.get(</span>
+<span class="fc" id="L433">              parentCommand.parentCommand.dataDir().toAbsolutePath().toString(),</span>
+              BesuController.DATABASE_PATH);
+<span class="fc" id="L435">      final File databaseDirectory = new File(databasePath.toString());</span>
+<span class="fc bfc" id="L436" title="All 4 branches covered.">      if (!databaseDirectory.isDirectory() || databaseDirectory.list().length == 0) {</span>
+        // Empty data directory, nothing to export
+<span class="fc" id="L438">        throw new CommandLine.ParameterException(</span>
+<span class="fc" id="L439">            spec.commandLine(),</span>
+            &quot;Chain is empty.  Unable to export blocks from specified data directory: &quot;
+<span class="fc" id="L441">                + databaseDirectory.toString());</span>
+      }
+<span class="fc" id="L443">    }</span>
+
+    private Optional&lt;Long&gt; getStartBlock() {
+<span class="fc" id="L446">      return Optional.ofNullable(startBlock);</span>
+    }
+
+    private Optional&lt;Long&gt; getEndBlock() {
+<span class="fc" id="L450">      return Optional.ofNullable(endBlock);</span>
+    }
+  }
+
+  private static Optional&lt;MetricsService&gt; initMetrics(final BlocksSubCommand parentCommand) {
+<span class="fc" id="L455">    final MetricsConfiguration metricsConfiguration =</span>
+<span class="fc" id="L456">        parentCommand.parentCommand.metricsConfiguration();</span>
+
+    Optional&lt;MetricsService&gt; metricsService =
+<span class="fc" id="L459">        MetricsService.create(</span>
+<span class="fc" id="L460">            Vertx.vertx(), metricsConfiguration, parentCommand.parentCommand.getMetricsSystem());</span>
+<span class="fc" id="L461">    metricsService.ifPresent(MetricsService::start);</span>
+<span class="fc" id="L462">    return metricsService;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

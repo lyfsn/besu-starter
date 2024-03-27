@@ -1,0 +1,258 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieLogFactoryImpl.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai.trielog</a> &gt; <span class="el_source">TrieLogFactoryImpl.java</span></div><h1>TrieLogFactoryImpl.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.bonsai.trielog;
+
+import org.hyperledger.besu.datatypes.AccountValue;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.ethereum.trie.bonsai.BonsaiValue;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.plugin.data.BlockHeader;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogAccumulator;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogFactory;
+
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+
+<span class="fc" id="L44">public class TrieLogFactoryImpl implements TrieLogFactory {</span>
+
+  @Override
+  public TrieLogLayer create(final TrieLogAccumulator accumulator, final BlockHeader blockHeader) {
+<span class="fc" id="L48">    TrieLogLayer layer = new TrieLogLayer();</span>
+<span class="fc" id="L49">    layer.setBlockHash(blockHeader.getBlockHash());</span>
+<span class="fc" id="L50">    layer.setBlockNumber(blockHeader.getNumber());</span>
+<span class="fc bfc" id="L51" title="All 2 branches covered.">    for (final var updatedAccount : accumulator.getAccountsToUpdate().entrySet()) {</span>
+<span class="fc" id="L52">      final var bonsaiValue = updatedAccount.getValue();</span>
+<span class="fc" id="L53">      final var oldAccountValue = bonsaiValue.getPrior();</span>
+<span class="fc" id="L54">      final var newAccountValue = bonsaiValue.getUpdated();</span>
+<span class="fc bfc" id="L55" title="All 4 branches covered.">      if (oldAccountValue == null &amp;&amp; newAccountValue == null) {</span>
+        // by default do not persist empty reads of accounts to the trie log
+<span class="fc" id="L57">        continue;</span>
+      }
+<span class="fc" id="L59">      layer.addAccountChange(updatedAccount.getKey(), oldAccountValue, newAccountValue);</span>
+<span class="fc" id="L60">    }</span>
+
+<span class="fc bfc" id="L62" title="All 2 branches covered.">    for (final var updatedCode : accumulator.getCodeToUpdate().entrySet()) {</span>
+<span class="fc" id="L63">      layer.addCodeChange(</span>
+<span class="fc" id="L64">          updatedCode.getKey(),</span>
+<span class="fc" id="L65">          updatedCode.getValue().getPrior(),</span>
+<span class="fc" id="L66">          updatedCode.getValue().getUpdated(),</span>
+<span class="fc" id="L67">          blockHeader.getBlockHash());</span>
+<span class="fc" id="L68">    }</span>
+
+<span class="fc bfc" id="L70" title="All 2 branches covered.">    for (final var updatesStorage : accumulator.getStorageToUpdate().entrySet()) {</span>
+<span class="fc" id="L71">      final Address address = updatesStorage.getKey();</span>
+<span class="fc bfc" id="L72" title="All 2 branches covered.">      for (final var slotUpdate : updatesStorage.getValue().entrySet()) {</span>
+<span class="fc" id="L73">        var val = slotUpdate.getValue();</span>
+
+<span class="fc bfc" id="L75" title="All 4 branches covered.">        if (val.getPrior() == null &amp;&amp; val.getUpdated() == null) {</span>
+          // by default do not persist empty reads to the trie log
+<span class="fc" id="L77">          continue;</span>
+        }
+
+<span class="fc" id="L80">        layer.addStorageChange(address, slotUpdate.getKey(), val.getPrior(), val.getUpdated());</span>
+<span class="fc" id="L81">      }</span>
+<span class="fc" id="L82">    }</span>
+<span class="fc" id="L83">    return layer;</span>
+  }
+
+  @Override
+  public byte[] serialize(final TrieLog layer) {
+<span class="fc" id="L88">    final BytesValueRLPOutput rlpLog = new BytesValueRLPOutput();</span>
+<span class="fc" id="L89">    writeTo(layer, rlpLog);</span>
+<span class="fc" id="L90">    return rlpLog.encoded().toArrayUnsafe();</span>
+  }
+
+  public static void writeTo(final TrieLog layer, final RLPOutput output) {
+<span class="fc" id="L94">    layer.freeze();</span>
+
+<span class="fc" id="L96">    final Set&lt;Address&gt; addresses = new TreeSet&lt;&gt;();</span>
+<span class="fc" id="L97">    addresses.addAll(layer.getAccountChanges().keySet());</span>
+<span class="fc" id="L98">    addresses.addAll(layer.getCodeChanges().keySet());</span>
+<span class="fc" id="L99">    addresses.addAll(layer.getStorageChanges().keySet());</span>
+
+<span class="fc" id="L101">    output.startList(); // container</span>
+<span class="fc" id="L102">    output.writeBytes(layer.getBlockHash());</span>
+
+<span class="fc bfc" id="L104" title="All 2 branches covered.">    for (final Address address : addresses) {</span>
+<span class="fc" id="L105">      output.startList(); // this change</span>
+<span class="fc" id="L106">      output.writeBytes(address);</span>
+
+<span class="fc" id="L108">      final TrieLog.LogTuple&lt;AccountValue&gt; accountChange = layer.getAccountChanges().get(address);</span>
+<span class="pc bpc" id="L109" title="1 of 4 branches missed.">      if (accountChange == null || accountChange.isUnchanged()) {</span>
+<span class="fc" id="L110">        output.writeNull();</span>
+      } else {
+<span class="fc" id="L112">        writeRlp(accountChange, output, (o, sta) -&gt; sta.writeTo(o));</span>
+      }
+
+<span class="fc" id="L115">      final TrieLog.LogTuple&lt;Bytes&gt; codeChange = layer.getCodeChanges().get(address);</span>
+<span class="fc bfc" id="L116" title="All 4 branches covered.">      if (codeChange == null || codeChange.isUnchanged()) {</span>
+<span class="fc" id="L117">        output.writeNull();</span>
+      } else {
+<span class="fc" id="L119">        writeRlp(codeChange, output, RLPOutput::writeBytes);</span>
+      }
+
+<span class="fc" id="L122">      final Map&lt;StorageSlotKey, TrieLog.LogTuple&lt;UInt256&gt;&gt; storageChanges =</span>
+<span class="fc" id="L123">          layer.getStorageChanges().get(address);</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">      if (storageChanges == null) {</span>
+<span class="fc" id="L125">        output.writeNull();</span>
+      } else {
+<span class="fc" id="L127">        output.startList();</span>
+        for (final Map.Entry&lt;StorageSlotKey, TrieLog.LogTuple&lt;UInt256&gt;&gt; storageChangeEntry :
+<span class="fc bfc" id="L129" title="All 2 branches covered.">            storageChanges.entrySet()) {</span>
+<span class="fc" id="L130">          output.startList();</span>
+          // do not write slotKey, it is not used in mainnet bonsai trielogs
+<span class="fc" id="L132">          output.writeBytes(storageChangeEntry.getKey().getSlotHash());</span>
+<span class="fc" id="L133">          writeInnerRlp(storageChangeEntry.getValue(), output, RLPOutput::writeUInt256Scalar);</span>
+<span class="fc" id="L134">          output.endList();</span>
+<span class="fc" id="L135">        }</span>
+<span class="fc" id="L136">        output.endList();</span>
+      }
+
+<span class="fc" id="L139">      output.endList(); // this change</span>
+<span class="fc" id="L140">    }</span>
+<span class="fc" id="L141">    output.endList(); // container</span>
+<span class="fc" id="L142">  }</span>
+
+  @Override
+  public TrieLogLayer deserialize(final byte[] bytes) {
+<span class="fc" id="L146">    return readFrom(new BytesValueRLPInput(Bytes.wrap(bytes), false));</span>
+  }
+
+  public static TrieLogLayer readFrom(final RLPInput input) {
+<span class="fc" id="L150">    final TrieLogLayer newLayer = new TrieLogLayer();</span>
+
+<span class="fc" id="L152">    input.enterList();</span>
+<span class="fc" id="L153">    newLayer.blockHash = Hash.wrap(input.readBytes32());</span>
+
+<span class="fc bfc" id="L155" title="All 2 branches covered.">    while (!input.isEndOfCurrentList()) {</span>
+<span class="fc" id="L156">      input.enterList();</span>
+<span class="fc" id="L157">      final Address address = Address.readFrom(input);</span>
+
+<span class="fc bfc" id="L159" title="All 2 branches covered.">      if (input.nextIsNull()) {</span>
+<span class="fc" id="L160">        input.skipNext();</span>
+      } else {
+<span class="fc" id="L162">        input.enterList();</span>
+<span class="fc" id="L163">        final StateTrieAccountValue oldValue = nullOrValue(input, StateTrieAccountValue::readFrom);</span>
+<span class="fc" id="L164">        final StateTrieAccountValue newValue = nullOrValue(input, StateTrieAccountValue::readFrom);</span>
+<span class="fc" id="L165">        final boolean isCleared = getOptionalIsCleared(input);</span>
+<span class="fc" id="L166">        input.leaveList();</span>
+<span class="fc" id="L167">        newLayer.accounts.put(address, new BonsaiValue&lt;&gt;(oldValue, newValue, isCleared));</span>
+      }
+
+<span class="fc bfc" id="L170" title="All 2 branches covered.">      if (input.nextIsNull()) {</span>
+<span class="fc" id="L171">        input.skipNext();</span>
+      } else {
+<span class="fc" id="L173">        input.enterList();</span>
+<span class="fc" id="L174">        final Bytes oldCode = nullOrValue(input, RLPInput::readBytes);</span>
+<span class="fc" id="L175">        final Bytes newCode = nullOrValue(input, RLPInput::readBytes);</span>
+<span class="fc" id="L176">        final boolean isCleared = getOptionalIsCleared(input);</span>
+<span class="fc" id="L177">        input.leaveList();</span>
+<span class="fc" id="L178">        newLayer.code.put(address, new BonsaiValue&lt;&gt;(oldCode, newCode, isCleared));</span>
+      }
+
+<span class="fc bfc" id="L181" title="All 2 branches covered.">      if (input.nextIsNull()) {</span>
+<span class="fc" id="L182">        input.skipNext();</span>
+      } else {
+<span class="fc" id="L184">        final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; storageChanges = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L185">        input.enterList();</span>
+<span class="fc bfc" id="L186" title="All 2 branches covered.">        while (!input.isEndOfCurrentList()) {</span>
+<span class="fc" id="L187">          input.enterList();</span>
+<span class="fc" id="L188">          final Hash slotHash = Hash.wrap(input.readBytes32());</span>
+<span class="fc" id="L189">          final StorageSlotKey storageSlotKey = new StorageSlotKey(slotHash, Optional.empty());</span>
+<span class="fc" id="L190">          final UInt256 oldValue = nullOrValue(input, RLPInput::readUInt256Scalar);</span>
+<span class="fc" id="L191">          final UInt256 newValue = nullOrValue(input, RLPInput::readUInt256Scalar);</span>
+<span class="fc" id="L192">          final boolean isCleared = getOptionalIsCleared(input);</span>
+<span class="fc" id="L193">          storageChanges.put(storageSlotKey, new BonsaiValue&lt;&gt;(oldValue, newValue, isCleared));</span>
+<span class="fc" id="L194">          input.leaveList();</span>
+<span class="fc" id="L195">        }</span>
+<span class="fc" id="L196">        input.leaveList();</span>
+<span class="fc" id="L197">        newLayer.storage.put(address, storageChanges);</span>
+      }
+
+      // TODO add trie nodes
+
+      // lenient leave list for forward compatible additions.
+<span class="fc" id="L203">      input.leaveListLenient();</span>
+<span class="fc" id="L204">    }</span>
+<span class="fc" id="L205">    input.leaveListLenient();</span>
+<span class="fc" id="L206">    newLayer.freeze();</span>
+
+<span class="fc" id="L208">    return newLayer;</span>
+  }
+
+  protected static &lt;T&gt; T nullOrValue(final RLPInput input, final Function&lt;RLPInput, T&gt; reader) {
+<span class="fc bfc" id="L212" title="All 2 branches covered.">    if (input.nextIsNull()) {</span>
+<span class="fc" id="L213">      input.skipNext();</span>
+<span class="fc" id="L214">      return null;</span>
+    } else {
+<span class="fc" id="L216">      return reader.apply(input);</span>
+    }
+  }
+
+  protected static boolean getOptionalIsCleared(final RLPInput input) {
+<span class="fc" id="L221">    return Optional.of(input.isEndOfCurrentList())</span>
+<span class="pc bpc" id="L222" title="1 of 2 branches missed.">        .filter(isEnd -&gt; !isEnd) // isCleared is optional</span>
+<span class="fc" id="L223">        .map(__ -&gt; nullOrValue(input, RLPInput::readInt))</span>
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">        .filter(i -&gt; i == 1)</span>
+<span class="fc" id="L225">        .isPresent();</span>
+  }
+
+  public static &lt;T&gt; void writeRlp(
+      final TrieLog.LogTuple&lt;T&gt; value,
+      final RLPOutput output,
+      final BiConsumer&lt;RLPOutput, T&gt; writer) {
+<span class="fc" id="L232">    output.startList();</span>
+<span class="fc" id="L233">    writeInnerRlp(value, output, writer);</span>
+<span class="fc" id="L234">    output.endList();</span>
+<span class="fc" id="L235">  }</span>
+
+  public static &lt;T&gt; void writeInnerRlp(
+      final TrieLog.LogTuple&lt;T&gt; value,
+      final RLPOutput output,
+      final BiConsumer&lt;RLPOutput, T&gt; writer) {
+<span class="fc bfc" id="L241" title="All 2 branches covered.">    if (value.getPrior() == null) {</span>
+<span class="fc" id="L242">      output.writeNull();</span>
+    } else {
+<span class="fc" id="L244">      writer.accept(output, value.getPrior());</span>
+    }
+<span class="fc bfc" id="L246" title="All 2 branches covered.">    if (value.getUpdated() == null) {</span>
+<span class="fc" id="L247">      output.writeNull();</span>
+    } else {
+<span class="fc" id="L249">      writer.accept(output, value.getUpdated());</span>
+    }
+<span class="fc bfc" id="L251" title="All 2 branches covered.">    if (!value.isLastStepCleared()) {</span>
+<span class="fc" id="L252">      output.writeNull();</span>
+    } else {
+<span class="fc" id="L254">      output.writeInt(1);</span>
+    }
+<span class="fc" id="L256">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

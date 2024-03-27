@@ -1,0 +1,520 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthStatsService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethstats</a> &gt; <span class="el_source">EthStatsService.java</span></div><h1>EthStatsService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethstats;
+
+import static com.google.common.collect.Streams.stream;
+import static java.lang.Boolean.FALSE;
+import static java.lang.Boolean.TRUE;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.EMIT_FIELD;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.MAPPER;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.BLOCK;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.HELLO;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.HISTORY;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.LATENCY;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.NODE_PING;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.NODE_PONG;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.PENDING;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.READY;
+import static org.hyperledger.besu.ethstats.request.EthStatsRequest.Type.STATS;
+
+import org.hyperledger.besu.config.GenesisConfigOptions;
+import org.hyperledger.besu.consensus.clique.blockcreation.CliqueMiningCoordinator;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.BlockResult;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.BlockResultFactory;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.p2p.network.P2PNetwork;
+import org.hyperledger.besu.ethstats.authentication.ImmutableAuthenticationData;
+import org.hyperledger.besu.ethstats.authentication.ImmutableNodeInfo;
+import org.hyperledger.besu.ethstats.authentication.NodeInfo;
+import org.hyperledger.besu.ethstats.report.ImmutableBlockReport;
+import org.hyperledger.besu.ethstats.report.ImmutableHistoryReport;
+import org.hyperledger.besu.ethstats.report.ImmutableLatencyReport;
+import org.hyperledger.besu.ethstats.report.ImmutableNodeStatsReport;
+import org.hyperledger.besu.ethstats.report.ImmutablePendingTransactionsReport;
+import org.hyperledger.besu.ethstats.report.ImmutablePingReport;
+import org.hyperledger.besu.ethstats.report.NodeStatsReport;
+import org.hyperledger.besu.ethstats.report.PendingTransactionsReport;
+import org.hyperledger.besu.ethstats.request.EthStatsRequest;
+import org.hyperledger.besu.ethstats.util.EthStatsConnectOptions;
+import org.hyperledger.besu.ethstats.util.PrimusHeartBeatsHelper;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.util.platform.PlatformDetector;
+
+import java.math.BigInteger;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.Optional;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import io.vertx.core.Vertx;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.http.WebSocket;
+import io.vertx.core.http.WebSocketConnectOptions;
+import io.vertx.core.net.PemTrustOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class describes the behaviour of the EthStats service. This class is used to report pending
+ * transactions, blocks, and several node-related information to a netstats server.
+ */
+public class EthStatsService {
+
+<span class="fc" id="L88">  private static final Logger LOG = LoggerFactory.getLogger(EthStatsService.class);</span>
+
+<span class="fc" id="L90">  private static final Duration SEND_REPORT_DELAY = Duration.ofSeconds(5);</span>
+  private static final int HISTORY_RANGE = 50;
+
+<span class="fc" id="L93">  private final AtomicBoolean retryInProgress = new AtomicBoolean(false);</span>
+
+  private final EthStatsConnectOptions ethStatsConnectOptions;
+  private final EthProtocolManager protocolManager;
+  private final TransactionPool transactionPool;
+  private final MiningCoordinator miningCoordinator;
+  private final SyncState syncState;
+  private final Vertx vertx;
+  private final String clientVersion;
+  private final GenesisConfigOptions genesisConfigOptions;
+  private final P2PNetwork p2PNetwork;
+  private final BlockchainQueries blockchainQueries;
+  private final BlockResultFactory blockResultFactory;
+  private final HttpClientOptions httpClientOptions;
+  private final WebSocketConnectOptions webSocketConnectOptions;
+
+  private ScheduledFuture&lt;?&gt; reportScheduler;
+  private WebSocket webSocket;
+  private EnodeURL enodeURL;
+  private long pingTimestamp;
+
+  /**
+   * Instantiates a new EthStats service.
+   *
+   * @param ethStatsConnectOptions the netstats url
+   * @param blockchainQueries the blockchain queries
+   * @param protocolManager the protocol manager
+   * @param transactionPool the transaction pool
+   * @param miningCoordinator the mining coordinator
+   * @param syncState the sync state
+   * @param vertx the vertx
+   * @param clientVersion the client version
+   * @param genesisConfigOptions the genesis config options
+   * @param p2PNetwork the p 2 p network
+   */
+  public EthStatsService(
+      final EthStatsConnectOptions ethStatsConnectOptions,
+      final BlockchainQueries blockchainQueries,
+      final EthProtocolManager protocolManager,
+      final TransactionPool transactionPool,
+      final MiningCoordinator miningCoordinator,
+      final SyncState syncState,
+      final Vertx vertx,
+      final String clientVersion,
+      final GenesisConfigOptions genesisConfigOptions,
+<span class="fc" id="L138">      final P2PNetwork p2PNetwork) {</span>
+<span class="fc" id="L139">    this.ethStatsConnectOptions = ethStatsConnectOptions;</span>
+<span class="fc" id="L140">    this.blockchainQueries = blockchainQueries;</span>
+<span class="fc" id="L141">    this.protocolManager = protocolManager;</span>
+<span class="fc" id="L142">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L143">    this.miningCoordinator = miningCoordinator;</span>
+<span class="fc" id="L144">    this.vertx = vertx;</span>
+<span class="fc" id="L145">    this.syncState = syncState;</span>
+<span class="fc" id="L146">    this.clientVersion = clientVersion;</span>
+<span class="fc" id="L147">    this.genesisConfigOptions = genesisConfigOptions;</span>
+<span class="fc" id="L148">    this.p2PNetwork = p2PNetwork;</span>
+<span class="fc" id="L149">    this.blockResultFactory = new BlockResultFactory();</span>
+<span class="fc" id="L150">    this.httpClientOptions = buildHttpClientOptions(ethStatsConnectOptions);</span>
+<span class="fc" id="L151">    this.webSocketConnectOptions = buildWebSocketConnectOptions(ethStatsConnectOptions);</span>
+<span class="fc" id="L152">  }</span>
+
+  private static HttpClientOptions buildHttpClientOptions(
+      final EthStatsConnectOptions ethStatsConnectOptions) {
+<span class="fc" id="L156">    final HttpClientOptions options = new HttpClientOptions();</span>
+
+<span class="pc bpc" id="L158" title="1 of 2 branches missed.">    if (ethStatsConnectOptions.getCaCert() != null) {</span>
+<span class="nc" id="L159">      options.setPemTrustOptions(</span>
+<span class="nc" id="L160">          new PemTrustOptions().addCertPath(ethStatsConnectOptions.getCaCert().toString()));</span>
+    }
+<span class="fc" id="L162">    return options;</span>
+  }
+
+  private static WebSocketConnectOptions buildWebSocketConnectOptions(
+      final EthStatsConnectOptions ethStatsConnectOptions) {
+    // if user specified scheme is null, default ssl to true, otherwise set ssl to true for wss
+    // scheme.
+<span class="fc" id="L169">    final boolean isSSL =</span>
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">        ethStatsConnectOptions.getScheme() == null</span>
+<span class="pc bnc" id="L171" title="All 2 branches missed.">            || ethStatsConnectOptions.getScheme().equalsIgnoreCase(&quot;wss&quot;);</span>
+<span class="fc" id="L172">    return new WebSocketConnectOptions()</span>
+<span class="fc" id="L173">        .setURI(&quot;/api&quot;)</span>
+<span class="fc" id="L174">        .setSsl(isSSL)</span>
+<span class="fc" id="L175">        .setHost(ethStatsConnectOptions.getHost())</span>
+<span class="fc" id="L176">        .setPort(getWsPort(ethStatsConnectOptions, isSSL));</span>
+  }
+
+  private static int getWsPort(
+      final EthStatsConnectOptions ethStatsConnectOptions, final boolean isSSL) {
+<span class="pc bpc" id="L181" title="1 of 2 branches missed.">    if (ethStatsConnectOptions.getPort() &gt;= 0) {</span>
+<span class="fc" id="L182">      return ethStatsConnectOptions.getPort();</span>
+    }
+<span class="nc bnc" id="L184" title="All 2 branches missed.">    return isSSL ? 443 : 80;</span>
+  }
+
+  /** Start. */
+  public void start() {
+<span class="fc" id="L189">    LOG.debug(&quot;Connecting to EthStats: {}&quot;, getEthStatsURI());</span>
+    try {
+<span class="fc" id="L191">      enodeURL = p2PNetwork.getLocalEnode().orElseThrow();</span>
+<span class="fc" id="L192">      vertx</span>
+<span class="fc" id="L193">          .createHttpClient(httpClientOptions)</span>
+<span class="fc" id="L194">          .webSocket(</span>
+              webSocketConnectOptions,
+              event -&gt; {
+<span class="pc bpc" id="L197" title="1 of 2 branches missed.">                if (event.succeeded()) {</span>
+<span class="fc" id="L198">                  webSocket = event.result();</span>
+
+                  // reconnect if we lose the connection or if an error occurs
+<span class="pc" id="L201">                  webSocket.exceptionHandler(ex -&gt; retryConnect());</span>
+<span class="pc" id="L202">                  webSocket.closeHandler(handler -&gt; retryConnect());</span>
+
+                  // listen to the messages from the ethstats server in order to validate the
+                  // connection
+<span class="fc" id="L206">                  webSocket.textMessageHandler(</span>
+                      ack -&gt; {
+<span class="fc" id="L208">                        EthStatsRequest ethStatsRequest = EthStatsRequest.fromResponse(ack);</span>
+<span class="pc bpc" id="L209" title="1 of 2 branches missed.">                        if (ethStatsRequest.getType().equals(READY)) {</span>
+<span class="fc" id="L210">                          LOG.info(&quot;Connected to ethstats server&quot;);</span>
+
+                          // listen to messages from the ethstats server
+<span class="fc" id="L213">                          startListeningEthstatsServer();</span>
+                          // send a full report after the connection
+<span class="fc" id="L215">                          sendFullReport();</span>
+                        } else {
+<span class="nc" id="L217">                          LOG.error(&quot;Failed to login to ethstats server {}&quot;, ack);</span>
+                        }
+<span class="fc" id="L219">                      });</span>
+
+<span class="fc" id="L221">                  retryInProgress.set(false);</span>
+                  // sending a hello to initiate the connection using the secret
+<span class="fc" id="L223">                  sendHello();</span>
+                } else {
+<span class="nc" id="L225">                  LOG.error(</span>
+<span class="nc" id="L226">                      &quot;Failed to reach the ethstats server due to: {}&quot;, event.cause().getMessage());</span>
+<span class="nc" id="L227">                  retryInProgress.set(false);</span>
+<span class="nc" id="L228">                  retryConnect();</span>
+                }
+<span class="fc" id="L230">              });</span>
+
+<span class="fc" id="L232">    } catch (Exception e) {</span>
+<span class="fc" id="L233">      retryConnect();</span>
+<span class="fc" id="L234">    }</span>
+<span class="fc" id="L235">  }</span>
+
+  private String getEthStatsURI() {
+<span class="fc" id="L238">    return String.format(</span>
+        &quot;%s://%s:%s&quot;,
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">        webSocketConnectOptions.isSsl() ? &quot;wss&quot; : &quot;ws&quot;,</span>
+<span class="fc" id="L241">        ethStatsConnectOptions.getHost(),</span>
+<span class="fc" id="L242">        getWsPort(ethStatsConnectOptions, webSocketConnectOptions.isSsl()));</span>
+  }
+
+  /**
+   * Switch from ssl to non-ssl and vice-versa if user specified scheme is null. Sets port to 443 or
+   * 80 if not specified.
+   */
+  private void updateSSLProtocol() {
+<span class="pc bpc" id="L250" title="1 of 2 branches missed.">    if (ethStatsConnectOptions.getScheme() == null) {</span>
+<span class="pc bpc" id="L251" title="1 of 2 branches missed.">      final boolean updatedSSL = !webSocketConnectOptions.isSsl();</span>
+<span class="fc" id="L252">      webSocketConnectOptions.setSsl(updatedSSL);</span>
+    }
+<span class="fc" id="L254">    webSocketConnectOptions.setPort(</span>
+<span class="fc" id="L255">        getWsPort(ethStatsConnectOptions, webSocketConnectOptions.isSsl()));</span>
+<span class="fc" id="L256">  }</span>
+
+  /** Ends the current web socket connection, observers and schedulers */
+  public void stop() {
+<span class="pc bpc" id="L260" title="1 of 4 branches missed.">    if (webSocket != null &amp;&amp; !webSocket.isClosed()) {</span>
+<span class="fc" id="L261">      webSocket.close();</span>
+    }
+<span class="pc bpc" id="L263" title="1 of 2 branches missed.">    if (reportScheduler != null) {</span>
+<span class="nc" id="L264">      reportScheduler.cancel(true);</span>
+    }
+<span class="fc" id="L266">  }</span>
+
+  /** Ends the current connection and restart a new one. */
+  private void retryConnect() {
+<span class="pc bpc" id="L270" title="1 of 2 branches missed.">    if (retryInProgress.getAndSet(true) == FALSE) {</span>
+<span class="fc" id="L271">      stop();</span>
+<span class="fc" id="L272">      updateSSLProtocol(); // switch from ssl:true to ssl:false and vice-versa</span>
+<span class="fc" id="L273">      LOG.info(&quot;Attempting to reconnect to ethstats server in approximately 10 seconds.&quot;);</span>
+<span class="fc" id="L274">      protocolManager</span>
+<span class="fc" id="L275">          .ethContext()</span>
+<span class="fc" id="L276">          .getScheduler()</span>
+<span class="fc" id="L277">          .scheduleFutureTask(this::start, Duration.ofSeconds(10));</span>
+    }
+<span class="fc" id="L279">  }</span>
+
+  /** Sends a hello request to the ethstats server in order to log in. */
+  private void sendHello() {
+    try {
+<span class="fc" id="L284">      final Optional&lt;Integer&gt; port = enodeURL.getListeningPort();</span>
+<span class="fc" id="L285">      final Optional&lt;BigInteger&gt; chainId = genesisConfigOptions.getChainId();</span>
+<span class="pc bpc" id="L286" title="2 of 4 branches missed.">      if (port.isPresent() &amp;&amp; chainId.isPresent()) {</span>
+<span class="fc" id="L287">        final String os = PlatformDetector.getOSType();</span>
+<span class="fc" id="L288">        final String arch = PlatformDetector.getArch();</span>
+
+<span class="fc" id="L290">        final NodeInfo nodeInfo =</span>
+<span class="fc" id="L291">            ImmutableNodeInfo.of(</span>
+<span class="fc" id="L292">                ethStatsConnectOptions.getNodeName(),</span>
+                clientVersion,
+<span class="fc" id="L294">                String.valueOf(port.get()),</span>
+<span class="fc" id="L295">                chainId.get().toString(),</span>
+<span class="fc" id="L296">                protocolManager.getSupportedCapabilities().toString(),</span>
+                &quot;No&quot;,
+                os,
+                arch,
+                &quot;0.1.1&quot;,
+<span class="fc" id="L301">                true,</span>
+<span class="fc" id="L302">                ethStatsConnectOptions.getContact());</span>
+
+<span class="fc" id="L304">        final EthStatsRequest hello =</span>
+            new EthStatsRequest(
+                HELLO,
+<span class="fc" id="L307">                ImmutableAuthenticationData.of(</span>
+<span class="fc" id="L308">                    enodeURL.getNodeId().toHexString(),</span>
+                    nodeInfo,
+<span class="fc" id="L310">                    ethStatsConnectOptions.getSecret()));</span>
+<span class="fc" id="L311">        sendMessage(</span>
+            webSocket,
+            hello,
+            isSucceeded -&gt; {
+<span class="pc bpc" id="L315" title="1 of 2 branches missed.">              if (!isSucceeded) {</span>
+<span class="fc" id="L316">                retryConnect();</span>
+              }
+<span class="fc" id="L318">            });</span>
+<span class="fc" id="L319">      } else {</span>
+<span class="nc" id="L320">        throw new NoSuchElementException();</span>
+      }
+<span class="nc" id="L322">    } catch (NoSuchElementException e) {</span>
+<span class="nc" id="L323">      LOG.error(&quot;Failed to find required parameters for ethstats request : {}&quot;, e.getMessage());</span>
+<span class="nc" id="L324">      retryConnect();</span>
+<span class="fc" id="L325">    }</span>
+<span class="fc" id="L326">  }</span>
+
+  /** Sends a full report to the ethstats server */
+  private void sendFullReport() {
+<span class="fc" id="L330">    reportScheduler =</span>
+        protocolManager
+<span class="fc" id="L332">            .ethContext()</span>
+<span class="fc" id="L333">            .getScheduler()</span>
+<span class="fc" id="L334">            .scheduleFutureTaskWithFixedDelay(</span>
+                () -&gt; {
+<span class="nc" id="L336">                  sendPing();</span>
+<span class="nc" id="L337">                  sendBlockReport();</span>
+<span class="nc" id="L338">                  sendPendingTransactionReport();</span>
+<span class="nc" id="L339">                  sendNodeStatsReport();</span>
+<span class="nc" id="L340">                },</span>
+<span class="fc" id="L341">                Duration.ofSeconds(0),</span>
+                SEND_REPORT_DELAY);
+<span class="fc" id="L343">  }</span>
+
+  /** Sends a ping request to the ethstats server */
+  private void sendPing() {
+    // we store the timestamp when we sent the ping
+<span class="nc" id="L348">    pingTimestamp = System.currentTimeMillis();</span>
+
+<span class="nc" id="L350">    sendMessage(</span>
+        webSocket,
+        new EthStatsRequest(
+            NODE_PING,
+<span class="nc" id="L354">            ImmutablePingReport.of(</span>
+<span class="nc" id="L355">                enodeURL.getNodeId().toHexString(), String.valueOf(pingTimestamp))));</span>
+<span class="nc" id="L356">  }</span>
+
+  /** Sends a latency report to the ethstats server */
+  private void sendLatencyReport() {
+<span class="nc" id="L360">    sendMessage(</span>
+        webSocket,
+        new EthStatsRequest(
+            LATENCY,
+<span class="nc" id="L364">            ImmutableLatencyReport.of(</span>
+<span class="nc" id="L365">                enodeURL.getNodeId().toHexString(),</span>
+<span class="nc" id="L366">                String.valueOf(System.currentTimeMillis() - pingTimestamp))));</span>
+<span class="nc" id="L367">  }</span>
+
+  /** Sends a block report concerning the last block */
+  private void sendBlockReport() {
+<span class="nc" id="L371">    blockchainQueries</span>
+<span class="nc" id="L372">        .latestBlock()</span>
+<span class="nc" id="L373">        .map(tx -&gt; blockResultFactory.transactionComplete(tx, false))</span>
+<span class="nc" id="L374">        .ifPresent(</span>
+            blockResult -&gt;
+<span class="nc" id="L376">                sendMessage(</span>
+                    webSocket,
+                    new EthStatsRequest(
+                        BLOCK,
+<span class="nc" id="L380">                        ImmutableBlockReport.of(enodeURL.getNodeId().toHexString(), blockResult))));</span>
+<span class="nc" id="L381">  }</span>
+
+  /** Sends a report concerning a set of blocks (range, list of blocks) */
+  private void sendHistoryReport(final List&lt;Long&gt; blocks) {
+<span class="nc" id="L385">    final List&lt;BlockResult&gt; blockResults = new ArrayList&lt;&gt;();</span>
+
+<span class="nc" id="L387">    blocks.forEach(</span>
+        blockNumber -&gt;
+<span class="nc" id="L389">            blockchainQueries</span>
+<span class="nc" id="L390">                .blockByNumber(blockNumber)</span>
+<span class="nc" id="L391">                .map(tx -&gt; blockResultFactory.transactionComplete(tx, false))</span>
+<span class="nc" id="L392">                .ifPresent(blockResults::add));</span>
+
+<span class="nc bnc" id="L394" title="All 2 branches missed.">    if (!blockResults.isEmpty()) {</span>
+<span class="nc" id="L395">      sendMessage(</span>
+          webSocket,
+          new EthStatsRequest(
+              HISTORY,
+<span class="nc" id="L399">              ImmutableHistoryReport.of(enodeURL.getNodeId().toHexString(), blockResults)));</span>
+    }
+<span class="nc" id="L401">  }</span>
+
+  /** Sends the number of pending transactions in the pool */
+  private void sendPendingTransactionReport() {
+<span class="nc" id="L405">    final int pendingTransactionsNumber = transactionPool.count();</span>
+
+    final PendingTransactionsReport pendingTransactionsReport =
+<span class="nc" id="L408">        ImmutablePendingTransactionsReport.builder()</span>
+<span class="nc" id="L409">            .id(enodeURL.getNodeId().toHexString())</span>
+<span class="nc" id="L410">            .stats(pendingTransactionsNumber)</span>
+<span class="nc" id="L411">            .build();</span>
+
+<span class="nc" id="L413">    sendMessage(webSocket, new EthStatsRequest(PENDING, pendingTransactionsReport));</span>
+<span class="nc" id="L414">  }</span>
+
+  /** Sends information about the node (is mining, is syncing, etc.) */
+  private void sendNodeStatsReport() {
+    final boolean isMiningEnabled;
+<span class="nc bnc" id="L419" title="All 2 branches missed.">    if (miningCoordinator instanceof CliqueMiningCoordinator) {</span>
+<span class="nc" id="L420">      isMiningEnabled = ((CliqueMiningCoordinator) miningCoordinator).isSigner();</span>
+    } else {
+<span class="nc" id="L422">      isMiningEnabled = miningCoordinator.isMining();</span>
+    }
+<span class="nc" id="L424">    final boolean isSyncing = syncState.isInSync();</span>
+<span class="nc" id="L425">    final long gasPrice = suggestGasPrice(blockchainQueries.getBlockchain().getChainHeadBlock());</span>
+<span class="nc" id="L426">    final long hashrate = miningCoordinator.hashesPerSecond().orElse(0L);</span>
+    // safe to cast to int since it isn't realistic to have more than max int peers
+<span class="nc" id="L428">    final int peersNumber =</span>
+<span class="nc" id="L429">        (int) protocolManager.ethContext().getEthPeers().streamAvailablePeers().count();</span>
+
+    final NodeStatsReport nodeStatsReport =
+<span class="nc" id="L432">        ImmutableNodeStatsReport.builder()</span>
+<span class="nc" id="L433">            .id(enodeURL.getNodeId().toHexString())</span>
+<span class="nc" id="L434">            .stats(true, isMiningEnabled, hashrate, peersNumber, gasPrice, isSyncing, 100)</span>
+<span class="nc" id="L435">            .build();</span>
+<span class="nc" id="L436">    sendMessage(webSocket, new EthStatsRequest(STATS, nodeStatsReport));</span>
+<span class="nc" id="L437">  }</span>
+
+  private void sendMessage(
+      final WebSocket webSocket,
+      final EthStatsRequest message,
+      final Consumer&lt;Boolean&gt; handlerResult) {
+    try {
+<span class="fc" id="L444">      LOG.trace(&quot;Send ethstats request {}&quot;, message.generateCommand());</span>
+<span class="fc" id="L445">      webSocket.writeTextMessage(</span>
+<span class="fc" id="L446">          message.generateCommand(),</span>
+          handler -&gt; {
+<span class="pc bpc" id="L448" title="1 of 2 branches missed.">            if (!handler.succeeded()) {</span>
+<span class="fc" id="L449">              LOG.error(&quot;Failed to send {} ethstats request&quot;, message.getType());</span>
+<span class="fc" id="L450">              handlerResult.accept(FALSE);</span>
+            } else {
+<span class="nc" id="L452">              handlerResult.accept(TRUE);</span>
+            }
+<span class="fc" id="L454">          });</span>
+<span class="nc" id="L455">    } catch (Exception e) {</span>
+<span class="nc" id="L456">      LOG.error(</span>
+<span class="nc" id="L457">          &quot;Failed to send {} ethstats request with error {}&quot;, message.getType(), e.getMessage());</span>
+<span class="nc" id="L458">      handlerResult.accept(FALSE);</span>
+<span class="fc" id="L459">    }</span>
+<span class="fc" id="L460">  }</span>
+
+  private void sendMessage(final WebSocket webSocket, final EthStatsRequest message) {
+<span class="nc" id="L463">    sendMessage(webSocket, message, __ -&gt; {});</span>
+<span class="nc" id="L464">  }</span>
+
+  private void startListeningEthstatsServer() {
+
+<span class="fc" id="L468">    webSocket.textMessageHandler(</span>
+        message -&gt; {
+          try {
+<span class="nc bnc" id="L471" title="All 2 branches missed.">            if (PrimusHeartBeatsHelper.isHeartBeatsRequest(message)) {</span>
+<span class="nc" id="L472">              PrimusHeartBeatsHelper.sendHeartBeatsResponse(webSocket);</span>
+            } else {
+<span class="nc" id="L474">              final JsonNode jsonNode = MAPPER.readTree(message);</span>
+<span class="nc" id="L475">              final JsonNode parameters = jsonNode.get(EMIT_FIELD);</span>
+<span class="nc bnc" id="L476" title="All 2 branches missed.">              if (parameters.isArray()) {</span>
+<span class="nc" id="L477">                final EthStatsRequest.Type type =</span>
+<span class="nc" id="L478">                    EthStatsRequest.Type.fromValue(parameters.get(0).asText());</span>
+<span class="nc bnc" id="L479" title="All 2 branches missed.">                if (type.equals(NODE_PONG)) {</span>
+<span class="nc" id="L480">                  sendLatencyReport();</span>
+
+<span class="nc bnc" id="L482" title="All 2 branches missed.">                } else if (type.equals(HISTORY)) {</span>
+<span class="nc" id="L483">                  List&lt;Long&gt; list =</span>
+<span class="nc" id="L484">                      stream(parameters.get(1).withArray(&quot;list&quot;).elements())</span>
+<span class="nc" id="L485">                          .map(JsonNode::asLong)</span>
+<span class="nc" id="L486">                          .collect(Collectors.toList());</span>
+                  //  if the server does not send a list, we recover the last 50 blocks
+<span class="nc bnc" id="L488" title="All 2 branches missed.">                  if (list.isEmpty()) {</span>
+<span class="nc" id="L489">                    final long chainHeadBlockNumber =</span>
+<span class="nc" id="L490">                        blockchainQueries.getBlockchain().getChainHeadBlockNumber();</span>
+<span class="nc" id="L491">                    final long startHistoryBlockNumber =</span>
+<span class="nc" id="L492">                        Math.max(0, chainHeadBlockNumber - HISTORY_RANGE);</span>
+<span class="nc" id="L493">                    list =</span>
+<span class="nc" id="L494">                        LongStream.range(chainHeadBlockNumber, startHistoryBlockNumber)</span>
+<span class="nc" id="L495">                            .boxed()</span>
+<span class="nc" id="L496">                            .collect(Collectors.toList());</span>
+                  }
+<span class="nc" id="L498">                  sendHistoryReport(list);</span>
+                }
+              }
+            }
+<span class="nc" id="L502">          } catch (Exception e) {</span>
+<span class="nc" id="L503">            LOG.debug(&quot;Ignore invalid request {}&quot;, message);</span>
+<span class="nc" id="L504">          }</span>
+<span class="nc" id="L505">        });</span>
+<span class="fc" id="L506">  }</span>
+
+  private long suggestGasPrice(final Block block) {
+    // retrieves transactions from the last blocks and takes the lowest gas price. If no transaction
+    // is present we return the minTransactionGasPrice of the mining coordinator
+<span class="nc" id="L511">    return block.getBody().getTransactions().stream()</span>
+<span class="nc" id="L512">        .min(Comparator.comparing(t -&gt; t.getEffectiveGasPrice(block.getHeader().getBaseFee())))</span>
+<span class="nc" id="L513">        .map(t -&gt; t.getEffectiveGasPrice(block.getHeader().getBaseFee()))</span>
+<span class="nc bnc" id="L514" title="All 2 branches missed.">        .filter(wei -&gt; wei.getAsBigInteger().longValue() &gt; 0)</span>
+<span class="nc" id="L515">        .orElse(miningCoordinator.getMinTransactionGasPrice())</span>
+<span class="nc" id="L516">        .getAsBigInteger()</span>
+<span class="nc" id="L517">        .longValue();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

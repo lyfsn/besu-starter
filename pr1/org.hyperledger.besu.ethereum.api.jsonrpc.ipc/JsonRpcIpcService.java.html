@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JsonRpcIpcService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.ipc</a> &gt; <span class="el_source">JsonRpcIpcService.java</span></div><h1>JsonRpcIpcService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.ipc;
+
+import static org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType.INVALID_REQUEST;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.execution.JsonRpcExecutor;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequest;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponseType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
+import io.vertx.core.Future;
+import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
+import io.vertx.core.json.DecodeException;
+import io.vertx.core.json.Json;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.NetServer;
+import io.vertx.core.net.NetServerOptions;
+import io.vertx.core.net.NetSocket;
+import io.vertx.core.net.SocketAddress;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class JsonRpcIpcService {
+
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(JsonRpcIpcService.class);</span>
+<span class="fc" id="L56">  private static final ObjectWriter JSON_OBJECT_WRITER =</span>
+      new ObjectMapper()
+<span class="fc" id="L58">          .registerModule(new Jdk8Module()) // Handle JDK8 Optionals (de)serialization</span>
+<span class="fc" id="L59">          .writer()</span>
+<span class="fc" id="L60">          .without(JsonGenerator.Feature.FLUSH_PASSED_TO_STREAM)</span>
+<span class="fc" id="L61">          .with(JsonGenerator.Feature.AUTO_CLOSE_TARGET);</span>
+
+  private final Vertx vertx;
+  private final Path path;
+  private final JsonRpcExecutor jsonRpcExecutor;
+  private NetServer netServer;
+
+<span class="fc" id="L68">  public JsonRpcIpcService(final Vertx vertx, final Path path, final JsonRpcExecutor rpcExecutor) {</span>
+<span class="fc" id="L69">    this.vertx = vertx;</span>
+<span class="fc" id="L70">    this.path = path;</span>
+<span class="fc" id="L71">    this.jsonRpcExecutor = rpcExecutor;</span>
+<span class="fc" id="L72">  }</span>
+
+  public Future&lt;NetServer&gt; start() {
+<span class="fc" id="L75">    netServer = vertx.createNetServer(buildNetServerOptions());</span>
+<span class="fc" id="L76">    netServer.connectHandler(</span>
+        socket -&gt; {
+<span class="fc" id="L78">          AtomicBoolean closedSocket = new AtomicBoolean(false);</span>
+<span class="fc" id="L79">          socket</span>
+<span class="fc" id="L80">              .closeHandler(unused -&gt; closedSocket.set(true))</span>
+<span class="fc" id="L81">              .handler(</span>
+                  buffer -&gt; {
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">                    if (buffer.length() == 0) {</span>
+<span class="nc" id="L84">                      errorReturn(socket, null, RpcErrorType.INVALID_REQUEST);</span>
+                    } else {
+                      try {
+<span class="fc" id="L87">                        final JsonObject jsonRpcRequest = buffer.toJsonObject();</span>
+<span class="fc" id="L88">                        vertx</span>
+<span class="fc" id="L89">                            .&lt;JsonRpcResponse&gt;executeBlocking(</span>
+                                promise -&gt; {
+<span class="fc" id="L91">                                  final JsonRpcResponse jsonRpcResponse =</span>
+<span class="fc" id="L92">                                      jsonRpcExecutor.execute(</span>
+<span class="fc" id="L93">                                          Optional.empty(),</span>
+                                          null,
+                                          null,
+<span class="fc" id="L96">                                          closedSocket::get,</span>
+                                          jsonRpcRequest,
+<span class="fc" id="L98">                                          req -&gt; req.mapTo(JsonRpcRequest.class));</span>
+<span class="fc" id="L99">                                  promise.complete(jsonRpcResponse);</span>
+<span class="fc" id="L100">                                })</span>
+<span class="fc" id="L101">                            .onSuccess(</span>
+                                jsonRpcResponse -&gt; {
+                                  try {
+<span class="fc" id="L104">                                    socket.write(</span>
+<span class="fc" id="L105">                                        JSON_OBJECT_WRITER.writeValueAsString(jsonRpcResponse)</span>
+                                            + '\n');
+<span class="nc" id="L107">                                  } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L108">                                    LOG.error(&quot;Error streaming JSON-RPC response&quot;, e);</span>
+<span class="fc" id="L109">                                  }</span>
+<span class="fc" id="L110">                                })</span>
+<span class="fc" id="L111">                            .onFailure(</span>
+                                throwable -&gt; {
+                                  try {
+<span class="nc" id="L114">                                    final Integer id = jsonRpcRequest.getInteger(&quot;id&quot;, null);</span>
+<span class="nc" id="L115">                                    errorReturn(socket, id, RpcErrorType.INTERNAL_ERROR);</span>
+<span class="nc" id="L116">                                  } catch (ClassCastException idNotIntegerException) {</span>
+<span class="nc" id="L117">                                    errorReturn(socket, null, RpcErrorType.INTERNAL_ERROR);</span>
+<span class="nc" id="L118">                                  }</span>
+<span class="nc" id="L119">                                });</span>
+<span class="fc" id="L120">                      } catch (DecodeException jsonObjectDecodeException) {</span>
+                        try {
+<span class="fc" id="L122">                          final JsonArray batchJsonRpcRequest = buffer.toJsonArray();</span>
+<span class="pc bpc" id="L123" title="1 of 2 branches missed.">                          if (batchJsonRpcRequest.isEmpty()) {</span>
+<span class="nc" id="L124">                            errorReturn(socket, null, RpcErrorType.INVALID_REQUEST);</span>
+                          } else {
+<span class="fc" id="L126">                            vertx</span>
+<span class="fc" id="L127">                                .&lt;List&lt;JsonRpcResponse&gt;&gt;executeBlocking(</span>
+                                    promise -&gt; {
+<span class="fc" id="L129">                                      List&lt;JsonRpcResponse&gt; responses = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">                                      for (int i = 0; i &lt; batchJsonRpcRequest.size(); i++) {</span>
+                                        final JsonObject jsonRequest;
+                                        try {
+<span class="fc" id="L133">                                          jsonRequest = batchJsonRpcRequest.getJsonObject(i);</span>
+<span class="nc" id="L134">                                        } catch (ClassCastException e) {</span>
+<span class="nc" id="L135">                                          responses.add(</span>
+                                              new JsonRpcErrorResponse(null, INVALID_REQUEST));
+<span class="nc" id="L137">                                          continue;</span>
+<span class="fc" id="L138">                                        }</span>
+<span class="fc" id="L139">                                        responses.add(</span>
+<span class="fc" id="L140">                                            jsonRpcExecutor.execute(</span>
+<span class="fc" id="L141">                                                Optional.empty(),</span>
+                                                null,
+                                                null,
+<span class="fc" id="L144">                                                closedSocket::get,</span>
+                                                jsonRequest,
+<span class="fc" id="L146">                                                req -&gt; req.mapTo(JsonRpcRequest.class)));</span>
+                                      }
+<span class="fc" id="L148">                                      promise.complete(responses);</span>
+<span class="fc" id="L149">                                    })</span>
+<span class="fc" id="L150">                                .onSuccess(</span>
+                                    jsonRpcBatchResponse -&gt; {
+                                      try {
+<span class="fc" id="L153">                                        final JsonRpcResponse[] completed =</span>
+<span class="fc" id="L154">                                            jsonRpcBatchResponse.stream()</span>
+<span class="fc" id="L155">                                                .filter(</span>
+                                                    jsonRpcResponse -&gt;
+<span class="pc bpc" id="L157" title="1 of 2 branches missed.">                                                        jsonRpcResponse.getType()</span>
+                                                            != JsonRpcResponseType.NONE)
+<span class="fc" id="L159">                                                .toArray(JsonRpcResponse[]::new);</span>
+
+<span class="fc" id="L161">                                        socket.write(</span>
+<span class="fc" id="L162">                                            JSON_OBJECT_WRITER.writeValueAsString(completed)</span>
+                                                + '\n');
+<span class="nc" id="L164">                                      } catch (JsonProcessingException e) {</span>
+<span class="nc" id="L165">                                        LOG.error(&quot;Error streaming JSON-RPC response&quot;, e);</span>
+<span class="fc" id="L166">                                      }</span>
+<span class="fc" id="L167">                                    })</span>
+<span class="fc" id="L168">                                .onFailure(</span>
+                                    throwable -&gt;
+<span class="nc" id="L170">                                        errorReturn(socket, null, RpcErrorType.INTERNAL_ERROR));</span>
+                          }
+<span class="fc" id="L172">                        } catch (DecodeException jsonArrayDecodeException) {</span>
+<span class="fc" id="L173">                          errorReturn(socket, null, RpcErrorType.PARSE_ERROR);</span>
+<span class="fc" id="L174">                        }</span>
+<span class="fc" id="L175">                      }</span>
+                    }
+<span class="fc" id="L177">                  });</span>
+<span class="fc" id="L178">        });</span>
+<span class="fc" id="L179">    return netServer</span>
+<span class="fc" id="L180">        .listen(SocketAddress.domainSocketAddress(path.toString()))</span>
+<span class="fc" id="L181">        .onSuccess(successServer -&gt; LOG.info(&quot;IPC endpoint opened: {}&quot;, path))</span>
+<span class="pc" id="L182">        .onFailure(throwable -&gt; LOG.error(&quot;Unable to open IPC endpoint&quot;, throwable));</span>
+  }
+
+  public Future&lt;Void&gt; stop() {
+<span class="pc bpc" id="L186" title="1 of 2 branches missed.">    if (netServer == null) {</span>
+<span class="nc" id="L187">      return Future.succeededFuture();</span>
+    } else {
+<span class="fc" id="L189">      return netServer</span>
+<span class="fc" id="L190">          .close()</span>
+<span class="fc" id="L191">          .onComplete(</span>
+              closeResult -&gt; {
+                try {
+<span class="fc" id="L194">                  Files.deleteIfExists(path);</span>
+<span class="nc" id="L195">                } catch (IOException e) {</span>
+<span class="nc" id="L196">                  LOG.error(&quot;Unable to delete IPC file&quot;, e);</span>
+<span class="fc" id="L197">                }</span>
+<span class="fc" id="L198">              });</span>
+    }
+  }
+
+  private Future&lt;Void&gt; errorReturn(
+      final NetSocket socket, final Integer id, final RpcErrorType rpcError) {
+<span class="fc" id="L204">    return socket.write(Buffer.buffer(Json.encode(new JsonRpcErrorResponse(id, rpcError)) + '\n'));</span>
+  }
+
+  private NetServerOptions buildNetServerOptions() {
+<span class="fc" id="L208">    return new NetServerOptions();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

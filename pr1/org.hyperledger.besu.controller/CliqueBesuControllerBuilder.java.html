@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CliqueBesuControllerBuilder.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.controller</a> &gt; <span class="el_source">CliqueBesuControllerBuilder.java</span></div><h1>CliqueBesuControllerBuilder.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.controller;
+
+import static org.hyperledger.besu.consensus.clique.CliqueHelpers.installCliqueBlockChoiceRule;
+
+import org.hyperledger.besu.config.CliqueConfigOptions;
+import org.hyperledger.besu.consensus.clique.CliqueBlockInterface;
+import org.hyperledger.besu.consensus.clique.CliqueContext;
+import org.hyperledger.besu.consensus.clique.CliqueForksSchedulesFactory;
+import org.hyperledger.besu.consensus.clique.CliqueMiningTracker;
+import org.hyperledger.besu.consensus.clique.CliqueProtocolSchedule;
+import org.hyperledger.besu.consensus.clique.blockcreation.CliqueBlockScheduler;
+import org.hyperledger.besu.consensus.clique.blockcreation.CliqueMinerExecutor;
+import org.hyperledger.besu.consensus.clique.blockcreation.CliqueMiningCoordinator;
+import org.hyperledger.besu.consensus.clique.jsonrpc.CliqueJsonRpcMethods;
+import org.hyperledger.besu.consensus.common.BlockInterface;
+import org.hyperledger.besu.consensus.common.EpochManager;
+import org.hyperledger.besu.consensus.common.ForksSchedule;
+import org.hyperledger.besu.consensus.common.validator.blockbased.BlockValidatorProvider;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.methods.JsonRpcMethods;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.Util;
+import org.hyperledger.besu.ethereum.eth.manager.EthProtocolManager;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Clique consensus controller builder. */
+<span class="fc" id="L51">public class CliqueBesuControllerBuilder extends BesuControllerBuilder {</span>
+
+<span class="fc" id="L53">  private static final Logger LOG = LoggerFactory.getLogger(CliqueBesuControllerBuilder.class);</span>
+
+  private Address localAddress;
+  private EpochManager epochManager;
+<span class="fc" id="L57">  private final BlockInterface blockInterface = new CliqueBlockInterface();</span>
+  private ForksSchedule&lt;CliqueConfigOptions&gt; forksSchedule;
+
+  @Override
+  protected void prepForBuild() {
+<span class="fc" id="L62">    localAddress = Util.publicKeyToAddress(nodeKey.getPublicKey());</span>
+<span class="fc" id="L63">    final CliqueConfigOptions cliqueConfig = configOptionsSupplier.get().getCliqueConfigOptions();</span>
+<span class="fc" id="L64">    final long blocksPerEpoch = cliqueConfig.getEpochLength();</span>
+
+<span class="fc" id="L66">    epochManager = new EpochManager(blocksPerEpoch);</span>
+<span class="fc" id="L67">    forksSchedule = CliqueForksSchedulesFactory.create(configOptionsSupplier.get());</span>
+<span class="fc" id="L68">  }</span>
+
+  @Override
+  protected JsonRpcMethods createAdditionalJsonRpcMethodFactory(
+      final ProtocolContext protocolContext) {
+<span class="fc" id="L73">    return new CliqueJsonRpcMethods(protocolContext);</span>
+  }
+
+  @Override
+  protected MiningCoordinator createMiningCoordinator(
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParameters,
+      final SyncState syncState,
+      final EthProtocolManager ethProtocolManager) {
+<span class="fc" id="L84">    final CliqueMinerExecutor miningExecutor =</span>
+        new CliqueMinerExecutor(
+            protocolContext,
+            protocolSchedule,
+            transactionPool,
+            nodeKey,
+            miningParameters,
+            new CliqueBlockScheduler(
+                clock,
+<span class="fc" id="L93">                protocolContext.getConsensusContext(CliqueContext.class).getValidatorProvider(),</span>
+                localAddress,
+                forksSchedule),
+            epochManager,
+            forksSchedule,
+<span class="fc" id="L98">            ethProtocolManager.ethContext().getScheduler());</span>
+<span class="fc" id="L99">    final CliqueMiningCoordinator miningCoordinator =</span>
+        new CliqueMiningCoordinator(
+<span class="fc" id="L101">            protocolContext.getBlockchain(),</span>
+            miningExecutor,
+            syncState,
+            new CliqueMiningTracker(localAddress, protocolContext));
+
+    // Update the next block period in seconds according to the transition schedule
+<span class="fc" id="L107">    protocolContext</span>
+<span class="fc" id="L108">        .getBlockchain()</span>
+<span class="fc" id="L109">        .observeBlockAdded(</span>
+            o -&gt;
+<span class="fc" id="L111">                miningParameters.setBlockPeriodSeconds(</span>
+                    forksSchedule
+<span class="fc" id="L113">                        .getFork(o.getBlock().getHeader().getNumber() + 1)</span>
+<span class="fc" id="L114">                        .getValue()</span>
+<span class="fc" id="L115">                        .getBlockPeriodSeconds()));</span>
+
+<span class="fc" id="L117">    miningCoordinator.addMinedBlockObserver(ethProtocolManager);</span>
+
+    // Clique mining is implicitly enabled.
+<span class="fc" id="L120">    miningCoordinator.enable();</span>
+<span class="fc" id="L121">    return miningCoordinator;</span>
+  }
+
+  @Override
+  protected ProtocolSchedule createProtocolSchedule() {
+<span class="fc" id="L126">    return CliqueProtocolSchedule.create(</span>
+<span class="fc" id="L127">        configOptionsSupplier.get(),</span>
+        forksSchedule,
+        nodeKey,
+        privacyParameters,
+        isRevertReasonEnabled,
+        evmConfiguration,
+        miningParameters,
+        badBlockManager);
+  }
+
+  @Override
+  protected void validateContext(final ProtocolContext context) {
+<span class="fc" id="L139">    final BlockHeader genesisBlockHeader = context.getBlockchain().getGenesisBlock().getHeader();</span>
+
+<span class="pc bpc" id="L141" title="1 of 2 branches missed.">    if (blockInterface.validatorsInBlock(genesisBlockHeader).isEmpty()) {</span>
+<span class="nc" id="L142">      LOG.warn(&quot;Genesis block contains no signers - chain will not progress.&quot;);</span>
+    }
+<span class="fc" id="L144">  }</span>
+
+  @Override
+  protected PluginServiceFactory createAdditionalPluginServices(
+      final Blockchain blockchain, final ProtocolContext protocolContext) {
+<span class="fc" id="L149">    return new CliqueQueryPluginServiceFactory(blockchain, nodeKey);</span>
+  }
+
+  @Override
+  protected CliqueContext createConsensusContext(
+      final Blockchain blockchain,
+      final WorldStateArchive worldStateArchive,
+      final ProtocolSchedule protocolSchedule) {
+<span class="fc" id="L157">    final CliqueContext cliqueContext =</span>
+        new CliqueContext(
+<span class="fc" id="L159">            BlockValidatorProvider.nonForkingValidatorProvider(</span>
+                blockchain, epochManager, blockInterface),
+            epochManager,
+            blockInterface);
+<span class="fc" id="L163">    installCliqueBlockChoiceRule(blockchain, cliqueContext);</span>
+<span class="fc" id="L164">    return cliqueContext;</span>
+  }
+
+  @Override
+  public MiningParameters getMiningParameterOverrides(final MiningParameters fromCli) {
+    // Clique mines by default, reflect that with in the mining parameters:
+<span class="fc" id="L170">    return fromCli.setMiningEnabled(true);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

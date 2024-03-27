@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastSyncDownloadPipelineFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">FastSyncDownloadPipelineFactory.java</span></div><h1>FastSyncDownloadPipelineFactory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.DETACHED_ONLY;
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.FULL;
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.LIGHT;
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.LIGHT_DETACHED_ONLY;
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.LIGHT_SKIP_DETACHED;
+import static org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode.SKIP_DETACHED;
+
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadBodiesStep;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadHeadersStep;
+import org.hyperledger.besu.ethereum.eth.sync.DownloadPipelineFactory;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.fullsync.SyncTerminationCondition;
+import org.hyperledger.besu.ethereum.eth.sync.range.RangeHeadersFetcher;
+import org.hyperledger.besu.ethereum.eth.sync.range.RangeHeadersValidationStep;
+import org.hyperledger.besu.ethereum.eth.sync.range.SyncTargetRange;
+import org.hyperledger.besu.ethereum.eth.sync.range.SyncTargetRangeSource;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncTarget;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.services.pipeline.PipelineBuilder;
+
+import java.util.concurrent.CompletionStage;
+
+public class FastSyncDownloadPipelineFactory implements DownloadPipelineFactory {
+  protected final SynchronizerConfiguration syncConfig;
+  protected final ProtocolSchedule protocolSchedule;
+  protected final ProtocolContext protocolContext;
+  protected final EthContext ethContext;
+  protected final FastSyncState fastSyncState;
+  protected final MetricsSystem metricsSystem;
+  protected final FastSyncValidationPolicy attachedValidationPolicy;
+  protected final FastSyncValidationPolicy detachedValidationPolicy;
+  protected final FastSyncValidationPolicy ommerValidationPolicy;
+
+  public FastSyncDownloadPipelineFactory(
+      final SynchronizerConfiguration syncConfig,
+      final ProtocolSchedule protocolSchedule,
+      final ProtocolContext protocolContext,
+      final EthContext ethContext,
+      final FastSyncState fastSyncState,
+<span class="fc" id="L67">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L68">    this.syncConfig = syncConfig;</span>
+<span class="fc" id="L69">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L70">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L71">    this.ethContext = ethContext;</span>
+<span class="fc" id="L72">    this.fastSyncState = fastSyncState;</span>
+<span class="fc" id="L73">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L74">    final LabelledMetric&lt;Counter&gt; fastSyncValidationCounter =</span>
+<span class="fc" id="L75">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.SYNCHRONIZER,
+            &quot;fast_sync_validation_mode&quot;,
+            &quot;Number of blocks validated using light vs full validation during fast sync&quot;,
+            &quot;validationMode&quot;);
+<span class="fc" id="L80">    attachedValidationPolicy =</span>
+        new FastSyncValidationPolicy(
+<span class="fc" id="L82">            this.syncConfig.getFastSyncFullValidationRate(),</span>
+            LIGHT_SKIP_DETACHED,
+            SKIP_DETACHED,
+            fastSyncValidationCounter);
+<span class="fc" id="L86">    ommerValidationPolicy =</span>
+        new FastSyncValidationPolicy(
+<span class="fc" id="L88">            this.syncConfig.getFastSyncFullValidationRate(),</span>
+            LIGHT,
+            FULL,
+            fastSyncValidationCounter);
+<span class="fc" id="L92">    detachedValidationPolicy =</span>
+        new FastSyncValidationPolicy(
+<span class="fc" id="L94">            this.syncConfig.getFastSyncFullValidationRate(),</span>
+            LIGHT_DETACHED_ONLY,
+            DETACHED_ONLY,
+            fastSyncValidationCounter);
+<span class="fc" id="L98">  }</span>
+
+  @Override
+  public CompletionStage&lt;Void&gt; startPipeline(
+      final EthScheduler scheduler,
+      final SyncState syncState,
+      final SyncTarget syncTarget,
+      final Pipeline&lt;?&gt; pipeline) {
+<span class="fc" id="L106">    return scheduler.startPipeline(pipeline);</span>
+  }
+
+  @Override
+  public Pipeline&lt;SyncTargetRange&gt; createDownloadPipelineForSyncTarget(final SyncTarget target) {
+
+<span class="fc" id="L112">    final int downloaderParallelism = syncConfig.getDownloaderParallelism();</span>
+<span class="fc" id="L113">    final int headerRequestSize = syncConfig.getDownloaderHeaderRequestSize();</span>
+<span class="fc" id="L114">    final int singleHeaderBufferSize = headerRequestSize * downloaderParallelism;</span>
+<span class="fc" id="L115">    final SyncTargetRangeSource checkpointRangeSource =</span>
+        new SyncTargetRangeSource(
+            new RangeHeadersFetcher(
+                syncConfig, protocolSchedule, ethContext, fastSyncState, metricsSystem),
+            this::shouldContinueDownloadingFromPeer,
+<span class="fc" id="L120">            ethContext.getScheduler(),</span>
+<span class="fc" id="L121">            target.peer(),</span>
+<span class="fc" id="L122">            getCommonAncestor(target),</span>
+<span class="fc" id="L123">            syncConfig.getDownloaderCheckpointTimeoutsPermitted(),</span>
+<span class="fc" id="L124">            SyncTerminationCondition.never());</span>
+<span class="fc" id="L125">    final DownloadHeadersStep downloadHeadersStep =</span>
+        new DownloadHeadersStep(
+            protocolSchedule,
+            protocolContext,
+            ethContext,
+            detachedValidationPolicy,
+            headerRequestSize,
+            metricsSystem);
+<span class="fc" id="L133">    final RangeHeadersValidationStep validateHeadersJoinUpStep =</span>
+        new RangeHeadersValidationStep(protocolSchedule, protocolContext, detachedValidationPolicy);
+<span class="fc" id="L135">    final DownloadBodiesStep downloadBodiesStep =</span>
+        new DownloadBodiesStep(protocolSchedule, ethContext, metricsSystem);
+<span class="fc" id="L137">    final DownloadReceiptsStep downloadReceiptsStep =</span>
+        new DownloadReceiptsStep(ethContext, metricsSystem);
+<span class="fc" id="L139">    final ImportBlocksStep importBlockStep =</span>
+        new ImportBlocksStep(
+            protocolSchedule,
+            protocolContext,
+            attachedValidationPolicy,
+            ommerValidationPolicy,
+            ethContext,
+<span class="fc" id="L146">            fastSyncState.getPivotBlockHeader().get());</span>
+
+<span class="fc" id="L148">    return PipelineBuilder.createPipelineFrom(</span>
+            &quot;fetchCheckpoints&quot;,
+            checkpointRangeSource,
+            downloaderParallelism,
+<span class="fc" id="L152">            metricsSystem.createLabelledCounter(</span>
+                BesuMetricCategory.SYNCHRONIZER,
+                &quot;chain_download_pipeline_processed_total&quot;,
+                &quot;Number of entries process by each chain download pipeline stage&quot;,
+                &quot;step&quot;,
+                &quot;action&quot;),
+            true,
+            &quot;fastSync&quot;)
+<span class="fc" id="L160">        .thenProcessAsyncOrdered(&quot;downloadHeaders&quot;, downloadHeadersStep, downloaderParallelism)</span>
+<span class="fc" id="L161">        .thenFlatMap(&quot;validateHeadersJoin&quot;, validateHeadersJoinUpStep, singleHeaderBufferSize)</span>
+<span class="fc" id="L162">        .inBatches(headerRequestSize)</span>
+<span class="fc" id="L163">        .thenProcessAsyncOrdered(&quot;downloadBodies&quot;, downloadBodiesStep, downloaderParallelism)</span>
+<span class="fc" id="L164">        .thenProcessAsyncOrdered(&quot;downloadReceipts&quot;, downloadReceiptsStep, downloaderParallelism)</span>
+<span class="fc" id="L165">        .andFinishWith(&quot;importBlock&quot;, importBlockStep);</span>
+  }
+
+  protected BlockHeader getCommonAncestor(final SyncTarget syncTarget) {
+<span class="fc" id="L169">    return syncTarget.commonAncestor();</span>
+  }
+
+  protected boolean shouldContinueDownloadingFromPeer(
+      final EthPeer peer, final BlockHeader lastRoundHeader) {
+<span class="fc" id="L174">    final BlockHeader pivotBlockHeader = fastSyncState.getPivotBlockHeader().get();</span>
+<span class="fc bfc" id="L175" title="All 4 branches covered.">    return !peer.isDisconnected() &amp;&amp; lastRoundHeader.getNumber() &lt; pivotBlockHeader.getNumber();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

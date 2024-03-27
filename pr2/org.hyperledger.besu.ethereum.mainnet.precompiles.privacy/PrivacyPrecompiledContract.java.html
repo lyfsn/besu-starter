@@ -1,0 +1,319 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivacyPrecompiledContract.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet.precompiles.privacy</a> &gt; <span class="el_source">PrivacyPrecompiledContract.java</span></div><h1>PrivacyPrecompiledContract.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet.precompiles.privacy;
+
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_IS_PERSISTING_PRIVATE_STATE;
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_PRIVATE_METADATA_UPDATER;
+import static org.hyperledger.besu.ethereum.mainnet.PrivateStateUtils.KEY_TRANSACTION_HASH;
+import static org.hyperledger.besu.ethereum.privacy.PrivateStateRootResolver.EMPTY_ROOT_HASH;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.EnclaveClientException;
+import org.hyperledger.besu.enclave.EnclaveConfigurationException;
+import org.hyperledger.besu.enclave.EnclaveIOException;
+import org.hyperledger.besu.enclave.EnclaveServerException;
+import org.hyperledger.besu.enclave.types.ReceiveResponse;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.PrivacyParameters;
+import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateGenesisAllocator;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateRootResolver;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransaction;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionProcessor;
+import org.hyperledger.besu.ethereum.privacy.PrivateTransactionReceipt;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateMetadataUpdater;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateTransactionMetadata;
+import org.hyperledger.besu.ethereum.processing.TransactionProcessingResult;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.evm.frame.BlockValues;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+import org.hyperledger.besu.evm.precompile.AbstractPrecompiledContract;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+
+import java.util.Base64;
+import java.util.Optional;
+import javax.annotation.Nonnull;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivacyPrecompiledContract extends AbstractPrecompiledContract {
+  private final Enclave enclave;
+  final WorldStateArchive privateWorldStateArchive;
+  final PrivateStateRootResolver privateStateRootResolver;
+  private final PrivateStateGenesisAllocator privateStateGenesisAllocator;
+  PrivateTransactionProcessor privateTransactionProcessor;
+
+<span class="fc" id="L66">  private static final Logger LOG = LoggerFactory.getLogger(PrivacyPrecompiledContract.class);</span>
+
+<span class="fc" id="L68">  static final PrecompileContractResult NO_RESULT =</span>
+      new PrecompileContractResult(
+<span class="fc" id="L70">          Bytes.EMPTY, true, MessageFrame.State.CODE_EXECUTING, Optional.empty());</span>
+
+  public PrivacyPrecompiledContract(
+      final GasCalculator gasCalculator,
+      final PrivacyParameters privacyParameters,
+      final String name) {
+<span class="fc" id="L76">    this(</span>
+        gasCalculator,
+<span class="fc" id="L78">        privacyParameters.getEnclave(),</span>
+<span class="fc" id="L79">        privacyParameters.getPrivateWorldStateArchive(),</span>
+<span class="fc" id="L80">        privacyParameters.getPrivateStateRootResolver(),</span>
+<span class="fc" id="L81">        privacyParameters.getPrivateStateGenesisAllocator(),</span>
+        name);
+<span class="fc" id="L83">  }</span>
+
+  protected PrivacyPrecompiledContract(
+      final GasCalculator gasCalculator,
+      final Enclave enclave,
+      final WorldStateArchive worldStateArchive,
+      final PrivateStateRootResolver privateStateRootResolver,
+      final PrivateStateGenesisAllocator privateStateGenesisAllocator,
+      final String name) {
+<span class="fc" id="L92">    super(name, gasCalculator);</span>
+<span class="fc" id="L93">    this.enclave = enclave;</span>
+<span class="fc" id="L94">    this.privateWorldStateArchive = worldStateArchive;</span>
+<span class="fc" id="L95">    this.privateStateRootResolver = privateStateRootResolver;</span>
+<span class="fc" id="L96">    this.privateStateGenesisAllocator = privateStateGenesisAllocator;</span>
+<span class="fc" id="L97">  }</span>
+
+  public void setPrivateTransactionProcessor(
+      final PrivateTransactionProcessor privateTransactionProcessor) {
+<span class="fc" id="L101">    this.privateTransactionProcessor = privateTransactionProcessor;</span>
+<span class="fc" id="L102">  }</span>
+
+  @Override
+  public long gasRequirement(final Bytes input) {
+<span class="fc" id="L106">    return 0L;</span>
+  }
+
+  @Nonnull
+  @Override
+  public PrecompileContractResult computePrecompile(
+      final Bytes input, @Nonnull final MessageFrame messageFrame) {
+
+<span class="fc bfc" id="L114" title="All 2 branches covered.">    if (skipContractExecution(messageFrame)) {</span>
+<span class="fc" id="L115">      return NO_RESULT;</span>
+    }
+
+<span class="fc" id="L118">    final Hash pmtHash = messageFrame.getContextVariable(KEY_TRANSACTION_HASH);</span>
+
+<span class="fc" id="L120">    final String key = input.toBase64String();</span>
+    final ReceiveResponse receiveResponse;
+    try {
+<span class="fc" id="L123">      receiveResponse = getReceiveResponse(key);</span>
+<span class="fc" id="L124">    } catch (final EnclaveClientException e) {</span>
+<span class="fc" id="L125">      LOG.debug(&quot;Can not fetch private transaction payload with key {}&quot;, key, e);</span>
+<span class="fc" id="L126">      return NO_RESULT;</span>
+<span class="fc" id="L127">    }</span>
+
+<span class="fc" id="L129">    final BytesValueRLPInput bytesValueRLPInput =</span>
+        new BytesValueRLPInput(
+<span class="fc" id="L131">            Bytes.wrap(Base64.getDecoder().decode(receiveResponse.getPayload())), false);</span>
+<span class="fc" id="L132">    final PrivateTransaction privateTransaction =</span>
+<span class="fc" id="L133">        PrivateTransaction.readFrom(bytesValueRLPInput.readAsRlp());</span>
+
+<span class="fc" id="L135">    final Bytes privateFrom = privateTransaction.getPrivateFrom();</span>
+<span class="fc bfc" id="L136" title="All 2 branches covered.">    if (!privateFromMatchesSenderKey(privateFrom, receiveResponse.getSenderKey())) {</span>
+<span class="fc" id="L137">      return NO_RESULT;</span>
+    }
+
+<span class="fc" id="L140">    final Bytes32 privacyGroupId =</span>
+<span class="fc" id="L141">        Bytes32.wrap(Bytes.fromBase64String(receiveResponse.getPrivacyGroupId()));</span>
+
+    try {
+<span class="fc bfc" id="L144" title="All 2 branches covered.">      if (privateTransaction.getPrivateFor().isEmpty()</span>
+          &amp;&amp; !enclave
+<span class="fc" id="L146">              .retrievePrivacyGroup(privacyGroupId.toBase64String())</span>
+<span class="fc" id="L147">              .getMembers()</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">              .contains(privateFrom.toBase64String())) {</span>
+<span class="nc" id="L149">        return NO_RESULT;</span>
+      }
+<span class="nc" id="L151">    } catch (final EnclaveClientException e) {</span>
+      // This exception is thrown when the privacy group can not be found
+<span class="nc" id="L153">      return NO_RESULT;</span>
+<span class="nc" id="L154">    } catch (final EnclaveServerException e) {</span>
+<span class="nc" id="L155">      throw new IllegalStateException(</span>
+          &quot;Enclave is responding with an error, perhaps it has a misconfiguration?&quot;, e);
+<span class="nc" id="L157">    } catch (final EnclaveIOException e) {</span>
+<span class="nc" id="L158">      throw new IllegalStateException(&quot;Can not communicate with enclave, is it up?&quot;, e);</span>
+<span class="fc" id="L159">    }</span>
+
+<span class="fc" id="L161">    LOG.debug(&quot;Processing private transaction {} in privacy group {}&quot;, pmtHash, privacyGroupId);</span>
+
+<span class="fc" id="L163">    final PrivateMetadataUpdater privateMetadataUpdater =</span>
+<span class="fc" id="L164">        messageFrame.getContextVariable(KEY_PRIVATE_METADATA_UPDATER);</span>
+<span class="fc" id="L165">    final Hash lastRootHash =</span>
+<span class="fc" id="L166">        privateStateRootResolver.resolveLastStateRoot(privacyGroupId, privateMetadataUpdater);</span>
+
+<span class="fc" id="L168">    final MutableWorldState disposablePrivateState =</span>
+<span class="fc" id="L169">        privateWorldStateArchive.getMutable(lastRootHash, null).get();</span>
+
+<span class="fc" id="L171">    final WorldUpdater privateWorldStateUpdater = disposablePrivateState.updater();</span>
+
+<span class="fc" id="L173">    maybeApplyGenesisToPrivateWorldState(</span>
+        lastRootHash,
+        disposablePrivateState,
+        privateWorldStateUpdater,
+        privacyGroupId,
+<span class="fc" id="L178">        messageFrame.getBlockValues().getNumber());</span>
+
+<span class="fc" id="L180">    final TransactionProcessingResult result =</span>
+<span class="fc" id="L181">        processPrivateTransaction(</span>
+            messageFrame, privateTransaction, privacyGroupId, privateWorldStateUpdater);
+
+<span class="pc bpc" id="L184" title="1 of 4 branches missed.">    if (result.isInvalid() || !result.isSuccessful()) {</span>
+<span class="fc" id="L185">      LOG.error(</span>
+          &quot;Failed to process private transaction {}: {}&quot;,
+          pmtHash,
+<span class="fc" id="L188">          result.getValidationResult().getErrorMessage());</span>
+
+<span class="fc" id="L190">      privateMetadataUpdater.putTransactionReceipt(pmtHash, new PrivateTransactionReceipt(result));</span>
+
+<span class="fc" id="L192">      return NO_RESULT;</span>
+    }
+
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    if (messageFrame.getContextVariable(KEY_IS_PERSISTING_PRIVATE_STATE, false)) {</span>
+<span class="fc" id="L196">      privateWorldStateUpdater.commit();</span>
+<span class="fc" id="L197">      disposablePrivateState.persist(null);</span>
+
+<span class="fc" id="L199">      storePrivateMetadata(</span>
+          pmtHash, privacyGroupId, disposablePrivateState, privateMetadataUpdater, result);
+    }
+
+<span class="fc" id="L203">    return new PrecompileContractResult(</span>
+<span class="fc" id="L204">        result.getOutput(), true, MessageFrame.State.CODE_EXECUTING, Optional.empty());</span>
+  }
+
+  protected void maybeApplyGenesisToPrivateWorldState(
+      final Hash lastRootHash,
+      final MutableWorldState disposablePrivateState,
+      final WorldUpdater privateWorldStateUpdater,
+      final Bytes32 privacyGroupId,
+      final long blockNumber) {
+<span class="pc bpc" id="L213" title="1 of 2 branches missed.">    if (lastRootHash.equals(EMPTY_ROOT_HASH)) {</span>
+<span class="fc" id="L214">      this.privateStateGenesisAllocator.applyGenesisToPrivateWorldState(</span>
+          disposablePrivateState, privateWorldStateUpdater, privacyGroupId, blockNumber);
+    }
+<span class="fc" id="L217">  }</span>
+
+  void storePrivateMetadata(
+      final Hash commitmentHash,
+      final Bytes32 privacyGroupId,
+      final MutableWorldState disposablePrivateState,
+      final PrivateMetadataUpdater privateMetadataUpdater,
+      final TransactionProcessingResult result) {
+
+    final int txStatus =
+<span class="pc bpc" id="L227" title="1 of 2 branches missed.">        result.getStatus() == TransactionProcessingResult.Status.SUCCESSFUL ? 1 : 0;</span>
+
+<span class="fc" id="L229">    final PrivateTransactionReceipt privateTransactionReceipt =</span>
+        new PrivateTransactionReceipt(
+<span class="fc" id="L231">            txStatus, result.getLogs(), result.getOutput(), result.getRevertReason());</span>
+
+<span class="fc" id="L233">    privateMetadataUpdater.putTransactionReceipt(commitmentHash, privateTransactionReceipt);</span>
+<span class="fc" id="L234">    privateMetadataUpdater.updatePrivacyGroupHeadBlockMap(privacyGroupId);</span>
+<span class="fc" id="L235">    privateMetadataUpdater.addPrivateTransactionMetadata(</span>
+        privacyGroupId,
+<span class="fc" id="L237">        new PrivateTransactionMetadata(commitmentHash, disposablePrivateState.rootHash()));</span>
+<span class="fc" id="L238">  }</span>
+
+  TransactionProcessingResult processPrivateTransaction(
+      final MessageFrame messageFrame,
+      final PrivateTransaction privateTransaction,
+      final Bytes32 privacyGroupId,
+      final WorldUpdater privateWorldStateUpdater) {
+
+<span class="fc" id="L246">    return privateTransactionProcessor.processTransaction(</span>
+<span class="fc" id="L247">        messageFrame.getWorldUpdater(),</span>
+        privateWorldStateUpdater,
+<span class="fc" id="L249">        (ProcessableBlockHeader) messageFrame.getBlockValues(),</span>
+<span class="fc" id="L250">        messageFrame.getContextVariable(KEY_TRANSACTION_HASH),</span>
+        privateTransaction,
+<span class="fc" id="L252">        messageFrame.getMiningBeneficiary(),</span>
+        OperationTracer.NO_TRACING,
+<span class="fc" id="L254">        messageFrame.getBlockHashLookup(),</span>
+        privacyGroupId);
+  }
+
+  ReceiveResponse getReceiveResponse(final String key) {
+    final ReceiveResponse receiveResponse;
+    try {
+<span class="fc" id="L261">      receiveResponse = enclave.receive(key);</span>
+<span class="nc" id="L262">    } catch (final EnclaveServerException e) {</span>
+<span class="nc" id="L263">      throw new IllegalStateException(</span>
+          &quot;Enclave is responding with an error, perhaps it has a misconfiguration?&quot;, e);
+<span class="nc" id="L265">    } catch (final EnclaveIOException e) {</span>
+<span class="nc" id="L266">      throw new IllegalStateException(&quot;Can not communicate with enclave is it up?&quot;, e);</span>
+<span class="fc" id="L267">    }</span>
+<span class="fc" id="L268">    return receiveResponse;</span>
+  }
+
+  boolean skipContractExecution(final MessageFrame messageFrame) {
+<span class="pc bpc" id="L272" title="1 of 4 branches missed.">    return isSimulatingPMT(messageFrame) || isMining(messageFrame);</span>
+  }
+
+  boolean isSimulatingPMT(final MessageFrame messageFrame) {
+    // If there's no PrivateMetadataUpdater, the precompile has not been called through the
+    // PrivacyBlockProcessor. This indicates the PMT is being simulated and execution of the
+    // precompile is not required.
+<span class="fc bfc" id="L279" title="All 2 branches covered.">    return !messageFrame.hasContextVariable(KEY_PRIVATE_METADATA_UPDATER);</span>
+  }
+
+  boolean isMining(final MessageFrame messageFrame) {
+<span class="fc" id="L283">    boolean isMining = false;</span>
+<span class="fc" id="L284">    final BlockValues currentBlockHeader = messageFrame.getBlockValues();</span>
+<span class="pc bpc" id="L285" title="1 of 2 branches missed.">    if (!BlockHeader.class.isAssignableFrom(currentBlockHeader.getClass())) {</span>
+<span class="nc bnc" id="L286" title="All 2 branches missed.">      if (messageFrame.getContextVariable(KEY_IS_PERSISTING_PRIVATE_STATE, false)) {</span>
+<span class="nc" id="L287">        throw new IllegalArgumentException(</span>
+            &quot;The MessageFrame contains an illegal block header type. Cannot persist private block&quot;
+                + &quot; metadata without current block hash.&quot;);
+      } else {
+<span class="nc" id="L291">        isMining = true;</span>
+      }
+    }
+<span class="fc" id="L294">    return isMining;</span>
+  }
+
+  protected boolean privateFromMatchesSenderKey(
+      final Bytes transactionPrivateFrom, final String payloadSenderKey) {
+<span class="fc bfc" id="L299" title="All 2 branches covered.">    if (payloadSenderKey == null) {</span>
+<span class="fc" id="L300">      LOG.warn(</span>
+          &quot;Missing sender key from Orion response. Upgrade Orion to 1.6 to enforce privateFrom check.&quot;);
+<span class="fc" id="L302">      throw new EnclaveConfigurationException(</span>
+          &quot;Incompatible Orion version. Orion version must be 1.6.0 or greater.&quot;);
+    }
+
+<span class="pc bpc" id="L306" title="1 of 4 branches missed.">    if (transactionPrivateFrom == null || transactionPrivateFrom.isEmpty()) {</span>
+<span class="fc" id="L307">      LOG.warn(&quot;Private transaction is missing privateFrom&quot;);</span>
+<span class="fc" id="L308">      return false;</span>
+    }
+
+<span class="fc bfc" id="L311" title="All 2 branches covered.">    if (!payloadSenderKey.equals(transactionPrivateFrom.toBase64String())) {</span>
+<span class="fc" id="L312">      LOG.warn(&quot;Private transaction privateFrom doesn't match payload sender key&quot;);</span>
+<span class="fc" id="L313">      return false;</span>
+    }
+
+<span class="fc" id="L316">    return true;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

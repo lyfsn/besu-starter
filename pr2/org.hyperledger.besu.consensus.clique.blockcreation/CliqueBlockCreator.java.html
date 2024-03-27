@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CliqueBlockCreator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.clique.blockcreation</a> &gt; <span class="el_source">CliqueBlockCreator.java</span></div><h1>CliqueBlockCreator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.clique.blockcreation;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.consensus.clique.CliqueBlockHashing;
+import org.hyperledger.besu.consensus.clique.CliqueBlockInterface;
+import org.hyperledger.besu.consensus.clique.CliqueContext;
+import org.hyperledger.besu.consensus.clique.CliqueExtraData;
+import org.hyperledger.besu.consensus.common.EpochManager;
+import org.hyperledger.besu.consensus.common.validator.ValidatorVote;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.blockcreation.AbstractBlockCreator;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.BlockHeaderBuilder;
+import org.hyperledger.besu.ethereum.core.BlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.core.SealableBlockHeader;
+import org.hyperledger.besu.ethereum.core.Util;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+
+import java.util.Optional;
+
+/** The Clique block creator. */
+public class CliqueBlockCreator extends AbstractBlockCreator {
+
+  private final NodeKey nodeKey;
+  private final EpochManager epochManager;
+
+  /**
+   * Instantiates a new Clique block creator.
+   *
+   * @param miningParameters the mining parameters
+   * @param extraDataCalculator the extra data calculator
+   * @param transactionPool the pending transactions
+   * @param protocolContext the protocol context
+   * @param protocolSchedule the protocol schedule
+   * @param nodeKey the node key
+   * @param parentHeader the parent header
+   * @param epochManager the epoch manager
+   * @param ethScheduler the scheduler for asynchronous block creation tasks
+   */
+  public CliqueBlockCreator(
+      final MiningParameters miningParameters,
+      final ExtraDataCalculator extraDataCalculator,
+      final TransactionPool transactionPool,
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final NodeKey nodeKey,
+      final BlockHeader parentHeader,
+      final EpochManager epochManager,
+      final EthScheduler ethScheduler) {
+<span class="fc" id="L71">    super(</span>
+        miningParameters,
+<span class="fc" id="L73">        __ -&gt; Util.publicKeyToAddress(nodeKey.getPublicKey()),</span>
+        extraDataCalculator,
+        transactionPool,
+        protocolContext,
+        protocolSchedule,
+        parentHeader,
+<span class="fc" id="L79">        Optional.empty(),</span>
+        ethScheduler);
+<span class="fc" id="L81">    this.nodeKey = nodeKey;</span>
+<span class="fc" id="L82">    this.epochManager = epochManager;</span>
+<span class="fc" id="L83">  }</span>
+
+  /**
+   * Responsible for signing (hash of) the block (including MixHash and Nonce), and then injecting
+   * the seal into the extraData. This is called after a suitable set of transactions have been
+   * identified, and all resulting hashes have been inserted into the passed-in SealableBlockHeader.
+   *
+   * @param sealableBlockHeader A block header containing StateRoots, TransactionHashes etc.
+   * @return The blockhead which is to be added to the block being proposed.
+   */
+  @Override
+  protected BlockHeader createFinalBlockHeader(final SealableBlockHeader sealableBlockHeader) {
+<span class="fc" id="L95">    final BlockHeaderFunctions blockHeaderFunctions =</span>
+<span class="fc" id="L96">        ScheduleBasedBlockHeaderFunctions.create(protocolSchedule);</span>
+
+    final BlockHeaderBuilder builder =
+<span class="fc" id="L99">        BlockHeaderBuilder.create()</span>
+<span class="fc" id="L100">            .populateFrom(sealableBlockHeader)</span>
+<span class="fc" id="L101">            .mixHash(Hash.ZERO)</span>
+<span class="fc" id="L102">            .blockHeaderFunctions(blockHeaderFunctions);</span>
+
+<span class="fc" id="L104">    final Optional&lt;ValidatorVote&gt; vote = determineCliqueVote(sealableBlockHeader);</span>
+<span class="fc" id="L105">    final BlockHeaderBuilder builderIncludingProposedVotes =</span>
+<span class="fc" id="L106">        CliqueBlockInterface.createHeaderBuilderWithVoteHeaders(builder, vote);</span>
+<span class="fc" id="L107">    final CliqueExtraData sealedExtraData =</span>
+<span class="fc" id="L108">        constructSignedExtraData(builderIncludingProposedVotes.buildBlockHeader());</span>
+
+    // Replace the extraData in the BlockHeaderBuilder, and return header.
+<span class="fc" id="L111">    return builderIncludingProposedVotes.extraData(sealedExtraData.encode()).buildBlockHeader();</span>
+  }
+
+  private Optional&lt;ValidatorVote&gt; determineCliqueVote(
+      final SealableBlockHeader sealableBlockHeader) {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    if (epochManager.isEpochBlock(sealableBlockHeader.getNumber())) {</span>
+<span class="fc" id="L117">      return Optional.empty();</span>
+    } else {
+<span class="fc" id="L119">      final CliqueContext cliqueContext = protocolContext.getConsensusContext(CliqueContext.class);</span>
+<span class="fc" id="L120">      checkState(</span>
+<span class="fc" id="L121">          cliqueContext.getValidatorProvider().getVoteProviderAtHead().isPresent(),</span>
+          &quot;Clique requires a vote provider&quot;);
+<span class="fc" id="L123">      return cliqueContext</span>
+<span class="fc" id="L124">          .getValidatorProvider()</span>
+<span class="fc" id="L125">          .getVoteProviderAtHead()</span>
+<span class="fc" id="L126">          .get()</span>
+<span class="fc" id="L127">          .getVoteAfterBlock(parentHeader, Util.publicKeyToAddress(nodeKey.getPublicKey()));</span>
+    }
+  }
+
+  /**
+   * Produces a CliqueExtraData object with a populated proposerSeal. The signature in the block is
+   * generated from the Hash of the header (minus proposer and committer seals) and the nodeKeys.
+   *
+   * @param headerToSign An almost fully populated header (proposer and committer seals are empty)
+   * @return Extra data containing the same vanity data and validators as extraData, however
+   *     proposerSeal will also be populated.
+   */
+  private CliqueExtraData constructSignedExtraData(final BlockHeader headerToSign) {
+<span class="fc" id="L140">    final CliqueExtraData extraData = CliqueExtraData.decode(headerToSign);</span>
+<span class="fc" id="L141">    final Hash hashToSign =</span>
+<span class="fc" id="L142">        CliqueBlockHashing.calculateDataHashForProposerSeal(headerToSign, extraData);</span>
+<span class="fc" id="L143">    return new CliqueExtraData(</span>
+<span class="fc" id="L144">        extraData.getVanityData(),</span>
+<span class="fc" id="L145">        nodeKey.sign(hashToSign),</span>
+<span class="fc" id="L146">        extraData.getValidators(),</span>
+        headerToSign);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

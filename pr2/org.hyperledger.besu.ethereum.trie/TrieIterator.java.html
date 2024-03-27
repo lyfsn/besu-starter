@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TrieIterator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie</a> &gt; <span class="el_source">TrieIterator.java</span></div><h1>TrieIterator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie;
+
+import org.hyperledger.besu.ethereum.trie.patricia.BranchNode;
+import org.hyperledger.besu.ethereum.trie.patricia.ExtensionNode;
+import org.hyperledger.besu.ethereum.trie.patricia.LeafNode;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.Iterator;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.MutableBytes;
+
+public class TrieIterator&lt;V&gt; implements PathNodeVisitor&lt;V&gt; {
+
+<span class="fc" id="L31">  private final Deque&lt;Bytes&gt; paths = new ArrayDeque&lt;&gt;();</span>
+  private final LeafHandler&lt;V&gt; leafHandler;
+<span class="fc" id="L33">  private State state = State.SEARCHING;</span>
+  private final boolean unload;
+
+<span class="fc" id="L36">  public TrieIterator(final LeafHandler&lt;V&gt; leafHandler, final boolean unload) {</span>
+<span class="fc" id="L37">    this.leafHandler = leafHandler;</span>
+<span class="fc" id="L38">    this.unload = unload;</span>
+<span class="fc" id="L39">  }</span>
+
+  @Override
+  public Node&lt;V&gt; visit(final ExtensionNode&lt;V&gt; node, final Bytes searchPath) {
+<span class="fc" id="L43">    Bytes remainingPath = searchPath;</span>
+    final Bytes extensionPath;
+    final Bytes commonPrefixPath;
+<span class="fc bfc" id="L46" title="All 2 branches covered.">    if (state == State.SEARCHING) {</span>
+<span class="fc" id="L47">      extensionPath = node.getPath();</span>
+<span class="fc" id="L48">      commonPrefixPath = searchPath.slice(0, Math.min(searchPath.size(), extensionPath.size()));</span>
+<span class="fc" id="L49">      remainingPath = searchPath.slice(commonPrefixPath.size());</span>
+<span class="fc bfc" id="L50" title="All 2 branches covered.">      if (node.getPath().compareTo(commonPrefixPath) &gt; 0) {</span>
+<span class="fc" id="L51">        remainingPath = MutableBytes.create(remainingPath.size());</span>
+      }
+    }
+
+<span class="fc" id="L55">    paths.push(node.getPath());</span>
+<span class="fc" id="L56">    node.getChild().accept(this, remainingPath);</span>
+<span class="pc bpc" id="L57" title="1 of 2 branches missed.">    if (unload) {</span>
+<span class="nc" id="L58">      node.getChild().unload();</span>
+    }
+<span class="fc" id="L60">    paths.pop();</span>
+<span class="fc" id="L61">    return node;</span>
+  }
+
+  @Override
+  public Node&lt;V&gt; visit(final BranchNode&lt;V&gt; node, final Bytes searchPath) {
+<span class="fc" id="L66">    byte iterateFrom = 0;</span>
+<span class="fc" id="L67">    Bytes remainingPath = searchPath;</span>
+<span class="fc bfc" id="L68" title="All 2 branches covered.">    if (state == State.SEARCHING) {</span>
+<span class="fc" id="L69">      iterateFrom = searchPath.get(0);</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">      if (iterateFrom == CompactEncoding.LEAF_TERMINATOR) {</span>
+<span class="nc" id="L71">        return node;</span>
+      }
+<span class="fc" id="L73">      remainingPath = searchPath.slice(1);</span>
+    }
+<span class="fc" id="L75">    paths.push(node.getPath());</span>
+<span class="fc bfc" id="L76" title="All 4 branches covered.">    for (int i = iterateFrom; i &lt; node.maxChild() &amp;&amp; state.continueIterating(); i++) {</span>
+<span class="fc" id="L77">      paths.push(Bytes.of(i));</span>
+<span class="fc" id="L78">      final Node&lt;V&gt; child = node.child((byte) i);</span>
+<span class="fc bfc" id="L79" title="All 2 branches covered.">      if (i == iterateFrom) {</span>
+<span class="fc" id="L80">        child.accept(this, remainingPath);</span>
+      } else {
+<span class="fc" id="L82">        child.accept(this, MutableBytes.create(remainingPath.size()));</span>
+      }
+
+<span class="fc bfc" id="L85" title="All 2 branches covered.">      if (unload) {</span>
+<span class="fc" id="L86">        child.unload();</span>
+      }
+<span class="fc" id="L88">      paths.pop();</span>
+    }
+<span class="fc" id="L90">    paths.pop();</span>
+<span class="fc" id="L91">    return node;</span>
+  }
+
+  @Override
+  public Node&lt;V&gt; visit(final LeafNode&lt;V&gt; node, final Bytes path) {
+<span class="fc" id="L96">    paths.push(node.getPath());</span>
+<span class="fc" id="L97">    state = State.CONTINUE;</span>
+<span class="fc" id="L98">    state = leafHandler.onLeaf(keyHash(), node);</span>
+<span class="fc" id="L99">    paths.pop();</span>
+<span class="fc" id="L100">    return node;</span>
+  }
+
+  @Override
+  public Node&lt;V&gt; visit(final NullNode&lt;V&gt; node, final Bytes path) {
+<span class="fc" id="L105">    state = State.CONTINUE;</span>
+<span class="fc" id="L106">    return node;</span>
+  }
+
+  private Bytes32 keyHash() {
+<span class="fc" id="L110">    final Iterator&lt;Bytes&gt; iterator = paths.descendingIterator();</span>
+<span class="fc" id="L111">    Bytes fullPath = iterator.next();</span>
+<span class="fc bfc" id="L112" title="All 2 branches covered.">    while (iterator.hasNext()) {</span>
+<span class="fc" id="L113">      fullPath = Bytes.wrap(fullPath, iterator.next());</span>
+    }
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">    return fullPath.isZero()</span>
+<span class="nc" id="L116">        ? Bytes32.ZERO</span>
+<span class="fc" id="L117">        : Bytes32.wrap(CompactEncoding.pathToBytes(fullPath), 0);</span>
+  }
+
+  public interface LeafHandler&lt;V&gt; {
+
+    State onLeaf(Bytes32 keyHash, Node&lt;V&gt; node);
+  }
+
+<span class="fc" id="L125">  public enum State {</span>
+<span class="fc" id="L126">    SEARCHING,</span>
+<span class="fc" id="L127">    CONTINUE,</span>
+<span class="fc" id="L128">    STOP;</span>
+
+    public boolean continueIterating() {
+<span class="fc bfc" id="L131" title="All 2 branches covered.">      return this != STOP;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

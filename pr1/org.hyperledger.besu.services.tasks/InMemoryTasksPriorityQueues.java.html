@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>InMemoryTasksPriorityQueues.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.tasks</a> &gt; <span class="el_source">InMemoryTasksPriorityQueues.java</span></div><h1>InMemoryTasksPriorityQueues.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.tasks;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.PriorityQueue;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.annotation.Nonnull;
+
+/**
+ * The InMemory tasks priority queues.
+ *
+ * @param &lt;T&gt; the type parameter
+ */
+public class InMemoryTasksPriorityQueues&lt;T extends TasksPriorityProvider&gt;
+    implements TaskCollection&lt;T&gt; {
+<span class="fc" id="L34">  private final List&lt;PriorityQueue&lt;T&gt;&gt; internalQueues = new ArrayList&lt;&gt;(16);</span>
+<span class="fc" id="L35">  private final Set&lt;InMemoryTask&lt;T&gt;&gt; unfinishedOutstandingTasks = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L36">  private final AtomicBoolean closed = new AtomicBoolean(false);</span>
+
+  /** Instantiates a new InMemory tasks priority queues. */
+<span class="fc" id="L39">  public InMemoryTasksPriorityQueues() {</span>
+<span class="fc" id="L40">    clearInternalQueues();</span>
+<span class="fc" id="L41">  }</span>
+
+  /** Clear internal queues. */
+  public synchronized void clearInternalQueues() {
+<span class="fc" id="L45">    internalQueues.clear();</span>
+<span class="fc bfc" id="L46" title="All 2 branches covered.">    for (int i = 0; i &lt; 16; i++) {</span>
+<span class="fc" id="L47">      internalQueues.add(newEmptyQueue());</span>
+    }
+<span class="fc" id="L49">  }</span>
+
+  @Nonnull
+  private PriorityQueue&lt;T&gt; newEmptyQueue() {
+<span class="fc" id="L53">    return new PriorityQueue&lt;&gt;(Comparator.comparingLong(TasksPriorityProvider::getPriority));</span>
+  }
+
+  @Override
+  public synchronized void add(final T taskData) {
+<span class="fc" id="L58">    assertNotClosed();</span>
+<span class="fc" id="L59">    var dequeue = findQueue(taskData.getDepth());</span>
+<span class="fc" id="L60">    dequeue.add(taskData);</span>
+<span class="fc" id="L61">  }</span>
+
+  private PriorityQueue&lt;T&gt; findQueue(final int priority) {
+<span class="fc bfc" id="L64" title="All 2 branches covered.">    while (priority + 1 &gt; internalQueues.size()) {</span>
+<span class="fc" id="L65">      internalQueues.add(newEmptyQueue());</span>
+    }
+<span class="fc" id="L67">    return internalQueues.get(priority);</span>
+  }
+
+  @Override
+  public synchronized Task&lt;T&gt; remove() {
+<span class="fc" id="L72">    assertNotClosed();</span>
+<span class="fc" id="L73">    final Queue&lt;T&gt; lastNonEmptyQueue = findLastNonEmptyQueue();</span>
+<span class="fc bfc" id="L74" title="All 2 branches covered.">    if (lastNonEmptyQueue.isEmpty()) {</span>
+<span class="fc" id="L75">      return null;</span>
+    }
+<span class="fc" id="L77">    T data = lastNonEmptyQueue.remove();</span>
+<span class="fc" id="L78">    InMemoryTask&lt;T&gt; task = new InMemoryTask&lt;&gt;(this, data);</span>
+<span class="fc" id="L79">    unfinishedOutstandingTasks.add(task);</span>
+<span class="fc" id="L80">    return task;</span>
+  }
+
+  private Queue&lt;T&gt; findLastNonEmptyQueue() {
+<span class="fc bfc" id="L84" title="All 2 branches covered.">    for (int i = internalQueues.size() - 1; i &gt; 0; i--) {</span>
+<span class="fc" id="L85">      final Queue&lt;T&gt; queue = internalQueues.get(i);</span>
+<span class="fc bfc" id="L86" title="All 2 branches covered.">      if (!queue.isEmpty()) {</span>
+<span class="fc" id="L87">        return queue;</span>
+      }
+    }
+<span class="fc" id="L90">    return internalQueues.get(0);</span>
+  }
+
+  @Override
+  public synchronized long size() {
+<span class="fc" id="L95">    return internalQueues.stream().mapToInt(Queue::size).sum();</span>
+  }
+
+  @Override
+  public synchronized boolean isEmpty() {
+<span class="fc" id="L100">    return findLastNonEmptyQueue().isEmpty();</span>
+  }
+
+  @Override
+  public synchronized void clear() {
+<span class="fc" id="L105">    assertNotClosed();</span>
+
+<span class="fc" id="L107">    unfinishedOutstandingTasks.clear();</span>
+<span class="fc" id="L108">    clearInternalQueues();</span>
+<span class="fc" id="L109">  }</span>
+
+  @Override
+  public synchronized boolean allTasksCompleted() {
+<span class="fc bfc" id="L113" title="All 4 branches covered.">    return isEmpty() &amp;&amp; unfinishedOutstandingTasks.isEmpty();</span>
+  }
+
+  @Override
+  public synchronized void close() {
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">    if (closed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L119">      internalQueues.clear();</span>
+<span class="fc" id="L120">      unfinishedOutstandingTasks.clear();</span>
+    }
+<span class="fc" id="L122">  }</span>
+
+  private void assertNotClosed() {
+<span class="fc bfc" id="L125" title="All 2 branches covered.">    if (closed.get()) {</span>
+<span class="fc" id="L126">      throw new IllegalStateException(&quot;Attempt to access closed &quot; + getClass().getSimpleName());</span>
+    }
+<span class="fc" id="L128">  }</span>
+
+  private synchronized void handleFailedTask(final InMemoryTask&lt;T&gt; task) {
+<span class="pc bpc" id="L131" title="1 of 2 branches missed.">    if (markTaskCompleted(task)) {</span>
+<span class="fc" id="L132">      add(task.getData());</span>
+    }
+<span class="fc" id="L134">  }</span>
+
+  private synchronized boolean markTaskCompleted(final InMemoryTask&lt;T&gt; task) {
+<span class="fc" id="L137">    return unfinishedOutstandingTasks.remove(task);</span>
+  }
+
+  /**
+   * Check if queue Contains the task .
+   *
+   * @param request the request
+   * @return the boolean
+   */
+  public synchronized boolean contains(final T request) {
+<span class="fc" id="L147">    final PriorityQueue&lt;T&gt; queue = findQueue(request.getDepth());</span>
+<span class="fc bfc" id="L148" title="All 2 branches covered.">    return queue.contains(request)</span>
+<span class="fc" id="L149">        || unfinishedOutstandingTasks.stream()</span>
+<span class="fc" id="L150">            .map(InMemoryTask::getData)</span>
+<span class="fc bfc" id="L151" title="All 2 branches covered.">            .anyMatch(data -&gt; data.equals(request));</span>
+  }
+
+  private static class InMemoryTask&lt;T extends TasksPriorityProvider&gt; implements Task&lt;T&gt; {
+    private final T data;
+    private final InMemoryTasksPriorityQueues&lt;T&gt; queue;
+<span class="fc" id="L157">    private final AtomicBoolean completed = new AtomicBoolean(false);</span>
+
+    /**
+     * Instantiates a new InMemory task.
+     *
+     * @param queue the queue
+     * @param data the data
+     */
+<span class="fc" id="L165">    public InMemoryTask(final InMemoryTasksPriorityQueues&lt;T&gt; queue, final T data) {</span>
+<span class="fc" id="L166">      this.queue = queue;</span>
+<span class="fc" id="L167">      this.data = data;</span>
+<span class="fc" id="L168">    }</span>
+
+    @Override
+    public T getData() {
+<span class="fc" id="L172">      return data;</span>
+    }
+
+    @Override
+    public void markCompleted() {
+<span class="pc bpc" id="L177" title="1 of 2 branches missed.">      if (completed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L178">        queue.markTaskCompleted(this);</span>
+      }
+<span class="fc" id="L180">    }</span>
+
+    @Override
+    public void markFailed() {
+<span class="fc bfc" id="L184" title="All 2 branches covered.">      if (completed.compareAndSet(false, true)) {</span>
+<span class="fc" id="L185">        queue.handleFailedTask(this);</span>
+      }
+<span class="fc" id="L187">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

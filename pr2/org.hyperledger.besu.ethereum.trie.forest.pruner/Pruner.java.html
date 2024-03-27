@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Pruner.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.forest.pruner</a> &gt; <span class="el_source">Pruner.java</span></div><h1>Pruner.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.forest.pruner;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.BlockAddedEvent;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class Pruner {
+
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(Pruner.class);</span>
+
+  private final MarkSweepPruner pruningStrategy;
+  private final Blockchain blockchain;
+  private Long blockAddedObserverId;
+  private final long blocksRetained;
+<span class="fc" id="L44">  private final AtomicReference&lt;PruningPhase&gt; pruningPhase =</span>
+      new AtomicReference&lt;&gt;(PruningPhase.IDLE);
+<span class="fc" id="L46">  private volatile long markBlockNumber = 0;</span>
+  private volatile BlockHeader markedBlockHeader;
+  private final long blockConfirmations;
+
+<span class="fc" id="L50">  private final AtomicReference&lt;State&gt; state = new AtomicReference&lt;&gt;(State.IDLE);</span>
+  private final ExecutorService executorService;
+
+  @VisibleForTesting
+  Pruner(
+      final MarkSweepPruner pruningStrategy,
+      final Blockchain blockchain,
+      final PrunerConfiguration prunerConfiguration,
+<span class="fc" id="L58">      final ExecutorService executorService) {</span>
+<span class="fc" id="L59">    this.pruningStrategy = pruningStrategy;</span>
+<span class="fc" id="L60">    this.blockchain = blockchain;</span>
+<span class="fc" id="L61">    this.executorService = executorService;</span>
+<span class="fc" id="L62">    this.blocksRetained = prunerConfiguration.getBlocksRetained();</span>
+<span class="fc" id="L63">    this.blockConfirmations = prunerConfiguration.getBlockConfirmations();</span>
+<span class="fc bfc" id="L64" title="All 4 branches covered.">    checkArgument(</span>
+        blockConfirmations &gt;= 0 &amp;&amp; blockConfirmations &lt; blocksRetained,
+        &quot;blockConfirmations and blocksRetained must be non-negative. blockConfirmations must be less than blockRetained.&quot;);
+<span class="fc" id="L67">  }</span>
+
+  public Pruner(
+      final MarkSweepPruner pruningStrategy,
+      final Blockchain blockchain,
+      final PrunerConfiguration prunerConfiguration) {
+<span class="fc" id="L73">    this(</span>
+        pruningStrategy,
+        blockchain,
+        prunerConfiguration,
+        // This is basically the out-of-the-box `Executors.newSingleThreadExecutor` except we want
+        // the `corePoolSize` to be 0
+        new ThreadPoolExecutor(
+            0,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue&lt;&gt;(),
+            new ThreadFactoryBuilder()
+<span class="fc" id="L86">                .setDaemon(true)</span>
+<span class="fc" id="L87">                .setPriority(Thread.MIN_PRIORITY)</span>
+<span class="fc" id="L88">                .setNameFormat(&quot;StatePruning-%d&quot;)</span>
+<span class="fc" id="L89">                .build()));</span>
+<span class="fc" id="L90">  }</span>
+
+  public void start() {
+<span class="fc" id="L93">    execute(</span>
+        () -&gt; {
+<span class="pc bpc" id="L95" title="1 of 2 branches missed.">          if (state.compareAndSet(State.IDLE, State.RUNNING)) {</span>
+<span class="fc" id="L96">            LOG.info(&quot;Starting Pruner.&quot;);</span>
+<span class="fc" id="L97">            pruningStrategy.prepare();</span>
+<span class="fc" id="L98">            blockAddedObserverId = blockchain.observeBlockAdded(this::handleNewBlock);</span>
+          }
+<span class="fc" id="L100">        });</span>
+<span class="fc" id="L101">  }</span>
+
+  public void stop() {
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">    if (state.compareAndSet(State.RUNNING, State.STOPPED)) {</span>
+<span class="fc" id="L105">      LOG.info(&quot;Stopping Pruner.&quot;);</span>
+<span class="fc" id="L106">      pruningStrategy.cleanup();</span>
+<span class="fc" id="L107">      blockchain.removeObserver(blockAddedObserverId);</span>
+<span class="fc" id="L108">      executorService.shutdownNow();</span>
+    }
+<span class="fc" id="L110">  }</span>
+
+  public void awaitStop() throws InterruptedException {
+<span class="nc bnc" id="L113" title="All 2 branches missed.">    if (!executorService.awaitTermination(10, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L114">      LOG.error(&quot;Failed to shutdown Pruner executor service.&quot;);</span>
+    }
+<span class="nc" id="L116">  }</span>
+
+  private void handleNewBlock(final BlockAddedEvent event) {
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    if (!event.isNewCanonicalHead()) {</span>
+<span class="fc" id="L120">      return;</span>
+    }
+
+<span class="fc" id="L123">    final long blockNumber = event.getBlock().getHeader().getNumber();</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    if (pruningPhase.compareAndSet(</span>
+        PruningPhase.IDLE, PruningPhase.MARK_BLOCK_CONFIRMATIONS_AWAITING)) {
+<span class="fc" id="L126">      markBlockNumber = blockNumber;</span>
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">    } else if (blockNumber &gt;= markBlockNumber + blockConfirmations</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">        &amp;&amp; pruningPhase.compareAndSet(</span>
+            PruningPhase.MARK_BLOCK_CONFIRMATIONS_AWAITING, PruningPhase.MARKING)) {
+<span class="fc" id="L130">      markedBlockHeader = blockchain.getBlockHeader(markBlockNumber).get();</span>
+<span class="fc" id="L131">      mark(markedBlockHeader);</span>
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">    } else if (blockNumber &gt;= markBlockNumber + blocksRetained</span>
+<span class="pc bpc" id="L133" title="1 of 2 branches missed.">        &amp;&amp; blockchain.blockIsOnCanonicalChain(markedBlockHeader.getHash())</span>
+<span class="pc bpc" id="L134" title="1 of 2 branches missed.">        &amp;&amp; pruningPhase.compareAndSet(PruningPhase.MARKING_COMPLETE, PruningPhase.SWEEPING)) {</span>
+<span class="fc" id="L135">      sweep();</span>
+    }
+<span class="fc" id="L137">  }</span>
+
+  private void mark(final BlockHeader header) {
+<span class="fc" id="L140">    final Hash stateRoot = header.getStateRoot();</span>
+<span class="fc" id="L141">    LOG.info(</span>
+        &quot;Begin marking used nodes for pruning. Block number: {} State root: {}&quot;,
+<span class="fc" id="L143">        markBlockNumber,</span>
+        stateRoot);
+<span class="fc" id="L145">    execute(</span>
+        () -&gt; {
+<span class="fc" id="L147">          pruningStrategy.mark(stateRoot);</span>
+<span class="fc" id="L148">          pruningPhase.compareAndSet(PruningPhase.MARKING, PruningPhase.MARKING_COMPLETE);</span>
+<span class="fc" id="L149">        });</span>
+<span class="fc" id="L150">  }</span>
+
+  private void sweep() {
+<span class="fc" id="L153">    LOG.info(</span>
+        &quot;Begin sweeping unused nodes for pruning. Keeping full state for blocks {} to {}&quot;,
+<span class="fc" id="L155">        markBlockNumber,</span>
+<span class="fc" id="L156">        markBlockNumber + blocksRetained);</span>
+<span class="fc" id="L157">    execute(</span>
+        () -&gt; {
+<span class="fc" id="L159">          pruningStrategy.sweepBefore(markBlockNumber);</span>
+<span class="fc" id="L160">          pruningPhase.compareAndSet(PruningPhase.SWEEPING, PruningPhase.IDLE);</span>
+<span class="fc" id="L161">        });</span>
+<span class="fc" id="L162">  }</span>
+
+  private void execute(final Runnable action) {
+    try {
+<span class="fc" id="L166">      executorService.execute(action);</span>
+<span class="nc" id="L167">    } catch (final MerkleTrieException mte) {</span>
+<span class="nc" id="L168">      LOG.error(</span>
+          &quot;An unrecoverable error occurred while pruning. The database directory must be deleted and resynced.&quot;,
+          mte);
+<span class="nc" id="L171">      System.exit(1);</span>
+<span class="nc" id="L172">    } catch (final Exception e) {</span>
+<span class="nc" id="L173">      LOG.error(</span>
+          &quot;An unexpected error occurred in the {} pruning phase: {}. Reattempting.&quot;,
+<span class="nc" id="L175">          getPruningPhase(),</span>
+<span class="nc" id="L176">          e.getMessage());</span>
+<span class="nc" id="L177">      pruningStrategy.clearMarks();</span>
+<span class="nc" id="L178">      pruningPhase.set(PruningPhase.IDLE);</span>
+<span class="pc" id="L179">    }</span>
+<span class="fc" id="L180">  }</span>
+
+  PruningPhase getPruningPhase() {
+<span class="nc" id="L183">    return pruningPhase.get();</span>
+  }
+
+<span class="fc" id="L186">  enum PruningPhase {</span>
+<span class="fc" id="L187">    IDLE,</span>
+<span class="fc" id="L188">    MARK_BLOCK_CONFIRMATIONS_AWAITING,</span>
+<span class="fc" id="L189">    MARKING,</span>
+<span class="fc" id="L190">    MARKING_COMPLETE,</span>
+<span class="fc" id="L191">    SWEEPING;</span>
+  }
+
+<span class="fc" id="L194">  private enum State {</span>
+<span class="fc" id="L195">    IDLE,</span>
+<span class="fc" id="L196">    RUNNING,</span>
+<span class="fc" id="L197">    STOPPED</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

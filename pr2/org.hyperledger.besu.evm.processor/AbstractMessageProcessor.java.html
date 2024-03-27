@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractMessageProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.processor</a> &gt; <span class="el_source">AbstractMessageProcessor.java</span></div><h1>AbstractMessageProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.processor;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.EVM;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.AccountState;
+import org.hyperledger.besu.evm.frame.MessageFrame;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * A skeletal class for instantiating message processors.
+ *
+ * &lt;p&gt;The following methods have been created to be invoked when the message state changes via the
+ * {@link MessageFrame.State}. Note that some of these methods are abstract while others have
+ * default behaviors. There is currently no method for responding to a {@link
+ * MessageFrame.State#CODE_SUSPENDED}*.
+ *
+ * &lt;table&gt;
+ * &lt;caption&gt;Method Overview&lt;/caption&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;&lt;b&gt;{@code MessageFrame.State}&lt;/b&gt;&lt;/td&gt;
+ * &lt;td&gt;&lt;b&gt;Method&lt;/b&gt;&lt;/td&gt;
+ * &lt;/tr&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;{@link MessageFrame.State#NOT_STARTED}&lt;/td&gt;
+ * &lt;td&gt;{@link AbstractMessageProcessor#start(MessageFrame, OperationTracer)}&lt;/td&gt;
+ * &lt;/tr&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;{@link MessageFrame.State#CODE_EXECUTING}&lt;/td&gt;
+ * &lt;td&gt;{@link AbstractMessageProcessor#codeExecute(MessageFrame, OperationTracer)}&lt;/td&gt;
+ * &lt;/tr&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;{@link MessageFrame.State#CODE_SUCCESS}&lt;/td&gt;
+ * &lt;td&gt;{@link AbstractMessageProcessor#codeSuccess(MessageFrame, OperationTracer)}&lt;/td&gt;
+ * &lt;/tr&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;{@link MessageFrame.State#COMPLETED_FAILED}&lt;/td&gt;
+ * &lt;td&gt;{@link AbstractMessageProcessor#completedFailed(MessageFrame)}&lt;/td&gt;
+ * &lt;tr&gt;
+ * &lt;td&gt;{@link MessageFrame.State#COMPLETED_SUCCESS}&lt;/td&gt;
+ * &lt;td&gt;{@link AbstractMessageProcessor#completedSuccess(MessageFrame)}&lt;/td&gt;
+ * &lt;/tr&gt;
+ * &lt;/table&gt;
+ */
+public abstract class AbstractMessageProcessor {
+
+  // List of addresses to force delete when they are touched but empty
+  // when the state changes in the message are were not meant to be committed.
+  private final Collection&lt;? super Address&gt; forceDeleteAccountsWhenEmpty;
+  private final EVM evm;
+
+  /**
+   * Instantiates a new Abstract message processor.
+   *
+   * @param evm the evm
+   * @param forceDeleteAccountsWhenEmpty the force delete accounts when empty
+   */
+<span class="fc" id="L81">  AbstractMessageProcessor(final EVM evm, final Collection&lt;Address&gt; forceDeleteAccountsWhenEmpty) {</span>
+<span class="fc" id="L82">    this.evm = evm;</span>
+<span class="fc" id="L83">    this.forceDeleteAccountsWhenEmpty = forceDeleteAccountsWhenEmpty;</span>
+<span class="fc" id="L84">  }</span>
+
+  /**
+   * Start.
+   *
+   * @param frame the frame
+   * @param operationTracer the operation tracer
+   */
+  protected abstract void start(MessageFrame frame, final OperationTracer operationTracer);
+
+  /**
+   * Gets called when the message frame code executes successfully.
+   *
+   * @param frame The message frame
+   * @param operationTracer The tracer recording execution
+   */
+  protected abstract void codeSuccess(MessageFrame frame, final OperationTracer operationTracer);
+
+  private void clearAccumulatedStateBesidesGasAndOutput(final MessageFrame frame) {
+<span class="fc" id="L103">    ArrayList&lt;Address&gt; addresses =</span>
+<span class="fc" id="L104">        frame.getWorldUpdater().getTouchedAccounts().stream()</span>
+<span class="fc" id="L105">            .filter(AccountState::isEmpty)</span>
+<span class="fc" id="L106">            .map(Account::getAddress)</span>
+<span class="fc" id="L107">            .filter(forceDeleteAccountsWhenEmpty::contains)</span>
+<span class="fc" id="L108">            .collect(Collectors.toCollection(ArrayList::new));</span>
+
+    // Clear any pending changes.
+<span class="fc" id="L111">    frame.getWorldUpdater().revert();</span>
+
+    // Force delete any requested accounts and commit the changes.
+<span class="fc" id="L114">    ((Collection&lt;Address&gt;) addresses).forEach(h -&gt; frame.getWorldUpdater().deleteAccount(h));</span>
+<span class="fc" id="L115">    frame.getWorldUpdater().commit();</span>
+
+<span class="fc" id="L117">    frame.clearLogs();</span>
+<span class="fc" id="L118">    frame.clearGasRefund();</span>
+
+<span class="fc" id="L120">    frame.rollback();</span>
+<span class="fc" id="L121">  }</span>
+
+  /**
+   * Gets called when the message frame encounters an exceptional halt.
+   *
+   * @param frame The message frame
+   */
+  private void exceptionalHalt(final MessageFrame frame) {
+<span class="fc" id="L129">    clearAccumulatedStateBesidesGasAndOutput(frame);</span>
+<span class="fc" id="L130">    frame.clearGasRemaining();</span>
+<span class="fc" id="L131">    frame.clearOutputData();</span>
+<span class="fc" id="L132">    frame.setState(MessageFrame.State.COMPLETED_FAILED);</span>
+<span class="fc" id="L133">  }</span>
+
+  /**
+   * Gets called when the message frame requests a revert.
+   *
+   * @param frame The message frame
+   */
+  protected void revert(final MessageFrame frame) {
+<span class="fc" id="L141">    clearAccumulatedStateBesidesGasAndOutput(frame);</span>
+<span class="fc" id="L142">    frame.setState(MessageFrame.State.COMPLETED_FAILED);</span>
+<span class="fc" id="L143">  }</span>
+
+  /**
+   * Gets called when the message frame completes successfully.
+   *
+   * @param frame The message frame
+   */
+  private void completedSuccess(final MessageFrame frame) {
+<span class="fc" id="L151">    frame.getWorldUpdater().commit();</span>
+<span class="fc" id="L152">    frame.getMessageFrameStack().removeFirst();</span>
+<span class="fc" id="L153">    frame.notifyCompletion();</span>
+<span class="fc" id="L154">  }</span>
+
+  /**
+   * Gets called when the message frame execution fails.
+   *
+   * @param frame The message frame
+   */
+  private void completedFailed(final MessageFrame frame) {
+<span class="fc" id="L162">    frame.getMessageFrameStack().removeFirst();</span>
+<span class="fc" id="L163">    frame.notifyCompletion();</span>
+<span class="fc" id="L164">  }</span>
+
+  /**
+   * Executes the message frame code until it halts.
+   *
+   * @param frame The message frame
+   * @param operationTracer The tracer recording execution
+   */
+  private void codeExecute(final MessageFrame frame, final OperationTracer operationTracer) {
+    try {
+<span class="fc" id="L174">      evm.runToHalt(frame, operationTracer);</span>
+<span class="nc" id="L175">    } catch (final ModificationNotAllowedException e) {</span>
+<span class="nc" id="L176">      frame.setState(MessageFrame.State.REVERT);</span>
+<span class="fc" id="L177">    }</span>
+<span class="fc" id="L178">  }</span>
+
+  /**
+   * Process.
+   *
+   * @param frame the frame
+   * @param operationTracer the operation tracer
+   */
+  public void process(final MessageFrame frame, final OperationTracer operationTracer) {
+<span class="pc bpc" id="L187" title="1 of 2 branches missed.">    if (operationTracer != null) {</span>
+<span class="fc bfc" id="L188" title="All 2 branches covered.">      if (frame.getState() == MessageFrame.State.NOT_STARTED) {</span>
+<span class="fc" id="L189">        operationTracer.traceContextEnter(frame);</span>
+      } else {
+<span class="fc" id="L191">        operationTracer.traceContextReEnter(frame);</span>
+      }
+    }
+
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.NOT_STARTED) {</span>
+<span class="fc" id="L196">      start(frame, operationTracer);</span>
+    }
+
+<span class="fc bfc" id="L199" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.CODE_EXECUTING) {</span>
+<span class="fc" id="L200">      codeExecute(frame, operationTracer);</span>
+
+<span class="fc bfc" id="L202" title="All 2 branches covered.">      if (frame.getState() == MessageFrame.State.CODE_SUSPENDED) {</span>
+<span class="fc" id="L203">        return;</span>
+      }
+
+<span class="fc bfc" id="L206" title="All 2 branches covered.">      if (frame.getState() == MessageFrame.State.CODE_SUCCESS) {</span>
+<span class="fc" id="L207">        codeSuccess(frame, operationTracer);</span>
+      }
+    }
+
+<span class="fc bfc" id="L211" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.EXCEPTIONAL_HALT) {</span>
+<span class="fc" id="L212">      exceptionalHalt(frame);</span>
+    }
+
+<span class="fc bfc" id="L215" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.REVERT) {</span>
+<span class="fc" id="L216">      revert(frame);</span>
+    }
+
+<span class="fc bfc" id="L219" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="pc bpc" id="L220" title="1 of 2 branches missed.">      if (operationTracer != null) {</span>
+<span class="fc" id="L221">        operationTracer.traceContextExit(frame);</span>
+      }
+<span class="fc" id="L223">      completedSuccess(frame);</span>
+    }
+<span class="fc bfc" id="L225" title="All 2 branches covered.">    if (frame.getState() == MessageFrame.State.COMPLETED_FAILED) {</span>
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">      if (operationTracer != null) {</span>
+<span class="fc" id="L227">        operationTracer.traceContextExit(frame);</span>
+      }
+<span class="fc" id="L229">      completedFailed(frame);</span>
+    }
+<span class="fc" id="L231">  }</span>
+
+  /**
+   * Gets code from evm.
+   *
+   * @param codeHash the code hash
+   * @param codeBytes the code bytes
+   * @return the code from evm
+   */
+  public Code getCodeFromEVM(final Hash codeHash, final Bytes codeBytes) {
+<span class="fc" id="L241">    return evm.getCode(codeHash, codeBytes);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

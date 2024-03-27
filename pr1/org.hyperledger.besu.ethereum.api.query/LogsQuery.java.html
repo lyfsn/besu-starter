@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LogsQuery.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.query</a> &gt; <span class="el_source">LogsQuery.java</span></div><h1>LogsQuery.java</h1><pre class="source lang-java linenums">/*
+ *
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.api.query;
+
+import static java.util.Collections.emptyList;
+import static java.util.stream.Collectors.toUnmodifiableList;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.TopicsDeserializer;
+import org.hyperledger.besu.evm.log.Log;
+import org.hyperledger.besu.evm.log.LogTopic;
+import org.hyperledger.besu.evm.log.LogsBloomFilter;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.google.common.collect.Lists;
+
+public class LogsQuery {
+
+  private final List&lt;Address&gt; addresses;
+  private final List&lt;List&lt;LogTopic&gt;&gt; topics;
+  private final List&lt;LogsBloomFilter&gt; addressBlooms;
+  private final List&lt;List&lt;LogsBloomFilter&gt;&gt; topicsBlooms;
+
+  @JsonCreator
+  public LogsQuery(
+      @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY) @JsonProperty(&quot;address&quot;)
+          final List&lt;Address&gt; addresses,
+      @JsonDeserialize(using = TopicsDeserializer.class) @JsonProperty(&quot;topics&quot;)
+<span class="fc" id="L53">          final List&lt;List&lt;LogTopic&gt;&gt; topics) {</span>
+    // Ordinarily this defensive copy wouldn't be surprising, style wise it should be an immutable
+    // collection. However, the semantics of the Ethereum JSON-RPC APIs ascribe meaning to a null
+    // value in lists for logs queries. We need to proactively put the values into a collection
+    // that won't throw a null pointer exception when checking to see if the list contains null.
+    // List.of(...) is one of the lists that reacts poorly to null member checks and is something
+    // that we should expect to see passed in. So we must copy into a null-tolerant list.
+<span class="pc bpc" id="L60" title="1 of 2 branches missed.">    this.addresses = addresses != null ? new ArrayList&lt;&gt;(addresses) : emptyList();</span>
+<span class="fc" id="L61">    this.topics =</span>
+<span class="fc bfc" id="L62" title="All 2 branches covered.">        topics != null</span>
+<span class="fc" id="L63">            ? topics.stream().map(ArrayList::new).collect(Collectors.toList())</span>
+<span class="fc" id="L64">            : emptyList();</span>
+<span class="fc" id="L65">    this.addressBlooms =</span>
+<span class="fc" id="L66">        this.addresses.stream()</span>
+<span class="fc" id="L67">            .map(address -&gt; LogsBloomFilter.builder().insertBytes(address).build())</span>
+<span class="fc" id="L68">            .collect(toUnmodifiableList());</span>
+<span class="fc" id="L69">    this.topicsBlooms =</span>
+<span class="fc" id="L70">        this.topics.stream()</span>
+<span class="fc" id="L71">            .map(</span>
+                subTopics -&gt;
+<span class="fc" id="L73">                    subTopics.stream()</span>
+<span class="fc" id="L74">                        .filter(Objects::nonNull)</span>
+<span class="fc" id="L75">                        .map(logTopic -&gt; LogsBloomFilter.builder().insertBytes(logTopic).build())</span>
+<span class="fc" id="L76">                        .collect(Collectors.toList()))</span>
+<span class="fc" id="L77">            .collect(toUnmodifiableList());</span>
+<span class="fc" id="L78">  }</span>
+
+  public boolean couldMatch(final LogsBloomFilter bloom) {
+<span class="pc bpc" id="L81" title="1 of 4 branches missed.">    return (addressBlooms.isEmpty() || addressBlooms.stream().anyMatch(bloom::couldContain))</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">        &amp;&amp; (topicsBlooms.isEmpty()</span>
+<span class="fc" id="L83">            || topicsBlooms.stream()</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">                .allMatch(</span>
+<span class="fc bfc" id="L85" title="All 4 branches covered.">                    topics -&gt; topics.isEmpty() || topics.stream().anyMatch(bloom::couldContain)));</span>
+  }
+
+  public boolean matches(final Log log) {
+<span class="fc bfc" id="L89" title="All 4 branches covered.">    return matchesAddresses(log.getLogger()) &amp;&amp; matchesTopics(log.getTopics());</span>
+  }
+
+  private boolean matchesAddresses(final Address address) {
+<span class="fc bfc" id="L93" title="All 4 branches covered.">    return addresses.isEmpty() || addresses.contains(address);</span>
+  }
+
+  private boolean matchesTopics(final List&lt;LogTopic&gt; topics) {
+<span class="fc bfc" id="L97" title="All 2 branches covered.">    return this.topics.isEmpty()</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        || (topics.size() &gt;= this.topics.size()</span>
+<span class="fc" id="L99">            &amp;&amp; IntStream.range(0, this.topics.size())</span>
+<span class="fc bfc" id="L100" title="All 2 branches covered.">                .allMatch(i -&gt; matchesTopic(topics.get(i), this.topics.get(i))));</span>
+  }
+
+  private boolean matchesTopic(final LogTopic topic, final List&lt;LogTopic&gt; matchCriteria) {
+<span class="fc bfc" id="L104" title="All 4 branches covered.">    return matchCriteria.contains(null) || matchCriteria.contains(topic);</span>
+  }
+
+  @Override
+  public boolean equals(final Object o) {
+<span class="pc bpc" id="L109" title="1 of 2 branches missed.">    if (this == o) return true;</span>
+<span class="pc bpc" id="L110" title="2 of 4 branches missed.">    if (o == null || getClass() != o.getClass()) return false;</span>
+<span class="fc" id="L111">    final LogsQuery logsQuery = (LogsQuery) o;</span>
+<span class="pc bpc" id="L112" title="1 of 2 branches missed.">    return Objects.equals(addresses, logsQuery.addresses)</span>
+<span class="pc bpc" id="L113" title="1 of 2 branches missed.">        &amp;&amp; Objects.equals(topics, logsQuery.topics);</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L118">    return String.format(</span>
+<span class="nc" id="L119">        &quot;%s{addresses=%s, topics=%s&quot;, getClass().getSimpleName(), addresses, topics);</span>
+  }
+
+  @Override
+  public int hashCode() {
+<span class="fc" id="L124">    return Objects.hash(addresses, topics);</span>
+  }
+
+<span class="fc" id="L127">  public static class Builder {</span>
+<span class="fc" id="L128">    private final List&lt;Address&gt; queryAddresses = Lists.newArrayList();</span>
+<span class="fc" id="L129">    private final List&lt;List&lt;LogTopic&gt;&gt; queryTopics = Lists.newArrayList();</span>
+
+    public Builder address(final Address address) {
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">      if (address != null) {</span>
+<span class="fc" id="L133">        queryAddresses.add(address);</span>
+      }
+<span class="fc" id="L135">      return this;</span>
+    }
+
+    public Builder addresses(final Address... addresses) {
+<span class="pc bpc" id="L139" title="2 of 4 branches missed.">      if (addresses != null &amp;&amp; addresses.length &gt; 0) {</span>
+<span class="fc" id="L140">        queryAddresses.addAll(Arrays.asList(addresses));</span>
+      }
+<span class="fc" id="L142">      return this;</span>
+    }
+
+    public Builder addresses(final List&lt;Address&gt; addresses) {
+<span class="fc bfc" id="L146" title="All 4 branches covered.">      if (addresses != null &amp;&amp; !addresses.isEmpty()) {</span>
+<span class="fc" id="L147">        queryAddresses.addAll(addresses);</span>
+      }
+<span class="fc" id="L149">      return this;</span>
+    }
+
+    public Builder topics(final List&lt;List&lt;LogTopic&gt;&gt; topics) {
+<span class="pc bpc" id="L153" title="1 of 4 branches missed.">      if (topics != null &amp;&amp; !topics.isEmpty()) {</span>
+<span class="fc" id="L154">        queryTopics.addAll(topics);</span>
+      }
+<span class="fc" id="L156">      return this;</span>
+    }
+
+    public LogsQuery build() {
+<span class="fc" id="L160">      return new LogsQuery(queryAddresses, queryTopics);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

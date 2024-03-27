@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthFeeHistory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">EthFeeHistory.java</span></div><h1>EthFeeHistory.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import static java.util.stream.Collectors.toUnmodifiableList;
+import static org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator.calculateExcessBlobGasForParent;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.ApiConfiguration;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.UnsignedIntParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.RpcErrorType;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.FeeHistory;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.ImmutableFeeHistory;
+import org.hyperledger.besu.ethereum.blockcreation.MiningCoordinator;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.BaseFeeMarket;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Streams;
+
+public class EthFeeHistory implements JsonRpcMethod {
+  private final ProtocolSchedule protocolSchedule;
+  private final Blockchain blockchain;
+  private final MiningCoordinator miningCoordinator;
+  private final ApiConfiguration apiConfiguration;
+  private final Cache&lt;RewardCacheKey, List&lt;Wei&gt;&gt; cache;
+  private static final int MAXIMUM_CACHE_SIZE = 100_000;
+
+<span class="pc" id="L67">  record RewardCacheKey(Hash blockHash, List&lt;Double&gt; rewardPercentiles) {}</span>
+
+  public EthFeeHistory(
+      final ProtocolSchedule protocolSchedule,
+      final Blockchain blockchain,
+      final MiningCoordinator miningCoordinator,
+<span class="fc" id="L73">      final ApiConfiguration apiConfiguration) {</span>
+<span class="fc" id="L74">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L75">    this.blockchain = blockchain;</span>
+<span class="fc" id="L76">    this.miningCoordinator = miningCoordinator;</span>
+<span class="fc" id="L77">    this.apiConfiguration = apiConfiguration;</span>
+<span class="fc" id="L78">    this.cache = Caffeine.newBuilder().maximumSize(MAXIMUM_CACHE_SIZE).build();</span>
+<span class="fc" id="L79">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L83">    return RpcMethod.ETH_FEE_HISTORY.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext request) {
+<span class="fc" id="L88">    final Object requestId = request.getRequest().getId();</span>
+
+<span class="fc" id="L90">    final int blockCount = request.getRequiredParameter(0, UnsignedIntParameter.class).getValue();</span>
+<span class="fc bfc" id="L91" title="All 2 branches covered.">    if (isInvalidBlockCount(blockCount)) {</span>
+<span class="fc" id="L92">      return new JsonRpcErrorResponse(requestId, RpcErrorType.INVALID_PARAMS);</span>
+    }
+<span class="fc" id="L94">    final BlockParameter highestBlock = request.getRequiredParameter(1, BlockParameter.class);</span>
+<span class="fc" id="L95">    final Optional&lt;List&lt;Double&gt;&gt; maybeRewardPercentiles =</span>
+<span class="fc" id="L96">        request.getOptionalParameter(2, Double[].class).map(Arrays::asList);</span>
+
+<span class="fc" id="L98">    final BlockHeader chainHeadHeader = blockchain.getChainHeadHeader();</span>
+<span class="fc" id="L99">    final long chainHeadBlockNumber = chainHeadHeader.getNumber();</span>
+<span class="fc" id="L100">    final long highestBlockNumber = highestBlock.getNumber().orElse(chainHeadBlockNumber);</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    if (highestBlockNumber &gt; chainHeadBlockNumber) {</span>
+<span class="fc" id="L102">      return new JsonRpcErrorResponse(requestId, RpcErrorType.INVALID_PARAMS);</span>
+    }
+
+<span class="fc" id="L105">    final long firstBlock = Math.max(0, highestBlockNumber - (blockCount - 1));</span>
+    final long lastBlock =
+<span class="fc bfc" id="L107" title="All 2 branches covered.">        blockCount &gt; highestBlockNumber ? (highestBlockNumber + 1) : (firstBlock + blockCount);</span>
+
+<span class="fc" id="L109">    final List&lt;BlockHeader&gt; blockHeaderRange = getBlockHeaders(firstBlock, lastBlock);</span>
+<span class="fc" id="L110">    final List&lt;Wei&gt; requestedBaseFees = getBaseFees(blockHeaderRange);</span>
+<span class="fc" id="L111">    final List&lt;Wei&gt; requestedBlobBaseFees = getBlobBaseFees(blockHeaderRange);</span>
+<span class="fc" id="L112">    final Wei nextBaseFee =</span>
+<span class="fc" id="L113">        getNextBaseFee(highestBlockNumber, chainHeadHeader, requestedBaseFees, blockHeaderRange);</span>
+<span class="fc" id="L114">    final List&lt;Double&gt; gasUsedRatios = getGasUsedRatios(blockHeaderRange);</span>
+<span class="fc" id="L115">    final List&lt;Double&gt; blobGasUsedRatios = getBlobGasUsedRatios(blockHeaderRange);</span>
+<span class="fc" id="L116">    final Optional&lt;List&lt;List&lt;Wei&gt;&gt;&gt; maybeRewards =</span>
+<span class="fc" id="L117">        maybeRewardPercentiles.map(rewards -&gt; getRewards(rewards, blockHeaderRange));</span>
+<span class="fc" id="L118">    return new JsonRpcSuccessResponse(</span>
+        requestId,
+<span class="fc" id="L120">        createFeeHistoryResult(</span>
+            firstBlock,
+            requestedBaseFees,
+            requestedBlobBaseFees,
+            nextBaseFee,
+            gasUsedRatios,
+            blobGasUsedRatios,
+            maybeRewards));
+  }
+
+  private Wei getNextBaseFee(
+      final long resolvedHighestBlockNumber,
+      final BlockHeader chainHeadHeader,
+      final List&lt;Wei&gt; explicitlyRequestedBaseFees,
+      final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L135">    final long nextBlockNumber = resolvedHighestBlockNumber + 1;</span>
+<span class="fc" id="L136">    return blockchain</span>
+<span class="fc" id="L137">        .getBlockHeader(nextBlockNumber)</span>
+<span class="fc" id="L138">        .map(blockHeader -&gt; blockHeader.getBaseFee().orElse(Wei.ZERO))</span>
+<span class="fc" id="L139">        .orElseGet(</span>
+            () -&gt;
+<span class="fc" id="L141">                computeNextBaseFee(</span>
+                    nextBlockNumber, chainHeadHeader, explicitlyRequestedBaseFees, blockHeaders));
+  }
+
+  private Wei computeNextBaseFee(
+      final long nextBlockNumber,
+      final BlockHeader chainHeadHeader,
+      final List&lt;Wei&gt; explicitlyRequestedBaseFees,
+      final List&lt;BlockHeader&gt; blockHeaders) {
+
+    // Note: We are able to use the chain head timestamp for next block header as
+    // the base fee market can only be pre or post London. If another fee
+    // market is added, we will need to reconsider this.
+
+    // Get the fee market for the next block header
+<span class="fc" id="L156">    Optional&lt;FeeMarket&gt; feeMarketOptional =</span>
+<span class="fc" id="L157">        Optional.of(</span>
+            protocolSchedule
+<span class="fc" id="L159">                .getForNextBlockHeader(chainHeadHeader, chainHeadHeader.getTimestamp())</span>
+<span class="fc" id="L160">                .getFeeMarket());</span>
+
+    // If the fee market implements base fee, compute the next base fee
+<span class="fc" id="L163">    return feeMarketOptional</span>
+<span class="fc" id="L164">        .filter(FeeMarket::implementsBaseFee)</span>
+<span class="fc" id="L165">        .map(BaseFeeMarket.class::cast)</span>
+<span class="fc" id="L166">        .map(</span>
+            feeMarket -&gt; {
+              // Get the last block header and the last explicitly requested base fee
+<span class="fc" id="L169">              final BlockHeader lastBlockHeader = blockHeaders.get(blockHeaders.size() - 1);</span>
+<span class="fc" id="L170">              final Wei lastExplicitlyRequestedBaseFee =</span>
+<span class="fc" id="L171">                  explicitlyRequestedBaseFees.get(explicitlyRequestedBaseFees.size() - 1);</span>
+
+              // Compute the next base fee
+<span class="fc" id="L174">              return feeMarket.computeBaseFee(</span>
+                  nextBlockNumber,
+                  lastExplicitlyRequestedBaseFee,
+<span class="fc" id="L177">                  lastBlockHeader.getGasUsed(),</span>
+<span class="fc" id="L178">                  feeMarket.targetGasUsed(lastBlockHeader));</span>
+            })
+<span class="fc" id="L180">        .orElse(Wei.ZERO); // If the fee market does not implement base fee, return zero</span>
+  }
+
+  private List&lt;List&lt;Wei&gt;&gt; getRewards(
+      final List&lt;Double&gt; rewardPercentiles, final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L185">    var sortedPercentiles = rewardPercentiles.stream().sorted().toList();</span>
+<span class="fc" id="L186">    return blockHeaders.stream()</span>
+<span class="fc" id="L187">        .parallel()</span>
+<span class="fc" id="L188">        .map(blockHeader -&gt; calculateBlockHeaderReward(sortedPercentiles, blockHeader))</span>
+<span class="fc" id="L189">        .flatMap(Optional::stream)</span>
+<span class="fc" id="L190">        .toList();</span>
+  }
+
+  private Optional&lt;List&lt;Wei&gt;&gt; calculateBlockHeaderReward(
+      final List&lt;Double&gt; sortedPercentiles, final BlockHeader blockHeader) {
+
+    // Create a new key for the reward cache
+<span class="fc" id="L197">    final RewardCacheKey key = new RewardCacheKey(blockHeader.getBlockHash(), sortedPercentiles);</span>
+
+    // Try to get the rewards from the cache
+<span class="fc" id="L200">    return Optional.ofNullable(cache.getIfPresent(key))</span>
+<span class="fc" id="L201">        .or(</span>
+            () -&gt; {
+              // If the rewards are not in the cache, compute them
+<span class="fc" id="L204">              Optional&lt;Block&gt; block = blockchain.getBlockByHash(blockHeader.getBlockHash());</span>
+<span class="fc" id="L205">              return block.map(</span>
+                  b -&gt; {
+<span class="fc" id="L207">                    List&lt;Wei&gt; rewards = computeRewards(sortedPercentiles, b);</span>
+                    // Put the computed rewards in the cache for future use
+<span class="fc" id="L209">                    cache.put(key, rewards);</span>
+<span class="fc" id="L210">                    return rewards;</span>
+                  });
+            });
+  }
+
+<span class="pc" id="L215">  record TransactionInfo(Transaction transaction, Long gasUsed, Wei effectivePriorityFeePerGas) {}</span>
+
+  @VisibleForTesting
+  public List&lt;Wei&gt; computeRewards(final List&lt;Double&gt; rewardPercentiles, final Block block) {
+<span class="fc" id="L219">    final List&lt;Transaction&gt; transactions = block.getBody().getTransactions();</span>
+<span class="fc bfc" id="L220" title="All 2 branches covered.">    if (transactions.isEmpty()) {</span>
+      // all 0's for empty block
+<span class="fc" id="L222">      return generateZeroWeiList(rewardPercentiles.size());</span>
+    }
+<span class="fc" id="L224">    final Optional&lt;Wei&gt; baseFee = block.getHeader().getBaseFee();</span>
+<span class="fc" id="L225">    final List&lt;Long&gt; transactionsGasUsed = calculateTransactionsGasUsed(block);</span>
+<span class="fc" id="L226">    final List&lt;TransactionInfo&gt; transactionsInfo =</span>
+<span class="fc" id="L227">        generateTransactionsInfo(transactions, transactionsGasUsed, baseFee);</span>
+
+<span class="fc" id="L229">    var realRewards = calculateRewards(rewardPercentiles, block, transactionsInfo);</span>
+
+    // If the priority fee boundary is set, return the bounded rewards. Otherwise, return the real
+    // rewards.
+<span class="fc bfc" id="L233" title="All 2 branches covered.">    if (apiConfiguration.isGasAndPriorityFeeLimitingEnabled()) {</span>
+<span class="fc" id="L234">      return boundRewards(realRewards);</span>
+    } else {
+<span class="fc" id="L236">      return realRewards;</span>
+    }
+  }
+
+  private List&lt;Wei&gt; calculateRewards(
+      final List&lt;Double&gt; rewardPercentiles,
+      final Block block,
+      final List&lt;TransactionInfo&gt; sortedTransactionsInfo) {
+<span class="fc" id="L244">    final ArrayList&lt;Wei&gt; rewards = new ArrayList&lt;&gt;(rewardPercentiles.size());</span>
+
+    // Start with the gas used by the first transaction
+<span class="fc" id="L247">    double cumulativeGasUsed = sortedTransactionsInfo.get(0).gasUsed();</span>
+<span class="fc" id="L248">    var transactionIndex = 0;</span>
+    // Iterate over each reward percentile
+<span class="fc bfc" id="L250" title="All 2 branches covered.">    for (double rewardPercentile : rewardPercentiles) {</span>
+      // Calculate the threshold gas used for the current reward percentile
+      // This is the amount of gas that needs to be used to reach this percentile
+<span class="fc" id="L253">      var thresholdGasUsed = rewardPercentile * block.getHeader().getGasUsed() / 100;</span>
+
+      // Update cumulativeGasUsed by adding the gas used by each transaction
+      // Stop when cumulativeGasUsed reaches the threshold or there are no more transactions
+<span class="fc bfc" id="L257" title="All 2 branches covered.">      while (cumulativeGasUsed &lt; thresholdGasUsed</span>
+<span class="pc bpc" id="L258" title="1 of 2 branches missed.">          &amp;&amp; transactionIndex &lt; sortedTransactionsInfo.size() - 1) {</span>
+<span class="fc" id="L259">        transactionIndex++;</span>
+<span class="fc" id="L260">        cumulativeGasUsed += sortedTransactionsInfo.get(transactionIndex).gasUsed();</span>
+      }
+      // Add the effective priority fee per gas of the transaction that reached the percentile to
+      // the rewards list
+<span class="fc" id="L264">      rewards.add(sortedTransactionsInfo.get(transactionIndex).effectivePriorityFeePerGas);</span>
+<span class="fc" id="L265">    }</span>
+<span class="fc" id="L266">    return rewards;</span>
+  }
+
+  /**
+   * This method returns a list of bounded rewards.
+   *
+   * @param rewards The list of rewards to be bounded.
+   * @return The list of bounded rewards.
+   */
+  private List&lt;Wei&gt; boundRewards(final List&lt;Wei&gt; rewards) {
+<span class="fc" id="L276">    Wei minPriorityFee = miningCoordinator.getMinPriorityFeePerGas();</span>
+<span class="fc" id="L277">    Wei lowerBound =</span>
+        minPriorityFee
+<span class="fc" id="L279">            .multiply(apiConfiguration.getLowerBoundGasAndPriorityFeeCoefficient())</span>
+<span class="fc" id="L280">            .divide(100);</span>
+<span class="fc" id="L281">    Wei upperBound =</span>
+        minPriorityFee
+<span class="fc" id="L283">            .multiply(apiConfiguration.getUpperBoundGasAndPriorityFeeCoefficient())</span>
+<span class="fc" id="L284">            .divide(100);</span>
+
+<span class="fc" id="L286">    return rewards.stream().map(reward -&gt; boundReward(reward, lowerBound, upperBound)).toList();</span>
+  }
+
+  /**
+   * This method bounds the reward between a lower and upper limit.
+   *
+   * @param reward The reward to be bounded.
+   * @param lowerBound The lower limit for the reward.
+   * @param upperBound The upper limit for the reward.
+   * @return The bounded reward.
+   */
+  private Wei boundReward(final Wei reward, final Wei lowerBound, final Wei upperBound) {
+<span class="fc bfc" id="L298" title="All 2 branches covered.">    return reward.compareTo(lowerBound) &lt;= 0</span>
+<span class="fc" id="L299">        ? lowerBound</span>
+<span class="fc bfc" id="L300" title="All 2 branches covered.">        : reward.compareTo(upperBound) &gt;= 0 ? upperBound : reward;</span>
+  }
+
+  private List&lt;Long&gt; calculateTransactionsGasUsed(final Block block) {
+<span class="fc" id="L304">    final List&lt;Long&gt; transactionsGasUsed = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L305">    long cumulativeGasUsed = 0L;</span>
+    for (final TransactionReceipt transactionReceipt :
+<span class="fc bfc" id="L307" title="All 2 branches covered.">        blockchain.getTxReceipts(block.getHash()).get()) {</span>
+<span class="fc" id="L308">      transactionsGasUsed.add(transactionReceipt.getCumulativeGasUsed() - cumulativeGasUsed);</span>
+<span class="fc" id="L309">      cumulativeGasUsed = transactionReceipt.getCumulativeGasUsed();</span>
+<span class="fc" id="L310">    }</span>
+<span class="fc" id="L311">    return transactionsGasUsed;</span>
+  }
+
+  private List&lt;TransactionInfo&gt; generateTransactionsInfo(
+      final List&lt;Transaction&gt; transactions,
+      final List&lt;Long&gt; transactionsGasUsed,
+      final Optional&lt;Wei&gt; baseFee) {
+<span class="fc" id="L318">    return Streams.zip(</span>
+<span class="fc" id="L319">            transactions.stream(),</span>
+<span class="fc" id="L320">            transactionsGasUsed.stream(),</span>
+            (transaction, gasUsed) -&gt;
+<span class="fc" id="L322">                new TransactionInfo(</span>
+<span class="fc" id="L323">                    transaction, gasUsed, transaction.getEffectivePriorityFeePerGas(baseFee)))</span>
+<span class="fc" id="L324">        .sorted(Comparator.comparing(TransactionInfo::effectivePriorityFeePerGas))</span>
+<span class="fc" id="L325">        .toList();</span>
+  }
+
+  private boolean isInvalidBlockCount(final int blockCount) {
+<span class="fc bfc" id="L329" title="All 4 branches covered.">    return blockCount &lt; 1 || blockCount &gt; 1024;</span>
+  }
+
+  private List&lt;BlockHeader&gt; getBlockHeaders(final long oldestBlock, final long lastBlock) {
+<span class="fc" id="L333">    return LongStream.range(oldestBlock, lastBlock)</span>
+<span class="fc" id="L334">        .parallel()</span>
+<span class="fc" id="L335">        .mapToObj(blockchain::getBlockHeader)</span>
+<span class="fc" id="L336">        .flatMap(Optional::stream)</span>
+<span class="fc" id="L337">        .toList();</span>
+  }
+
+  private List&lt;Wei&gt; getBaseFees(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L341">    return blockHeaders.stream()</span>
+<span class="fc" id="L342">        .map(blockHeader -&gt; blockHeader.getBaseFee().orElse(Wei.ZERO))</span>
+<span class="fc" id="L343">        .toList();</span>
+  }
+
+  private List&lt;Wei&gt; getBlobBaseFees(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="pc bpc" id="L347" title="1 of 2 branches missed.">    if (blockHeaders.isEmpty()) {</span>
+<span class="nc" id="L348">      return Collections.emptyList();</span>
+    }
+    // Calculate the BlobFee for the requested range
+<span class="fc" id="L351">    List&lt;Wei&gt; baseFeesPerBlobGas =</span>
+<span class="fc" id="L352">        blockHeaders.stream().map(this::getBlobGasFee).collect(Collectors.toList());</span>
+
+    // Calculate the next blob base fee and add it to the list
+<span class="fc" id="L355">    Wei nextBlobBaseFee = getNextBlobFee(blockHeaders.get(blockHeaders.size() - 1));</span>
+<span class="fc" id="L356">    baseFeesPerBlobGas.add(nextBlobBaseFee);</span>
+
+<span class="fc" id="L358">    return baseFeesPerBlobGas;</span>
+  }
+
+  private Wei getBlobGasFee(final BlockHeader header) {
+<span class="fc" id="L362">    return blockchain</span>
+<span class="fc" id="L363">        .getBlockHeader(header.getParentHash())</span>
+<span class="fc" id="L364">        .map(parent -&gt; getBlobGasFee(protocolSchedule.getByBlockHeader(header), parent))</span>
+<span class="fc" id="L365">        .orElse(Wei.ZERO);</span>
+  }
+
+  private Wei getBlobGasFee(final ProtocolSpec spec, final BlockHeader parent) {
+<span class="fc" id="L369">    return spec.getFeeMarket().blobGasPricePerGas(calculateExcessBlobGasForParent(spec, parent));</span>
+  }
+
+  private Wei getNextBlobFee(final BlockHeader header) {
+    // Attempt to retrieve the next header based on the current header's number.
+<span class="fc" id="L374">    long nextBlockNumber = header.getNumber() + 1;</span>
+<span class="fc" id="L375">    return blockchain</span>
+<span class="fc" id="L376">        .getBlockHeader(nextBlockNumber)</span>
+<span class="fc" id="L377">        .map(nextHeader -&gt; getBlobGasFee(protocolSchedule.getByBlockHeader(nextHeader), header))</span>
+        // If the next header is not present, calculate the fee using the current time.
+<span class="fc" id="L379">        .orElseGet(</span>
+            () -&gt;
+<span class="fc" id="L381">                getBlobGasFee(</span>
+<span class="fc" id="L382">                    protocolSchedule.getForNextBlockHeader(header, System.currentTimeMillis()),</span>
+                    header));
+  }
+
+  private List&lt;Double&gt; getGasUsedRatios(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L387">    return blockHeaders.stream()</span>
+<span class="fc" id="L388">        .map(blockHeader -&gt; blockHeader.getGasUsed() / (double) blockHeader.getGasLimit())</span>
+<span class="fc" id="L389">        .toList();</span>
+  }
+
+  private List&lt;Double&gt; getBlobGasUsedRatios(final List&lt;BlockHeader&gt; blockHeaders) {
+<span class="fc" id="L393">    return blockHeaders.stream().map(this::calculateBlobGasUsedRatio).toList();</span>
+  }
+
+  private double calculateBlobGasUsedRatio(final BlockHeader blockHeader) {
+<span class="fc" id="L397">    ProtocolSpec spec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+<span class="fc" id="L398">    long blobGasUsed = blockHeader.getBlobGasUsed().orElse(0L);</span>
+<span class="fc" id="L399">    double currentBlobGasLimit = spec.getGasLimitCalculator().currentBlobGasLimit();</span>
+<span class="fc bfc" id="L400" title="All 2 branches covered.">    if (currentBlobGasLimit == 0) {</span>
+<span class="fc" id="L401">      return 0;</span>
+    }
+<span class="fc" id="L403">    return blobGasUsed / currentBlobGasLimit;</span>
+  }
+
+  private FeeHistory.FeeHistoryResult createFeeHistoryResult(
+      final long oldestBlock,
+      final List&lt;Wei&gt; explicitlyRequestedBaseFees,
+      final List&lt;Wei&gt; requestedBlobBaseFees,
+      final Wei nextBaseFee,
+      final List&lt;Double&gt; gasUsedRatios,
+      final List&lt;Double&gt; blobGasUsedRatio,
+      final Optional&lt;List&lt;List&lt;Wei&gt;&gt;&gt; maybeRewards) {
+<span class="fc" id="L414">    return FeeHistory.FeeHistoryResult.from(</span>
+<span class="fc" id="L415">        ImmutableFeeHistory.builder()</span>
+<span class="fc" id="L416">            .oldestBlock(oldestBlock)</span>
+<span class="fc" id="L417">            .baseFeePerGas(</span>
+<span class="fc" id="L418">                Stream.concat(explicitlyRequestedBaseFees.stream(), Stream.of(nextBaseFee))</span>
+<span class="fc" id="L419">                    .collect(toUnmodifiableList()))</span>
+<span class="fc" id="L420">            .baseFeePerBlobGas(requestedBlobBaseFees)</span>
+<span class="fc" id="L421">            .gasUsedRatio(gasUsedRatios)</span>
+<span class="fc" id="L422">            .blobGasUsedRatio(blobGasUsedRatio)</span>
+<span class="fc" id="L423">            .reward(maybeRewards)</span>
+<span class="fc" id="L424">            .build());</span>
+  }
+
+  private List&lt;Wei&gt; generateZeroWeiList(final int size) {
+<span class="fc" id="L428">    return Stream.generate(() -&gt; Wei.ZERO).limit(size).toList();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

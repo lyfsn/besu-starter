@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PoWMinerExecutor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.blockcreation</a> &gt; <span class="el_source">PoWMinerExecutor.java</span></div><h1>PoWMinerExecutor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.blockcreation;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.chain.MinedBlockObserver;
+import org.hyperledger.besu.ethereum.chain.PoWObserver;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.EpochCalculator;
+import org.hyperledger.besu.ethereum.mainnet.PoWSolver;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Optional;
+import java.util.function.Function;
+
+public class PoWMinerExecutor extends AbstractMinerExecutor&lt;PoWBlockMiner&gt; {
+
+  protected boolean stratumMiningEnabled;
+  protected final EpochCalculator epochCalculator;
+
+  public PoWMinerExecutor(
+      final ProtocolContext protocolContext,
+      final ProtocolSchedule protocolSchedule,
+      final TransactionPool transactionPool,
+      final MiningParameters miningParams,
+      final AbstractBlockScheduler blockScheduler,
+      final EpochCalculator epochCalculator,
+      final EthScheduler ethScheduler) {
+<span class="fc" id="L47">    super(</span>
+        protocolContext,
+        protocolSchedule,
+        transactionPool,
+        miningParams,
+        blockScheduler,
+        ethScheduler);
+<span class="fc bfc" id="L54" title="All 2 branches covered.">    if (miningParams.getNonceGenerator().isEmpty()) {</span>
+<span class="fc" id="L55">      miningParams.setNonceGenerator(new RandomNonceGenerator());</span>
+    }
+<span class="fc" id="L57">    this.epochCalculator = epochCalculator;</span>
+<span class="fc" id="L58">  }</span>
+
+  @Override
+  public Optional&lt;PoWBlockMiner&gt; startAsyncMining(
+      final Subscribers&lt;MinedBlockObserver&gt; observers,
+      final Subscribers&lt;PoWObserver&gt; ethHashObservers,
+      final BlockHeader parentHeader) {
+<span class="pc bpc" id="L65" title="1 of 2 branches missed.">    if (miningParameters.getCoinbase().isEmpty()) {</span>
+<span class="fc" id="L66">      throw new CoinbaseNotSetException(&quot;Unable to start mining without a coinbase.&quot;);</span>
+    }
+<span class="nc" id="L68">    return super.startAsyncMining(observers, ethHashObservers, parentHeader);</span>
+  }
+
+  @Override
+  public PoWBlockMiner createMiner(
+      final Subscribers&lt;MinedBlockObserver&gt; observers,
+      final Subscribers&lt;PoWObserver&gt; ethHashObservers,
+      final BlockHeader parentHeader) {
+    // We don't need to consider the timestamp when getting the protocol schedule for the next block
+    // as timestamps are not used for defining forks when using POW
+<span class="fc" id="L78">    final ProtocolSpec nextBlockProtocolSpec =</span>
+<span class="fc" id="L79">        protocolSchedule.getForNextBlockHeader(parentHeader, 0);</span>
+<span class="fc" id="L80">    final PoWSolver solver =</span>
+        new PoWSolver(
+            miningParameters,
+<span class="fc" id="L83">            nextBlockProtocolSpec.getPoWHasher().get(),</span>
+<span class="fc" id="L84">            stratumMiningEnabled,</span>
+            ethHashObservers,
+            epochCalculator);
+<span class="fc" id="L87">    final Function&lt;BlockHeader, PoWBlockCreator&gt; blockCreator =</span>
+        (header) -&gt;
+<span class="fc" id="L89">            new PoWBlockCreator(</span>
+                miningParameters,
+<span class="fc" id="L91">                parent -&gt; miningParameters.getExtraData(),</span>
+                transactionPool,
+                protocolContext,
+                protocolSchedule,
+                solver,
+                parentHeader,
+                ethScheduler);
+
+<span class="fc" id="L99">    return new PoWBlockMiner(</span>
+        blockCreator, protocolSchedule, protocolContext, observers, blockScheduler, parentHeader);
+  }
+
+  public void setCoinbase(final Address coinbase) {
+<span class="fc bfc" id="L104" title="All 2 branches covered.">    if (coinbase == null) {</span>
+<span class="fc" id="L105">      throw new IllegalArgumentException(&quot;Coinbase cannot be unset.&quot;);</span>
+    } else {
+<span class="fc" id="L107">      miningParameters.setCoinbase(Address.wrap(coinbase.copy()));</span>
+    }
+<span class="fc" id="L109">  }</span>
+
+  void setStratumMiningEnabled(final boolean stratumMiningEnabled) {
+<span class="fc" id="L112">    this.stratumMiningEnabled = stratumMiningEnabled;</span>
+<span class="fc" id="L113">  }</span>
+
+  @Override
+  public Optional&lt;Address&gt; getCoinbase() {
+<span class="nc" id="L117">    return miningParameters.getCoinbase();</span>
+  }
+
+  public EpochCalculator getEpochCalculator() {
+<span class="nc" id="L121">    return epochCalculator;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

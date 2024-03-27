@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangeHeadersFetcher.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.range</a> &gt; <span class="el_source">RangeHeadersFetcher.java</span></div><h1>RangeHeadersFetcher.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.range;
+
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
+import static java.util.concurrent.CompletableFuture.completedFuture;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.AbstractPeerTask.PeerTaskResult;
+import org.hyperledger.besu.ethereum.eth.manager.task.GetHeadersFromPeerByHashTask;
+import org.hyperledger.besu.ethereum.eth.sync.SynchronizerConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.fastsync.FastSyncState;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RangeHeadersFetcher {
+<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(RangeHeadersFetcher.class);</span>
+
+  private final SynchronizerConfiguration syncConfig;
+  private final ProtocolSchedule protocolSchedule;
+  private final EthContext ethContext;
+  // The range we're aiming to reach at the end of this sync.
+  private final FastSyncState fastSyncState;
+  private final MetricsSystem metricsSystem;
+
+  public RangeHeadersFetcher(
+      final SynchronizerConfiguration syncConfig,
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L53">    this(syncConfig, protocolSchedule, ethContext, new FastSyncState(), metricsSystem);</span>
+<span class="fc" id="L54">  }</span>
+
+  public RangeHeadersFetcher(
+      final SynchronizerConfiguration syncConfig,
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final FastSyncState fastSyncState,
+<span class="fc" id="L61">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L62">    this.syncConfig = syncConfig;</span>
+<span class="fc" id="L63">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L64">    this.ethContext = ethContext;</span>
+<span class="fc" id="L65">    this.fastSyncState = fastSyncState;</span>
+<span class="fc" id="L66">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L67">  }</span>
+
+  public CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; getNextRangeHeaders(
+      final EthPeer peer, final BlockHeader previousRangeHeader) {
+<span class="fc" id="L71">    final int skip = syncConfig.getDownloaderChainSegmentSize() - 1;</span>
+<span class="fc" id="L72">    final int maximumHeaderRequestSize = syncConfig.getDownloaderHeaderRequestSize();</span>
+<span class="fc" id="L73">    final long previousRangeNumber = previousRangeHeader.getNumber();</span>
+
+    final int additionalHeaderCount;
+<span class="fc" id="L76">    final Optional&lt;BlockHeader&gt; finalRangeHeader = fastSyncState.getPivotBlockHeader();</span>
+<span class="fc bfc" id="L77" title="All 2 branches covered.">    if (finalRangeHeader.isPresent()) {</span>
+<span class="fc" id="L78">      final BlockHeader targetHeader = finalRangeHeader.get();</span>
+<span class="fc" id="L79">      final long blocksUntilTarget = targetHeader.getNumber() - previousRangeNumber;</span>
+<span class="fc bfc" id="L80" title="All 2 branches covered.">      if (blocksUntilTarget &lt;= 0) {</span>
+<span class="fc" id="L81">        return completedFuture(emptyList());</span>
+      }
+<span class="fc" id="L83">      final long maxHeadersToRequest = blocksUntilTarget / (skip + 1);</span>
+<span class="fc" id="L84">      additionalHeaderCount = (int) Math.min(maxHeadersToRequest, maximumHeaderRequestSize);</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">      if (additionalHeaderCount == 0) {</span>
+<span class="fc" id="L86">        return completedFuture(singletonList(targetHeader));</span>
+      }
+<span class="fc" id="L88">    } else {</span>
+<span class="fc" id="L89">      additionalHeaderCount = maximumHeaderRequestSize;</span>
+    }
+
+<span class="fc" id="L92">    return requestHeaders(peer, previousRangeHeader, additionalHeaderCount, skip);</span>
+  }
+
+  private CompletableFuture&lt;List&lt;BlockHeader&gt;&gt; requestHeaders(
+      final EthPeer peer,
+      final BlockHeader referenceHeader,
+      final int headerCount,
+      final int skip) {
+<span class="fc" id="L100">    LOG.trace(</span>
+        &quot;Requesting {} range headers, starting from {}, {} blocks apart&quot;,
+<span class="fc" id="L102">        headerCount,</span>
+<span class="fc" id="L103">        referenceHeader.getNumber(),</span>
+<span class="fc" id="L104">        skip);</span>
+<span class="fc" id="L105">    return GetHeadersFromPeerByHashTask.startingAtHash(</span>
+            protocolSchedule,
+            ethContext,
+<span class="fc" id="L108">            referenceHeader.getHash(),</span>
+<span class="fc" id="L109">            referenceHeader.getNumber(),</span>
+            // + 1 because lastHeader will be returned as well.
+            headerCount + 1,
+            skip,
+            metricsSystem)
+<span class="fc" id="L114">        .assignPeer(peer)</span>
+<span class="fc" id="L115">        .run()</span>
+<span class="fc" id="L116">        .thenApply(PeerTaskResult::getResult)</span>
+<span class="fc" id="L117">        .thenApply(headers -&gt; stripExistingRangeHeaders(referenceHeader, headers));</span>
+  }
+
+  private List&lt;BlockHeader&gt; stripExistingRangeHeaders(
+      final BlockHeader lastHeader, final List&lt;BlockHeader&gt; headers) {
+<span class="pc bpc" id="L122" title="1 of 4 branches missed.">    if (!headers.isEmpty() &amp;&amp; headers.get(0).equals(lastHeader)) {</span>
+<span class="fc" id="L123">      return headers.subList(1, headers.size());</span>
+    }
+<span class="fc" id="L125">    return headers;</span>
+  }
+
+  public boolean nextRangeEndsAtChainHead(
+      final EthPeer peer, final BlockHeader previousRangeHeader) {
+<span class="fc" id="L130">    final Optional&lt;BlockHeader&gt; finalRangeHeader = fastSyncState.getPivotBlockHeader();</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (finalRangeHeader.isPresent()) {</span>
+<span class="fc" id="L132">      return false;</span>
+    }
+<span class="fc" id="L134">    final int skip = syncConfig.getDownloaderChainSegmentSize() - 1;</span>
+<span class="fc" id="L135">    final long peerEstimatedHeight = peer.chainState().getEstimatedHeight();</span>
+<span class="fc" id="L136">    final long previousRangeNumber = previousRangeHeader.getNumber();</span>
+<span class="fc bfc" id="L137" title="All 2 branches covered.">    return previousRangeNumber + skip &gt;= peerEstimatedHeight;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

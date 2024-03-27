@@ -1,0 +1,352 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthScheduler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">EthScheduler.java</span></div><h1>EthScheduler.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import static org.hyperledger.besu.util.FutureUtils.propagateResult;
+
+import org.hyperledger.besu.ethereum.eth.manager.task.EthTask;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.services.pipeline.Pipeline;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.time.Duration;
+import java.util.Collection;
+import java.util.Queue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class EthScheduler {
+<span class="fc" id="L48">  private static final Logger LOG = LoggerFactory.getLogger(EthScheduler.class);</span>
+
+<span class="fc" id="L50">  private final Duration defaultTimeout = Duration.ofSeconds(5);</span>
+<span class="fc" id="L51">  private final AtomicBoolean stopped = new AtomicBoolean(false);</span>
+<span class="fc" id="L52">  private final CountDownLatch shutdown = new CountDownLatch(1);</span>
+  private static final int TX_WORKER_CAPACITY = 1_000;
+
+  protected final ExecutorService syncWorkerExecutor;
+  protected final ScheduledExecutorService scheduler;
+  protected final ExecutorService txWorkerExecutor;
+  protected final ExecutorService servicesExecutor;
+  protected final ExecutorService computationExecutor;
+  protected final ExecutorService blockCreationExecutor;
+
+<span class="fc" id="L62">  private final Collection&lt;CompletableFuture&lt;?&gt;&gt; pendingFutures = new ConcurrentLinkedDeque&lt;&gt;();</span>
+
+  public EthScheduler(
+      final int syncWorkerCount,
+      final int txWorkerCount,
+      final int computationWorkerCount,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L69">    this(syncWorkerCount, txWorkerCount, TX_WORKER_CAPACITY, computationWorkerCount, metricsSystem);</span>
+<span class="fc" id="L70">  }</span>
+
+  public EthScheduler(
+      final int syncWorkerCount,
+      final int txWorkerCount,
+      final int txWorkerQueueSize,
+      final int computationWorkerCount,
+      final MetricsSystem metricsSystem) {
+<span class="fc" id="L78">    this(</span>
+<span class="fc" id="L79">        MonitoredExecutors.newFixedThreadPool(</span>
+<span class="fc" id="L80">            EthScheduler.class.getSimpleName() + &quot;-Workers&quot;, 1, syncWorkerCount, metricsSystem),</span>
+<span class="fc" id="L81">        MonitoredExecutors.newScheduledThreadPool(</span>
+<span class="fc" id="L82">            EthScheduler.class.getSimpleName() + &quot;-Timer&quot;, 1, metricsSystem),</span>
+<span class="fc" id="L83">        MonitoredExecutors.newBoundedThreadPool(</span>
+<span class="fc" id="L84">            EthScheduler.class.getSimpleName() + &quot;-Transactions&quot;,</span>
+            1,
+            txWorkerCount,
+            txWorkerQueueSize,
+            metricsSystem),
+<span class="fc" id="L89">        MonitoredExecutors.newCachedThreadPool(</span>
+<span class="fc" id="L90">            EthScheduler.class.getSimpleName() + &quot;-Services&quot;, metricsSystem),</span>
+<span class="fc" id="L91">        MonitoredExecutors.newFixedThreadPool(</span>
+<span class="fc" id="L92">            EthScheduler.class.getSimpleName() + &quot;-Computation&quot;,</span>
+            1,
+            computationWorkerCount,
+            metricsSystem),
+<span class="fc" id="L96">        MonitoredExecutors.newCachedThreadPool(</span>
+<span class="fc" id="L97">            EthScheduler.class.getSimpleName() + &quot;-BlockCreation&quot;, metricsSystem));</span>
+<span class="fc" id="L98">  }</span>
+
+  protected EthScheduler(
+      final ExecutorService syncWorkerExecutor,
+      final ScheduledExecutorService scheduler,
+      final ExecutorService txWorkerExecutor,
+      final ExecutorService servicesExecutor,
+      final ExecutorService computationExecutor,
+<span class="fc" id="L106">      final ExecutorService blockCreationExecutor) {</span>
+<span class="fc" id="L107">    this.syncWorkerExecutor = syncWorkerExecutor;</span>
+<span class="fc" id="L108">    this.scheduler = scheduler;</span>
+<span class="fc" id="L109">    this.txWorkerExecutor = txWorkerExecutor;</span>
+<span class="fc" id="L110">    this.servicesExecutor = servicesExecutor;</span>
+<span class="fc" id="L111">    this.computationExecutor = computationExecutor;</span>
+<span class="fc" id="L112">    this.blockCreationExecutor = blockCreationExecutor;</span>
+<span class="fc" id="L113">  }</span>
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; scheduleSyncWorkerTask(
+      final Supplier&lt;CompletableFuture&lt;T&gt;&gt; future) {
+<span class="fc" id="L117">    final CompletableFuture&lt;T&gt; promise = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L118">    final Future&lt;?&gt; workerFuture =</span>
+<span class="fc" id="L119">        syncWorkerExecutor.submit(() -&gt; propagateResult(future, promise));</span>
+    // If returned promise is cancelled, cancel the worker future
+<span class="fc" id="L121">    promise.whenComplete(</span>
+        (r, t) -&gt; {
+<span class="fc bfc" id="L123" title="All 2 branches covered.">          if (t instanceof CancellationException) {</span>
+<span class="fc" id="L124">            workerFuture.cancel(false);</span>
+          }
+<span class="fc" id="L126">        });</span>
+<span class="fc" id="L127">    return promise;</span>
+  }
+
+  public void scheduleSyncWorkerTask(final Runnable command) {
+<span class="fc" id="L131">    syncWorkerExecutor.execute(command);</span>
+<span class="fc" id="L132">  }</span>
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; scheduleSyncWorkerTask(final EthTask&lt;T&gt; task) {
+<span class="fc" id="L135">    final CompletableFuture&lt;T&gt; syncFuture = task.runAsync(syncWorkerExecutor);</span>
+<span class="fc" id="L136">    pendingFutures.add(syncFuture);</span>
+<span class="fc" id="L137">    syncFuture.whenComplete((r, t) -&gt; pendingFutures.remove(syncFuture));</span>
+<span class="fc" id="L138">    return syncFuture;</span>
+  }
+
+  public void scheduleTxWorkerTask(final Runnable command) {
+<span class="fc" id="L142">    txWorkerExecutor.execute(command);</span>
+<span class="fc" id="L143">  }</span>
+
+  public void executeServiceTask(final Runnable command) {
+<span class="nc" id="L146">    servicesExecutor.execute(command);</span>
+<span class="nc" id="L147">  }</span>
+
+  public &lt;T&gt; CompletableFuture&lt;Void&gt; scheduleServiceTask(final Runnable task) {
+<span class="nc" id="L150">    return CompletableFuture.runAsync(task, servicesExecutor);</span>
+  }
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; scheduleServiceTask(final EthTask&lt;T&gt; task) {
+<span class="fc" id="L154">    final CompletableFuture&lt;T&gt; serviceFuture = task.runAsync(servicesExecutor);</span>
+<span class="fc" id="L155">    pendingFutures.add(serviceFuture);</span>
+<span class="fc" id="L156">    serviceFuture.whenComplete((r, t) -&gt; pendingFutures.remove(serviceFuture));</span>
+<span class="fc" id="L157">    return serviceFuture;</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; startPipeline(final Pipeline&lt;?&gt; pipeline) {
+<span class="fc" id="L161">    final CompletableFuture&lt;Void&gt; pipelineFuture = pipeline.start(servicesExecutor);</span>
+<span class="fc" id="L162">    pendingFutures.add(pipelineFuture);</span>
+<span class="fc" id="L163">    pipelineFuture.whenComplete((r, t) -&gt; pendingFutures.remove(pipelineFuture));</span>
+<span class="fc" id="L164">    return pipelineFuture;</span>
+  }
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; scheduleComputationTask(final Supplier&lt;T&gt; computation) {
+<span class="fc" id="L168">    return CompletableFuture.supplyAsync(computation, computationExecutor);</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; scheduleFutureTask(
+      final Runnable command, final Duration duration) {
+<span class="fc" id="L173">    final CompletableFuture&lt;Void&gt; promise = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L174">    final ScheduledFuture&lt;?&gt; scheduledFuture =</span>
+<span class="fc" id="L175">        scheduler.schedule(</span>
+            () -&gt; {
+              try {
+<span class="fc" id="L178">                command.run();</span>
+<span class="fc" id="L179">                promise.complete(null);</span>
+<span class="nc" id="L180">              } catch (final Throwable t) {</span>
+<span class="nc" id="L181">                promise.completeExceptionally(t);</span>
+<span class="fc" id="L182">              }</span>
+<span class="fc" id="L183">            },</span>
+<span class="fc" id="L184">            duration.toMillis(),</span>
+            TimeUnit.MILLISECONDS);
+    // If returned promise is cancelled, cancel scheduled task
+<span class="fc" id="L187">    promise.whenComplete(</span>
+        (r, t) -&gt; {
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">          if (t instanceof CancellationException) {</span>
+<span class="nc" id="L190">            scheduledFuture.cancel(false);</span>
+          }
+<span class="fc" id="L192">        });</span>
+<span class="fc" id="L193">    return promise;</span>
+  }
+
+  public ScheduledFuture&lt;?&gt; scheduleFutureTaskWithFixedDelay(
+      final Runnable command, final Duration initialDelay, final Duration duration) {
+<span class="fc" id="L198">    return scheduler.scheduleWithFixedDelay(</span>
+<span class="fc" id="L199">        command, initialDelay.toMillis(), duration.toMillis(), TimeUnit.MILLISECONDS);</span>
+  }
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; scheduleFutureTask(
+      final Supplier&lt;CompletableFuture&lt;T&gt;&gt; future, final Duration duration) {
+<span class="fc" id="L204">    final CompletableFuture&lt;T&gt; promise = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L205">    final ScheduledFuture&lt;?&gt; scheduledFuture =</span>
+<span class="fc" id="L206">        scheduler.schedule(</span>
+<span class="fc" id="L207">            () -&gt; propagateResult(future, promise), duration.toMillis(), TimeUnit.MILLISECONDS);</span>
+    // If returned promise is cancelled, cancel scheduled task
+<span class="fc" id="L209">    promise.whenComplete(</span>
+        (r, t) -&gt; {
+<span class="fc bfc" id="L211" title="All 2 branches covered.">          if (t instanceof CancellationException) {</span>
+<span class="fc" id="L212">            scheduledFuture.cancel(false);</span>
+          }
+<span class="fc" id="L214">        });</span>
+<span class="fc" id="L215">    return promise;</span>
+  }
+
+  public CompletableFuture&lt;Void&gt; scheduleBlockCreationTask(final Runnable task) {
+<span class="fc" id="L219">    return CompletableFuture.runAsync(task, blockCreationExecutor);</span>
+  }
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; timeout(final EthTask&lt;T&gt; task) {
+<span class="fc" id="L223">    return timeout(task, defaultTimeout);</span>
+  }
+
+  public &lt;T&gt; CompletableFuture&lt;T&gt; timeout(final EthTask&lt;T&gt; task, final Duration timeout) {
+<span class="fc" id="L227">    final CompletableFuture&lt;T&gt; future = task.run();</span>
+<span class="fc" id="L228">    final CompletableFuture&lt;T&gt; result = timeout(future, timeout);</span>
+<span class="fc" id="L229">    result.whenComplete(</span>
+        (r, error) -&gt; {
+<span class="fc bfc" id="L231" title="All 2 branches covered.">          if (errorIsTimeoutOrCancellation(error)) {</span>
+<span class="fc" id="L232">            task.cancel();</span>
+          }
+<span class="fc" id="L234">        });</span>
+<span class="fc" id="L235">    return result;</span>
+  }
+
+  private boolean errorIsTimeoutOrCancellation(final Throwable error) {
+<span class="fc" id="L239">    final Throwable cause = ExceptionUtils.rootCause(error);</span>
+<span class="fc bfc" id="L240" title="All 4 branches covered.">    return cause instanceof TimeoutException || cause instanceof CancellationException;</span>
+  }
+
+  private &lt;T&gt; CompletableFuture&lt;T&gt; timeout(
+      final CompletableFuture&lt;T&gt; future, final Duration delay) {
+<span class="fc" id="L245">    final CompletableFuture&lt;T&gt; timeout = failAfterTimeout(delay);</span>
+<span class="fc" id="L246">    return future.applyToEither(timeout, Function.identity());</span>
+  }
+
+  public void stop() {
+<span class="pc bpc" id="L250" title="1 of 2 branches missed.">    if (stopped.compareAndSet(false, true)) {</span>
+<span class="fc" id="L251">      LOG.trace(&quot;Stopping &quot; + getClass().getSimpleName());</span>
+<span class="fc" id="L252">      syncWorkerExecutor.shutdownNow();</span>
+<span class="fc" id="L253">      txWorkerExecutor.shutdownNow();</span>
+<span class="fc" id="L254">      scheduler.shutdownNow();</span>
+<span class="fc" id="L255">      servicesExecutor.shutdownNow();</span>
+<span class="fc" id="L256">      computationExecutor.shutdownNow();</span>
+<span class="fc" id="L257">      shutdown.countDown();</span>
+    } else {
+<span class="nc" id="L259">      LOG.trace(&quot;Attempted to stop already stopped &quot; + getClass().getSimpleName());</span>
+    }
+<span class="fc" id="L261">  }</span>
+
+  public void awaitStop() throws InterruptedException {
+<span class="fc" id="L264">    shutdown.await();</span>
+<span class="fc" id="L265">    pendingFutures.forEach(future -&gt; future.cancel(true));</span>
+<span class="pc bpc" id="L266" title="1 of 2 branches missed.">    if (!syncWorkerExecutor.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L267">      LOG.error(&quot;{} worker executor did not shutdown cleanly.&quot;, this.getClass().getSimpleName());</span>
+    }
+<span class="pc bpc" id="L269" title="1 of 2 branches missed.">    if (!txWorkerExecutor.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L270">      LOG.error(</span>
+          &quot;{} transaction worker executor did not shutdown cleanly.&quot;,
+<span class="nc" id="L272">          this.getClass().getSimpleName());</span>
+    }
+<span class="pc bpc" id="L274" title="1 of 2 branches missed.">    if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L275">      LOG.error(&quot;{} scheduler did not shutdown cleanly.&quot;, this.getClass().getSimpleName());</span>
+<span class="nc" id="L276">      scheduler.shutdownNow();</span>
+    }
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">    if (!servicesExecutor.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L279">      LOG.error(&quot;{} services executor did not shutdown cleanly.&quot;, this.getClass().getSimpleName());</span>
+    }
+<span class="pc bpc" id="L281" title="1 of 2 branches missed.">    if (!computationExecutor.awaitTermination(30, TimeUnit.SECONDS)) {</span>
+<span class="nc" id="L282">      LOG.error(</span>
+<span class="nc" id="L283">          &quot;{} computation executor did not shutdown cleanly.&quot;, this.getClass().getSimpleName());</span>
+    }
+<span class="fc" id="L285">    LOG.trace(&quot;{} stopped.&quot;, this.getClass().getSimpleName());</span>
+<span class="fc" id="L286">  }</span>
+
+  private &lt;T&gt; CompletableFuture&lt;T&gt; failAfterTimeout(final Duration timeout) {
+<span class="fc" id="L289">    final CompletableFuture&lt;T&gt; promise = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L290">    failAfterTimeout(promise, timeout);</span>
+<span class="fc" id="L291">    return promise;</span>
+  }
+
+  public &lt;T&gt; void failAfterTimeout(final CompletableFuture&lt;T&gt; promise, final Duration timeout) {
+<span class="fc" id="L295">    final long delay = timeout.toMillis();</span>
+<span class="fc" id="L296">    final TimeUnit unit = TimeUnit.MILLISECONDS;</span>
+<span class="fc" id="L297">    scheduler.schedule(</span>
+        () -&gt; {
+<span class="fc" id="L299">          final TimeoutException ex =</span>
+<span class="fc" id="L300">              new TimeoutException(&quot;Timeout after &quot; + delay + &quot; &quot; + unit.name());</span>
+<span class="fc" id="L301">          return promise.completeExceptionally(ex);</span>
+        },
+        delay,
+        unit);
+<span class="fc" id="L305">  }</span>
+
+  public &lt;ITEM&gt; OrderedProcessor&lt;ITEM&gt; createOrderedProcessor(final Consumer&lt;ITEM&gt; processor) {
+<span class="fc" id="L308">    return new OrderedProcessor&lt;&gt;(processor);</span>
+  }
+
+  /**
+   * This class is a way to execute a set of tasks, one by one, in a strict order, without blocking
+   * the caller in case there are still previous tasks queued
+   *
+   * @param &lt;ITEM&gt; the class of item to be processed
+   */
+  public class OrderedProcessor&lt;ITEM&gt; {
+<span class="fc" id="L318">    private final Queue&lt;ITEM&gt; blockAddedQueue = new ConcurrentLinkedQueue&lt;&gt;();</span>
+<span class="fc" id="L319">    private final ReentrantLock blockAddedLock = new ReentrantLock();</span>
+    private final Consumer&lt;ITEM&gt; processor;
+
+<span class="fc" id="L322">    private OrderedProcessor(final Consumer&lt;ITEM&gt; processor) {</span>
+<span class="fc" id="L323">      this.processor = processor;</span>
+<span class="fc" id="L324">    }</span>
+
+    public void submit(final ITEM item) {
+      // add the item to the processing queue
+<span class="fc" id="L328">      blockAddedQueue.add(item);</span>
+
+<span class="fc bfc" id="L330" title="All 2 branches covered.">      if (blockAddedLock.hasQueuedThreads()) {</span>
+        // another thread is already waiting to process the queue with our item, there is no need to
+        // schedule another thread
+<span class="fc" id="L333">        LOG.trace(</span>
+            &quot;Block added event queue is already being processed and an already queued thread is present, nothing to do&quot;);
+      } else {
+<span class="fc" id="L336">        servicesExecutor.submit(</span>
+            () -&gt; {
+<span class="fc" id="L338">              blockAddedLock.lock();</span>
+              try {
+                // now that we have the lock, process as many items as possible
+<span class="fc bfc" id="L341" title="All 2 branches covered.">                for (ITEM i = blockAddedQueue.poll(); i != null; i = blockAddedQueue.poll()) {</span>
+<span class="fc" id="L342">                  processor.accept(i);</span>
+                }
+              } finally {
+<span class="fc" id="L345">                blockAddedLock.unlock();</span>
+              }
+<span class="fc" id="L347">            });</span>
+      }
+<span class="fc" id="L349">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

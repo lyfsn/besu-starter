@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MainnetBlockHeaderValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">MainnetBlockHeaderValidator.java</span></div><h1>MainnetBlockHeaderValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.config.MergeConfigOptions;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.BaseFeeMarket;
+import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.AncestryValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.BaseFeeMarketBlockHeaderGasPriceValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.BlobGasValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.CalculatedDifficultyValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.ConstantFieldValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.ConstantOmmersHashRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.ExtraDataMaxLengthValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.GasLimitRangeAndDeltaValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.GasUsageValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.IncrementalTimestampRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.NoDifficultyRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.NoNonceRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.ProofOfWorkValidationRule;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.TimestampBoundedByFutureParameter;
+import org.hyperledger.besu.ethereum.mainnet.headervalidationrules.TimestampMoreRecentThanParent;
+import org.hyperledger.besu.evm.gascalculator.CancunGasCalculator;
+
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+
+public final class MainnetBlockHeaderValidator {
+
+<span class="fc" id="L45">  public static final Bytes DAO_EXTRA_DATA = Bytes.fromHexString(&quot;0x64616f2d686172642d666f726b&quot;);</span>
+  public static final int MIN_GAS_LIMIT = 5000;
+  public static final long MAX_GAS_LIMIT = 0x7fffffffffffffffL;
+  public static final int TIMESTAMP_TOLERANCE_S = 15;
+  public static final int MINIMUM_SECONDS_SINCE_PARENT = 1;
+<span class="fc" id="L50">  public static final Bytes CLASSIC_FORK_BLOCK_HEADER =</span>
+<span class="fc" id="L51">      Bytes.fromHexString(&quot;0x94365e3a8c0b35089c1d1195081fe7489b528a84b22199c916180db8b28ade7f&quot;);</span>
+
+  private MainnetBlockHeaderValidator() {
+    // utility class
+  }
+
+  public static BlockHeaderValidator.Builder create() {
+<span class="fc" id="L58">    return createPgaFeeMarketValidator(PoWHasher.ETHASH_LIGHT);</span>
+  }
+
+  public static BlockHeaderValidator.Builder create(final PoWHasher hasher) {
+<span class="fc" id="L62">    return createPgaFeeMarketValidator(hasher);</span>
+  }
+
+  public static BlockHeaderValidator.Builder createDaoValidator() {
+<span class="fc" id="L66">    return createPgaFeeMarketValidator()</span>
+<span class="fc" id="L67">        .addRule(</span>
+            new ConstantFieldValidationRule&lt;&gt;(
+                &quot;extraData&quot;, BlockHeader::getExtraData, DAO_EXTRA_DATA));
+  }
+
+  public static BlockHeaderValidator.Builder createClassicValidator() {
+<span class="fc" id="L73">    return createClassicValidator(PoWHasher.ETHASH_LIGHT);</span>
+  }
+
+  public static BlockHeaderValidator.Builder createClassicValidator(final PoWHasher hasher) {
+<span class="fc" id="L77">    return createPgaFeeMarketValidator(hasher)</span>
+<span class="fc" id="L78">        .addRule(</span>
+            new ConstantFieldValidationRule&lt;&gt;(
+                &quot;hash&quot;,
+<span class="nc bnc" id="L81" title="All 2 branches missed.">                h -&gt; h.getNumber() == 1920000 ? h.getBlockHash() : CLASSIC_FORK_BLOCK_HEADER,</span>
+                CLASSIC_FORK_BLOCK_HEADER));
+  }
+
+  public static boolean validateHeaderForDaoFork(final BlockHeader header) {
+<span class="fc" id="L86">    return DAO_EXTRA_DATA.equals(header.getExtraData());</span>
+  }
+
+  public static boolean validateHeaderForClassicFork(final BlockHeader header) {
+<span class="nc bnc" id="L90" title="All 4 branches missed.">    return header.getNumber() != 1_920_000 || header.getHash().equals(CLASSIC_FORK_BLOCK_HEADER);</span>
+  }
+
+  static BlockHeaderValidator.Builder createLegacyFeeMarketOmmerValidator() {
+<span class="fc" id="L94">    return createLegacyFeeMarketOmmerValidator(</span>
+        new EpochCalculator.DefaultEpochCalculator(), PoWHasher.ETHASH_LIGHT);
+  }
+
+  static BlockHeaderValidator.Builder createLegacyFeeMarketOmmerValidator(
+      final EpochCalculator epochCalculator, final PoWHasher hasher) {
+<span class="fc" id="L100">    return new BlockHeaderValidator.Builder()</span>
+<span class="fc" id="L101">        .addRule(CalculatedDifficultyValidationRule::new)</span>
+<span class="fc" id="L102">        .addRule(new AncestryValidationRule())</span>
+<span class="fc" id="L103">        .addRule(new GasLimitRangeAndDeltaValidationRule(MIN_GAS_LIMIT, MAX_GAS_LIMIT))</span>
+<span class="fc" id="L104">        .addRule(new GasUsageValidationRule())</span>
+<span class="fc" id="L105">        .addRule(new TimestampMoreRecentThanParent(MINIMUM_SECONDS_SINCE_PARENT))</span>
+<span class="fc" id="L106">        .addRule(new ExtraDataMaxLengthValidationRule(BlockHeader.MAX_EXTRA_DATA_BYTES))</span>
+<span class="fc" id="L107">        .addRule(new ProofOfWorkValidationRule(epochCalculator, hasher, Optional.empty()));</span>
+  }
+
+  private static BlockHeaderValidator.Builder createPgaFeeMarketValidator() {
+<span class="fc" id="L111">    return createPgaFeeMarketValidator(PoWHasher.ETHASH_LIGHT);</span>
+  }
+
+  private static BlockHeaderValidator.Builder createPgaFeeMarketValidator(final PoWHasher hasher) {
+<span class="fc" id="L115">    return createPgaBlockHeaderValidator(new EpochCalculator.DefaultEpochCalculator(), hasher);</span>
+  }
+
+  public static BlockHeaderValidator.Builder createPgaBlockHeaderValidator(
+      final EpochCalculator epochCalculator, final PoWHasher hasher) {
+<span class="fc" id="L120">    return new BlockHeaderValidator.Builder()</span>
+<span class="fc" id="L121">        .addRule(CalculatedDifficultyValidationRule::new)</span>
+<span class="fc" id="L122">        .addRule(new AncestryValidationRule())</span>
+<span class="fc" id="L123">        .addRule(new GasLimitRangeAndDeltaValidationRule(MIN_GAS_LIMIT, MAX_GAS_LIMIT))</span>
+<span class="fc" id="L124">        .addRule(new GasUsageValidationRule())</span>
+<span class="fc" id="L125">        .addRule(new TimestampMoreRecentThanParent(MINIMUM_SECONDS_SINCE_PARENT))</span>
+<span class="fc" id="L126">        .addRule(new TimestampBoundedByFutureParameter(TIMESTAMP_TOLERANCE_S))</span>
+<span class="fc" id="L127">        .addRule(new ExtraDataMaxLengthValidationRule(BlockHeader.MAX_EXTRA_DATA_BYTES))</span>
+<span class="fc" id="L128">        .addRule(new ProofOfWorkValidationRule(epochCalculator, hasher, Optional.empty()));</span>
+  }
+
+  public static BlockHeaderValidator.Builder createBaseFeeMarketValidator(
+      final BaseFeeMarket baseFeeMarket) {
+<span class="fc" id="L133">    return createBaseFeeMarketValidator(baseFeeMarket, MergeConfigOptions.isMergeEnabled());</span>
+  }
+
+  @VisibleForTesting
+  public static BlockHeaderValidator.Builder createBaseFeeMarketValidator(
+      final BaseFeeMarket baseFeeMarket, final boolean isMergeEnabled) {
+<span class="fc" id="L139">    var builder =</span>
+        new BlockHeaderValidator.Builder()
+<span class="fc" id="L141">            .addRule(CalculatedDifficultyValidationRule::new)</span>
+<span class="fc" id="L142">            .addRule(new AncestryValidationRule())</span>
+<span class="fc" id="L143">            .addRule(new GasUsageValidationRule())</span>
+<span class="fc" id="L144">            .addRule(</span>
+                new GasLimitRangeAndDeltaValidationRule(
+<span class="fc" id="L146">                    MIN_GAS_LIMIT, Long.MAX_VALUE, Optional.of(baseFeeMarket)))</span>
+<span class="fc" id="L147">            .addRule(new TimestampMoreRecentThanParent(MINIMUM_SECONDS_SINCE_PARENT))</span>
+<span class="fc" id="L148">            .addRule(new TimestampBoundedByFutureParameter(TIMESTAMP_TOLERANCE_S))</span>
+<span class="fc" id="L149">            .addRule(new ExtraDataMaxLengthValidationRule(BlockHeader.MAX_EXTRA_DATA_BYTES))</span>
+<span class="fc" id="L150">            .addRule((new BaseFeeMarketBlockHeaderGasPriceValidationRule(baseFeeMarket)));</span>
+
+    // if this is not a merged PoS network, add the proof of work validation rule:
+<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (!isMergeEnabled) {</span>
+<span class="fc" id="L154">      builder.addRule(</span>
+          new ProofOfWorkValidationRule(
+              new EpochCalculator.DefaultEpochCalculator(),
+              PoWHasher.ETHASH_LIGHT,
+<span class="fc" id="L158">              Optional.of(baseFeeMarket)));</span>
+    }
+<span class="fc" id="L160">    return builder;</span>
+  }
+
+  static BlockHeaderValidator.Builder createBaseFeeMarketOmmerValidator(
+      final BaseFeeMarket baseFeeMarket) {
+<span class="fc" id="L165">    return new BlockHeaderValidator.Builder()</span>
+<span class="fc" id="L166">        .addRule(CalculatedDifficultyValidationRule::new)</span>
+<span class="fc" id="L167">        .addRule(new AncestryValidationRule())</span>
+<span class="fc" id="L168">        .addRule(new GasUsageValidationRule())</span>
+<span class="fc" id="L169">        .addRule(</span>
+            new GasLimitRangeAndDeltaValidationRule(
+<span class="fc" id="L171">                MIN_GAS_LIMIT, Long.MAX_VALUE, Optional.of(baseFeeMarket)))</span>
+<span class="fc" id="L172">        .addRule(new TimestampMoreRecentThanParent(MINIMUM_SECONDS_SINCE_PARENT))</span>
+<span class="fc" id="L173">        .addRule(new ExtraDataMaxLengthValidationRule(BlockHeader.MAX_EXTRA_DATA_BYTES))</span>
+<span class="fc" id="L174">        .addRule(</span>
+            new ProofOfWorkValidationRule(
+                new EpochCalculator.DefaultEpochCalculator(),
+                PoWHasher.ETHASH_LIGHT,
+<span class="fc" id="L178">                Optional.of(baseFeeMarket)))</span>
+<span class="fc" id="L179">        .addRule((new BaseFeeMarketBlockHeaderGasPriceValidationRule(baseFeeMarket)));</span>
+  }
+
+  public static BlockHeaderValidator.Builder mergeBlockHeaderValidator(final FeeMarket feeMarket) {
+
+<span class="fc" id="L184">    var baseFeeMarket = (BaseFeeMarket) feeMarket;</span>
+
+<span class="fc" id="L186">    return new BlockHeaderValidator.Builder()</span>
+<span class="fc" id="L187">        .addRule(new AncestryValidationRule())</span>
+<span class="fc" id="L188">        .addRule(new GasUsageValidationRule())</span>
+<span class="fc" id="L189">        .addRule(</span>
+            new GasLimitRangeAndDeltaValidationRule(
+<span class="fc" id="L191">                MIN_GAS_LIMIT, Long.MAX_VALUE, Optional.of(baseFeeMarket)))</span>
+<span class="fc" id="L192">        .addRule(new ExtraDataMaxLengthValidationRule(BlockHeader.MAX_EXTRA_DATA_BYTES))</span>
+<span class="fc" id="L193">        .addRule((new BaseFeeMarketBlockHeaderGasPriceValidationRule(baseFeeMarket)))</span>
+<span class="fc" id="L194">        .addRule(new ConstantOmmersHashRule())</span>
+<span class="fc" id="L195">        .addRule(new NoNonceRule())</span>
+<span class="fc" id="L196">        .addRule(new NoDifficultyRule())</span>
+<span class="fc" id="L197">        .addRule(new IncrementalTimestampRule());</span>
+  }
+
+  public static BlockHeaderValidator.Builder cancunBlockHeaderValidator(final FeeMarket feeMarket) {
+<span class="fc" id="L201">    return mergeBlockHeaderValidator(feeMarket)</span>
+<span class="fc" id="L202">        .addRule(new BlobGasValidationRule(new CancunGasCalculator()));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StorageTrieNodeHealingRequest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal</a> &gt; <span class="el_source">StorageTrieNodeHealingRequest.java</span></div><h1>StorageTrieNodeHealingRequest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal;
+
+import static org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator.applyForStrategy;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncProcessState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapWorldDownloadState;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.SnapDataRequest;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.rlp.RLP;
+
+/** Represents a healing request for a storage trie node. */
+public class StorageTrieNodeHealingRequest extends TrieNodeHealingRequest {
+
+  final Hash accountHash;
+
+  public StorageTrieNodeHealingRequest(
+      final Hash nodeHash, final Hash accountHash, final Hash rootHash, final Bytes location) {
+<span class="fc" id="L43">    super(nodeHash, rootHash, location);</span>
+<span class="fc" id="L44">    this.accountHash = accountHash;</span>
+<span class="fc" id="L45">  }</span>
+
+  @Override
+  protected int doPersist(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final WorldStateKeyValueStorage.Updater updater,
+      final SnapWorldDownloadState downloadState,
+      final SnapSyncProcessState snapSyncState,
+      final SnapSyncConfiguration snapSyncConfiguration) {
+<span class="nc" id="L54">    applyForStrategy(</span>
+        updater,
+        onBonsai -&gt; {
+<span class="nc" id="L57">          onBonsai.putAccountStorageTrieNode(getAccountHash(), getLocation(), getNodeHash(), data);</span>
+<span class="nc" id="L58">        },</span>
+        onForest -&gt; {
+<span class="nc" id="L60">          onForest.putAccountStorageTrieNode(getNodeHash(), data);</span>
+<span class="nc" id="L61">        });</span>
+<span class="nc" id="L62">    return 1;</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getExistingData(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator) {
+<span class="fc" id="L68">    return worldStateStorageCoordinator.getAccountStorageTrieNode(</span>
+<span class="fc" id="L69">        getAccountHash(), getLocation(), getNodeHash());</span>
+  }
+
+  @Override
+  protected SnapDataRequest createChildNodeDataRequest(final Hash childHash, final Bytes location) {
+<span class="nc" id="L74">    return SnapDataRequest.createStorageTrieNodeDataRequest(</span>
+<span class="nc" id="L75">        childHash, getAccountHash(), getRootHash(), location);</span>
+  }
+
+  @Override
+  protected Stream&lt;SnapDataRequest&gt; getRequestsFromTrieNodeValue(
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapWorldDownloadState downloadState,
+      final Bytes location,
+      final Bytes path,
+      final Bytes value) {
+<span class="nc" id="L85">    worldStateStorageCoordinator.applyWhenFlatModeEnabled(</span>
+        onBonsai -&gt; {
+<span class="nc" id="L87">          onBonsai</span>
+<span class="nc" id="L88">              .updater()</span>
+<span class="nc" id="L89">              .putStorageValueBySlotHash(</span>
+<span class="nc" id="L90">                  accountHash, getSlotHash(location, path), Bytes32.leftPad(RLP.decodeValue(value)))</span>
+<span class="nc" id="L91">              .commit();</span>
+<span class="nc" id="L92">        });</span>
+<span class="nc" id="L93">    return Stream.empty();</span>
+  }
+
+  public Hash getAccountHash() {
+<span class="fc" id="L97">    return accountHash;</span>
+  }
+
+  private Hash getSlotHash(final Bytes location, final Bytes path) {
+<span class="nc" id="L101">    return Hash.wrap(Bytes32.wrap(CompactEncoding.pathToBytes(Bytes.concatenate(location, path))));</span>
+  }
+
+  @Override
+  public List&lt;Bytes&gt; getTrieNodePath() {
+<span class="nc" id="L106">    return List.of(accountHash, CompactEncoding.encode(getLocation()));</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

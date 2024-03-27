@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionPoolMetrics.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">TransactionPoolMetrics.java</span></div><h1>TransactionPoolMetrics.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.metrics.ReplaceableDoubleSupplier;
+import org.hyperledger.besu.metrics.RunnableCounter;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledGauge;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.DoubleSupplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class TransactionPoolMetrics {
+<span class="fc" id="L34">  private static final Logger LOG = LoggerFactory.getLogger(TransactionPoolMetrics.class);</span>
+  public static final String ADDED_COUNTER_NAME = &quot;added_total&quot;;
+  public static final String REMOVED_COUNTER_NAME = &quot;removed_total&quot;;
+  public static final String REJECTED_COUNTER_NAME = &quot;rejected_total&quot;;
+  public static final String EXPIRED_MESSAGES_COUNTER_NAME = &quot;messages_expired_total&quot;;
+  private static final int SKIPPED_MESSAGES_LOGGING_THRESHOLD = 1000;
+  private final MetricsSystem metricsSystem;
+  private final LabelledMetric&lt;Counter&gt; addedCounter;
+  private final LabelledMetric&lt;Counter&gt; removedCounter;
+  private final LabelledMetric&lt;Counter&gt; rejectedCounter;
+  private final LabelledGauge spaceUsed;
+  private final LabelledGauge transactionCount;
+  private final LabelledGauge uniqueSenderCount;
+  private final LabelledMetric&lt;Counter&gt; expiredMessagesCounter;
+<span class="fc" id="L48">  private final Map&lt;String, RunnableCounter&gt; expiredMessagesRunnableCounters = new HashMap&lt;&gt;();</span>
+  private final LabelledMetric&lt;Counter&gt; alreadySeenTransactionsCounter;
+<span class="fc" id="L50">  private final Map&lt;String, ReplaceableDoubleSupplier&gt; spaceUsedSuppliers = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L51">  private final Map&lt;String, ReplaceableDoubleSupplier&gt; transactionCountSuppliers = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L52">  private final Map&lt;String, ReplaceableDoubleSupplier&gt; uniqueSendersSuppliers = new HashMap&lt;&gt;();</span>
+
+<span class="fc" id="L54">  public TransactionPoolMetrics(final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L55">    this.metricsSystem = metricsSystem;</span>
+
+<span class="fc" id="L57">    addedCounter =</span>
+<span class="fc" id="L58">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            ADDED_COUNTER_NAME,
+            &quot;Count of transactions added to the transaction pool&quot;,
+            &quot;source&quot;,
+            &quot;priority&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L66">    removedCounter =</span>
+<span class="fc" id="L67">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            REMOVED_COUNTER_NAME,
+            &quot;Count of transactions removed from the transaction pool&quot;,
+            &quot;source&quot;,
+            &quot;priority&quot;,
+            &quot;operation&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L76">    rejectedCounter =</span>
+<span class="fc" id="L77">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            REJECTED_COUNTER_NAME,
+            &quot;Count of transactions not accepted to the transaction pool&quot;,
+            &quot;source&quot;,
+            &quot;priority&quot;,
+            &quot;reason&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L86">    spaceUsed =</span>
+<span class="fc" id="L87">        metricsSystem.createLabelledGauge(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            &quot;space_used&quot;,
+            &quot;The amount of space used by the transactions in the layer&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L93">    transactionCount =</span>
+<span class="fc" id="L94">        metricsSystem.createLabelledGauge(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            &quot;number_of_transactions&quot;,
+            &quot;The number of transactions currently present in the layer&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L100">    uniqueSenderCount =</span>
+<span class="fc" id="L101">        metricsSystem.createLabelledGauge(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            &quot;unique_senders&quot;,
+            &quot;The number of senders with at least one transaction currently present in the layer&quot;,
+            &quot;layer&quot;);
+
+<span class="fc" id="L107">    expiredMessagesCounter =</span>
+<span class="fc" id="L108">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            EXPIRED_MESSAGES_COUNTER_NAME,
+            &quot;Total number of received transaction pool messages expired and not processed.&quot;,
+            &quot;message&quot;);
+
+<span class="fc" id="L114">    alreadySeenTransactionsCounter =</span>
+<span class="fc" id="L115">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.TRANSACTION_POOL,
+            &quot;remote_transactions_already_seen_total&quot;,
+            &quot;Total number of received transactions already seen&quot;,
+            &quot;message&quot;);
+<span class="fc" id="L120">  }</span>
+
+  public MetricsSystem getMetricsSystem() {
+<span class="fc" id="L123">    return metricsSystem;</span>
+  }
+
+  public void initSpaceUsed(final DoubleSupplier spaceUsedSupplier, final String layer) {
+<span class="fc" id="L127">    spaceUsedSuppliers.compute(</span>
+        layer,
+        (unused, existingSupplier) -&gt; {
+<span class="fc bfc" id="L130" title="All 2 branches covered.">          if (existingSupplier == null) {</span>
+<span class="fc" id="L131">            final var newSupplier = new ReplaceableDoubleSupplier(spaceUsedSupplier);</span>
+<span class="fc" id="L132">            spaceUsed.labels(newSupplier, layer);</span>
+<span class="fc" id="L133">            return newSupplier;</span>
+          }
+<span class="fc" id="L135">          return existingSupplier.replaceDoubleSupplier(spaceUsedSupplier);</span>
+        });
+<span class="fc" id="L137">  }</span>
+
+  public void initTransactionCount(
+      final DoubleSupplier transactionCountSupplier, final String layer) {
+<span class="fc" id="L141">    transactionCountSuppliers.compute(</span>
+        layer,
+        (unused, existingSupplier) -&gt; {
+<span class="fc bfc" id="L144" title="All 2 branches covered.">          if (existingSupplier == null) {</span>
+<span class="fc" id="L145">            final var newSupplier = new ReplaceableDoubleSupplier(transactionCountSupplier);</span>
+<span class="fc" id="L146">            transactionCount.labels(newSupplier, layer);</span>
+<span class="fc" id="L147">            return newSupplier;</span>
+          }
+<span class="fc" id="L149">          return existingSupplier.replaceDoubleSupplier(transactionCountSupplier);</span>
+        });
+<span class="fc" id="L151">  }</span>
+
+  public void initUniqueSenderCount(
+      final DoubleSupplier uniqueSenderCountSupplier, final String layer) {
+<span class="fc" id="L155">    uniqueSendersSuppliers.compute(</span>
+        layer,
+        (unused, existingSupplier) -&gt; {
+<span class="fc bfc" id="L158" title="All 2 branches covered.">          if (existingSupplier == null) {</span>
+<span class="fc" id="L159">            final var newSupplier = new ReplaceableDoubleSupplier(uniqueSenderCountSupplier);</span>
+<span class="fc" id="L160">            uniqueSenderCount.labels(newSupplier, layer);</span>
+<span class="fc" id="L161">            return newSupplier;</span>
+          }
+<span class="fc" id="L163">          return existingSupplier.replaceDoubleSupplier(uniqueSenderCountSupplier);</span>
+        });
+<span class="fc" id="L165">  }</span>
+
+  public void initExpiredMessagesCounter(final String message) {
+<span class="fc" id="L168">    expiredMessagesRunnableCounters.put(</span>
+        message,
+        new RunnableCounter(
+<span class="fc" id="L171">            expiredMessagesCounter.labels(message),</span>
+            () -&gt;
+<span class="nc" id="L173">                LOG.warn(</span>
+                    &quot;{} expired {} messages have been skipped.&quot;,
+<span class="nc" id="L175">                    SKIPPED_MESSAGES_LOGGING_THRESHOLD,</span>
+                    message),
+            SKIPPED_MESSAGES_LOGGING_THRESHOLD));
+<span class="fc" id="L178">  }</span>
+
+  public void incrementAdded(final PendingTransaction pendingTransaction, final String layer) {
+<span class="fc" id="L181">    addedCounter</span>
+<span class="fc" id="L182">        .labels(</span>
+<span class="fc" id="L183">            location(pendingTransaction.isReceivedFromLocalSource()),</span>
+<span class="fc" id="L184">            priority(pendingTransaction.hasPriority()),</span>
+            layer)
+<span class="fc" id="L186">        .inc();</span>
+<span class="fc" id="L187">  }</span>
+
+  public void incrementRemoved(
+      final PendingTransaction pendingTransaction, final String operation, final String layer) {
+<span class="fc" id="L191">    removedCounter</span>
+<span class="fc" id="L192">        .labels(</span>
+<span class="fc" id="L193">            location(pendingTransaction.isReceivedFromLocalSource()),</span>
+<span class="fc" id="L194">            priority(pendingTransaction.hasPriority()),</span>
+            operation,
+            layer)
+<span class="fc" id="L197">        .inc();</span>
+<span class="fc" id="L198">  }</span>
+
+  public void incrementRejected(
+      final PendingTransaction pendingTransaction,
+      final TransactionInvalidReason rejectReason,
+      final String layer) {
+<span class="fc" id="L204">    incrementRejected(</span>
+<span class="fc" id="L205">        pendingTransaction.isReceivedFromLocalSource(),</span>
+<span class="fc" id="L206">        pendingTransaction.hasPriority(),</span>
+        rejectReason,
+        layer);
+<span class="fc" id="L209">  }</span>
+
+  public void incrementRejected(
+      final boolean receivedFromLocalSource,
+      final boolean hasPriority,
+      final TransactionInvalidReason rejectReason,
+      final String layer) {
+<span class="fc" id="L216">    rejectedCounter</span>
+<span class="fc" id="L217">        .labels(</span>
+<span class="fc" id="L218">            location(receivedFromLocalSource), priority(hasPriority), rejectReason.name(), layer)</span>
+<span class="fc" id="L219">        .inc();</span>
+<span class="fc" id="L220">  }</span>
+
+  public void incrementExpiredMessages(final String message) {
+<span class="fc" id="L223">    expiredMessagesCounter.labels(message).inc();</span>
+<span class="fc" id="L224">  }</span>
+
+  public void incrementAlreadySeenTransactions(final String message, final long count) {
+<span class="fc" id="L227">    alreadySeenTransactionsCounter.labels(message).inc(count);</span>
+<span class="fc" id="L228">  }</span>
+
+  private String location(final boolean receivedFromLocalSource) {
+<span class="fc bfc" id="L231" title="All 2 branches covered.">    return receivedFromLocalSource ? &quot;local&quot; : &quot;remote&quot;;</span>
+  }
+
+  private String priority(final boolean hasPriority) {
+<span class="fc bfc" id="L235" title="All 2 branches covered.">    return hasPriority ? &quot;yes&quot; : &quot;no&quot;;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TransactionAdapter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter</a> &gt; <span class="el_source">TransactionAdapter.java</span></div><h1>TransactionAdapter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.graphql.internal.pojoadapter;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.VersionedHash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.api.graphql.GraphQLContextType;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.api.query.TransactionReceiptWithMetadata;
+import org.hyperledger.besu.ethereum.api.query.TransactionWithMetadata;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import javax.annotation.Nonnull;
+
+import graphql.schema.DataFetchingEnvironment;
+import org.apache.tuweni.bytes.Bytes;
+
+@SuppressWarnings(&quot;unused&quot;) // reflected by GraphQL
+public class TransactionAdapter extends AdapterBase {
+  private final TransactionWithMetadata transactionWithMetadata;
+  private Optional&lt;TransactionReceiptWithMetadata&gt; transactionReceiptWithMetadata;
+
+<span class="fc" id="L45">  public TransactionAdapter(final @Nonnull TransactionWithMetadata transactionWithMetadata) {</span>
+<span class="fc" id="L46">    this.transactionWithMetadata = transactionWithMetadata;</span>
+<span class="fc" id="L47">  }</span>
+
+  private Optional&lt;TransactionReceiptWithMetadata&gt; getReceipt(
+      final DataFetchingEnvironment environment) {
+<span class="fc bfc" id="L51" title="All 2 branches covered.">    if (transactionReceiptWithMetadata == null) {</span>
+<span class="fc" id="L52">      final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L53">      final ProtocolSchedule protocolSchedule =</span>
+<span class="fc" id="L54">          environment.getGraphQlContext().get(GraphQLContextType.PROTOCOL_SCHEDULE);</span>
+
+<span class="fc" id="L56">      final Transaction transaction = transactionWithMetadata.getTransaction();</span>
+<span class="pc bpc" id="L57" title="1 of 2 branches missed.">      if (transaction == null) {</span>
+<span class="nc" id="L58">        transactionReceiptWithMetadata = Optional.empty();</span>
+      } else {
+<span class="fc" id="L60">        transactionReceiptWithMetadata =</span>
+<span class="fc" id="L61">            query.transactionReceiptByTransactionHash(transaction.getHash(), protocolSchedule);</span>
+      }
+    }
+<span class="fc" id="L64">    return transactionReceiptWithMetadata;</span>
+  }
+
+  public Hash getHash() {
+<span class="fc" id="L68">    return transactionWithMetadata.getTransaction().getHash();</span>
+  }
+
+  public Optional&lt;Integer&gt; getType() {
+<span class="fc" id="L72">    return Optional.of(transactionWithMetadata.getTransaction().getType().ordinal());</span>
+  }
+
+  public Long getNonce() {
+<span class="fc" id="L76">    return transactionWithMetadata.getTransaction().getNonce();</span>
+  }
+
+  public Optional&lt;Integer&gt; getIndex() {
+<span class="fc" id="L80">    return transactionWithMetadata.getTransactionIndex();</span>
+  }
+
+  public AccountAdapter getFrom(final DataFetchingEnvironment environment) {
+<span class="fc" id="L84">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L85">    final Long blockNumber =</span>
+<span class="fc" id="L86">        Optional.&lt;Long&gt;ofNullable(environment.getArgument(&quot;block&quot;))</span>
+<span class="fc" id="L87">            .or(transactionWithMetadata::getBlockNumber)</span>
+<span class="fc" id="L88">            .orElseGet(query::headBlockNumber);</span>
+
+<span class="fc" id="L90">    final Address addr = transactionWithMetadata.getTransaction().getSender();</span>
+<span class="fc" id="L91">    return query</span>
+<span class="fc" id="L92">        .getAndMapWorldState(</span>
+<span class="fc" id="L93">            blockNumber,</span>
+<span class="fc" id="L94">            mutableWorldState -&gt; Optional.of(new AccountAdapter(mutableWorldState.get(addr))))</span>
+<span class="fc" id="L95">        .orElse(new EmptyAccountAdapter(addr));</span>
+  }
+
+  public Optional&lt;AccountAdapter&gt; getTo(final DataFetchingEnvironment environment) {
+<span class="fc" id="L99">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L100">    final Long blockNumber =</span>
+<span class="fc" id="L101">        Optional.&lt;Long&gt;ofNullable(environment.getArgument(&quot;block&quot;))</span>
+<span class="fc" id="L102">            .or(transactionWithMetadata::getBlockNumber)</span>
+<span class="fc" id="L103">            .orElseGet(query::headBlockNumber);</span>
+
+<span class="fc" id="L105">    return transactionWithMetadata</span>
+<span class="fc" id="L106">        .getTransaction()</span>
+<span class="fc" id="L107">        .getTo()</span>
+<span class="fc" id="L108">        .flatMap(</span>
+            address -&gt;
+<span class="fc" id="L110">                query</span>
+<span class="fc" id="L111">                    .getAndMapWorldState(</span>
+<span class="fc" id="L112">                        blockNumber,</span>
+<span class="fc" id="L113">                        ws -&gt; Optional.of(new AccountAdapter(address, ws.get(address))))</span>
+<span class="pc" id="L114">                    .or(() -&gt; Optional.of(new EmptyAccountAdapter(address))));</span>
+  }
+
+  public Wei getValue() {
+<span class="fc" id="L118">    return transactionWithMetadata.getTransaction().getValue();</span>
+  }
+
+  public Wei getGasPrice() {
+<span class="fc" id="L122">    return transactionWithMetadata.getTransaction().getGasPrice().orElse(Wei.ZERO);</span>
+  }
+
+  public Optional&lt;Wei&gt; getMaxFeePerGas() {
+<span class="fc" id="L126">    return transactionWithMetadata.getTransaction().getMaxFeePerGas();</span>
+  }
+
+  public Optional&lt;Wei&gt; getMaxPriorityFeePerGas() {
+<span class="fc" id="L130">    return transactionWithMetadata.getTransaction().getMaxPriorityFeePerGas();</span>
+  }
+
+  public Optional&lt;Wei&gt; getMaxFeePerBlobGas() {
+<span class="fc" id="L134">    return transactionWithMetadata.getTransaction().getMaxFeePerBlobGas();</span>
+  }
+
+  public Optional&lt;Wei&gt; getEffectiveTip(final DataFetchingEnvironment environment) {
+<span class="nc" id="L138">    return getReceipt(environment)</span>
+<span class="nc" id="L139">        .map(rwm -&gt; rwm.getTransaction().getEffectivePriorityFeePerGas(rwm.getBaseFee()));</span>
+  }
+
+  public Long getGas() {
+<span class="fc" id="L143">    return transactionWithMetadata.getTransaction().getGasLimit();</span>
+  }
+
+  public Bytes getInputData() {
+<span class="fc" id="L147">    return transactionWithMetadata.getTransaction().getPayload();</span>
+  }
+
+  public Optional&lt;NormalBlockAdapter&gt; getBlock(final DataFetchingEnvironment environment) {
+<span class="fc" id="L151">    return transactionWithMetadata</span>
+<span class="fc" id="L152">        .getBlockHash()</span>
+<span class="fc" id="L153">        .flatMap(blockHash -&gt; getBlockchainQueries(environment).blockByHash(blockHash))</span>
+<span class="fc" id="L154">        .map(NormalBlockAdapter::new);</span>
+  }
+
+  public Optional&lt;Long&gt; getStatus(final DataFetchingEnvironment environment) {
+<span class="fc" id="L158">    return getReceipt(environment)</span>
+<span class="fc" id="L159">        .map(TransactionReceiptWithMetadata::getReceipt)</span>
+<span class="fc" id="L160">        .flatMap(</span>
+            receipt -&gt;
+<span class="fc bfc" id="L162" title="All 2 branches covered.">                receipt.getStatus() == -1</span>
+<span class="fc" id="L163">                    ? Optional.empty()</span>
+<span class="fc" id="L164">                    : Optional.of((long) receipt.getStatus()));</span>
+  }
+
+  public Optional&lt;Long&gt; getGasUsed(final DataFetchingEnvironment environment) {
+<span class="fc" id="L168">    return getReceipt(environment).map(TransactionReceiptWithMetadata::getGasUsed);</span>
+  }
+
+  public Optional&lt;Long&gt; getCumulativeGasUsed(final DataFetchingEnvironment environment) {
+<span class="fc" id="L172">    return getReceipt(environment).map(rpt -&gt; rpt.getReceipt().getCumulativeGasUsed());</span>
+  }
+
+  public Optional&lt;Wei&gt; getEffectiveGasPrice(final DataFetchingEnvironment environment) {
+<span class="nc" id="L176">    return getReceipt(environment)</span>
+<span class="nc" id="L177">        .map(rwm -&gt; rwm.getTransaction().getEffectiveGasPrice(rwm.getBaseFee()));</span>
+  }
+
+  public Optional&lt;Long&gt; getBlobGasUsed(final DataFetchingEnvironment environment) {
+<span class="fc" id="L181">    return getReceipt(environment).flatMap(TransactionReceiptWithMetadata::getBlobGasUsed);</span>
+  }
+
+  public Optional&lt;Wei&gt; getBlobGasPrice(final DataFetchingEnvironment environment) {
+<span class="fc" id="L185">    return getReceipt(environment).flatMap(TransactionReceiptWithMetadata::getBlobGasPrice);</span>
+  }
+
+  public Optional&lt;AccountAdapter&gt; getCreatedContract(final DataFetchingEnvironment environment) {
+<span class="fc" id="L189">    final boolean contractCreated = transactionWithMetadata.getTransaction().isContractCreation();</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">    if (contractCreated) {</span>
+<span class="fc" id="L191">      final Optional&lt;Address&gt; addr = transactionWithMetadata.getTransaction().contractAddress();</span>
+
+<span class="pc bpc" id="L193" title="1 of 2 branches missed.">      if (addr.isPresent()) {</span>
+<span class="fc" id="L194">        final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L195">        final Optional&lt;Long&gt; txBlockNumber = transactionWithMetadata.getBlockNumber();</span>
+<span class="fc" id="L196">        final Optional&lt;Long&gt; bn = Optional.ofNullable(environment.getArgument(&quot;block&quot;));</span>
+<span class="pc bpc" id="L197" title="3 of 4 branches missed.">        if (txBlockNumber.isEmpty() &amp;&amp; bn.isEmpty()) {</span>
+<span class="nc" id="L198">          return Optional.empty();</span>
+        }
+<span class="fc" id="L200">        final long blockNumber = bn.orElseGet(txBlockNumber::get);</span>
+<span class="fc" id="L201">        return query</span>
+<span class="fc" id="L202">            .getAndMapWorldState(</span>
+<span class="fc" id="L203">                blockNumber, ws -&gt; Optional.of(new AccountAdapter(ws.get(addr.get()))))</span>
+<span class="pc" id="L204">            .or(() -&gt; Optional.of(new EmptyAccountAdapter(addr.get())));</span>
+      }
+    }
+<span class="fc" id="L207">    return Optional.empty();</span>
+  }
+
+  public List&lt;LogAdapter&gt; getLogs(final DataFetchingEnvironment environment) {
+<span class="fc" id="L211">    final BlockchainQueries query = getBlockchainQueries(environment);</span>
+<span class="fc" id="L212">    final ProtocolSchedule protocolSchedule =</span>
+<span class="fc" id="L213">        environment.getGraphQlContext().get(GraphQLContextType.PROTOCOL_SCHEDULE);</span>
+
+<span class="fc" id="L215">    final Hash hash = transactionWithMetadata.getTransaction().getHash();</span>
+
+<span class="fc" id="L217">    final Optional&lt;BlockHeader&gt; maybeBlockHeader =</span>
+<span class="fc" id="L218">        transactionWithMetadata.getBlockNumber().flatMap(query::getBlockHeaderByNumber);</span>
+
+<span class="pc bpc" id="L220" title="1 of 2 branches missed.">    if (maybeBlockHeader.isEmpty()) {</span>
+<span class="nc" id="L221">      throw new RuntimeException(</span>
+          &quot;Cannot get block (&quot;
+<span class="nc" id="L223">              + transactionWithMetadata.getBlockNumber()</span>
+              + &quot;) for transaction &quot;
+<span class="nc" id="L225">              + transactionWithMetadata.getTransaction().getHash());</span>
+    }
+
+<span class="fc" id="L228">    final Optional&lt;TransactionReceiptWithMetadata&gt; maybeTransactionReceiptWithMetadata =</span>
+<span class="fc" id="L229">        query.transactionReceiptByTransactionHash(hash, protocolSchedule);</span>
+<span class="fc" id="L230">    final List&lt;LogAdapter&gt; results = new ArrayList&lt;&gt;();</span>
+<span class="pc bpc" id="L231" title="1 of 2 branches missed.">    if (maybeTransactionReceiptWithMetadata.isPresent()) {</span>
+<span class="fc" id="L232">      final List&lt;LogWithMetadata&gt; logs =</span>
+<span class="fc" id="L233">          query.matchingLogs(</span>
+<span class="fc" id="L234">              maybeBlockHeader.get().getBlockHash(), transactionWithMetadata, () -&gt; true);</span>
+<span class="fc bfc" id="L235" title="All 2 branches covered.">      for (final LogWithMetadata log : logs) {</span>
+<span class="fc" id="L236">        results.add(new LogAdapter(log));</span>
+<span class="fc" id="L237">      }</span>
+    }
+<span class="fc" id="L239">    return results;</span>
+  }
+
+  public BigInteger getR() {
+<span class="fc" id="L243">    return transactionWithMetadata.getTransaction().getR();</span>
+  }
+
+  public BigInteger getS() {
+<span class="fc" id="L247">    return transactionWithMetadata.getTransaction().getS();</span>
+  }
+
+  public Optional&lt;BigInteger&gt; getV() {
+<span class="fc" id="L251">    return Optional.ofNullable(transactionWithMetadata.getTransaction().getV());</span>
+  }
+
+  public Optional&lt;BigInteger&gt; getYParity() {
+<span class="fc" id="L255">    return Optional.ofNullable(transactionWithMetadata.getTransaction().getYParity());</span>
+  }
+
+  public List&lt;AccessListEntryAdapter&gt; getAccessList() {
+<span class="fc" id="L259">    return transactionWithMetadata</span>
+<span class="fc" id="L260">        .getTransaction()</span>
+<span class="fc" id="L261">        .getAccessList()</span>
+<span class="fc" id="L262">        .map(l -&gt; l.stream().map(AccessListEntryAdapter::new).toList())</span>
+<span class="fc" id="L263">        .orElse(List.of());</span>
+  }
+
+  public Optional&lt;Bytes&gt; getRaw() {
+<span class="nc" id="L267">    final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L268">    transactionWithMetadata.getTransaction().writeTo(rlpOutput);</span>
+<span class="nc" id="L269">    return Optional.of(rlpOutput.encoded());</span>
+  }
+
+  public Optional&lt;Bytes&gt; getRawReceipt(final DataFetchingEnvironment environment) {
+<span class="nc" id="L273">    return getReceipt(environment)</span>
+<span class="nc" id="L274">        .map(</span>
+            receipt -&gt; {
+<span class="nc" id="L276">              final BytesValueRLPOutput rlpOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L277">              receipt.getReceipt().writeTo(rlpOutput);</span>
+<span class="nc" id="L278">              return rlpOutput.encoded();</span>
+            });
+  }
+
+  public List&lt;VersionedHash&gt; getBlobVersionedHashes() {
+<span class="fc" id="L283">    return transactionWithMetadata.getTransaction().getVersionedHashes().orElse(List.of());</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

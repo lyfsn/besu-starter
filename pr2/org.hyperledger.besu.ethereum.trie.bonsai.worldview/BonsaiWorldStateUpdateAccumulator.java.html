@@ -1,0 +1,847 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiWorldStateUpdateAccumulator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.bonsai.worldview</a> &gt; <span class="el_source">BonsaiWorldStateUpdateAccumulator.java</span></div><h1>BonsaiWorldStateUpdateAccumulator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.bonsai.worldview;
+
+import org.hyperledger.besu.datatypes.AccountValue;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.bonsai.BonsaiAccount;
+import org.hyperledger.besu.ethereum.trie.bonsai.BonsaiValue;
+import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.AbstractWorldUpdater;
+import org.hyperledger.besu.evm.worldstate.UpdateTrackingAccount;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogAccumulator;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
+import javax.annotation.Nonnull;
+
+import com.google.common.collect.ForwardingMap;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BonsaiWorldStateUpdateAccumulator
+    extends AbstractWorldUpdater&lt;BonsaiWorldView, BonsaiAccount&gt;
+    implements BonsaiWorldView, TrieLogAccumulator {
+<span class="fc" id="L61">  private static final Logger LOG =</span>
+<span class="fc" id="L62">      LoggerFactory.getLogger(BonsaiWorldStateUpdateAccumulator.class);</span>
+  protected final Consumer&lt;BonsaiValue&lt;BonsaiAccount&gt;&gt; accountPreloader;
+  protected final Consumer&lt;StorageSlotKey&gt; storagePreloader;
+
+  private final AccountConsumingMap&lt;BonsaiValue&lt;BonsaiAccount&gt;&gt; accountsToUpdate;
+<span class="fc" id="L67">  private final Map&lt;Address, BonsaiValue&lt;Bytes&gt;&gt; codeToUpdate = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L68">  private final Set&lt;Address&gt; storageToClear = Collections.synchronizedSet(new HashSet&lt;&gt;());</span>
+  protected final EvmConfiguration evmConfiguration;
+
+  // storage sub mapped by _hashed_ key.  This is because in self_destruct calls we need to
+  // enumerate the old storage and delete it.  Those are trie stored by hashed key by spec and the
+  // alternative was to keep a giant pre-image cache of the entire trie.
+<span class="fc" id="L74">  private final Map&lt;Address, StorageConsumingMap&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt;&gt;</span>
+      storageToUpdate = new ConcurrentHashMap&lt;&gt;();
+
+<span class="fc" id="L77">  private final Map&lt;UInt256, Hash&gt; storageKeyHashLookup = new ConcurrentHashMap&lt;&gt;();</span>
+  protected boolean isAccumulatorStateChanged;
+
+  public BonsaiWorldStateUpdateAccumulator(
+      final BonsaiWorldView world,
+      final Consumer&lt;BonsaiValue&lt;BonsaiAccount&gt;&gt; accountPreloader,
+      final Consumer&lt;StorageSlotKey&gt; storagePreloader,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L85">    super(world, evmConfiguration);</span>
+<span class="fc" id="L86">    this.accountsToUpdate = new AccountConsumingMap&lt;&gt;(new ConcurrentHashMap&lt;&gt;(), accountPreloader);</span>
+<span class="fc" id="L87">    this.accountPreloader = accountPreloader;</span>
+<span class="fc" id="L88">    this.storagePreloader = storagePreloader;</span>
+<span class="fc" id="L89">    this.isAccumulatorStateChanged = false;</span>
+<span class="fc" id="L90">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L91">  }</span>
+
+  public BonsaiWorldStateUpdateAccumulator copy() {
+<span class="fc" id="L94">    final BonsaiWorldStateUpdateAccumulator copy =</span>
+        new BonsaiWorldStateUpdateAccumulator(
+<span class="fc" id="L96">            wrappedWorldView(), accountPreloader, storagePreloader, evmConfiguration);</span>
+<span class="fc" id="L97">    copy.cloneFromUpdater(this);</span>
+<span class="fc" id="L98">    return copy;</span>
+  }
+
+  void cloneFromUpdater(final BonsaiWorldStateUpdateAccumulator source) {
+<span class="fc" id="L102">    accountsToUpdate.putAll(source.getAccountsToUpdate());</span>
+<span class="fc" id="L103">    codeToUpdate.putAll(source.codeToUpdate);</span>
+<span class="fc" id="L104">    storageToClear.addAll(source.storageToClear);</span>
+<span class="fc" id="L105">    storageToUpdate.putAll(source.storageToUpdate);</span>
+<span class="fc" id="L106">    updatedAccounts.putAll(source.updatedAccounts);</span>
+<span class="fc" id="L107">    deletedAccounts.addAll(source.deletedAccounts);</span>
+<span class="fc" id="L108">    this.isAccumulatorStateChanged = true;</span>
+<span class="fc" id="L109">  }</span>
+
+  @Override
+  public Account get(final Address address) {
+<span class="fc" id="L113">    return super.get(address);</span>
+  }
+
+  @Override
+  protected UpdateTrackingAccount&lt;BonsaiAccount&gt; track(
+      final UpdateTrackingAccount&lt;BonsaiAccount&gt; account) {
+<span class="fc" id="L119">    return super.track(account);</span>
+  }
+
+  @Override
+  public MutableAccount getAccount(final Address address) {
+<span class="fc" id="L124">    return super.getAccount(address);</span>
+  }
+
+  @Override
+  public MutableAccount createAccount(final Address address, final long nonce, final Wei balance) {
+<span class="fc" id="L129">    BonsaiValue&lt;BonsaiAccount&gt; bonsaiValue = accountsToUpdate.get(address);</span>
+
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (bonsaiValue == null) {</span>
+<span class="fc" id="L132">      bonsaiValue = new BonsaiValue&lt;&gt;(null, null);</span>
+<span class="fc" id="L133">      accountsToUpdate.put(address, bonsaiValue);</span>
+<span class="fc bfc" id="L134" title="All 2 branches covered.">    } else if (bonsaiValue.getUpdated() != null) {</span>
+<span class="pc bpc" id="L135" title="1 of 2 branches missed.">      if (bonsaiValue.getUpdated().isEmpty()) {</span>
+<span class="fc" id="L136">        return track(new UpdateTrackingAccount&lt;&gt;(bonsaiValue.getUpdated()));</span>
+      } else {
+<span class="nc" id="L138">        throw new IllegalStateException(&quot;Cannot create an account when one already exists&quot;);</span>
+      }
+    }
+
+<span class="fc" id="L142">    final BonsaiAccount newAccount =</span>
+        new BonsaiAccount(
+            this,
+            address,
+<span class="fc" id="L146">            hashAndSaveAccountPreImage(address),</span>
+            nonce,
+            balance,
+            Hash.EMPTY_TRIE_HASH,
+            Hash.EMPTY,
+            true);
+<span class="fc" id="L152">    bonsaiValue.setUpdated(newAccount);</span>
+<span class="fc" id="L153">    return track(new UpdateTrackingAccount&lt;&gt;(newAccount));</span>
+  }
+
+  @Override
+  public Map&lt;Address, BonsaiValue&lt;BonsaiAccount&gt;&gt; getAccountsToUpdate() {
+<span class="fc" id="L158">    return accountsToUpdate;</span>
+  }
+
+  @Override
+  public Map&lt;Address, BonsaiValue&lt;Bytes&gt;&gt; getCodeToUpdate() {
+<span class="fc" id="L163">    return codeToUpdate;</span>
+  }
+
+  public Set&lt;Address&gt; getStorageToClear() {
+<span class="fc" id="L167">    return storageToClear;</span>
+  }
+
+  @Override
+  public Map&lt;Address, StorageConsumingMap&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt;&gt;
+      getStorageToUpdate() {
+<span class="fc" id="L173">    return storageToUpdate;</span>
+  }
+
+  @Override
+  protected BonsaiAccount getForMutation(final Address address) {
+<span class="fc" id="L178">    return loadAccount(address, BonsaiValue::getUpdated);</span>
+  }
+
+  protected BonsaiAccount loadAccount(
+      final Address address,
+      final Function&lt;BonsaiValue&lt;BonsaiAccount&gt;, BonsaiAccount&gt; bonsaiAccountFunction) {
+    try {
+<span class="fc" id="L185">      final BonsaiValue&lt;BonsaiAccount&gt; bonsaiValue = accountsToUpdate.get(address);</span>
+<span class="fc bfc" id="L186" title="All 2 branches covered.">      if (bonsaiValue == null) {</span>
+        final Account account;
+<span class="pc bpc" id="L188" title="1 of 2 branches missed.">        if (wrappedWorldView()</span>
+<span class="pc" id="L189">            instanceof BonsaiWorldStateUpdateAccumulator bonsaiWorldStateUpdateAccumulator) {</span>
+<span class="nc" id="L190">          account = bonsaiWorldStateUpdateAccumulator.loadAccount(address, bonsaiAccountFunction);</span>
+        } else {
+<span class="fc" id="L192">          account = wrappedWorldView().get(address);</span>
+        }
+<span class="fc bfc" id="L194" title="All 2 branches covered.">        if (account instanceof BonsaiAccount bonsaiAccount) {</span>
+<span class="fc" id="L195">          BonsaiAccount mutableAccount = new BonsaiAccount(bonsaiAccount, this, true);</span>
+<span class="fc" id="L196">          accountsToUpdate.put(address, new BonsaiValue&lt;&gt;(bonsaiAccount, mutableAccount));</span>
+<span class="fc" id="L197">          return mutableAccount;</span>
+        } else {
+          // add the empty read in accountsToUpdate
+<span class="fc" id="L200">          accountsToUpdate.put(address, new BonsaiValue&lt;&gt;(null, null));</span>
+<span class="fc" id="L201">          return null;</span>
+        }
+      } else {
+<span class="fc" id="L204">        return bonsaiAccountFunction.apply(bonsaiValue);</span>
+      }
+<span class="nc" id="L206">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L208">      throw new MerkleTrieException(</span>
+<span class="nc" id="L209">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  @Override
+  public Collection&lt;? extends Account&gt; getTouchedAccounts() {
+<span class="fc" id="L215">    return getUpdatedAccounts();</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getDeletedAccountAddresses() {
+<span class="nc" id="L220">    return getDeletedAccounts();</span>
+  }
+
+  @Override
+  public void revert() {
+<span class="nc" id="L225">    super.reset();</span>
+<span class="nc" id="L226">  }</span>
+
+  @Override
+  public void commit() {
+<span class="fc" id="L230">    this.isAccumulatorStateChanged = true;</span>
+<span class="fc bfc" id="L231" title="All 2 branches covered.">    for (final Address deletedAddress : getDeletedAccounts()) {</span>
+<span class="fc" id="L232">      final BonsaiValue&lt;BonsaiAccount&gt; accountValue =</span>
+<span class="fc" id="L233">          accountsToUpdate.computeIfAbsent(</span>
+              deletedAddress,
+<span class="nc" id="L235">              __ -&gt; loadAccountFromParent(deletedAddress, new BonsaiValue&lt;&gt;(null, null, true)));</span>
+<span class="fc" id="L236">      storageToClear.add(deletedAddress);</span>
+<span class="fc" id="L237">      final BonsaiValue&lt;Bytes&gt; codeValue = codeToUpdate.get(deletedAddress);</span>
+<span class="fc bfc" id="L238" title="All 2 branches covered.">      if (codeValue != null) {</span>
+<span class="fc" id="L239">        codeValue.setUpdated(null).setCleared();</span>
+      } else {
+<span class="fc" id="L241">        wrappedWorldView()</span>
+<span class="fc" id="L242">            .getCode(</span>
+                deletedAddress,
+<span class="fc" id="L244">                Optional.ofNullable(accountValue)</span>
+<span class="fc" id="L245">                    .map(BonsaiValue::getPrior)</span>
+<span class="fc" id="L246">                    .map(BonsaiAccount::getCodeHash)</span>
+<span class="fc" id="L247">                    .orElse(Hash.EMPTY))</span>
+<span class="fc" id="L248">            .ifPresent(</span>
+                deletedCode -&gt;
+<span class="fc" id="L250">                    codeToUpdate.put(deletedAddress, new BonsaiValue&lt;&gt;(deletedCode, null, true)));</span>
+      }
+
+      // mark all updated storage as to be cleared
+<span class="fc" id="L254">      final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; deletedStorageUpdates =</span>
+<span class="fc" id="L255">          storageToUpdate.computeIfAbsent(</span>
+              deletedAddress,
+              k -&gt;
+<span class="fc" id="L258">                  new StorageConsumingMap&lt;&gt;(</span>
+                      deletedAddress, new ConcurrentHashMap&lt;&gt;(), storagePreloader));
+<span class="fc" id="L260">      final Iterator&lt;Map.Entry&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt;&gt; iter =</span>
+<span class="fc" id="L261">          deletedStorageUpdates.entrySet().iterator();</span>
+<span class="fc bfc" id="L262" title="All 2 branches covered.">      while (iter.hasNext()) {</span>
+<span class="fc" id="L263">        final Map.Entry&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; updateEntry = iter.next();</span>
+<span class="fc" id="L264">        final BonsaiValue&lt;UInt256&gt; updatedSlot = updateEntry.getValue();</span>
+<span class="pc bpc" id="L265" title="1 of 4 branches missed.">        if (updatedSlot.getPrior() == null || updatedSlot.getPrior().isZero()) {</span>
+<span class="fc" id="L266">          iter.remove();</span>
+        } else {
+<span class="fc" id="L268">          updatedSlot.setUpdated(null).setCleared();</span>
+        }
+<span class="fc" id="L270">      }</span>
+
+<span class="fc" id="L272">      final BonsaiAccount originalValue = accountValue.getPrior();</span>
+<span class="fc bfc" id="L273" title="All 2 branches covered.">      if (originalValue != null) {</span>
+        // Enumerate and delete addresses not updated
+<span class="fc" id="L275">        wrappedWorldView()</span>
+<span class="fc" id="L276">            .getAllAccountStorage(deletedAddress, originalValue.getStorageRoot())</span>
+<span class="fc" id="L277">            .forEach(</span>
+                (keyHash, entryValue) -&gt; {
+<span class="fc" id="L279">                  final StorageSlotKey storageSlotKey =</span>
+<span class="fc" id="L280">                      new StorageSlotKey(Hash.wrap(keyHash), Optional.empty());</span>
+<span class="fc bfc" id="L281" title="All 2 branches covered.">                  if (!deletedStorageUpdates.containsKey(storageSlotKey)) {</span>
+<span class="fc" id="L282">                    final UInt256 value = UInt256.fromBytes(RLP.decodeOne(entryValue));</span>
+<span class="fc" id="L283">                    deletedStorageUpdates.put(storageSlotKey, new BonsaiValue&lt;&gt;(value, null, true));</span>
+                  }
+<span class="fc" id="L285">                });</span>
+      }
+<span class="fc bfc" id="L287" title="All 2 branches covered.">      if (deletedStorageUpdates.isEmpty()) {</span>
+<span class="fc" id="L288">        storageToUpdate.remove(deletedAddress);</span>
+      }
+<span class="fc" id="L290">      accountValue.setUpdated(null);</span>
+<span class="fc" id="L291">    }</span>
+
+<span class="fc" id="L293">    getUpdatedAccounts().parallelStream()</span>
+<span class="fc" id="L294">        .forEach(</span>
+            tracked -&gt; {
+<span class="fc" id="L296">              final Address updatedAddress = tracked.getAddress();</span>
+              final BonsaiAccount updatedAccount;
+<span class="fc" id="L298">              final BonsaiValue&lt;BonsaiAccount&gt; updatedAccountValue =</span>
+<span class="fc" id="L299">                  accountsToUpdate.get(updatedAddress);</span>
+
+<span class="fc" id="L301">              final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; pendingStorageUpdates =</span>
+<span class="fc" id="L302">                  storageToUpdate.computeIfAbsent(</span>
+                      updatedAddress,
+                      k -&gt;
+<span class="fc" id="L305">                          new StorageConsumingMap&lt;&gt;(</span>
+                              updatedAddress, new ConcurrentHashMap&lt;&gt;(), storagePreloader));
+
+<span class="fc bfc" id="L308" title="All 2 branches covered.">              if (tracked.getStorageWasCleared()) {</span>
+<span class="fc" id="L309">                storageToClear.add(updatedAddress);</span>
+<span class="fc" id="L310">                pendingStorageUpdates.clear();</span>
+              }
+
+<span class="fc bfc" id="L313" title="All 2 branches covered.">              if (tracked.getWrappedAccount() == null) {</span>
+<span class="fc" id="L314">                updatedAccount = new BonsaiAccount(this, tracked);</span>
+<span class="fc" id="L315">                tracked.setWrappedAccount(updatedAccount);</span>
+<span class="pc bpc" id="L316" title="1 of 2 branches missed.">                if (updatedAccountValue == null) {</span>
+<span class="nc" id="L317">                  accountsToUpdate.put(updatedAddress, new BonsaiValue&lt;&gt;(null, updatedAccount));</span>
+<span class="nc" id="L318">                  codeToUpdate.put(</span>
+<span class="nc" id="L319">                      updatedAddress, new BonsaiValue&lt;&gt;(null, updatedAccount.getCode()));</span>
+                } else {
+<span class="fc" id="L321">                  updatedAccountValue.setUpdated(updatedAccount);</span>
+                }
+              } else {
+<span class="fc" id="L324">                updatedAccount = tracked.getWrappedAccount();</span>
+<span class="fc" id="L325">                updatedAccount.setBalance(tracked.getBalance());</span>
+<span class="fc" id="L326">                updatedAccount.setNonce(tracked.getNonce());</span>
+<span class="fc bfc" id="L327" title="All 2 branches covered.">                if (tracked.codeWasUpdated()) {</span>
+<span class="fc" id="L328">                  updatedAccount.setCode(tracked.getCode());</span>
+                }
+<span class="fc bfc" id="L330" title="All 2 branches covered.">                if (tracked.getStorageWasCleared()) {</span>
+<span class="fc" id="L331">                  updatedAccount.clearStorage();</span>
+                }
+<span class="fc" id="L333">                tracked.getUpdatedStorage().forEach(updatedAccount::setStorageValue);</span>
+              }
+
+<span class="fc bfc" id="L336" title="All 2 branches covered.">              if (tracked.codeWasUpdated()) {</span>
+<span class="fc" id="L337">                final BonsaiValue&lt;Bytes&gt; pendingCode =</span>
+<span class="fc" id="L338">                    codeToUpdate.computeIfAbsent(</span>
+                        updatedAddress,
+                        addr -&gt;
+<span class="fc" id="L341">                            new BonsaiValue&lt;&gt;(</span>
+<span class="fc" id="L342">                                wrappedWorldView()</span>
+<span class="fc" id="L343">                                    .getCode(</span>
+                                        addr,
+<span class="fc" id="L345">                                        Optional.ofNullable(updatedAccountValue)</span>
+<span class="fc" id="L346">                                            .map(BonsaiValue::getPrior)</span>
+<span class="fc" id="L347">                                            .map(BonsaiAccount::getCodeHash)</span>
+<span class="fc" id="L348">                                            .orElse(Hash.EMPTY))</span>
+<span class="fc" id="L349">                                    .orElse(null),</span>
+                                null));
+<span class="fc" id="L351">                pendingCode.setUpdated(updatedAccount.getCode());</span>
+              }
+
+              // This is especially to avoid unnecessary computation for withdrawals and
+              // self-destruct beneficiaries
+<span class="fc bfc" id="L356" title="All 2 branches covered.">              if (updatedAccount.getUpdatedStorage().isEmpty()) {</span>
+<span class="fc" id="L357">                return;</span>
+              }
+
+<span class="fc" id="L360">              final TreeSet&lt;Map.Entry&lt;UInt256, UInt256&gt;&gt; entries =</span>
+<span class="fc" id="L361">                  new TreeSet&lt;&gt;(Map.Entry.comparingByKey());</span>
+<span class="fc" id="L362">              entries.addAll(updatedAccount.getUpdatedStorage().entrySet());</span>
+
+              // parallel stream here may cause database corruption
+<span class="fc" id="L365">              entries.forEach(</span>
+                  storageUpdate -&gt; {
+<span class="fc" id="L367">                    final UInt256 keyUInt = storageUpdate.getKey();</span>
+<span class="fc" id="L368">                    final StorageSlotKey slotKey =</span>
+<span class="fc" id="L369">                        new StorageSlotKey(hashAndSaveSlotPreImage(keyUInt), Optional.of(keyUInt));</span>
+<span class="fc" id="L370">                    final UInt256 value = storageUpdate.getValue();</span>
+<span class="fc" id="L371">                    final BonsaiValue&lt;UInt256&gt; pendingValue = pendingStorageUpdates.get(slotKey);</span>
+
+<span class="fc bfc" id="L373" title="All 2 branches covered.">                    if (pendingValue == null) {</span>
+<span class="fc" id="L374">                      pendingStorageUpdates.put(</span>
+                          slotKey,
+                          new BonsaiValue&lt;&gt;(
+<span class="fc" id="L377">                              updatedAccount.getOriginalStorageValue(keyUInt), value));</span>
+                    } else {
+<span class="fc" id="L379">                      pendingValue.setUpdated(value);</span>
+                    }
+<span class="fc" id="L381">                  });</span>
+
+<span class="fc" id="L383">              updatedAccount.getUpdatedStorage().clear();</span>
+
+<span class="pc bpc" id="L385" title="1 of 2 branches missed.">              if (pendingStorageUpdates.isEmpty()) {</span>
+<span class="nc" id="L386">                storageToUpdate.remove(updatedAddress);</span>
+              }
+
+<span class="fc bfc" id="L389" title="All 2 branches covered.">              if (tracked.getStorageWasCleared()) {</span>
+<span class="fc" id="L390">                tracked.setStorageWasCleared(false); // storage already cleared for this transaction</span>
+              }
+<span class="fc" id="L392">            });</span>
+<span class="fc" id="L393">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getCode(final Address address, final Hash codeHash) {
+<span class="fc" id="L397">    final BonsaiValue&lt;Bytes&gt; localCode = codeToUpdate.get(address);</span>
+<span class="pc bpc" id="L398" title="1 of 2 branches missed.">    if (localCode == null) {</span>
+<span class="fc" id="L399">      final Optional&lt;Bytes&gt; code = wrappedWorldView().getCode(address, codeHash);</span>
+<span class="pc bpc" id="L400" title="3 of 4 branches missed.">      if (code.isEmpty() &amp;&amp; !codeHash.equals(Hash.EMPTY)) {</span>
+<span class="nc" id="L401">        throw new MerkleTrieException(</span>
+<span class="nc" id="L402">            &quot;invalid account code&quot;, Optional.of(address), codeHash, Bytes.EMPTY);</span>
+      }
+<span class="fc" id="L404">      return code;</span>
+    } else {
+<span class="nc" id="L406">      return Optional.ofNullable(localCode.getUpdated());</span>
+    }
+  }
+
+  @Override
+  public UInt256 getStorageValue(final Address address, final UInt256 slotKey) {
+<span class="fc" id="L412">    StorageSlotKey storageSlotKey =</span>
+<span class="fc" id="L413">        new StorageSlotKey(hashAndSaveSlotPreImage(slotKey), Optional.of(slotKey));</span>
+<span class="fc" id="L414">    return getStorageValueByStorageSlotKey(address, storageSlotKey).orElse(UInt256.ZERO);</span>
+  }
+
+  @Override
+  public Optional&lt;UInt256&gt; getStorageValueByStorageSlotKey(
+      final Address address, final StorageSlotKey storageSlotKey) {
+<span class="fc" id="L420">    final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; localAccountStorage =</span>
+<span class="fc" id="L421">        storageToUpdate.get(address);</span>
+<span class="fc bfc" id="L422" title="All 2 branches covered.">    if (localAccountStorage != null) {</span>
+<span class="fc" id="L423">      final BonsaiValue&lt;UInt256&gt; value = localAccountStorage.get(storageSlotKey);</span>
+<span class="fc bfc" id="L424" title="All 2 branches covered.">      if (value != null) {</span>
+<span class="fc" id="L425">        return Optional.ofNullable(value.getUpdated());</span>
+      }
+    }
+    try {
+      final Optional&lt;UInt256&gt; valueUInt =
+<span class="pc bpc" id="L430" title="1 of 2 branches missed.">          (wrappedWorldView() instanceof BonsaiWorldState bonsaiWorldState)</span>
+<span class="fc" id="L431">              ? bonsaiWorldState.getStorageValueByStorageSlotKey(</span>
+                  () -&gt;
+<span class="fc" id="L433">                      Optional.ofNullable(loadAccount(address, BonsaiValue::getPrior))</span>
+<span class="fc" id="L434">                          .map(BonsaiAccount::getStorageRoot),</span>
+                  address,
+                  storageSlotKey)
+<span class="pc" id="L437">              : wrappedWorldView().getStorageValueByStorageSlotKey(address, storageSlotKey);</span>
+<span class="fc" id="L438">      storageToUpdate</span>
+<span class="fc" id="L439">          .computeIfAbsent(</span>
+              address,
+              key -&gt;
+<span class="fc" id="L442">                  new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader))</span>
+<span class="fc" id="L443">          .put(storageSlotKey, new BonsaiValue&lt;&gt;(valueUInt.orElse(null), valueUInt.orElse(null)));</span>
+
+<span class="fc" id="L445">      return valueUInt;</span>
+<span class="nc" id="L446">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L448">      throw new MerkleTrieException(</span>
+<span class="nc" id="L449">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  @Override
+  public UInt256 getPriorStorageValue(final Address address, final UInt256 storageKey) {
+    // TODO maybe log the read into the trie layer?
+<span class="fc" id="L456">    StorageSlotKey storageSlotKey =</span>
+<span class="fc" id="L457">        new StorageSlotKey(hashAndSaveSlotPreImage(storageKey), Optional.of(storageKey));</span>
+<span class="fc" id="L458">    final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; localAccountStorage =</span>
+<span class="fc" id="L459">        storageToUpdate.get(address);</span>
+<span class="pc bpc" id="L460" title="1 of 2 branches missed.">    if (localAccountStorage != null) {</span>
+<span class="fc" id="L461">      final BonsaiValue&lt;UInt256&gt; value = localAccountStorage.get(storageSlotKey);</span>
+<span class="fc bfc" id="L462" title="All 2 branches covered.">      if (value != null) {</span>
+<span class="pc bpc" id="L463" title="1 of 2 branches missed.">        if (value.isLastStepCleared()) {</span>
+<span class="nc" id="L464">          return UInt256.ZERO;</span>
+        }
+<span class="fc" id="L466">        final UInt256 updated = value.getUpdated();</span>
+<span class="fc bfc" id="L467" title="All 2 branches covered.">        if (updated != null) {</span>
+<span class="fc" id="L468">          return updated;</span>
+        }
+<span class="fc" id="L470">        final UInt256 original = value.getPrior();</span>
+<span class="pc bpc" id="L471" title="1 of 2 branches missed.">        if (original != null) {</span>
+<span class="nc" id="L472">          return original;</span>
+        }
+      }
+    }
+<span class="fc bfc" id="L476" title="All 2 branches covered.">    if (storageToClear.contains(address)) {</span>
+<span class="fc" id="L477">      return UInt256.ZERO;</span>
+    }
+<span class="fc" id="L479">    return getStorageValue(address, storageKey);</span>
+  }
+
+  @Override
+  public Map&lt;Bytes32, Bytes&gt; getAllAccountStorage(final Address address, final Hash rootHash) {
+<span class="nc" id="L484">    final Map&lt;Bytes32, Bytes&gt; results = wrappedWorldView().getAllAccountStorage(address, rootHash);</span>
+<span class="nc" id="L485">    final StorageConsumingMap&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; bonsaiValueStorage =</span>
+<span class="nc" id="L486">        storageToUpdate.get(address);</span>
+<span class="nc bnc" id="L487" title="All 2 branches missed.">    if (bonsaiValueStorage != null) {</span>
+      // hash the key to match the implied storage interface of hashed slotKey
+<span class="nc" id="L489">      bonsaiValueStorage.forEach(</span>
+<span class="nc" id="L490">          (key, value) -&gt; results.put(key.getSlotHash(), value.getUpdated()));</span>
+    }
+<span class="nc" id="L492">    return results;</span>
+  }
+
+  @Override
+  public boolean isPersisted() {
+<span class="nc" id="L497">    return true;</span>
+  }
+
+  @Override
+  public BonsaiWorldStateKeyValueStorage getWorldStateStorage() {
+<span class="nc" id="L502">    return wrappedWorldView().getWorldStateStorage();</span>
+  }
+
+  public void rollForward(final TrieLog layer) {
+<span class="fc" id="L506">    layer</span>
+<span class="fc" id="L507">        .getAccountChanges()</span>
+<span class="fc" id="L508">        .forEach(</span>
+            (address, change) -&gt;
+<span class="fc" id="L510">                rollAccountChange(address, change.getPrior(), change.getUpdated()));</span>
+<span class="fc" id="L511">    layer</span>
+<span class="fc" id="L512">        .getCodeChanges()</span>
+<span class="fc" id="L513">        .forEach(</span>
+<span class="fc" id="L514">            (address, change) -&gt; rollCodeChange(address, change.getPrior(), change.getUpdated()));</span>
+<span class="fc" id="L515">    layer</span>
+<span class="fc" id="L516">        .getStorageChanges()</span>
+<span class="fc" id="L517">        .forEach(</span>
+            (address, storage) -&gt;
+<span class="fc" id="L519">                storage.forEach(</span>
+                    (storageSlotKey, value) -&gt;
+<span class="fc" id="L521">                        rollStorageChange(</span>
+<span class="fc" id="L522">                            address, storageSlotKey, value.getPrior(), value.getUpdated())));</span>
+<span class="fc" id="L523">  }</span>
+
+  public void rollBack(final TrieLog layer) {
+<span class="fc" id="L526">    layer</span>
+<span class="fc" id="L527">        .getAccountChanges()</span>
+<span class="fc" id="L528">        .forEach(</span>
+            (address, change) -&gt;
+<span class="fc" id="L530">                rollAccountChange(address, change.getUpdated(), change.getPrior()));</span>
+<span class="fc" id="L531">    layer</span>
+<span class="fc" id="L532">        .getCodeChanges()</span>
+<span class="fc" id="L533">        .forEach(</span>
+<span class="fc" id="L534">            (address, change) -&gt; rollCodeChange(address, change.getUpdated(), change.getPrior()));</span>
+<span class="fc" id="L535">    layer</span>
+<span class="fc" id="L536">        .getStorageChanges()</span>
+<span class="fc" id="L537">        .forEach(</span>
+            (address, storage) -&gt;
+<span class="fc" id="L539">                storage.forEach(</span>
+                    (storageSlotKey, value) -&gt;
+<span class="fc" id="L541">                        rollStorageChange(</span>
+<span class="fc" id="L542">                            address, storageSlotKey, value.getUpdated(), value.getPrior())));</span>
+<span class="fc" id="L543">  }</span>
+
+  private void rollAccountChange(
+      final Address address,
+      final AccountValue expectedValue,
+      final AccountValue replacementValue) {
+<span class="fc bfc" id="L549" title="All 2 branches covered.">    if (Objects.equals(expectedValue, replacementValue)) {</span>
+      // non-change, a cached read.
+<span class="fc" id="L551">      return;</span>
+    }
+<span class="fc" id="L553">    BonsaiValue&lt;BonsaiAccount&gt; accountValue = accountsToUpdate.get(address);</span>
+<span class="pc bpc" id="L554" title="1 of 2 branches missed.">    if (accountValue == null) {</span>
+<span class="fc" id="L555">      accountValue = loadAccountFromParent(address, accountValue);</span>
+    }
+<span class="fc bfc" id="L557" title="All 2 branches covered.">    if (accountValue == null) {</span>
+<span class="pc bpc" id="L558" title="2 of 4 branches missed.">      if (expectedValue == null &amp;&amp; replacementValue != null) {</span>
+<span class="fc" id="L559">        accountsToUpdate.put(</span>
+            address,
+            new BonsaiValue&lt;&gt;(null, new BonsaiAccount(this, address, replacementValue, true)));
+      } else {
+<span class="nc" id="L563">        throw new IllegalStateException(</span>
+<span class="nc" id="L564">            String.format(</span>
+                &quot;Expected to update account, but the account does not exist. Address=%s&quot;, address));
+      }
+    } else {
+<span class="pc bpc" id="L568" title="1 of 2 branches missed.">      if (expectedValue == null) {</span>
+<span class="nc bnc" id="L569" title="All 2 branches missed.">        if (accountValue.getUpdated() != null) {</span>
+<span class="nc" id="L570">          throw new IllegalStateException(</span>
+<span class="nc" id="L571">              String.format(</span>
+                  &quot;Expected to create account, but the account exists.  Address=%s&quot;, address));
+        }
+      } else {
+<span class="fc" id="L575">        BonsaiAccount.assertCloseEnoughForDiffing(</span>
+<span class="fc" id="L576">            accountValue.getUpdated(),</span>
+            expectedValue,
+            &quot;Address=&quot; + address + &quot; Prior Value in Rolling Change&quot;);
+      }
+<span class="fc bfc" id="L580" title="All 2 branches covered.">      if (replacementValue == null) {</span>
+<span class="pc bpc" id="L581" title="1 of 2 branches missed.">        if (accountValue.getPrior() == null) {</span>
+          // TODO: should we remove from the parent accumulated change also?  only if it is a
+          // private copy
+<span class="nc" id="L584">          accountsToUpdate.remove(address);</span>
+        } else {
+<span class="fc" id="L586">          accountValue.setUpdated(null);</span>
+        }
+      } else {
+<span class="fc" id="L589">        accountValue.setUpdated(</span>
+<span class="fc" id="L590">            new BonsaiAccount(wrappedWorldView(), address, replacementValue, true));</span>
+      }
+    }
+<span class="fc" id="L593">  }</span>
+
+  private BonsaiValue&lt;BonsaiAccount&gt; loadAccountFromParent(
+      final Address address, final BonsaiValue&lt;BonsaiAccount&gt; defaultValue) {
+    try {
+<span class="fc" id="L598">      final Account parentAccount = wrappedWorldView().get(address);</span>
+<span class="fc bfc" id="L599" title="All 2 branches covered.">      if (parentAccount instanceof BonsaiAccount account) {</span>
+<span class="fc" id="L600">        final BonsaiValue&lt;BonsaiAccount&gt; loadedAccountValue =</span>
+            new BonsaiValue&lt;&gt;(new BonsaiAccount(account), account);
+<span class="fc" id="L602">        accountsToUpdate.put(address, loadedAccountValue);</span>
+<span class="fc" id="L603">        return loadedAccountValue;</span>
+      } else {
+<span class="fc" id="L605">        return defaultValue;</span>
+      }
+<span class="nc" id="L607">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L609">      throw new MerkleTrieException(</span>
+<span class="nc" id="L610">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  private void rollCodeChange(
+      final Address address, final Bytes expectedCode, final Bytes replacementCode) {
+<span class="fc bfc" id="L616" title="All 2 branches covered.">    if (Objects.equals(expectedCode, replacementCode)) {</span>
+      // non-change, a cached read.
+<span class="fc" id="L618">      return;</span>
+    }
+<span class="fc" id="L620">    BonsaiValue&lt;Bytes&gt; codeValue = codeToUpdate.get(address);</span>
+<span class="pc bpc" id="L621" title="1 of 2 branches missed.">    if (codeValue == null) {</span>
+<span class="fc" id="L622">      final Bytes storedCode =</span>
+<span class="fc" id="L623">          wrappedWorldView()</span>
+<span class="fc" id="L624">              .getCode(</span>
+<span class="fc" id="L625">                  address, Optional.ofNullable(expectedCode).map(Hash::hash).orElse(Hash.EMPTY))</span>
+<span class="fc" id="L626">              .orElse(Bytes.EMPTY);</span>
+<span class="fc bfc" id="L627" title="All 2 branches covered.">      if (!storedCode.isEmpty()) {</span>
+<span class="fc" id="L628">        codeValue = new BonsaiValue&lt;&gt;(storedCode, storedCode);</span>
+<span class="fc" id="L629">        codeToUpdate.put(address, codeValue);</span>
+      }
+    }
+
+<span class="fc bfc" id="L633" title="All 2 branches covered.">    if (codeValue == null) {</span>
+<span class="pc bpc" id="L634" title="4 of 6 branches missed.">      if ((expectedCode == null || expectedCode.isEmpty()) &amp;&amp; replacementCode != null) {</span>
+<span class="fc" id="L635">        codeToUpdate.put(address, new BonsaiValue&lt;&gt;(null, replacementCode));</span>
+      } else {
+<span class="nc" id="L637">        throw new IllegalStateException(</span>
+<span class="nc" id="L638">            String.format(</span>
+                &quot;Expected to update code, but the code does not exist.  Address=%s&quot;, address));
+      }
+    } else {
+<span class="fc" id="L642">      final Bytes existingCode = codeValue.getUpdated();</span>
+<span class="pc bpc" id="L643" title="4 of 6 branches missed.">      if ((expectedCode == null || expectedCode.isEmpty())</span>
+          &amp;&amp; existingCode != null
+<span class="nc bnc" id="L645" title="All 2 branches missed.">          &amp;&amp; !existingCode.isEmpty()) {</span>
+<span class="nc" id="L646">        LOG.warn(&quot;At Address={}, expected to create code, but code exists. Overwriting.&quot;, address);</span>
+<span class="pc bpc" id="L647" title="1 of 2 branches missed.">      } else if (!Objects.equals(expectedCode, existingCode)) {</span>
+<span class="nc" id="L648">        throw new IllegalStateException(</span>
+<span class="nc" id="L649">            String.format(</span>
+                &quot;Old value of code does not match expected value.  Address=%s ExpectedHash=%s ActualHash=%s&quot;,
+                address,
+<span class="nc bnc" id="L652" title="All 2 branches missed.">                expectedCode == null ? &quot;null&quot; : Hash.hash(expectedCode),</span>
+<span class="nc" id="L653">                Hash.hash(codeValue.getUpdated())));</span>
+      }
+<span class="pc bpc" id="L655" title="2 of 4 branches missed.">      if (replacementCode == null &amp;&amp; codeValue.getPrior() == null) {</span>
+<span class="nc" id="L656">        codeToUpdate.remove(address);</span>
+      } else {
+<span class="fc" id="L658">        codeValue.setUpdated(replacementCode);</span>
+      }
+    }
+<span class="fc" id="L661">  }</span>
+
+  private Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; maybeCreateStorageMap(
+      final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; storageMap, final Address address) {
+<span class="fc bfc" id="L665" title="All 2 branches covered.">    if (storageMap == null) {</span>
+<span class="fc" id="L666">      final StorageConsumingMap&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; newMap =</span>
+          new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader);
+<span class="fc" id="L668">      storageToUpdate.put(address, newMap);</span>
+<span class="fc" id="L669">      return newMap;</span>
+    } else {
+<span class="fc" id="L671">      return storageMap;</span>
+    }
+  }
+
+  private void rollStorageChange(
+      final Address address,
+      final StorageSlotKey storageSlotKey,
+      final UInt256 expectedValue,
+      final UInt256 replacementValue) {
+<span class="fc bfc" id="L680" title="All 2 branches covered.">    if (Objects.equals(expectedValue, replacementValue)) {</span>
+      // non-change, a cached read.
+<span class="fc" id="L682">      return;</span>
+    }
+<span class="pc bpc" id="L684" title="2 of 6 branches missed.">    if (replacementValue == null &amp;&amp; expectedValue != null &amp;&amp; expectedValue.isZero()) {</span>
+      // corner case on deletes, non-change
+<span class="nc" id="L686">      return;</span>
+    }
+<span class="fc" id="L688">    final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; storageMap = storageToUpdate.get(address);</span>
+<span class="fc bfc" id="L689" title="All 2 branches covered.">    BonsaiValue&lt;UInt256&gt; slotValue = storageMap == null ? null : storageMap.get(storageSlotKey);</span>
+<span class="pc bpc" id="L690" title="1 of 2 branches missed.">    if (slotValue == null) {</span>
+<span class="fc" id="L691">      final Optional&lt;UInt256&gt; storageValue =</span>
+<span class="fc" id="L692">          wrappedWorldView().getStorageValueByStorageSlotKey(address, storageSlotKey);</span>
+<span class="fc bfc" id="L693" title="All 2 branches covered.">      if (storageValue.isPresent()) {</span>
+<span class="fc" id="L694">        slotValue = new BonsaiValue&lt;&gt;(storageValue.get(), storageValue.get());</span>
+<span class="fc" id="L695">        storageToUpdate</span>
+<span class="fc" id="L696">            .computeIfAbsent(</span>
+                address,
+                k -&gt;
+<span class="fc" id="L699">                    new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader))</span>
+<span class="fc" id="L700">            .put(storageSlotKey, slotValue);</span>
+      }
+    }
+<span class="fc bfc" id="L703" title="All 2 branches covered.">    if (slotValue == null) {</span>
+<span class="pc bpc" id="L704" title="4 of 6 branches missed.">      if ((expectedValue == null || expectedValue.isZero()) &amp;&amp; replacementValue != null) {</span>
+<span class="fc" id="L705">        maybeCreateStorageMap(storageMap, address)</span>
+<span class="fc" id="L706">            .put(storageSlotKey, new BonsaiValue&lt;&gt;(null, replacementValue));</span>
+      } else {
+<span class="nc" id="L708">        throw new IllegalStateException(</span>
+<span class="nc" id="L709">            String.format(</span>
+                &quot;Expected to update storage value, but the slot does not exist. Account=%s SlotKey=%s&quot;,
+                address, storageSlotKey));
+      }
+    } else {
+<span class="fc" id="L714">      final UInt256 existingSlotValue = slotValue.getUpdated();</span>
+<span class="pc bpc" id="L715" title="4 of 6 branches missed.">      if ((expectedValue == null || expectedValue.isZero())</span>
+          &amp;&amp; existingSlotValue != null
+<span class="nc bnc" id="L717" title="All 2 branches missed.">          &amp;&amp; !existingSlotValue.isZero()) {</span>
+<span class="nc" id="L718">        throw new IllegalStateException(</span>
+<span class="nc" id="L719">            String.format(</span>
+                &quot;Expected to create slot, but the slot exists. Account=%s SlotKey=%s expectedValue=%s existingValue=%s&quot;,
+                address, storageSlotKey, expectedValue, existingSlotValue));
+      }
+<span class="pc bpc" id="L723" title="1 of 2 branches missed.">      if (!isSlotEquals(expectedValue, existingSlotValue)) {</span>
+<span class="nc" id="L724">        throw new IllegalStateException(</span>
+<span class="nc" id="L725">            String.format(</span>
+                &quot;Old value of slot does not match expected value. Account=%s SlotKey=%s Expected=%s Actual=%s&quot;,
+                address,
+                storageSlotKey,
+<span class="nc bnc" id="L729" title="All 2 branches missed.">                expectedValue == null ? &quot;null&quot; : expectedValue.toShortHexString(),</span>
+<span class="nc bnc" id="L730" title="All 2 branches missed.">                existingSlotValue == null ? &quot;null&quot; : existingSlotValue.toShortHexString()));</span>
+      }
+<span class="pc bpc" id="L732" title="1 of 4 branches missed.">      if (replacementValue == null &amp;&amp; slotValue.getPrior() == null) {</span>
+<span class="nc" id="L733">        final Map&lt;StorageSlotKey, BonsaiValue&lt;UInt256&gt;&gt; thisStorageUpdate =</span>
+<span class="nc" id="L734">            maybeCreateStorageMap(storageMap, address);</span>
+<span class="nc" id="L735">        thisStorageUpdate.remove(storageSlotKey);</span>
+<span class="nc bnc" id="L736" title="All 2 branches missed.">        if (thisStorageUpdate.isEmpty()) {</span>
+<span class="nc" id="L737">          storageToUpdate.remove(address);</span>
+        }
+<span class="nc" id="L739">      } else {</span>
+<span class="fc" id="L740">        slotValue.setUpdated(replacementValue);</span>
+      }
+    }
+<span class="fc" id="L743">  }</span>
+
+  private boolean isSlotEquals(final UInt256 expectedValue, final UInt256 existingSlotValue) {
+<span class="pc bpc" id="L746" title="1 of 2 branches missed.">    final UInt256 sanitizedExpectedValue = (expectedValue == null) ? UInt256.ZERO : expectedValue;</span>
+    final UInt256 sanitizedExistingSlotValue =
+<span class="pc bpc" id="L748" title="1 of 2 branches missed.">        (existingSlotValue == null) ? UInt256.ZERO : existingSlotValue;</span>
+<span class="fc" id="L749">    return Objects.equals(sanitizedExpectedValue, sanitizedExistingSlotValue);</span>
+  }
+
+  public boolean isAccumulatorStateChanged() {
+<span class="fc" id="L753">    return isAccumulatorStateChanged;</span>
+  }
+
+  public void resetAccumulatorStateChanged() {
+<span class="fc" id="L757">    isAccumulatorStateChanged = false;</span>
+<span class="fc" id="L758">  }</span>
+
+  @Override
+  public void reset() {
+<span class="fc" id="L762">    storageToClear.clear();</span>
+<span class="fc" id="L763">    storageToUpdate.clear();</span>
+<span class="fc" id="L764">    codeToUpdate.clear();</span>
+<span class="fc" id="L765">    accountsToUpdate.clear();</span>
+<span class="fc" id="L766">    resetAccumulatorStateChanged();</span>
+<span class="fc" id="L767">    updatedAccounts.clear();</span>
+<span class="fc" id="L768">    deletedAccounts.clear();</span>
+<span class="fc" id="L769">    storageKeyHashLookup.clear();</span>
+<span class="fc" id="L770">  }</span>
+
+  public static class AccountConsumingMap&lt;T&gt; extends ForwardingMap&lt;Address, T&gt; {
+
+    private final ConcurrentMap&lt;Address, T&gt; accounts;
+    private final Consumer&lt;T&gt; consumer;
+
+    public AccountConsumingMap(
+<span class="fc" id="L778">        final ConcurrentMap&lt;Address, T&gt; accounts, final Consumer&lt;T&gt; consumer) {</span>
+<span class="fc" id="L779">      this.accounts = accounts;</span>
+<span class="fc" id="L780">      this.consumer = consumer;</span>
+<span class="fc" id="L781">    }</span>
+
+    @Override
+    public T put(@Nonnull final Address address, @Nonnull final T value) {
+<span class="fc" id="L785">      consumer.process(address, value);</span>
+<span class="fc" id="L786">      return accounts.put(address, value);</span>
+    }
+
+    public Consumer&lt;T&gt; getConsumer() {
+<span class="nc" id="L790">      return consumer;</span>
+    }
+
+    @Override
+    protected Map&lt;Address, T&gt; delegate() {
+<span class="fc" id="L795">      return accounts;</span>
+    }
+  }
+
+  public static class StorageConsumingMap&lt;K, T&gt; extends ForwardingMap&lt;K, T&gt; {
+
+    private final Address address;
+
+    private final ConcurrentMap&lt;K, T&gt; storages;
+    private final Consumer&lt;K&gt; consumer;
+
+    public StorageConsumingMap(
+<span class="fc" id="L807">        final Address address, final ConcurrentMap&lt;K, T&gt; storages, final Consumer&lt;K&gt; consumer) {</span>
+<span class="fc" id="L808">      this.address = address;</span>
+<span class="fc" id="L809">      this.storages = storages;</span>
+<span class="fc" id="L810">      this.consumer = consumer;</span>
+<span class="fc" id="L811">    }</span>
+
+    @Override
+    public T put(@Nonnull final K slotKey, @Nonnull final T value) {
+<span class="fc" id="L815">      consumer.process(address, slotKey);</span>
+<span class="fc" id="L816">      return storages.put(slotKey, value);</span>
+    }
+
+    public Consumer&lt;K&gt; getConsumer() {
+<span class="fc" id="L820">      return consumer;</span>
+    }
+
+    @Override
+    protected Map&lt;K, T&gt; delegate() {
+<span class="fc" id="L825">      return storages;</span>
+    }
+  }
+
+  public interface Consumer&lt;T&gt; {
+    void process(final Address address, T value);
+  }
+
+  protected Hash hashAndSaveAccountPreImage(final Address address) {
+    // no need to save account preimage by default
+<span class="fc" id="L835">    return Hash.hash(address);</span>
+  }
+
+  protected Hash hashAndSaveSlotPreImage(final UInt256 slotKey) {
+<span class="fc" id="L839">    Hash hash = storageKeyHashLookup.get(slotKey);</span>
+<span class="fc bfc" id="L840" title="All 2 branches covered.">    if (hash == null) {</span>
+<span class="fc" id="L841">      hash = Hash.hash(slotKey);</span>
+<span class="fc" id="L842">      storageKeyHashLookup.put(slotKey, hash);</span>
+    }
+<span class="fc" id="L844">    return hash;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

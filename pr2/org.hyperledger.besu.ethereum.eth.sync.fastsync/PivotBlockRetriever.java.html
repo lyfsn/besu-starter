@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PivotBlockRetriever.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.sync.fastsync</a> &gt; <span class="el_source">PivotBlockRetriever.java</span></div><h1>PivotBlockRetriever.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.sync.fastsync;
+
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This task attempts to find a non-controversial pivot block by confirming the pivot block number
+ * with a minimum number of peers. If a particular pivot block cannot be confirmed, the pivot block
+ * number is pushed back and the confirmation process repeats. If a maximum number of retries is
+ * reached, the task fails with a {@code FastSyncException} containing {@code
+ * FastSyncError.PIVOT_BLOCK_HEADER_MISMATCH}.
+ */
+public class PivotBlockRetriever {
+
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(PivotBlockRetriever.class);</span>
+  public static final int MAX_QUERY_RETRIES_PER_PEER = 4;
+  private static final int DEFAULT_MAX_PIVOT_BLOCK_RESETS = 250;
+  private static final int SUSPICIOUS_NUMBER_OF_RETRIES = 5;
+
+  private final EthContext ethContext;
+  private final MetricsSystem metricsSystem;
+  private final ProtocolSchedule protocolSchedule;
+
+  // The number of peers we need to query to confirm our pivot block
+  private final int peersToQuery;
+  // The max times to push the pivot block number back when peers can't agree on a pivot
+  private final int maxPivotBlockResets;
+  // How far to push back the pivot block when we retry on pivot disagreement
+  private final long pivotBlockNumberResetDelta;
+
+  // The current pivot block number, gets pushed back if peers disagree on the pivot block
+  AtomicLong pivotBlockNumber;
+
+<span class="fc" id="L60">  private final CompletableFuture&lt;FastSyncState&gt; result = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L61">  private final Map&lt;Long, PivotBlockConfirmer&gt; confirmationTasks = new ConcurrentHashMap&lt;&gt;();</span>
+
+<span class="fc" id="L63">  private final AtomicBoolean isStarted = new AtomicBoolean(false);</span>
+
+  PivotBlockRetriever(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final long pivotBlockNumber,
+      final int peersToQuery,
+      final long pivotBlockNumberResetDelta,
+<span class="fc" id="L72">      final int maxPivotBlockResets) {</span>
+<span class="fc" id="L73">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L74">    this.ethContext = ethContext;</span>
+<span class="fc" id="L75">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L76">    this.pivotBlockNumber = new AtomicLong(pivotBlockNumber);</span>
+<span class="fc" id="L77">    this.peersToQuery = peersToQuery;</span>
+<span class="fc" id="L78">    this.pivotBlockNumberResetDelta = pivotBlockNumberResetDelta;</span>
+<span class="fc" id="L79">    this.maxPivotBlockResets = maxPivotBlockResets;</span>
+<span class="fc" id="L80">  }</span>
+
+  public PivotBlockRetriever(
+      final ProtocolSchedule protocolSchedule,
+      final EthContext ethContext,
+      final MetricsSystem metricsSystem,
+      final long pivotBlockNumber,
+      final int peersToQuery,
+      final long pivotBlockNumberResetDelta) {
+<span class="fc" id="L89">    this(</span>
+        protocolSchedule,
+        ethContext,
+        metricsSystem,
+        pivotBlockNumber,
+        peersToQuery,
+        pivotBlockNumberResetDelta,
+        DEFAULT_MAX_PIVOT_BLOCK_RESETS);
+<span class="fc" id="L97">  }</span>
+
+  public CompletableFuture&lt;FastSyncState&gt; downloadPivotBlockHeader() {
+<span class="pc bpc" id="L100" title="1 of 2 branches missed.">    if (isStarted.compareAndSet(false, true)) {</span>
+<span class="fc" id="L101">      LOG.info(&quot;Retrieve a pivot block that can be confirmed by at least {} peers.&quot;, peersToQuery);</span>
+<span class="fc" id="L102">      confirmBlock(pivotBlockNumber.get());</span>
+    }
+
+<span class="fc" id="L105">    return result;</span>
+  }
+
+  private void confirmBlock(final long blockNumber) {
+<span class="fc" id="L109">    final PivotBlockConfirmer pivotBlockConfirmationTask =</span>
+        new PivotBlockConfirmer(
+            protocolSchedule,
+            ethContext,
+            metricsSystem,
+<span class="fc" id="L114">            pivotBlockNumber.get(),</span>
+            peersToQuery,
+            MAX_QUERY_RETRIES_PER_PEER);
+<span class="fc" id="L117">    final PivotBlockConfirmer preexistingTask =</span>
+<span class="fc" id="L118">        confirmationTasks.putIfAbsent(blockNumber, pivotBlockConfirmationTask);</span>
+<span class="pc bpc" id="L119" title="1 of 2 branches missed.">    if (preexistingTask != null) {</span>
+      // We already set up a task to confirm this block
+<span class="nc" id="L121">      return;</span>
+    }
+
+<span class="fc" id="L124">    pivotBlockConfirmationTask.confirmPivotBlock().whenComplete(this::handleConfirmationResult);</span>
+<span class="fc" id="L125">  }</span>
+
+  private void handleConfirmationResult(final FastSyncState fastSyncState, final Throwable error) {
+<span class="fc bfc" id="L128" title="All 2 branches covered.">    if (error != null) {</span>
+<span class="fc" id="L129">      final Throwable rootCause = ExceptionUtils.rootCause(error);</span>
+<span class="pc bpc" id="L130" title="1 of 2 branches missed.">      if (rootCause instanceof PivotBlockConfirmer.ContestedPivotBlockException) {</span>
+<span class="fc" id="L131">        final long blockNumber =</span>
+<span class="fc" id="L132">            ((PivotBlockConfirmer.ContestedPivotBlockException) error).getBlockNumber();</span>
+<span class="fc" id="L133">        handleContestedPivotBlock(blockNumber);</span>
+<span class="fc" id="L134">      } else {</span>
+<span class="nc" id="L135">        LOG.error(&quot;Encountered error while requesting pivot block header&quot;, error);</span>
+<span class="nc" id="L136">        result.completeExceptionally(error);</span>
+      }
+<span class="fc" id="L138">      return;</span>
+    }
+
+<span class="fc" id="L141">    result.complete(fastSyncState);</span>
+<span class="fc" id="L142">  }</span>
+
+  private void handleContestedPivotBlock(final long contestedBlockNumber) {
+<span class="pc bpc" id="L145" title="1 of 2 branches missed.">    if (pivotBlockNumber.compareAndSet(</span>
+        contestedBlockNumber, contestedBlockNumber - pivotBlockNumberResetDelta)) {
+<span class="fc" id="L147">      LOG.info(&quot;Received conflicting pivot blocks for {}.&quot;, contestedBlockNumber);</span>
+
+<span class="fc" id="L149">      final int retryCount = confirmationTasks.size();</span>
+
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">      if ((retryCount % SUSPICIOUS_NUMBER_OF_RETRIES) == 0) {</span>
+<span class="nc" id="L152">        LOG.warn(&quot;{} attempts have failed to find a fast sync pivot block&quot;, retryCount);</span>
+      }
+
+<span class="fc bfc" id="L155" title="All 2 branches covered.">      if (retryCount &gt; maxPivotBlockResets</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">          || pivotBlockNumber.get() &lt;= BlockHeader.GENESIS_BLOCK_NUMBER) {</span>
+<span class="fc" id="L157">        LOG.info(&quot;Max retries reached, cancel pivot block download.&quot;);</span>
+        // Pivot block selection has failed
+<span class="fc" id="L159">        result.completeExceptionally(new SyncException(SyncError.PIVOT_BLOCK_HEADER_MISMATCH));</span>
+<span class="fc" id="L160">        return;</span>
+      } else {
+<span class="fc" id="L162">        LOG.info(&quot;Move pivot block back to {} and retry.&quot;, pivotBlockNumber);</span>
+      }
+
+<span class="fc" id="L165">      confirmBlock(pivotBlockNumber.get());</span>
+    }
+<span class="fc" id="L167">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

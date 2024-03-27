@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>IbftMessageTransmitter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.ibft.network</a> &gt; <span class="el_source">IbftMessageTransmitter.java</span></div><h1>IbftMessageTransmitter.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.ibft.network;
+
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.network.ValidatorMulticaster;
+import org.hyperledger.besu.consensus.ibft.messagedata.CommitMessageData;
+import org.hyperledger.besu.consensus.ibft.messagedata.PrepareMessageData;
+import org.hyperledger.besu.consensus.ibft.messagedata.ProposalMessageData;
+import org.hyperledger.besu.consensus.ibft.messagedata.RoundChangeMessageData;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Commit;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Prepare;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.Proposal;
+import org.hyperledger.besu.consensus.ibft.messagewrappers.RoundChange;
+import org.hyperledger.besu.consensus.ibft.payload.MessageFactory;
+import org.hyperledger.besu.consensus.ibft.payload.RoundChangeCertificate;
+import org.hyperledger.besu.consensus.ibft.statemachine.PreparedRoundArtifacts;
+import org.hyperledger.besu.crypto.SECPSignature;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.plugin.services.securitymodule.SecurityModuleException;
+
+import java.util.Optional;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Ibft message transmitter. */
+public class IbftMessageTransmitter {
+
+<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(IbftMessageTransmitter.class);</span>
+
+  private final MessageFactory messageFactory;
+  private final ValidatorMulticaster multicaster;
+
+  /**
+   * Instantiates a new Ibft message transmitter.
+   *
+   * @param messageFactory the message factory
+   * @param multicaster the multicaster
+   */
+  public IbftMessageTransmitter(
+<span class="fc" id="L55">      final MessageFactory messageFactory, final ValidatorMulticaster multicaster) {</span>
+<span class="fc" id="L56">    this.messageFactory = messageFactory;</span>
+<span class="fc" id="L57">    this.multicaster = multicaster;</span>
+<span class="fc" id="L58">  }</span>
+
+  /**
+   * Multicast proposal.
+   *
+   * @param roundIdentifier the round identifier
+   * @param block the block
+   * @param roundChangeCertificate the round change certificate
+   */
+  public void multicastProposal(
+      final ConsensusRoundIdentifier roundIdentifier,
+      final Block block,
+      final Optional&lt;RoundChangeCertificate&gt; roundChangeCertificate) {
+    try {
+<span class="nc" id="L72">      final Proposal data =</span>
+<span class="nc" id="L73">          messageFactory.createProposal(roundIdentifier, block, roundChangeCertificate);</span>
+
+<span class="nc" id="L75">      final ProposalMessageData message = ProposalMessageData.create(data);</span>
+
+<span class="nc" id="L77">      multicaster.send(message);</span>
+<span class="nc" id="L78">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L79">      LOG.warn(&quot;Failed to generate signature for Proposal (not sent): {} &quot;, e.getMessage());</span>
+<span class="nc" id="L80">    }</span>
+<span class="nc" id="L81">  }</span>
+
+  /**
+   * Multicast prepare.
+   *
+   * @param roundIdentifier the round identifier
+   * @param digest the digest
+   */
+  public void multicastPrepare(final ConsensusRoundIdentifier roundIdentifier, final Hash digest) {
+    try {
+<span class="nc" id="L91">      final Prepare data = messageFactory.createPrepare(roundIdentifier, digest);</span>
+
+<span class="nc" id="L93">      final PrepareMessageData message = PrepareMessageData.create(data);</span>
+
+<span class="nc" id="L95">      multicaster.send(message);</span>
+<span class="nc" id="L96">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L97">      LOG.warn(&quot;Failed to generate signature for Prepare (not sent): {} &quot;, e.getMessage());</span>
+<span class="nc" id="L98">    }</span>
+<span class="nc" id="L99">  }</span>
+
+  /**
+   * Multicast commit.
+   *
+   * @param roundIdentifier the round identifier
+   * @param digest the digest
+   * @param commitSeal the commit seal
+   */
+  public void multicastCommit(
+      final ConsensusRoundIdentifier roundIdentifier,
+      final Hash digest,
+      final SECPSignature commitSeal) {
+    try {
+<span class="nc" id="L113">      final Commit data = messageFactory.createCommit(roundIdentifier, digest, commitSeal);</span>
+
+<span class="nc" id="L115">      final CommitMessageData message = CommitMessageData.create(data);</span>
+
+<span class="nc" id="L117">      multicaster.send(message);</span>
+<span class="nc" id="L118">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L119">      LOG.warn(&quot;Failed to generate signature for Commit (not sent): {} &quot;, e.getMessage());</span>
+<span class="nc" id="L120">    }</span>
+<span class="nc" id="L121">  }</span>
+
+  /**
+   * Multicast round change.
+   *
+   * @param roundIdentifier the round identifier
+   * @param preparedRoundArtifacts the prepared round artifacts
+   */
+  public void multicastRoundChange(
+      final ConsensusRoundIdentifier roundIdentifier,
+      final Optional&lt;PreparedRoundArtifacts&gt; preparedRoundArtifacts) {
+    try {
+<span class="fc" id="L133">      final RoundChange data =</span>
+<span class="fc" id="L134">          messageFactory.createRoundChange(roundIdentifier, preparedRoundArtifacts);</span>
+
+<span class="fc" id="L136">      final RoundChangeMessageData message = RoundChangeMessageData.create(data);</span>
+
+<span class="fc" id="L138">      multicaster.send(message);</span>
+<span class="nc" id="L139">    } catch (final SecurityModuleException e) {</span>
+<span class="nc" id="L140">      LOG.warn(&quot;Failed to generate signature for RoundChange (not sent): {} &quot;, e.getMessage());</span>
+<span class="fc" id="L141">    }</span>
+<span class="fc" id="L142">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

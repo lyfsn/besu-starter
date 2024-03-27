@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ValidatorContractController.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.qbft.validator</a> &gt; <span class="el_source">ValidatorContractController.java</span></div><h1>ValidatorContractController.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.qbft.validator;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.mainnet.ImmutableTransactionValidationParams;
+import org.hyperledger.besu.ethereum.mainnet.TransactionValidationParams;
+import org.hyperledger.besu.ethereum.transaction.CallParameter;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulator;
+import org.hyperledger.besu.ethereum.transaction.TransactionSimulatorResult;
+import org.hyperledger.besu.evm.tracing.OperationTracer;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.web3j.abi.FunctionEncoder;
+import org.web3j.abi.FunctionReturnDecoder;
+import org.web3j.abi.TypeReference;
+import org.web3j.abi.datatypes.DynamicArray;
+import org.web3j.abi.datatypes.Function;
+import org.web3j.abi.datatypes.Type;
+
+/** The Validator contract controller. */
+public class ValidatorContractController {
+  /** The constant GET_VALIDATORS. */
+  public static final String GET_VALIDATORS = &quot;getValidators&quot;;
+  /** The constant CONTRACT_ERROR_MSG. */
+  public static final String CONTRACT_ERROR_MSG = &quot;Failed validator smart contract call&quot;;
+
+  private final TransactionSimulator transactionSimulator;
+  private final Function getValidatorsFunction;
+
+  /**
+   * Instantiates a new Validator contract controller.
+   *
+   * @param transactionSimulator the transaction simulator
+   */
+<span class="fc" id="L53">  public ValidatorContractController(final TransactionSimulator transactionSimulator) {</span>
+<span class="fc" id="L54">    this.transactionSimulator = transactionSimulator;</span>
+
+    try {
+<span class="fc" id="L57">      this.getValidatorsFunction =</span>
+          new Function(
+              GET_VALIDATORS,
+<span class="fc" id="L60">              List.of(),</span>
+<span class="fc" id="L61">              List.of(new TypeReference&lt;DynamicArray&lt;org.web3j.abi.datatypes.Address&gt;&gt;() {}));</span>
+<span class="nc" id="L62">    } catch (final Exception e) {</span>
+<span class="nc" id="L63">      throw new RuntimeException(&quot;Error creating smart contract function&quot;, e);</span>
+<span class="fc" id="L64">    }</span>
+<span class="fc" id="L65">  }</span>
+
+  /**
+   * Gets validators.
+   *
+   * @param blockNumber the block number
+   * @param contractAddress the contract address
+   * @return the validators
+   */
+  public Collection&lt;Address&gt; getValidators(final long blockNumber, final Address contractAddress) {
+<span class="fc" id="L75">    return callFunction(blockNumber, getValidatorsFunction, contractAddress)</span>
+<span class="fc" id="L76">        .map(this::parseGetValidatorsResult)</span>
+<span class="fc" id="L77">        .orElseThrow(() -&gt; new IllegalStateException(CONTRACT_ERROR_MSG));</span>
+  }
+
+  @SuppressWarnings({&quot;rawtypes&quot;, &quot;unchecked&quot;})
+  private Collection&lt;Address&gt; parseGetValidatorsResult(final TransactionSimulatorResult result) {
+<span class="fc" id="L82">    final List&lt;Type&gt; resultDecoding = decodeResult(result, getValidatorsFunction);</span>
+<span class="fc" id="L83">    final List&lt;org.web3j.abi.datatypes.Address&gt; addresses =</span>
+<span class="fc" id="L84">        (List&lt;org.web3j.abi.datatypes.Address&gt;) resultDecoding.get(0).getValue();</span>
+<span class="fc" id="L85">    return addresses.stream()</span>
+<span class="fc" id="L86">        .map(a -&gt; Address.fromHexString(a.getValue()))</span>
+<span class="fc" id="L87">        .collect(Collectors.toList());</span>
+  }
+
+  private Optional&lt;TransactionSimulatorResult&gt; callFunction(
+      final long blockNumber, final Function function, final Address contractAddress) {
+<span class="fc" id="L92">    final Bytes payload = Bytes.fromHexString(FunctionEncoder.encode(function));</span>
+<span class="fc" id="L93">    final CallParameter callParams =</span>
+        new CallParameter(null, contractAddress, -1, null, null, payload);
+    final TransactionValidationParams transactionValidationParams =
+<span class="fc" id="L96">        ImmutableTransactionValidationParams.builder()</span>
+<span class="fc" id="L97">            .from(TransactionValidationParams.transactionSimulator())</span>
+<span class="fc" id="L98">            .isAllowExceedingBalance(true)</span>
+<span class="fc" id="L99">            .build();</span>
+<span class="fc" id="L100">    return transactionSimulator.process(</span>
+        callParams, transactionValidationParams, OperationTracer.NO_TRACING, blockNumber);
+  }
+
+  @SuppressWarnings(&quot;rawtypes&quot;)
+  private List&lt;Type&gt; decodeResult(
+      final TransactionSimulatorResult result, final Function function) {
+<span class="fc bfc" id="L107" title="All 2 branches covered.">    if (result.isSuccessful()) {</span>
+<span class="fc" id="L108">      final List&lt;Type&gt; decodedList =</span>
+<span class="fc" id="L109">          FunctionReturnDecoder.decode(</span>
+<span class="fc" id="L110">              result.result().getOutput().toHexString(), function.getOutputParameters());</span>
+
+<span class="fc bfc" id="L112" title="All 2 branches covered.">      if (decodedList.isEmpty()) {</span>
+<span class="fc" id="L113">        throw new IllegalStateException(</span>
+            &quot;Unexpected empty result from validator smart contract call&quot;);
+      }
+
+<span class="fc" id="L117">      return decodedList;</span>
+    } else {
+<span class="fc" id="L119">      throw new IllegalStateException(</span>
+<span class="fc" id="L120">          &quot;Failed validator smart contract call: &quot; + result.getValidationResult());</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

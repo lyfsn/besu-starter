@@ -1,0 +1,585 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractKeyValueStorageTest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.kvstore</a> &gt; <span class="el_source">AbstractKeyValueStorageTest.java</span></div><h1>AbstractKeyValueStorageTest.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.kvstore;
+
+import static java.util.stream.Collectors.toUnmodifiableList;
+import static java.util.stream.Collectors.toUnmodifiableSet;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.function.Function;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+
+/** The Abstract key value storage test. */
+@Disabled
+<span class="fc" id="L42">public abstract class AbstractKeyValueStorageTest {</span>
+
+  /**
+   * Create store key value storage.
+   *
+   * @return the key value storage
+   * @throws Exception the exception
+   */
+  protected abstract KeyValueStorage createStore() throws Exception;
+
+  /**
+   * Two stores are independent.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void twoStoresAreIndependent() throws Exception {
+<span class="fc" id="L59">    try (final KeyValueStorage store1 = createStore()) {</span>
+<span class="fc" id="L60">      try (final KeyValueStorage store2 = createStore()) {</span>
+
+<span class="fc" id="L62">        final KeyValueStorageTransaction tx = store1.startTransaction();</span>
+<span class="fc" id="L63">        final byte[] key = bytesFromHexString(&quot;0001&quot;);</span>
+<span class="fc" id="L64">        final byte[] value = bytesFromHexString(&quot;0FFF&quot;);</span>
+
+<span class="fc" id="L66">        tx.put(key, value);</span>
+<span class="fc" id="L67">        tx.commit();</span>
+
+<span class="fc" id="L69">        final Optional&lt;byte[]&gt; result = store2.get(key);</span>
+<span class="fc" id="L70">        assertThat(result).isEmpty();</span>
+      }
+    }
+<span class="fc" id="L73">  }</span>
+
+  /**
+   * Put.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void put() throws Exception {
+<span class="fc" id="L82">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L83">      final byte[] key = bytesFromHexString(&quot;0F&quot;);</span>
+<span class="fc" id="L84">      final byte[] firstValue = bytesFromHexString(&quot;0ABC&quot;);</span>
+<span class="fc" id="L85">      final byte[] secondValue = bytesFromHexString(&quot;0DEF&quot;);</span>
+
+<span class="fc" id="L87">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L88">      tx.put(key, firstValue);</span>
+<span class="fc" id="L89">      tx.commit();</span>
+<span class="fc" id="L90">      assertThat(store.get(key)).contains(firstValue);</span>
+
+<span class="fc" id="L92">      tx = store.startTransaction();</span>
+<span class="fc" id="L93">      tx.put(key, secondValue);</span>
+<span class="fc" id="L94">      tx.commit();</span>
+<span class="fc" id="L95">      assertThat(store.get(key)).contains(secondValue);</span>
+    }
+<span class="fc" id="L97">  }</span>
+
+  /**
+   * Stream keys.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void streamKeys() throws Exception {
+<span class="fc" id="L106">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L107">      final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L108">      final List&lt;byte[]&gt; keys =</span>
+<span class="fc" id="L109">          Stream.of(&quot;0F&quot;, &quot;10&quot;, &quot;11&quot;, &quot;12&quot;)</span>
+<span class="fc" id="L110">              .map(this::bytesFromHexString)</span>
+<span class="fc" id="L111">              .collect(toUnmodifiableList());</span>
+<span class="fc" id="L112">      keys.forEach(key -&gt; tx.put(key, bytesFromHexString(&quot;0ABC&quot;)));</span>
+<span class="fc" id="L113">      tx.commit();</span>
+<span class="fc" id="L114">      assertThat(store.stream().map(Pair::getKey).collect(toUnmodifiableSet()))</span>
+<span class="fc" id="L115">          .containsExactlyInAnyOrder(keys.toArray(new byte[][] {}));</span>
+    }
+<span class="fc" id="L117">  }</span>
+
+  /**
+   * Gets all keys that.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void getAllKeysThat() throws Exception {
+<span class="fc" id="L126">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L127">      final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L128">      tx.put(bytesFromHexString(&quot;0F&quot;), bytesFromHexString(&quot;0ABC&quot;));</span>
+<span class="fc" id="L129">      tx.put(bytesFromHexString(&quot;10&quot;), bytesFromHexString(&quot;0ABC&quot;));</span>
+<span class="fc" id="L130">      tx.put(bytesFromHexString(&quot;11&quot;), bytesFromHexString(&quot;0ABC&quot;));</span>
+<span class="fc" id="L131">      tx.put(bytesFromHexString(&quot;12&quot;), bytesFromHexString(&quot;0ABC&quot;));</span>
+<span class="fc" id="L132">      tx.commit();</span>
+<span class="fc" id="L133">      Set&lt;byte[]&gt; keys = store.getAllKeysThat(bv -&gt; Bytes.wrap(bv).toString().contains(&quot;1&quot;));</span>
+<span class="fc" id="L134">      assertThat(keys.size()).isEqualTo(3);</span>
+<span class="fc" id="L135">      assertThat(keys)</span>
+<span class="fc" id="L136">          .containsExactlyInAnyOrder(</span>
+<span class="fc" id="L137">              bytesFromHexString(&quot;10&quot;), bytesFromHexString(&quot;11&quot;), bytesFromHexString(&quot;12&quot;));</span>
+    }
+<span class="fc" id="L139">  }</span>
+
+  /**
+   * Contains key.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void containsKey() throws Exception {
+<span class="fc" id="L148">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L149">      final byte[] key = bytesFromHexString(&quot;ABCD&quot;);</span>
+<span class="fc" id="L150">      final byte[] value = bytesFromHexString(&quot;DEFF&quot;);</span>
+
+<span class="fc" id="L152">      assertThat(store.containsKey(key)).isFalse();</span>
+
+<span class="fc" id="L154">      final KeyValueStorageTransaction transaction = store.startTransaction();</span>
+<span class="fc" id="L155">      transaction.put(key, value);</span>
+<span class="fc" id="L156">      transaction.commit();</span>
+
+<span class="fc" id="L158">      assertThat(store.containsKey(key)).isTrue();</span>
+    }
+<span class="fc" id="L160">  }</span>
+
+  /**
+   * Remove existing.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void removeExisting() throws Exception {
+<span class="fc" id="L169">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L170">      final byte[] key = bytesFromHexString(&quot;0F&quot;);</span>
+<span class="fc" id="L171">      final byte[] value = bytesFromHexString(&quot;0ABC&quot;);</span>
+
+<span class="fc" id="L173">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L174">      tx.put(key, value);</span>
+<span class="fc" id="L175">      tx.commit();</span>
+
+<span class="fc" id="L177">      tx = store.startTransaction();</span>
+<span class="fc" id="L178">      tx.remove(key);</span>
+<span class="fc" id="L179">      tx.commit();</span>
+<span class="fc" id="L180">      assertThat(store.get(key)).isEmpty();</span>
+    }
+<span class="fc" id="L182">  }</span>
+
+  /**
+   * Remove existing same transaction.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void removeExistingSameTransaction() throws Exception {
+<span class="fc" id="L191">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L192">      final byte[] key = bytesFromHexString(&quot;0F&quot;);</span>
+<span class="fc" id="L193">      final byte[] value = bytesFromHexString(&quot;0ABC&quot;);</span>
+
+<span class="fc" id="L195">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L196">      tx.put(key, value);</span>
+<span class="fc" id="L197">      tx.remove(key);</span>
+<span class="fc" id="L198">      tx.commit();</span>
+<span class="fc" id="L199">      assertThat(store.get(key)).isEmpty();</span>
+    }
+<span class="fc" id="L201">  }</span>
+
+  /**
+   * Remove non existent.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void removeNonExistent() throws Exception {
+<span class="fc" id="L210">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L211">      final byte[] key = bytesFromHexString(&quot;0F&quot;);</span>
+
+<span class="fc" id="L213">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L214">      tx.remove(key);</span>
+<span class="fc" id="L215">      tx.commit();</span>
+<span class="fc" id="L216">      assertThat(store.get(key)).isEmpty();</span>
+    }
+<span class="fc" id="L218">  }</span>
+
+  /**
+   * Concurrent update.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void concurrentUpdate() throws Exception {
+<span class="fc" id="L227">    final int keyCount = 1000;</span>
+<span class="fc" id="L228">    try (final KeyValueStorage store = createStore()) {</span>
+
+<span class="fc" id="L230">      final CountDownLatch finishedLatch = new CountDownLatch(2);</span>
+<span class="fc" id="L231">      final Function&lt;byte[], Thread&gt; updater =</span>
+          (value) -&gt;
+<span class="fc" id="L233">              new Thread(</span>
+                  () -&gt; {
+                    try {
+<span class="fc bfc" id="L236" title="All 2 branches covered.">                      for (int i = 0; i &lt; keyCount; i++) {</span>
+<span class="fc" id="L237">                        KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L238">                        tx.put(Bytes.minimalBytes(i).toArrayUnsafe(), value);</span>
+<span class="fc" id="L239">                        tx.commit();</span>
+                      }
+                    } finally {
+<span class="fc" id="L242">                      finishedLatch.countDown();</span>
+                    }
+<span class="fc" id="L244">                  });</span>
+
+      // Run 2 concurrent transactions that write a bunch of values to the same keys
+<span class="fc" id="L247">      final byte[] a = Bytes.of(10).toArrayUnsafe();</span>
+<span class="fc" id="L248">      final byte[] b = Bytes.of(20).toArrayUnsafe();</span>
+<span class="fc" id="L249">      updater.apply(a).start();</span>
+<span class="fc" id="L250">      updater.apply(b).start();</span>
+
+<span class="fc" id="L252">      finishedLatch.await();</span>
+
+<span class="fc bfc" id="L254" title="All 2 branches covered.">      for (int i = 0; i &lt; keyCount; i++) {</span>
+<span class="fc" id="L255">        final byte[] key = Bytes.minimalBytes(i).toArrayUnsafe();</span>
+<span class="fc" id="L256">        final byte[] actual = store.get(key).get();</span>
+<span class="pc bpc" id="L257" title="1 of 4 branches missed.">        assertThat(Arrays.equals(actual, a) || Arrays.equals(actual, b)).isTrue();</span>
+      }
+    }
+<span class="fc" id="L260">  }</span>
+
+  /**
+   * Transaction commit.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void transactionCommit() throws Exception {
+<span class="fc" id="L269">    try (final KeyValueStorage store = createStore()) {</span>
+      // Add some values
+<span class="fc" id="L271">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L272">      tx.put(bytesOf(1), bytesOf(1));</span>
+<span class="fc" id="L273">      tx.put(bytesOf(2), bytesOf(2));</span>
+<span class="fc" id="L274">      tx.put(bytesOf(3), bytesOf(3));</span>
+<span class="fc" id="L275">      tx.commit();</span>
+
+      // Start transaction that adds, modifies, and removes some values
+<span class="fc" id="L278">      tx = store.startTransaction();</span>
+<span class="fc" id="L279">      tx.put(bytesOf(2), bytesOf(3));</span>
+<span class="fc" id="L280">      tx.put(bytesOf(2), bytesOf(4));</span>
+<span class="fc" id="L281">      tx.remove(bytesOf(3));</span>
+<span class="fc" id="L282">      tx.put(bytesOf(4), bytesOf(8));</span>
+
+      // Check values before committing have not changed
+<span class="fc" id="L285">      assertThat(store.get(bytesOf(1))).contains(bytesOf(1));</span>
+<span class="fc" id="L286">      assertThat(store.get(bytesOf(2))).contains(bytesOf(2));</span>
+<span class="fc" id="L287">      assertThat(store.get(bytesOf(3))).contains(bytesOf(3));</span>
+<span class="fc" id="L288">      assertThat(store.get(bytesOf(4))).isEmpty();</span>
+
+<span class="fc" id="L290">      tx.commit();</span>
+
+      // Check that values have been updated after commit
+<span class="fc" id="L293">      assertThat(store.get(bytesOf(1))).contains(bytesOf(1));</span>
+<span class="fc" id="L294">      assertThat(store.get(bytesOf(2))).contains(bytesOf(4));</span>
+<span class="fc" id="L295">      assertThat(store.get(bytesOf(3))).isEmpty();</span>
+<span class="fc" id="L296">      assertThat(store.get(bytesOf(4))).contains(bytesOf(8));</span>
+    }
+<span class="fc" id="L298">  }</span>
+
+  /**
+   * Transaction rollback.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void transactionRollback() throws Exception {
+<span class="fc" id="L307">    try (final KeyValueStorage store = createStore()) {</span>
+      // Add some values
+<span class="fc" id="L309">      KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L310">      tx.put(bytesOf(1), bytesOf(1));</span>
+<span class="fc" id="L311">      tx.put(bytesOf(2), bytesOf(2));</span>
+<span class="fc" id="L312">      tx.put(bytesOf(3), bytesOf(3));</span>
+<span class="fc" id="L313">      tx.commit();</span>
+
+      // Start transaction that adds, modifies, and removes some values
+<span class="fc" id="L316">      tx = store.startTransaction();</span>
+<span class="fc" id="L317">      tx.put(bytesOf(2), bytesOf(3));</span>
+<span class="fc" id="L318">      tx.put(bytesOf(2), bytesOf(4));</span>
+<span class="fc" id="L319">      tx.remove(bytesOf(3));</span>
+<span class="fc" id="L320">      tx.put(bytesOf(4), bytesOf(8));</span>
+
+      // Check values before committing have not changed
+<span class="fc" id="L323">      assertThat(store.get(bytesOf(1))).contains(bytesOf(1));</span>
+<span class="fc" id="L324">      assertThat(store.get(bytesOf(2))).contains(bytesOf(2));</span>
+<span class="fc" id="L325">      assertThat(store.get(bytesOf(3))).contains(bytesOf(3));</span>
+<span class="fc" id="L326">      assertThat(store.get(bytesOf(4))).isEmpty();</span>
+
+<span class="fc" id="L328">      tx.rollback();</span>
+
+      // Check that values have not changed after rollback
+<span class="fc" id="L331">      assertThat(store.get(bytesOf(1))).contains(bytesOf(1));</span>
+<span class="fc" id="L332">      assertThat(store.get(bytesOf(2))).contains(bytesOf(2));</span>
+<span class="fc" id="L333">      assertThat(store.get(bytesOf(3))).contains(bytesOf(3));</span>
+<span class="fc" id="L334">      assertThat(store.get(bytesOf(4))).isEmpty();</span>
+    }
+<span class="fc" id="L336">  }</span>
+
+  /**
+   * Transaction commit empty.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void transactionCommitEmpty() throws Exception {
+<span class="fc" id="L345">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L346">      final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L347">      tx.commit();</span>
+    }
+<span class="fc" id="L349">  }</span>
+
+  /**
+   * Transaction rollback empty.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void transactionRollbackEmpty() throws Exception {
+<span class="fc" id="L358">    try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L359">      final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L360">      tx.rollback();</span>
+    }
+<span class="fc" id="L362">  }</span>
+
+  /** Transaction put after commit. */
+  @Test
+  public void transactionPutAfterCommit() {
+<span class="fc" id="L367">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L369">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L370">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L371">                tx.commit();</span>
+<span class="nc" id="L372">                tx.put(bytesOf(1), bytesOf(1));</span>
+              }
+<span class="nc" id="L374">            })</span>
+<span class="fc" id="L375">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L376">  }</span>
+
+  /** Transaction remove after commit. */
+  @Test
+  public void transactionRemoveAfterCommit() {
+<span class="fc" id="L381">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L383">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L384">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L385">                tx.commit();</span>
+<span class="nc" id="L386">                tx.remove(bytesOf(1));</span>
+              }
+<span class="nc" id="L388">            })</span>
+<span class="fc" id="L389">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L390">  }</span>
+
+  /** Transaction put after rollback. */
+  @Test
+  public void transactionPutAfterRollback() {
+<span class="fc" id="L395">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L397">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L398">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L399">                tx.rollback();</span>
+<span class="nc" id="L400">                tx.put(bytesOf(1), bytesOf(1));</span>
+              }
+<span class="nc" id="L402">            })</span>
+<span class="fc" id="L403">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L404">  }</span>
+
+  /** Transaction remove after rollback. */
+  @Test
+  public void transactionRemoveAfterRollback() {
+<span class="fc" id="L409">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L411">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L412">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L413">                tx.rollback();</span>
+<span class="nc" id="L414">                tx.remove(bytesOf(1));</span>
+              }
+<span class="nc" id="L416">            })</span>
+<span class="fc" id="L417">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L418">  }</span>
+
+  /** Transaction commit after rollback. */
+  @Test
+  public void transactionCommitAfterRollback() {
+<span class="fc" id="L423">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L425">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L426">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L427">                tx.rollback();</span>
+<span class="nc" id="L428">                tx.commit();</span>
+              }
+<span class="nc" id="L430">            })</span>
+<span class="fc" id="L431">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L432">  }</span>
+
+  /** Transaction commit twice. */
+  @Test
+  public void transactionCommitTwice() {
+<span class="fc" id="L437">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L439">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L440">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L441">                tx.commit();</span>
+<span class="nc" id="L442">                tx.commit();</span>
+              }
+<span class="nc" id="L444">            })</span>
+<span class="fc" id="L445">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L446">  }</span>
+
+  /** Transaction rollback after commit. */
+  @Test
+  public void transactionRollbackAfterCommit() {
+<span class="fc" id="L451">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L453">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L454">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L455">                tx.commit();</span>
+<span class="nc" id="L456">                tx.rollback();</span>
+              }
+<span class="nc" id="L458">            })</span>
+<span class="fc" id="L459">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L460">  }</span>
+
+  /** Transaction rollback twice. */
+  @Test
+  public void transactionRollbackTwice() {
+<span class="fc" id="L465">    Assertions.assertThatThrownBy(</span>
+            () -&gt; {
+<span class="fc" id="L467">              try (final KeyValueStorage store = createStore()) {</span>
+<span class="fc" id="L468">                final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc" id="L469">                tx.rollback();</span>
+<span class="nc" id="L470">                tx.rollback();</span>
+              }
+<span class="nc" id="L472">            })</span>
+<span class="fc" id="L473">        .isInstanceOf(IllegalStateException.class);</span>
+<span class="fc" id="L474">  }</span>
+
+  /**
+   * Two transactions.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void twoTransactions() throws Exception {
+<span class="fc" id="L483">    try (final KeyValueStorage store = createStore()) {</span>
+
+<span class="fc" id="L485">      final KeyValueStorageTransaction tx1 = store.startTransaction();</span>
+<span class="fc" id="L486">      final KeyValueStorageTransaction tx2 = store.startTransaction();</span>
+
+<span class="fc" id="L488">      tx1.put(bytesOf(1), bytesOf(1));</span>
+<span class="fc" id="L489">      tx2.put(bytesOf(2), bytesOf(2));</span>
+
+<span class="fc" id="L491">      tx1.commit();</span>
+<span class="fc" id="L492">      tx2.commit();</span>
+
+<span class="fc" id="L494">      assertThat(store.get(bytesOf(1))).contains(bytesOf(1));</span>
+<span class="fc" id="L495">      assertThat(store.get(bytesOf(2))).contains(bytesOf(2));</span>
+    }
+<span class="fc" id="L497">  }</span>
+
+  /**
+   * Transaction isolation.
+   *
+   * @throws Exception the exception
+   */
+  @Test
+  public void transactionIsolation() throws Exception {
+<span class="fc" id="L506">    final int keyCount = 1000;</span>
+<span class="fc" id="L507">    final KeyValueStorage store = createStore();</span>
+
+<span class="fc" id="L509">    final CountDownLatch finishedLatch = new CountDownLatch(2);</span>
+<span class="fc" id="L510">    final Function&lt;byte[], Thread&gt; txRunner =</span>
+        (value) -&gt;
+<span class="fc" id="L512">            new Thread(</span>
+                () -&gt; {
+<span class="fc" id="L514">                  final KeyValueStorageTransaction tx = store.startTransaction();</span>
+<span class="fc bfc" id="L515" title="All 2 branches covered.">                  for (int i = 0; i &lt; keyCount; i++) {</span>
+<span class="fc" id="L516">                    tx.put(Bytes.minimalBytes(i).toArrayUnsafe(), value);</span>
+                  }
+                  try {
+<span class="fc" id="L519">                    tx.commit();</span>
+                  } finally {
+<span class="fc" id="L521">                    finishedLatch.countDown();</span>
+                  }
+<span class="fc" id="L523">                });</span>
+
+    // Run 2 concurrent transactions that write a bunch of values to the same keys
+<span class="fc" id="L526">    final byte[] a = bytesOf(10);</span>
+<span class="fc" id="L527">    final byte[] b = bytesOf(20);</span>
+<span class="fc" id="L528">    txRunner.apply(a).start();</span>
+<span class="fc" id="L529">    txRunner.apply(b).start();</span>
+
+<span class="fc" id="L531">    finishedLatch.await();</span>
+
+    // Check that transaction results are isolated (not interleaved)
+<span class="fc" id="L534">    final List&lt;byte[]&gt; finalValues = new ArrayList&lt;&gt;(keyCount);</span>
+<span class="fc bfc" id="L535" title="All 2 branches covered.">    for (int i = 0; i &lt; keyCount; i++) {</span>
+<span class="fc" id="L536">      final byte[] key = Bytes.minimalBytes(i).toArrayUnsafe();</span>
+<span class="fc" id="L537">      finalValues.add(store.get(key).get());</span>
+    }
+
+    // Expecting the same value for all entries
+<span class="fc" id="L541">    final byte[] expected = finalValues.get(0);</span>
+<span class="fc bfc" id="L542" title="All 2 branches covered.">    for (final byte[] actual : finalValues) {</span>
+<span class="fc" id="L543">      assertThat(actual).containsExactly(expected);</span>
+<span class="fc" id="L544">    }</span>
+
+<span class="pc bpc" id="L546" title="1 of 4 branches missed.">    assertThat(Arrays.equals(expected, a) || Arrays.equals(expected, b)).isTrue();</span>
+
+<span class="fc" id="L548">    store.close();</span>
+<span class="fc" id="L549">  }</span>
+
+  /**
+   * Bytes from hex string byte [ ].
+   *
+   * @param hex the hex
+   * @return the byte [ ]
+   */
+  /*
+   * Used to mimic the wrapping with Bytes performed in Besu
+   */
+  protected byte[] bytesFromHexString(final String hex) {
+<span class="fc" id="L561">    return Bytes.fromHexString(hex).toArrayUnsafe();</span>
+  }
+
+  /**
+   * Bytes of byte [ ].
+   *
+   * @param bytes the bytes
+   * @return the byte [ ]
+   */
+  protected byte[] bytesOf(final int... bytes) {
+<span class="fc" id="L571">    return Bytes.of(bytes).toArrayUnsafe();</span>
+  }
+
+  /**
+   * Create a sub folder from the given path, that will not conflict with other folders.
+   *
+   * @param folder the folder in which to create the sub folder
+   * @return the path representing the sub folder
+   * @throws Exception if the folder cannot be created
+   */
+  protected Path getTempSubFolder(final Path folder) throws Exception {
+<span class="fc" id="L582">    return java.nio.file.Files.createTempDirectory(folder, null);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

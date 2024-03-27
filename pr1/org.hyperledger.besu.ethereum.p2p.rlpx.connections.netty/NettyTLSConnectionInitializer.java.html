@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NettyTLSConnectionInitializer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty</a> &gt; <span class="el_source">NettyTLSConnectionInitializer.java</span></div><h1>NettyTLSConnectionInitializer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.connections.netty;
+
+import static org.hyperledger.besu.ethereum.p2p.rlpx.RlpxFrameConstants.LENGTH_FRAME_SIZE;
+import static org.hyperledger.besu.ethereum.p2p.rlpx.RlpxFrameConstants.LENGTH_MAX_MESSAGE_FRAME;
+
+import org.hyperledger.besu.cryptoservices.NodeKey;
+import org.hyperledger.besu.ethereum.p2p.config.RlpxConfiguration;
+import org.hyperledger.besu.ethereum.p2p.discovery.internal.PeerTable;
+import org.hyperledger.besu.ethereum.p2p.peers.LocalNode;
+import org.hyperledger.besu.ethereum.p2p.peers.Peer;
+import org.hyperledger.besu.ethereum.p2p.plain.PlainFramer;
+import org.hyperledger.besu.ethereum.p2p.plain.PlainHandshaker;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnectionEventDispatcher;
+import org.hyperledger.besu.ethereum.p2p.rlpx.framing.Framer;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.HandshakeSecrets;
+import org.hyperledger.besu.ethereum.p2p.rlpx.handshake.Handshaker;
+import org.hyperledger.besu.plugin.data.EnodeURL;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+
+import java.security.GeneralSecurityException;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Suppliers;
+import io.netty.channel.Channel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.codec.compression.SnappyFrameDecoder;
+import io.netty.handler.codec.compression.SnappyFrameEncoder;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslHandler;
+
+public class NettyTLSConnectionInitializer extends NettyConnectionInitializer {
+
+  private final Optional&lt;Supplier&lt;TLSContextFactory&gt;&gt; tlsContextFactorySupplier;
+  private final Boolean clientHelloSniHeaderEnabled;
+
+  public NettyTLSConnectionInitializer(
+      final NodeKey nodeKey,
+      final RlpxConfiguration config,
+      final LocalNode localNode,
+      final PeerConnectionEventDispatcher eventDispatcher,
+      final MetricsSystem metricsSystem,
+      final TLSConfiguration p2pTLSConfiguration,
+      final PeerTable peerTable) {
+<span class="fc" id="L61">    this(</span>
+        nodeKey,
+        config,
+        localNode,
+        eventDispatcher,
+        metricsSystem,
+<span class="fc" id="L67">        defaultTlsContextFactorySupplier(p2pTLSConfiguration),</span>
+<span class="fc" id="L68">        p2pTLSConfiguration.getClientHelloSniHeaderEnabled(),</span>
+        peerTable);
+<span class="fc" id="L70">  }</span>
+
+  @VisibleForTesting
+  NettyTLSConnectionInitializer(
+      final NodeKey nodeKey,
+      final RlpxConfiguration config,
+      final LocalNode localNode,
+      final PeerConnectionEventDispatcher eventDispatcher,
+      final MetricsSystem metricsSystem,
+      final Supplier&lt;TLSContextFactory&gt; tlsContextFactorySupplier,
+      final Boolean clientHelloSniHeaderEnabled,
+      final PeerTable peerTable) {
+<span class="fc" id="L82">    super(nodeKey, config, localNode, eventDispatcher, metricsSystem, peerTable);</span>
+<span class="pc bpc" id="L83" title="1 of 2 branches missed.">    if (tlsContextFactorySupplier != null) {</span>
+<span class="fc" id="L84">      this.tlsContextFactorySupplier =</span>
+<span class="fc" id="L85">          Optional.of(Suppliers.memoize(tlsContextFactorySupplier::get));</span>
+    } else {
+<span class="nc" id="L87">      this.tlsContextFactorySupplier = Optional.empty();</span>
+    }
+<span class="fc" id="L89">    this.clientHelloSniHeaderEnabled = clientHelloSniHeaderEnabled;</span>
+<span class="fc" id="L90">  }</span>
+
+  @Override
+  void addAdditionalOutboundHandlers(final Channel ch, final Peer peer)
+      throws GeneralSecurityException {
+<span class="pc bpc" id="L95" title="1 of 2 branches missed.">    if (tlsContextFactorySupplier.isPresent()) {</span>
+<span class="fc" id="L96">      final SslContext clientSslContext =</span>
+<span class="fc" id="L97">          tlsContextFactorySupplier.get().get().createNettyClientSslContext();</span>
+<span class="fc" id="L98">      final EnodeURL enode = peer.getEnodeURL();</span>
+<span class="fc" id="L99">      final SslHandler sslHandler = createClientSslHandler(ch, clientSslContext, enode);</span>
+<span class="fc" id="L100">      addHandlersToChannelPipeline(ch, sslHandler);</span>
+    }
+<span class="fc" id="L102">  }</span>
+
+  private SslHandler createClientSslHandler(
+      final Channel ch, final SslContext sslContext, final EnodeURL enode) {
+<span class="fc bfc" id="L106" title="All 2 branches covered.">    if (this.clientHelloSniHeaderEnabled) {</span>
+<span class="fc" id="L107">      return sslContext.newHandler(</span>
+<span class="fc" id="L108">          ch.alloc(), enode.getHost(), enode.getListeningPort().orElseThrow());</span>
+    } else {
+<span class="fc" id="L110">      return sslContext.newHandler(ch.alloc());</span>
+    }
+  }
+
+  @Override
+  void addAdditionalInboundHandlers(final Channel ch) throws GeneralSecurityException {
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">    if (tlsContextFactorySupplier.isPresent()) {</span>
+<span class="fc" id="L117">      final SslContext serverSslContext =</span>
+<span class="fc" id="L118">          tlsContextFactorySupplier.get().get().createNettyServerSslContext();</span>
+<span class="fc" id="L119">      addHandlersToChannelPipeline(ch, serverSslContext.newHandler(ch.alloc()));</span>
+    }
+<span class="fc" id="L121">  }</span>
+
+  private void addHandlersToChannelPipeline(final Channel ch, final SslHandler sslHandler) {
+<span class="fc" id="L124">    ch.pipeline().addLast(sslHandler);</span>
+<span class="fc" id="L125">    ch.pipeline().addLast(new SnappyFrameDecoder());</span>
+<span class="fc" id="L126">    ch.pipeline().addLast(new SnappyFrameEncoder());</span>
+<span class="fc" id="L127">    ch.pipeline()</span>
+<span class="fc" id="L128">        .addLast(</span>
+            new LengthFieldBasedFrameDecoder(
+                LENGTH_MAX_MESSAGE_FRAME, 0, LENGTH_FRAME_SIZE, 0, LENGTH_FRAME_SIZE));
+<span class="fc" id="L131">    ch.pipeline().addLast(new LengthFieldPrepender(LENGTH_FRAME_SIZE));</span>
+<span class="fc" id="L132">  }</span>
+
+  @Override
+  public Handshaker buildInstance() {
+<span class="fc" id="L136">    return new PlainHandshaker();</span>
+  }
+
+  @Override
+  public Framer buildFramer(final HandshakeSecrets secrets) {
+<span class="fc" id="L141">    return new PlainFramer();</span>
+  }
+
+  @VisibleForTesting
+  static Supplier&lt;TLSContextFactory&gt; defaultTlsContextFactorySupplier(
+      final TLSConfiguration tlsConfiguration) {
+<span class="fc bfc" id="L147" title="All 2 branches covered.">    if (tlsConfiguration == null) {</span>
+<span class="fc" id="L148">      throw new IllegalStateException(&quot;TLSConfiguration cannot be null when using TLS&quot;);</span>
+    }
+
+<span class="fc" id="L151">    return () -&gt; {</span>
+      try {
+<span class="fc" id="L153">        return TLSContextFactory.buildFrom(tlsConfiguration);</span>
+<span class="fc" id="L154">      } catch (final Exception e) {</span>
+<span class="fc" id="L155">        throw new IllegalStateException(&quot;Error creating TLSContextFactory&quot;, e);</span>
+      }
+    };
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -1,0 +1,253 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivateStateRehydration.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.privacy</a> &gt; <span class="el_source">PrivateStateRehydration.java</span></div><h1>PrivateStateRehydration.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.privacy;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.chain.TransactionLocation;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
+import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivacyGroupHeadBlockMap;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PrivateStateRehydration {
+
+<span class="fc" id="L42">  private static final Logger LOG = LoggerFactory.getLogger(PrivateStateRehydration.class);</span>
+
+  private final PrivateStateStorage privateStateStorage;
+  private final Blockchain blockchain;
+  private final ProtocolSchedule protocolSchedule;
+  private final WorldStateArchive publicWorldStateArchive;
+  private final WorldStateArchive privateWorldStateArchive;
+  private final PrivateStateRootResolver privateStateRootResolver;
+  private final PrivateStateGenesisAllocator privateStateGenesisAllocator;
+
+  public PrivateStateRehydration(
+      final PrivateStateStorage privateStateStorage,
+      final Blockchain blockchain,
+      final ProtocolSchedule protocolSchedule,
+      final WorldStateArchive publicWorldStateArchive,
+      final WorldStateArchive privateWorldStateArchive,
+      final PrivateStateRootResolver privateStateRootResolver,
+<span class="fc" id="L59">      final PrivateStateGenesisAllocator privateStateGenesisAllocator) {</span>
+<span class="fc" id="L60">    this.privateStateStorage = privateStateStorage;</span>
+<span class="fc" id="L61">    this.blockchain = blockchain;</span>
+<span class="fc" id="L62">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L63">    this.publicWorldStateArchive = publicWorldStateArchive;</span>
+<span class="fc" id="L64">    this.privateWorldStateArchive = privateWorldStateArchive;</span>
+<span class="fc" id="L65">    this.privateStateRootResolver = privateStateRootResolver;</span>
+<span class="fc" id="L66">    this.privateStateGenesisAllocator = privateStateGenesisAllocator;</span>
+<span class="fc" id="L67">  }</span>
+
+  public void rehydrate(
+      final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList) {
+<span class="fc" id="L71">    final long rehydrationStartTimestamp = System.currentTimeMillis();</span>
+<span class="fc" id="L72">    final long chainHeadBlockNumber = blockchain.getChainHeadBlockNumber();</span>
+<span class="fc" id="L73">    final Optional&lt;Bytes&gt; maybeGroupId =</span>
+<span class="fc" id="L74">        privateTransactionWithMetadataList.get(0).getPrivateTransaction().getPrivacyGroupId();</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">    if (maybeGroupId.isEmpty()) {</span>
+<span class="nc" id="L76">      LOG.debug(&quot;Flexible groups must have a group id.&quot;);</span>
+<span class="nc" id="L77">      return;</span>
+    }
+<span class="fc" id="L79">    final Bytes32 privacyGroupId = Bytes32.wrap(maybeGroupId.get());</span>
+
+<span class="fc" id="L81">    LOG.debug(&quot;Rehydrating privacy group {}&quot;, privacyGroupId.toBase64String());</span>
+
+    // check if there is a privacyGroupHeadBlockMap for the first block ...
+<span class="fc" id="L84">    final boolean needEmptyPrivacyGroupHeadBlockMap =</span>
+        privateStateStorage
+<span class="fc" id="L86">            .getPrivacyGroupHeadBlockMap(</span>
+<span class="fc" id="L87">                getBlockHashForIndex(0, privateTransactionWithMetadataList))</span>
+<span class="fc" id="L88">            .isEmpty();</span>
+<span class="pc bpc" id="L89" title="1 of 2 branches missed.">    if (needEmptyPrivacyGroupHeadBlockMap) {</span>
+<span class="nc" id="L90">      privateStateStorage</span>
+<span class="nc" id="L91">          .updater()</span>
+<span class="nc" id="L92">          .putPrivacyGroupHeadBlockMap(</span>
+<span class="nc" id="L93">              getBlockHashForIndex(0, privateTransactionWithMetadataList),</span>
+<span class="nc" id="L94">              PrivacyGroupHeadBlockMap.empty())</span>
+<span class="nc" id="L95">          .commit();</span>
+    }
+
+<span class="fc" id="L98">    final LinkedHashMap&lt;Hash, PrivateTransaction&gt; pmtHashToPrivateTransactionMap =</span>
+        new LinkedHashMap&lt;&gt;();
+<span class="fc bfc" id="L100" title="All 2 branches covered.">    for (int j = 0; j &lt; privateTransactionWithMetadataList.size(); j++) {</span>
+<span class="fc" id="L101">      final PrivateTransactionWithMetadata transactionWithMetadata =</span>
+<span class="fc" id="L102">          privateTransactionWithMetadataList.get(j);</span>
+<span class="fc" id="L103">      pmtHashToPrivateTransactionMap.put(</span>
+<span class="fc" id="L104">          transactionWithMetadata.getPrivateTransactionMetadata().getPrivateMarkerTransactionHash(),</span>
+<span class="fc" id="L105">          transactionWithMetadata.getPrivateTransaction());</span>
+    }
+
+<span class="fc bfc" id="L108" title="All 2 branches covered.">    for (int i = 0; i &lt; privateTransactionWithMetadataList.size(); i++) {</span>
+      // find out which block this transaction is in
+<span class="fc" id="L110">      final Hash blockHash = getBlockHashForIndex(i, privateTransactionWithMetadataList);</span>
+
+      // At the end of the while loop i will be the index of the last PMT (for this group) that is
+      // in this block.
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">      while (i + 1 &lt; privateTransactionWithMetadataList.size()</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">          &amp;&amp; blockHash.equals(getBlockHashForIndex(i + 1, privateTransactionWithMetadataList))) {</span>
+<span class="nc" id="L116">        i++;</span>
+      }
+
+<span class="fc" id="L119">      final Hash lastPmtHash =</span>
+          privateTransactionWithMetadataList
+<span class="fc" id="L121">              .get(i)</span>
+<span class="fc" id="L122">              .getPrivateTransactionMetadata()</span>
+<span class="fc" id="L123">              .getPrivateMarkerTransactionHash();</span>
+
+<span class="fc" id="L125">      final Optional&lt;TransactionLocation&gt; transactionLocationOfLastPmtInBlock =</span>
+<span class="fc" id="L126">          blockchain.getTransactionLocation(lastPmtHash);</span>
+<span class="pc bpc" id="L127" title="1 of 2 branches missed.">      if (transactionLocationOfLastPmtInBlock.isEmpty()) {</span>
+<span class="nc" id="L128">        LOG.debug(&quot;Rehydartion failed - missing marker transaction for {}&quot;, lastPmtHash);</span>
+<span class="nc" id="L129">        return;</span>
+      }
+
+<span class="fc" id="L132">      final Block block = blockchain.getBlockByHash(blockHash).orElseThrow(RuntimeException::new);</span>
+<span class="fc" id="L133">      final BlockHeader blockHeader = block.getHeader();</span>
+<span class="fc" id="L134">      LOG.debug(</span>
+          &quot;Rehydrating block {} ({}/{}), {}&quot;,
+          blockHash,
+<span class="fc" id="L137">          blockHeader.getNumber(),</span>
+<span class="fc" id="L138">          chainHeadBlockNumber,</span>
+<span class="fc" id="L139">          block.getBody().getTransactions().stream()</span>
+<span class="fc" id="L140">              .map(Transaction::getHash)</span>
+<span class="fc" id="L141">              .collect(Collectors.toList()));</span>
+
+<span class="fc" id="L143">      final ProtocolSpec protocolSpec = protocolSchedule.getByBlockHeader(blockHeader);</span>
+<span class="fc" id="L144">      final PrivateGroupRehydrationBlockProcessor privateGroupRehydrationBlockProcessor =</span>
+          new PrivateGroupRehydrationBlockProcessor(
+<span class="fc" id="L146">              protocolSpec.getTransactionProcessor(),</span>
+<span class="fc" id="L147">              protocolSpec.getPrivateTransactionProcessor(),</span>
+<span class="fc" id="L148">              protocolSpec.getTransactionReceiptFactory(),</span>
+<span class="fc" id="L149">              protocolSpec.getBlockReward(),</span>
+<span class="fc" id="L150">              protocolSpec.getMiningBeneficiaryCalculator(),</span>
+<span class="fc" id="L151">              protocolSpec.isSkipZeroBlockRewards(),</span>
+              privateStateGenesisAllocator);
+
+<span class="fc" id="L154">      final MutableWorldState publicWorldState =</span>
+          blockchain
+<span class="fc" id="L156">              .getBlockHeader(blockHeader.getParentHash())</span>
+<span class="fc" id="L157">              .flatMap(</span>
+                  header -&gt;
+<span class="fc" id="L159">                      publicWorldStateArchive.getMutable(header.getStateRoot(), header.getHash()))</span>
+<span class="fc" id="L160">              .orElseThrow(RuntimeException::new);</span>
+
+<span class="fc" id="L162">      privateGroupRehydrationBlockProcessor.processBlock(</span>
+          blockchain,
+          publicWorldState,
+          privateWorldStateArchive,
+          privateStateStorage,
+          privateStateRootResolver,
+          block,
+          pmtHashToPrivateTransactionMap,
+<span class="fc" id="L170">          block.getBody().getOmmers());</span>
+
+      // check the resulting private state against the state in the meta data
+<span class="fc" id="L173">      final Optional&lt;Hash&gt; latestStateRoot =</span>
+          privateStateStorage
+<span class="fc" id="L175">              .getPrivateBlockMetadata(blockHash, privacyGroupId)</span>
+<span class="fc" id="L176">              .orElseThrow()</span>
+<span class="fc" id="L177">              .getLatestStateRoot();</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">      if (latestStateRoot.isPresent()) {</span>
+<span class="fc" id="L179">        if (!latestStateRoot</span>
+<span class="fc" id="L180">            .get()</span>
+<span class="pc bpc" id="L181" title="1 of 2 branches missed.">            .equals(</span>
+                privateTransactionWithMetadataList
+<span class="fc" id="L183">                    .get(i)</span>
+<span class="fc" id="L184">                    .getPrivateTransactionMetadata()</span>
+<span class="fc" id="L185">                    .getStateRoot())) {</span>
+<span class="nc" id="L186">          throw new RuntimeException();</span>
+        }
+      }
+      // fix the privacy group header block map for the blocks between the current block and the
+      // next block containing a pmt for this privacy group
+<span class="pc bpc" id="L191" title="1 of 2 branches missed.">      if (i + 1 &lt; privateTransactionWithMetadataList.size()) {</span>
+<span class="nc" id="L192">        rehydratePrivacyGroupHeadBlockMap(</span>
+            privacyGroupId,
+            blockHash,
+            blockchain,
+<span class="nc" id="L196">            getBlockNumberForIndex(i, privateTransactionWithMetadataList),</span>
+<span class="nc" id="L197">            getBlockNumberForIndex(i + 1, privateTransactionWithMetadataList));</span>
+      } else {
+<span class="fc" id="L199">        rehydratePrivacyGroupHeadBlockMap(</span>
+            privacyGroupId,
+            blockHash,
+            blockchain,
+<span class="fc" id="L203">            getBlockNumberForIndex(i, privateTransactionWithMetadataList),</span>
+<span class="fc" id="L204">            blockchain.getChainHeadBlockNumber() + 1);</span>
+      }
+    }
+<span class="fc" id="L207">    final long rehydrationDuration = System.currentTimeMillis() - rehydrationStartTimestamp;</span>
+<span class="fc" id="L208">    LOG.debug(&quot;Rehydration took {} seconds&quot;, rehydrationDuration / 1000.0);</span>
+<span class="fc" id="L209">  }</span>
+
+  protected void rehydratePrivacyGroupHeadBlockMap(
+      final Bytes32 privacyGroupId,
+      final Hash hashOfLastBlockWithPmt,
+      final Blockchain currentBlockchain,
+      final long from,
+      final long to) {
+<span class="pc bpc" id="L217" title="1 of 2 branches missed.">    for (long j = from + 1; j &lt; to; j++) {</span>
+<span class="nc" id="L218">      final BlockHeader theBlockHeader = currentBlockchain.getBlockHeader(j).orElseThrow();</span>
+<span class="nc" id="L219">      final PrivacyGroupHeadBlockMap thePrivacyGroupHeadBlockMap =</span>
+          privateStateStorage
+<span class="nc" id="L221">              .getPrivacyGroupHeadBlockMap(theBlockHeader.getHash())</span>
+<span class="nc" id="L222">              .orElse(PrivacyGroupHeadBlockMap.empty());</span>
+<span class="nc" id="L223">      final PrivateStateStorage.Updater privateStateUpdater = privateStateStorage.updater();</span>
+<span class="nc" id="L224">      thePrivacyGroupHeadBlockMap.put(privacyGroupId, hashOfLastBlockWithPmt);</span>
+<span class="nc" id="L225">      privateStateUpdater.putPrivacyGroupHeadBlockMap(</span>
+<span class="nc" id="L226">          theBlockHeader.getHash(), new PrivacyGroupHeadBlockMap(thePrivacyGroupHeadBlockMap));</span>
+<span class="nc" id="L227">      privateStateUpdater.commit();</span>
+    }
+<span class="fc" id="L229">  }</span>
+
+  private long getBlockNumberForIndex(
+      final int index,
+      final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList) {
+<span class="fc" id="L234">    return blockchain</span>
+<span class="fc" id="L235">        .getBlockHeader(getBlockHashForIndex(index, privateTransactionWithMetadataList))</span>
+<span class="fc" id="L236">        .orElseThrow()</span>
+<span class="fc" id="L237">        .getNumber();</span>
+  }
+
+  private Hash getBlockHashForIndex(
+      final int index,
+      final List&lt;PrivateTransactionWithMetadata&gt; privateTransactionWithMetadataList) {
+<span class="fc" id="L243">    return blockchain</span>
+<span class="fc" id="L244">        .getTransactionLocation(</span>
+            privateTransactionWithMetadataList
+<span class="fc" id="L246">                .get(index)</span>
+<span class="fc" id="L247">                .getPrivateTransactionMetadata()</span>
+<span class="fc" id="L248">                .getPrivateMarkerTransactionHash())</span>
+<span class="fc" id="L249">        .orElseThrow()</span>
+<span class="fc" id="L250">        .getBlockHash();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

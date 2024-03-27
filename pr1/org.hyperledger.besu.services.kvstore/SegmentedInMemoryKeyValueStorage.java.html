@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SegmentedInMemoryKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.kvstore</a> &gt; <span class="el_source">SegmentedInMemoryKeyValueStorage.java</span></div><h1>SegmentedInMemoryKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.kvstore;
+
+import static java.util.stream.Collectors.toUnmodifiableSet;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.SnappableKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SnappedKeyValueStorage;
+
+import java.io.PrintStream;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+
+/** Segmented in memory key value storage. */
+public class SegmentedInMemoryKeyValueStorage
+    implements SnappedKeyValueStorage, SnappableKeyValueStorage, SegmentedKeyValueStorage {
+  /** protected access for the backing hash map. */
+  final ConcurrentMap&lt;SegmentIdentifier, Map&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; hashValueStore;
+
+  /** protected access to the rw lock. */
+<span class="fc" id="L55">  protected final ReadWriteLock rwLock = new ReentrantReadWriteLock();</span>
+
+  /** Instantiates a new In memory key value storage. */
+  public SegmentedInMemoryKeyValueStorage() {
+<span class="fc" id="L59">    this(new ConcurrentHashMap&lt;&gt;());</span>
+<span class="fc" id="L60">  }</span>
+
+  /**
+   * Instantiates a new In memory key value storage.
+   *
+   * @param hashValueStore the hash value store
+   */
+  protected SegmentedInMemoryKeyValueStorage(
+<span class="fc" id="L68">      final ConcurrentMap&lt;SegmentIdentifier, Map&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; hashValueStore) {</span>
+<span class="fc" id="L69">    this.hashValueStore = hashValueStore;</span>
+<span class="fc" id="L70">  }</span>
+
+  /**
+   * Instantiates a new In memory key value storage with specific set of segments.
+   *
+   * @param segments the segments to be used
+   */
+  public SegmentedInMemoryKeyValueStorage(final List&lt;SegmentIdentifier&gt; segments) {
+<span class="fc" id="L78">    this(</span>
+<span class="fc" id="L79">        segments.stream()</span>
+<span class="fc" id="L80">            .collect(</span>
+                Collectors
+                    .&lt;SegmentIdentifier, SegmentIdentifier, Map&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt;
+<span class="fc" id="L83">                        toConcurrentMap(s -&gt; s, s -&gt; new ConcurrentHashMap&lt;&gt;())));</span>
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public void clear(final SegmentIdentifier segmentIdentifier) {
+<span class="fc" id="L88">    final Lock lock = rwLock.writeLock();</span>
+<span class="fc" id="L89">    lock.lock();</span>
+    try {
+<span class="fc" id="L91">      Optional.ofNullable(hashValueStore.get(segmentIdentifier)).ifPresent(Map::clear);</span>
+    } finally {
+<span class="fc" id="L93">      lock.unlock();</span>
+    }
+<span class="fc" id="L95">  }</span>
+
+  @Override
+  public boolean containsKey(final SegmentIdentifier segmentIdentifier, final byte[] key)
+      throws StorageException {
+<span class="fc" id="L100">    return get(segmentIdentifier, key).isPresent();</span>
+  }
+
+  @Override
+  public Optional&lt;byte[]&gt; get(final SegmentIdentifier segmentIdentifier, final byte[] key)
+      throws StorageException {
+<span class="fc" id="L106">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L107">    lock.lock();</span>
+    try {
+<span class="fc" id="L109">      return hashValueStore</span>
+<span class="fc" id="L110">          .computeIfAbsent(segmentIdentifier, s -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L111">          .getOrDefault(Bytes.wrap(key), Optional.empty());</span>
+    } finally {
+<span class="fc" id="L113">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public Optional&lt;NearestKeyValue&gt; getNearestTo(
+      final SegmentIdentifier segmentIdentifier, final Bytes key) throws StorageException {
+
+<span class="fc" id="L121">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L122">    lock.lock();</span>
+    try {
+      // TODO: revisit this for sort performance
+<span class="fc" id="L125">      Comparator&lt;Map.Entry&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; comparing =</span>
+<span class="fc" id="L126">          Comparator.comparing(</span>
+<span class="fc" id="L127">                  (Map.Entry&lt;Bytes, Optional&lt;byte[]&gt;&gt; a) -&gt; a.getKey().commonPrefixLength(key))</span>
+<span class="fc" id="L128">              .thenComparing(Map.Entry.comparingByKey());</span>
+<span class="fc" id="L129">      return this.hashValueStore</span>
+<span class="fc" id="L130">          .computeIfAbsent(segmentIdentifier, s -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L131">          .entrySet()</span>
+<span class="fc" id="L132">          .stream()</span>
+          // only return keys equal to or less than
+<span class="fc bfc" id="L134" title="All 2 branches covered.">          .filter(e -&gt; e.getKey().compareTo(key) &lt;= 0)</span>
+<span class="fc" id="L135">          .sorted(comparing.reversed())</span>
+<span class="fc" id="L136">          .findFirst()</span>
+<span class="fc" id="L137">          .map(z -&gt; new NearestKeyValue(z.getKey(), z.getValue()));</span>
+    } finally {
+<span class="fc" id="L139">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllKeysThat(
+      final SegmentIdentifier segmentIdentifier, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="fc" id="L146">    return stream(segmentIdentifier)</span>
+<span class="fc" id="L147">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="fc" id="L148">        .map(Pair::getKey)</span>
+<span class="fc" id="L149">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllValuesFromKeysThat(
+      final SegmentIdentifier segmentIdentifier, final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="nc" id="L155">    return stream(segmentIdentifier)</span>
+<span class="nc" id="L156">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="nc" id="L157">        .map(Pair::getValue)</span>
+<span class="nc" id="L158">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream(final SegmentIdentifier segmentIdentifier) {
+<span class="fc" id="L163">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L164">    lock.lock();</span>
+    try {
+<span class="fc" id="L166">      return ImmutableSet.copyOf(</span>
+<span class="fc" id="L167">              hashValueStore.computeIfAbsent(segmentIdentifier, s -&gt; new HashMap&lt;&gt;()).entrySet())</span>
+<span class="fc" id="L168">          .stream()</span>
+<span class="fc" id="L169">          .filter(bytesEntry -&gt; bytesEntry.getValue().isPresent())</span>
+<span class="fc" id="L170">          .map(</span>
+              bytesEntry -&gt;
+<span class="fc" id="L172">                  Pair.of(bytesEntry.getKey().toArrayUnsafe(), bytesEntry.getValue().get()));</span>
+    } finally {
+<span class="fc" id="L174">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segmentIdentifier, final byte[] startKey) {
+<span class="nc" id="L181">    final Bytes startKeyBytes = Bytes.wrap(startKey);</span>
+<span class="nc" id="L182">    return stream(segmentIdentifier)</span>
+<span class="nc bnc" id="L183" title="All 2 branches missed.">        .filter(e -&gt; startKeyBytes.compareTo(Bytes.wrap(e.getKey())) &lt;= 0);</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
+      final SegmentIdentifier segmentIdentifier, final byte[] startKey, final byte[] endKey) {
+<span class="nc" id="L189">    final Bytes startKeyHash = Bytes.wrap(startKey);</span>
+<span class="nc" id="L190">    final Bytes endKeyHash = Bytes.wrap(endKey);</span>
+<span class="nc" id="L191">    return stream(segmentIdentifier)</span>
+<span class="nc bnc" id="L192" title="All 2 branches missed.">        .filter(e -&gt; startKeyHash.compareTo(Bytes.wrap(e.getKey())) &lt;= 0)</span>
+<span class="nc bnc" id="L193" title="All 2 branches missed.">        .filter(e -&gt; endKeyHash.compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
+  }
+
+  @Override
+  public Stream&lt;byte[]&gt; streamKeys(final SegmentIdentifier segmentIdentifier) {
+<span class="fc" id="L198">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L199">    lock.lock();</span>
+    try {
+<span class="fc" id="L201">      return ImmutableMap.copyOf(</span>
+<span class="fc" id="L202">              hashValueStore.computeIfAbsent(segmentIdentifier, s -&gt; new HashMap&lt;&gt;()))</span>
+<span class="fc" id="L203">          .entrySet()</span>
+<span class="fc" id="L204">          .stream()</span>
+<span class="fc" id="L205">          .filter(bytesEntry -&gt; bytesEntry.getValue().isPresent())</span>
+<span class="fc" id="L206">          .map(bytesEntry -&gt; bytesEntry.getKey().toArrayUnsafe());</span>
+    } finally {
+<span class="fc" id="L208">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public boolean tryDelete(final SegmentIdentifier segmentIdentifier, final byte[] key) {
+<span class="fc" id="L214">    final Lock lock = rwLock.writeLock();</span>
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">    if (lock.tryLock()) {</span>
+      try {
+<span class="fc" id="L217">        Optional.ofNullable(hashValueStore.get(segmentIdentifier))</span>
+<span class="fc" id="L218">            .ifPresent(store -&gt; store.remove(Bytes.wrap(key)));</span>
+      } finally {
+<span class="fc" id="L220">        lock.unlock();</span>
+      }
+<span class="fc" id="L222">      return true;</span>
+    }
+<span class="nc" id="L224">    return false;</span>
+  }
+
+  @Override
+<span class="fc" id="L228">  public void close() {}</span>
+
+  @Override
+  public SegmentedKeyValueStorageTransaction startTransaction() {
+<span class="fc" id="L232">    return new SegmentedKeyValueStorageTransactionValidatorDecorator(</span>
+        new SegmentedInMemoryTransaction(), this::isClosed);
+  }
+
+  @Override
+  public boolean isClosed() {
+<span class="fc" id="L238">    return false;</span>
+  }
+
+  @Override
+  public SegmentedInMemoryKeyValueStorage takeSnapshot() {
+    // need to clone the submaps also:
+<span class="fc" id="L244">    return new SegmentedInMemoryKeyValueStorage(</span>
+<span class="fc" id="L245">        hashValueStore.entrySet().stream()</span>
+<span class="fc" id="L246">            .collect(</span>
+<span class="fc" id="L247">                Collectors.toConcurrentMap(</span>
+<span class="fc" id="L248">                    Map.Entry::getKey, e -&gt; new ConcurrentHashMap&lt;&gt;(e.getValue()))));</span>
+  }
+
+  @Override
+  public SegmentedKeyValueStorageTransaction getSnapshotTransaction() {
+<span class="fc" id="L253">    return startTransaction();</span>
+  }
+
+  /** In memory transaction. */
+<span class="fc" id="L257">  public class SegmentedInMemoryTransaction implements SegmentedKeyValueStorageTransaction {</span>
+
+    /** protected access to updatedValues map for the transaction. */
+<span class="fc" id="L260">    protected Map&lt;SegmentIdentifier, Map&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; updatedValues = new HashMap&lt;&gt;();</span>
+    /** protected access to deletedValues set for the transaction. */
+<span class="fc" id="L262">    protected Map&lt;SegmentIdentifier, Set&lt;Bytes&gt;&gt; removedKeys = new HashMap&lt;&gt;();</span>
+
+    @Override
+    public void put(
+        final SegmentIdentifier segmentIdentifier, final byte[] key, final byte[] value) {
+<span class="fc" id="L267">      updatedValues</span>
+<span class="fc" id="L268">          .computeIfAbsent(segmentIdentifier, __ -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L269">          .put(Bytes.wrap(key), Optional.of(value));</span>
+<span class="fc" id="L270">      removedKeys.computeIfAbsent(segmentIdentifier, __ -&gt; new HashSet&lt;&gt;()).remove(Bytes.wrap(key));</span>
+<span class="fc" id="L271">    }</span>
+
+    @Override
+    public void remove(final SegmentIdentifier segmentIdentifier, final byte[] key) {
+<span class="fc" id="L275">      removedKeys.computeIfAbsent(segmentIdentifier, __ -&gt; new HashSet&lt;&gt;()).add(Bytes.wrap(key));</span>
+<span class="fc" id="L276">      updatedValues</span>
+<span class="fc" id="L277">          .computeIfAbsent(segmentIdentifier, __ -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L278">          .remove(Bytes.wrap(key));</span>
+<span class="fc" id="L279">    }</span>
+
+    @Override
+    public void commit() throws StorageException {
+<span class="fc" id="L283">      final Lock lock = rwLock.writeLock();</span>
+<span class="fc" id="L284">      lock.lock();</span>
+      try {
+<span class="fc" id="L286">        updatedValues.entrySet().stream()</span>
+<span class="fc" id="L287">            .forEach(</span>
+                entry -&gt;
+                    hashValueStore
+<span class="fc" id="L290">                        .computeIfAbsent(entry.getKey(), __ -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L291">                        .putAll(entry.getValue()));</span>
+
+<span class="fc" id="L293">        removedKeys.entrySet().stream()</span>
+<span class="fc" id="L294">            .forEach(</span>
+                entry -&gt; {
+<span class="fc" id="L296">                  var keyset =</span>
+                      hashValueStore
+<span class="pc" id="L298">                          .computeIfAbsent(entry.getKey(), __ -&gt; new HashMap&lt;&gt;())</span>
+<span class="fc" id="L299">                          .keySet();</span>
+<span class="fc" id="L300">                  keyset.removeAll(entry.getValue());</span>
+<span class="fc" id="L301">                });</span>
+
+<span class="fc" id="L303">        updatedValues.clear();</span>
+<span class="fc" id="L304">        removedKeys.clear();</span>
+      } finally {
+<span class="fc" id="L306">        lock.unlock();</span>
+      }
+<span class="fc" id="L308">    }</span>
+
+    @Override
+    public void rollback() {
+<span class="fc" id="L312">      updatedValues.clear();</span>
+<span class="fc" id="L313">      removedKeys.clear();</span>
+<span class="fc" id="L314">    }</span>
+  }
+
+  /**
+   * Dump the content of the store to the provided PrintStream.
+   *
+   * @param ps the PrintStream to dump the content to.
+   */
+  public void dump(final PrintStream ps) {
+<span class="nc" id="L323">    final Lock lock = rwLock.readLock();</span>
+<span class="nc" id="L324">    lock.lock();</span>
+    try {
+<span class="nc" id="L326">      ImmutableSet.copyOf(hashValueStore.entrySet()).stream()</span>
+<span class="nc" id="L327">          .forEach(</span>
+              map -&gt; {
+<span class="nc" id="L329">                ps.println(&quot;Segment: &quot; + map.getKey().getName());</span>
+<span class="nc" id="L330">                map.getValue().entrySet().stream()</span>
+<span class="nc" id="L331">                    .filter(bytesEntry -&gt; bytesEntry.getValue().isPresent())</span>
+<span class="nc" id="L332">                    .forEach(</span>
+                        entry -&gt;
+<span class="nc" id="L334">                            ps.printf(</span>
+                                &quot;  %s : %s%n&quot;,
+<span class="nc" id="L336">                                entry.getKey().toHexString(),</span>
+<span class="nc" id="L337">                                Bytes.wrap(entry.getValue().get()).toHexString()));</span>
+<span class="nc" id="L338">              });</span>
+    } finally {
+<span class="nc" id="L340">      lock.unlock();</span>
+    }
+<span class="nc" id="L342">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

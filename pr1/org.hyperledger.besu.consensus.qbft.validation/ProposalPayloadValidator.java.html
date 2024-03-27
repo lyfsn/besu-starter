@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ProposalPayloadValidator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.consensus.qbft.validation</a> &gt; <span class="el_source">ProposalPayloadValidator.java</span></div><h1>ProposalPayloadValidator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright 2020 ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.consensus.qbft.validation;
+
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.consensus.common.bft.BftBlockInterface;
+import org.hyperledger.besu.consensus.common.bft.BftExtraDataCodec;
+import org.hyperledger.besu.consensus.common.bft.ConsensusRoundIdentifier;
+import org.hyperledger.besu.consensus.common.bft.payload.SignedData;
+import org.hyperledger.besu.consensus.qbft.QbftContext;
+import org.hyperledger.besu.consensus.qbft.payload.ProposalPayload;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftBlockHeaderFunctions;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftExtraData;
+import org.hyperledger.besu.consensus.qbft.pki.PkiQbftExtraDataCodec;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.BlockValidator;
+import org.hyperledger.besu.ethereum.ProtocolContext;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.mainnet.HeaderValidationMode;
+import org.hyperledger.besu.pki.cms.CmsValidator;
+
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** The Proposal payload validator. */
+public class ProposalPayloadValidator {
+
+  private static final String ERROR_PREFIX = &quot;Invalid Proposal Payload&quot;;
+
+<span class="fc" id="L47">  private static final Logger LOG = LoggerFactory.getLogger(ProposalPayloadValidator.class);</span>
+  private final Address expectedProposer;
+  private final ConsensusRoundIdentifier targetRound;
+  private final BlockValidator blockValidator;
+  private final ProtocolContext protocolContext;
+  private final BftExtraDataCodec bftExtraDataCodec;
+  private final Optional&lt;CmsValidator&gt; cmsValidator;
+
+  /**
+   * Instantiates a new Proposal payload validator.
+   *
+   * @param expectedProposer the expected proposer
+   * @param targetRound the target round
+   * @param blockValidator the block validator
+   * @param protocolContext the protocol context
+   * @param bftExtraDataCodec the bft extra data codec
+   */
+  public ProposalPayloadValidator(
+      final Address expectedProposer,
+      final ConsensusRoundIdentifier targetRound,
+      final BlockValidator blockValidator,
+      final ProtocolContext protocolContext,
+      final BftExtraDataCodec bftExtraDataCodec) {
+<span class="fc" id="L70">    this(</span>
+        expectedProposer,
+        targetRound,
+        blockValidator,
+        protocolContext,
+        bftExtraDataCodec,
+        protocolContext
+<span class="fc" id="L77">            .getConsensusContext(QbftContext.class)</span>
+<span class="fc" id="L78">            .getPkiBlockCreationConfiguration()</span>
+<span class="pc" id="L79">            .map(config -&gt; new CmsValidator(config.getTrustStore())));</span>
+<span class="fc" id="L80">  }</span>
+
+  /**
+   * Instantiates a new Proposal payload validator.
+   *
+   * @param expectedProposer the expected proposer
+   * @param targetRound the target round
+   * @param blockValidator the block validator
+   * @param protocolContext the protocol context
+   * @param bftExtraDataCodec the bft extra data codec
+   * @param cmsValidator the cms validator
+   */
+  @VisibleForTesting
+  public ProposalPayloadValidator(
+      final Address expectedProposer,
+      final ConsensusRoundIdentifier targetRound,
+      final BlockValidator blockValidator,
+      final ProtocolContext protocolContext,
+      final BftExtraDataCodec bftExtraDataCodec,
+<span class="fc" id="L99">      final Optional&lt;CmsValidator&gt; cmsValidator) {</span>
+<span class="fc" id="L100">    this.expectedProposer = expectedProposer;</span>
+<span class="fc" id="L101">    this.targetRound = targetRound;</span>
+<span class="fc" id="L102">    this.blockValidator = blockValidator;</span>
+<span class="fc" id="L103">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L104">    this.bftExtraDataCodec = bftExtraDataCodec;</span>
+<span class="fc" id="L105">    this.cmsValidator = cmsValidator;</span>
+<span class="fc" id="L106">  }</span>
+
+  /**
+   * Validate.
+   *
+   * @param signedPayload the signed Proposal payload
+   * @return the boolean
+   */
+  public boolean validate(final SignedData&lt;ProposalPayload&gt; signedPayload) {
+
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    if (!signedPayload.getAuthor().equals(expectedProposer)) {</span>
+<span class="fc" id="L117">      LOG.info(&quot;{}: proposal created by non-proposer&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L118">      return false;</span>
+    }
+
+<span class="fc" id="L121">    final ProposalPayload payload = signedPayload.getPayload();</span>
+
+<span class="fc bfc" id="L123" title="All 2 branches covered.">    if (!payload.getRoundIdentifier().equals(targetRound)) {</span>
+<span class="fc" id="L124">      LOG.info(&quot;{}: proposal is not for expected round&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L125">      return false;</span>
+    }
+
+<span class="fc" id="L128">    final Block block = payload.getProposedBlock();</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">    if (!validateBlock(block)) {</span>
+<span class="fc" id="L130">      return false;</span>
+    }
+
+<span class="fc bfc" id="L133" title="All 2 branches covered.">    if (block.getHeader().getNumber() != payload.getRoundIdentifier().getSequenceNumber()) {</span>
+<span class="fc" id="L134">      LOG.info(&quot;{}: block number does not match sequence number&quot;, ERROR_PREFIX);</span>
+<span class="fc" id="L135">      return false;</span>
+    }
+
+<span class="fc bfc" id="L138" title="All 2 branches covered.">    if (cmsValidator.isPresent()) {</span>
+<span class="fc" id="L139">      return validateCms(</span>
+          block,
+<span class="fc" id="L141">          protocolContext.getConsensusContext(QbftContext.class).getBlockInterface(),</span>
+<span class="fc" id="L142">          cmsValidator.get());</span>
+    }
+
+<span class="fc" id="L145">    return true;</span>
+  }
+
+  private boolean validateBlock(final Block block) {
+<span class="pc bpc" id="L149" title="1 of 2 branches missed.">    checkState(blockValidator != null, &quot;block validation not possible, no block validator.&quot;);</span>
+
+<span class="fc" id="L151">    final var validationResult =</span>
+<span class="fc" id="L152">        blockValidator.validateAndProcessBlock(</span>
+            protocolContext, block, HeaderValidationMode.LIGHT, HeaderValidationMode.FULL);
+
+<span class="fc bfc" id="L155" title="All 2 branches covered.">    if (!validationResult.isSuccessful()) {</span>
+<span class="fc" id="L156">      LOG.info(</span>
+          &quot;{}: block did not pass validation. Reason {}&quot;,
+          ERROR_PREFIX,
+          validationResult.errorMessage);
+<span class="fc" id="L160">      return false;</span>
+    }
+
+<span class="fc" id="L163">    return true;</span>
+  }
+
+  private boolean validateCms(
+      final Block block,
+      final BftBlockInterface bftBlockInterface,
+      final CmsValidator cmsValidator) {
+<span class="fc" id="L170">    final PkiQbftExtraData pkiExtraData =</span>
+<span class="fc" id="L171">        (PkiQbftExtraData) bftBlockInterface.getExtraData(block.getHeader());</span>
+
+<span class="fc" id="L173">    final Hash hashWithoutCms =</span>
+<span class="fc" id="L174">        PkiQbftBlockHeaderFunctions.forCmsSignature((PkiQbftExtraDataCodec) bftExtraDataCodec)</span>
+<span class="fc" id="L175">            .hash(block.getHeader());</span>
+
+<span class="fc" id="L177">    LOG.debug(&quot;Validating CMS with signed hash {} in block {}&quot;, hashWithoutCms, block.getHash());</span>
+
+<span class="fc bfc" id="L179" title="All 2 branches covered.">    if (!cmsValidator.validate(pkiExtraData.getCms(), hashWithoutCms)) {</span>
+<span class="fc" id="L180">      LOG.info(&quot;{}: invalid CMS in block {}&quot;, ERROR_PREFIX, block.getHash());</span>
+<span class="fc" id="L181">      return false;</span>
+    } else {
+<span class="fc" id="L183">      LOG.trace(&quot;Valid CMS in block {}&quot;, block.getHash());</span>
+<span class="fc" id="L184">      return true;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

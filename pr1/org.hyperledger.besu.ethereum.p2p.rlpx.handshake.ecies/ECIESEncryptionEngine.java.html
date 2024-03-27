@@ -1,0 +1,398 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ECIESEncryptionEngine.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies</a> &gt; <span class="el_source">ECIESEncryptionEngine.java</span></div><h1>ECIESEncryptionEngine.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.p2p.rlpx.handshake.ecies;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.SECPPublicKey;
+import org.hyperledger.besu.crypto.SignatureAlgorithm;
+import org.hyperledger.besu.crypto.SignatureAlgorithmFactory;
+import org.hyperledger.besu.cryptoservices.NodeKey;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.bouncycastle.crypto.BufferedBlockCipher;
+import org.bouncycastle.crypto.DataLengthException;
+import org.bouncycastle.crypto.DerivationFunction;
+import org.bouncycastle.crypto.DerivationParameters;
+import org.bouncycastle.crypto.Digest;
+import org.bouncycastle.crypto.DigestDerivationFunction;
+import org.bouncycastle.crypto.InvalidCipherTextException;
+import org.bouncycastle.crypto.Mac;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.engines.AESEngine;
+import org.bouncycastle.crypto.macs.HMac;
+import org.bouncycastle.crypto.modes.SICBlockCipher;
+import org.bouncycastle.crypto.params.IESWithCipherParameters;
+import org.bouncycastle.crypto.params.KDFParameters;
+import org.bouncycastle.crypto.params.KeyParameter;
+import org.bouncycastle.crypto.params.ParametersWithIV;
+import org.bouncycastle.util.Arrays;
+import org.bouncycastle.util.Pack;
+
+/**
+ * An &lt;a href=&quot;https://en.wikipedia.org/wiki/Integrated_Encryption_Scheme&quot;&gt;Integrated Encryption
+ * Scheme&lt;/a&gt; engine that implements the encryption and decryption logic behind the ECIES crypto
+ * handshake during the RLPx connection establishment.
+ *
+ * &lt;p&gt;This class has been inspired by the &lt;code&gt;IESEngine&lt;/code&gt; implementation in Bouncy Castle. It
+ * has been modified heavily to accommodate our usage, yet the core logic remains unchanged. It
+ * implements a peculiarity of the Ethereum encryption protocol: updating the encryption MAC with
+ * the IV.
+ */
+public class ECIESEncryptionEngine {
+
+  public static final int ENCRYPTION_OVERHEAD = 113;
+
+<span class="fc" id="L59">  private static final byte[] IES_DERIVATION = new byte[0];</span>
+<span class="fc" id="L60">  private static final byte[] IES_ENCODING = new byte[0];</span>
+  private static final short CIPHER_BLOCK_SIZE = 16;
+  private static final short CIPHER_KEY_SIZE_BITS = CIPHER_BLOCK_SIZE * 8;
+
+<span class="fc" id="L64">  private static final IESWithCipherParameters PARAM =</span>
+      new IESWithCipherParameters(
+          IES_DERIVATION, IES_ENCODING, CIPHER_KEY_SIZE_BITS, CIPHER_KEY_SIZE_BITS);
+<span class="fc" id="L67">  private static final int CIPHER_KEY_SIZE = PARAM.getCipherKeySize();</span>
+<span class="fc" id="L68">  private static final int CIPHER_MAC_KEY_SIZE = PARAM.getMacKeySize();</span>
+
+  // Configure the components of the Integrated Encryption Scheme.
+<span class="fc" id="L71">  private final Digest hash = new SHA256Digest();</span>
+<span class="fc" id="L72">  private final DerivationFunction kdf = new ECIESHandshakeKDFFunction();</span>
+<span class="fc" id="L73">  private final Mac mac = new HMac(new SHA256Digest());</span>
+<span class="fc" id="L74">  private final BufferedBlockCipher cipher =</span>
+      new BufferedBlockCipher(new SICBlockCipher(new AESEngine()));
+
+  private final SECPPublicKey ephPubKey;
+  private final byte[] iv;
+
+  private ECIESEncryptionEngine(
+<span class="fc" id="L81">      final Bytes agreedSecret, final SECPPublicKey ephPubKey, final byte[] iv) {</span>
+<span class="fc" id="L82">    this.ephPubKey = ephPubKey;</span>
+<span class="fc" id="L83">    this.iv = iv;</span>
+
+    // Initialise the KDF.
+<span class="fc" id="L86">    this.kdf.init(new KDFParameters(agreedSecret.toArrayUnsafe(), PARAM.getDerivationV()));</span>
+<span class="fc" id="L87">  }</span>
+
+  /**
+   * Creates a new engine for decryption.
+   *
+   * @param nodeKey An abstraction of the decrypting private key
+   * @param ephPubKey The ephemeral public key extracted from the raw message.
+   * @param iv The initialization vector extracted from the raw message.
+   * @return An engine prepared for decryption.
+   */
+  public static ECIESEncryptionEngine forDecryption(
+      final NodeKey nodeKey, final SECPPublicKey ephPubKey, final Bytes iv) {
+<span class="fc" id="L99">    final byte[] ivb = iv.toArray();</span>
+
+    // Create parameters.
+<span class="fc" id="L102">    final Bytes agreedSecret = nodeKey.calculateECDHKeyAgreement(ephPubKey);</span>
+
+<span class="fc" id="L104">    return new ECIESEncryptionEngine(agreedSecret, ephPubKey, ivb);</span>
+  }
+
+  /**
+   * Creates a new engine for encryption.
+   *
+   * &lt;p&gt;The generated IV and ephemeral public key are available via getters {@link #getIv()} and
+   * {@link #getEphPubKey()}.
+   *
+   * @param pubKey The public key of the receiver.
+   * @return An engine prepared for encryption.
+   */
+  public static ECIESEncryptionEngine forEncryption(final SECPPublicKey pubKey) {
+<span class="fc" id="L117">    final SignatureAlgorithm signatureAlgorithm = SignatureAlgorithmFactory.getInstance();</span>
+
+    // Create an ephemeral key pair for IES whose public key we can later append in the message.
+<span class="fc" id="L120">    final KeyPair ephKeyPair = signatureAlgorithm.generateKeyPair();</span>
+
+    // Create random iv.
+<span class="fc" id="L123">    final byte[] ivb = ECIESHandshaker.random(CIPHER_BLOCK_SIZE).toArray();</span>
+
+<span class="fc" id="L125">    return new ECIESEncryptionEngine(</span>
+<span class="fc" id="L126">        signatureAlgorithm.calculateECDHKeyAgreement(ephKeyPair.getPrivateKey(), pubKey),</span>
+<span class="fc" id="L127">        ephKeyPair.getPublicKey(),</span>
+        ivb);
+  }
+
+  /**
+   * Encrypts the provided plaintext.
+   *
+   * @param in The plaintext.
+   * @return The ciphertext.
+   * @throws InvalidCipherTextException Thrown if an error occurred during encryption.
+   */
+  public Bytes encrypt(final Bytes in) throws InvalidCipherTextException {
+<span class="fc" id="L139">    return Bytes.wrap(encrypt(in.toArray(), 0, in.size(), null));</span>
+  }
+
+  public Bytes encrypt(final Bytes in, final byte[] macData) throws InvalidCipherTextException {
+<span class="fc" id="L143">    return Bytes.wrap(encrypt(in.toArray(), 0, in.size(), macData));</span>
+  }
+
+  private byte[] encrypt(final byte[] in, final int inOff, final int inLen, final byte[] macData)
+      throws InvalidCipherTextException {
+    final byte[] C;
+    final byte[] K;
+    final byte[] K1;
+    final byte[] K2;
+
+    int len;
+
+    // Block cipher mode.
+<span class="fc" id="L156">    K1 = new byte[CIPHER_KEY_SIZE / 8];</span>
+<span class="fc" id="L157">    K2 = new byte[CIPHER_MAC_KEY_SIZE / 8];</span>
+<span class="fc" id="L158">    K = new byte[K1.length + K2.length];</span>
+
+<span class="fc" id="L160">    kdf.generateBytes(K, 0, K.length);</span>
+<span class="fc" id="L161">    System.arraycopy(K, 0, K1, 0, K1.length);</span>
+<span class="fc" id="L162">    System.arraycopy(K, K1.length, K2, 0, K2.length);</span>
+
+    // Initialize the cipher with the IV.
+<span class="fc" id="L165">    cipher.init(true, new ParametersWithIV(new KeyParameter(K1), iv));</span>
+
+<span class="fc" id="L167">    C = new byte[cipher.getOutputSize(inLen)];</span>
+<span class="fc" id="L168">    len = cipher.processBytes(in, inOff, inLen, C, 0);</span>
+<span class="fc" id="L169">    len += cipher.doFinal(C, len);</span>
+
+    // Convert the length of the encoding vector into a byte array.
+<span class="fc" id="L172">    final byte[] P2 = PARAM.getEncodingV();</span>
+
+    // Apply the MAC.
+<span class="fc" id="L175">    final byte[] T = new byte[mac.getMacSize()];</span>
+
+<span class="fc" id="L177">    final byte[] K2hash = new byte[hash.getDigestSize()];</span>
+<span class="fc" id="L178">    hash.reset();</span>
+<span class="fc" id="L179">    hash.update(K2, 0, K2.length);</span>
+<span class="fc" id="L180">    hash.doFinal(K2hash, 0);</span>
+
+<span class="fc" id="L182">    mac.init(new KeyParameter(K2hash));</span>
+<span class="fc" id="L183">    mac.update(iv, 0, iv.length);</span>
+<span class="fc" id="L184">    mac.update(C, 0, C.length);</span>
+
+<span class="pc bpc" id="L186" title="1 of 2 branches missed.">    if (P2 != null) {</span>
+<span class="fc" id="L187">      mac.update(P2, 0, P2.length);</span>
+    }
+
+<span class="fc bfc" id="L190" title="All 2 branches covered.">    if (macData != null) {</span>
+<span class="fc" id="L191">      mac.update(macData, 0, macData.length);</span>
+    }
+
+<span class="fc" id="L194">    mac.doFinal(T, 0);</span>
+
+<span class="fc" id="L196">    final byte[] Output = new byte[len + T.length];</span>
+<span class="fc" id="L197">    System.arraycopy(C, 0, Output, 0, len);</span>
+<span class="fc" id="L198">    System.arraycopy(T, 0, Output, len, T.length);</span>
+
+<span class="fc" id="L200">    return Output;</span>
+  }
+
+  /**
+   * Decrypts the provided ciphertext.
+   *
+   * @param in The ciphertext.
+   * @return The plaintext.
+   * @throws InvalidCipherTextException Thrown if an error occurred during decryption.
+   */
+  public Bytes decrypt(final Bytes in) throws InvalidCipherTextException {
+<span class="fc" id="L211">    return Bytes.wrap(decrypt(in.toArray(), 0, in.size(), null));</span>
+  }
+
+  public Bytes decrypt(final Bytes in, final byte[] commonMac) throws InvalidCipherTextException {
+<span class="fc" id="L215">    return Bytes.wrap(decrypt(in.toArray(), 0, in.size(), commonMac));</span>
+  }
+
+  private byte[] decrypt(
+      final byte[] inEnc, final int inOff, final int inLen, final byte[] commonMac)
+      throws InvalidCipherTextException {
+    final byte[] M;
+    final byte[] K;
+    final byte[] K1;
+    final byte[] K2;
+
+    int len;
+
+    // Ensure that the length of the input is greater than the MAC in bytes
+<span class="pc bpc" id="L229" title="1 of 2 branches missed.">    if (inLen &lt;= (CIPHER_MAC_KEY_SIZE / 8)) {</span>
+<span class="nc" id="L230">      throw new InvalidCipherTextException(&quot;Length of input must be greater than the MAC&quot;);</span>
+    }
+
+    // Block cipher mode.
+<span class="fc" id="L234">    K1 = new byte[CIPHER_KEY_SIZE / 8];</span>
+<span class="fc" id="L235">    K2 = new byte[CIPHER_MAC_KEY_SIZE / 8];</span>
+<span class="fc" id="L236">    K = new byte[K1.length + K2.length];</span>
+
+<span class="fc" id="L238">    kdf.generateBytes(K, 0, K.length);</span>
+<span class="fc" id="L239">    System.arraycopy(K, 0, K1, 0, K1.length);</span>
+<span class="fc" id="L240">    System.arraycopy(K, K1.length, K2, 0, K2.length);</span>
+
+    // Use IV to initialize cipher.
+<span class="fc" id="L243">    cipher.init(false, new ParametersWithIV(new KeyParameter(K1), iv));</span>
+
+<span class="fc" id="L245">    M = new byte[cipher.getOutputSize(inLen - mac.getMacSize())];</span>
+<span class="fc" id="L246">    len = cipher.processBytes(inEnc, inOff, inLen - mac.getMacSize(), M, 0);</span>
+<span class="fc" id="L247">    len += cipher.doFinal(M, len);</span>
+
+    // Convert the length of the encoding vector into a byte array.
+<span class="fc" id="L250">    final byte[] P2 = PARAM.getEncodingV();</span>
+
+    // Verify the MAC.
+<span class="fc" id="L253">    final int end = inOff + inLen;</span>
+<span class="fc" id="L254">    final byte[] T1 = Arrays.copyOfRange(inEnc, end - mac.getMacSize(), end);</span>
+<span class="fc" id="L255">    final byte[] T2 = new byte[T1.length];</span>
+
+<span class="fc" id="L257">    final byte[] K2hash = new byte[hash.getDigestSize()];</span>
+<span class="fc" id="L258">    hash.reset();</span>
+<span class="fc" id="L259">    hash.update(K2, 0, K2.length);</span>
+<span class="fc" id="L260">    hash.doFinal(K2hash, 0);</span>
+
+<span class="fc" id="L262">    mac.init(new KeyParameter(K2hash));</span>
+<span class="fc" id="L263">    mac.update(iv, 0, iv.length);</span>
+<span class="fc" id="L264">    mac.update(inEnc, inOff, inLen - T2.length);</span>
+
+<span class="pc bpc" id="L266" title="1 of 2 branches missed.">    if (P2 != null) {</span>
+<span class="fc" id="L267">      mac.update(P2, 0, P2.length);</span>
+    }
+
+<span class="fc bfc" id="L270" title="All 2 branches covered.">    if (commonMac != null) {</span>
+<span class="fc" id="L271">      mac.update(commonMac, 0, commonMac.length);</span>
+    }
+
+<span class="fc" id="L274">    mac.doFinal(T2, 0);</span>
+
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">    if (!Arrays.constantTimeAreEqual(T1, T2)) {</span>
+<span class="nc" id="L277">      throw new InvalidCipherTextException(&quot;Invalid MAC.&quot;);</span>
+    }
+
+    // Output the message.
+<span class="fc" id="L281">    return Arrays.copyOfRange(M, 0, len);</span>
+  }
+
+  /**
+   * Returns the initialization vector.
+   *
+   * &lt;p&gt;When encrypting a payload this value is automatically generated and accessible via this
+   * getter.
+   *
+   * @return The initialization vector in use.
+   */
+  public Bytes getIv() {
+<span class="fc" id="L293">    return Bytes.wrap(iv);</span>
+  }
+
+  /**
+   * Returns the ephemeral public key.
+   *
+   * &lt;p&gt;When encrypting a payload this value is automatically generated and accessible via this
+   * getter.
+   *
+   * @return The ephemeral public key.
+   */
+  public SECPPublicKey getEphPubKey() {
+<span class="fc" id="L305">    return ephPubKey;</span>
+  }
+
+  /**
+   * Key generation function as defined in NIST SP 800-56A, but swapping the order of the digested
+   * values (counter first, shared secret second) to comply with Ethereum's approach.
+   *
+   * &lt;p&gt;This class has been adapted from the &lt;code&gt;BaseKDFBytesGenerator&lt;/code&gt; implementation of
+   * Bouncy Castle.
+   */
+<span class="fc" id="L315">  private static class ECIESHandshakeKDFFunction implements DigestDerivationFunction {</span>
+
+    private static final int COUNTER_START = 1;
+<span class="fc" id="L318">    private final Digest digest = new SHA256Digest();</span>
+<span class="fc" id="L319">    private final int digestSize = digest.getDigestSize();</span>
+    private byte[] shared;
+    private byte[] iv;
+
+    @Override
+    public void init(final DerivationParameters param) {
+<span class="fc" id="L325">      checkArgument(param instanceof KDFParameters, &quot;unexpected expected KDF params type&quot;);</span>
+
+<span class="fc" id="L327">      final KDFParameters p = (KDFParameters) param;</span>
+<span class="fc" id="L328">      shared = p.getSharedSecret();</span>
+<span class="fc" id="L329">      iv = p.getIV();</span>
+<span class="fc" id="L330">    }</span>
+
+    /**
+     * Returns the underlying digest.
+     *
+     * @return The digest.
+     */
+    @Override
+    public Digest getDigest() {
+<span class="nc" id="L339">      return digest;</span>
+    }
+
+    /**
+     * Fills &lt;code&gt;len&lt;/code&gt; bytes of the output buffer with bytes generated from the derivation
+     * function.
+     *
+     * @throws IllegalArgumentException If the size of the request will cause an overflow.
+     * @throws DataLengthException If the out buffer is too small.
+     */
+    @Override
+    public int generateBytes(final byte[] out, final int outOff, final int len)
+        throws DataLengthException, IllegalArgumentException {
+<span class="pc bpc" id="L352" title="1 of 2 branches missed.">      checkArgument(len &gt;= 0, &quot;length to fill cannot be negative&quot;);</span>
+
+<span class="pc bpc" id="L354" title="1 of 2 branches missed.">      if ((out.length - len) &lt; outOff) {</span>
+<span class="nc" id="L355">        throw new DataLengthException(&quot;output buffer too small&quot;);</span>
+      }
+
+<span class="fc" id="L358">      final int outLen = digest.getDigestSize();</span>
+<span class="fc" id="L359">      final int cThreshold = (len + outLen - 1) / outLen;</span>
+<span class="fc" id="L360">      final byte[] dig = new byte[digestSize];</span>
+<span class="fc" id="L361">      final byte[] C = Pack.intToBigEndian(COUNTER_START);</span>
+<span class="fc" id="L362">      int counterBase = 0; // COUNTER_START &amp; ~0xFF is always zero</span>
+<span class="fc" id="L363">      int offset = outOff;</span>
+<span class="fc" id="L364">      int length = len;</span>
+
+<span class="fc bfc" id="L366" title="All 2 branches covered.">      for (int i = 0; i &lt; cThreshold; i++) {</span>
+        // Ethereum peculiarity: Ethereum requires digesting the counter and the shared secret is
+        // inverse order
+        // that of the standard BaseKDFBytesGenerator in Bouncy Castle.
+<span class="fc" id="L370">        digest.update(C, 0, C.length);</span>
+<span class="fc" id="L371">        digest.update(shared, 0, shared.length);</span>
+
+<span class="pc bpc" id="L373" title="1 of 2 branches missed.">        if (iv != null) {</span>
+<span class="fc" id="L374">          digest.update(iv, 0, iv.length);</span>
+        }
+
+<span class="fc" id="L377">        digest.doFinal(dig, 0);</span>
+
+<span class="pc bpc" id="L379" title="1 of 2 branches missed.">        if (length &gt; outLen) {</span>
+<span class="nc" id="L380">          System.arraycopy(dig, 0, out, offset, outLen);</span>
+<span class="nc" id="L381">          offset += outLen;</span>
+<span class="nc" id="L382">          length -= outLen;</span>
+        } else {
+<span class="fc" id="L384">          System.arraycopy(dig, 0, out, offset, length);</span>
+        }
+
+<span class="pc bpc" id="L387" title="1 of 2 branches missed.">        if (++C[3] == 0) {</span>
+<span class="nc" id="L388">          counterBase += 0x100;</span>
+<span class="nc" id="L389">          Pack.intToBigEndian(counterBase, C, 0);</span>
+        }
+      }
+
+<span class="fc" id="L393">      digest.reset();</span>
+<span class="fc" id="L394">      return length;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

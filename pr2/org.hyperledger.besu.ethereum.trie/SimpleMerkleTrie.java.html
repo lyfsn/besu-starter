@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SimpleMerkleTrie.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie</a> &gt; <span class="el_source">SimpleMerkleTrie.java</span></div><h1>SimpleMerkleTrie.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.stream.Collectors.toUnmodifiableSet;
+import static org.hyperledger.besu.ethereum.trie.CompactEncoding.bytesToPath;
+
+import org.hyperledger.besu.ethereum.trie.patricia.DefaultNodeFactory;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+/**
+ * An in-memory {@link MerkleTrie}.
+ *
+ * @param &lt;V&gt; The type of values stored by this trie.
+ */
+public abstract class SimpleMerkleTrie&lt;K extends Bytes, V&gt; implements MerkleTrie&lt;K, V&gt; {
+
+  protected final DefaultNodeFactory&lt;V&gt; nodeFactory;
+
+  private Node&lt;V&gt; root;
+
+  /**
+   * Create a trie.
+   *
+   * @param valueSerializer A function for serializing values to bytes.
+   */
+<span class="fc" id="L52">  public SimpleMerkleTrie(final Function&lt;V, Bytes&gt; valueSerializer) {</span>
+<span class="fc" id="L53">    this.nodeFactory = new DefaultNodeFactory&lt;&gt;(valueSerializer);</span>
+<span class="fc" id="L54">    this.root = NullNode.instance();</span>
+<span class="fc" id="L55">  }</span>
+
+  @Override
+  public Optional&lt;V&gt; get(final K key) {
+<span class="fc" id="L59">    checkNotNull(key);</span>
+<span class="fc" id="L60">    return root.accept(getGetVisitor(), bytesToPath(key)).getValue();</span>
+  }
+
+  @Override
+  public Optional&lt;V&gt; getPath(final K path) {
+<span class="nc" id="L65">    checkNotNull(path);</span>
+<span class="nc" id="L66">    return root.accept(getGetVisitor(), path).getValue();</span>
+  }
+
+  @Override
+  public Proof&lt;V&gt; getValueWithProof(final K key) {
+<span class="fc" id="L71">    checkNotNull(key);</span>
+<span class="fc" id="L72">    final ProofVisitor&lt;V&gt; proofVisitor = new ProofVisitor&lt;&gt;(root);</span>
+<span class="fc" id="L73">    final Optional&lt;V&gt; value = root.accept(proofVisitor, bytesToPath(key)).getValue();</span>
+<span class="fc" id="L74">    final List&lt;Bytes&gt; proof =</span>
+<span class="fc" id="L75">        proofVisitor.getProof().stream().map(Node::getEncodedBytes).collect(Collectors.toList());</span>
+<span class="fc" id="L76">    return new Proof&lt;&gt;(value, proof);</span>
+  }
+
+  @Override
+  public void put(final K key, final V value) {
+<span class="fc" id="L81">    checkNotNull(key);</span>
+<span class="fc" id="L82">    checkNotNull(value);</span>
+<span class="fc" id="L83">    this.root = root.accept(getPutVisitor(value), bytesToPath(key));</span>
+<span class="fc" id="L84">  }</span>
+
+  @Override
+  public void putPath(final K path, final V value) {
+<span class="fc" id="L88">    checkNotNull(path);</span>
+<span class="fc" id="L89">    checkNotNull(value);</span>
+<span class="fc" id="L90">    this.root = root.accept(getPutVisitor(value), path);</span>
+<span class="fc" id="L91">  }</span>
+
+  @Override
+  public void put(final K key, final PathNodeVisitor&lt;V&gt; putVisitor) {
+<span class="nc" id="L95">    checkNotNull(key);</span>
+<span class="nc" id="L96">    this.root = root.accept(putVisitor, bytesToPath(key));</span>
+<span class="nc" id="L97">  }</span>
+
+  @Override
+  public void remove(final K key) {
+<span class="fc" id="L101">    checkNotNull(key);</span>
+<span class="fc" id="L102">    this.root = root.accept(getRemoveVisitor(), bytesToPath(key));</span>
+<span class="fc" id="L103">  }</span>
+
+  @Override
+  public void removePath(final K path, final PathNodeVisitor&lt;V&gt; removeVisitor) {
+<span class="nc" id="L107">    checkNotNull(path);</span>
+<span class="nc" id="L108">    this.root = root.accept(removeVisitor, path);</span>
+<span class="nc" id="L109">  }</span>
+
+  @Override
+  public Bytes32 getRootHash() {
+<span class="fc" id="L113">    return root.getHash();</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L118">    return getClass().getSimpleName() + &quot;[&quot; + getRootHash() + &quot;]&quot;;</span>
+  }
+
+  @Override
+  public void commit(final NodeUpdater nodeUpdater) {
+    // Nothing to do here
+<span class="nc" id="L124">  }</span>
+
+  @Override
+  public void commit(final NodeUpdater nodeUpdater, final CommitVisitor&lt;V&gt; commitVisitor) {
+    // Nothing to do here
+<span class="nc" id="L129">  }</span>
+
+  @Override
+  public Map&lt;Bytes32, V&gt; entriesFrom(final Bytes32 startKeyHash, final int limit) {
+<span class="nc" id="L133">    return StorageEntriesCollector.collectEntries(root, startKeyHash, limit);</span>
+  }
+
+  @Override
+  public Map&lt;Bytes32, V&gt; entriesFrom(final Function&lt;Node&lt;V&gt;, Map&lt;Bytes32, V&gt;&gt; handler) {
+<span class="nc" id="L138">    return handler.apply(root);</span>
+  }
+
+  @Override
+  public void visitAll(final Consumer&lt;Node&lt;V&gt;&gt; nodeConsumer) {
+<span class="nc" id="L143">    root.accept(new AllNodesVisitor&lt;&gt;(nodeConsumer));</span>
+<span class="nc" id="L144">  }</span>
+
+  @Override
+  public CompletableFuture&lt;Void&gt; visitAll(
+      final Consumer&lt;Node&lt;V&gt;&gt; nodeConsumer, final ExecutorService executorService) {
+<span class="nc" id="L149">    return CompletableFuture.allOf(</span>
+<span class="nc" id="L150">        Stream.concat(</span>
+<span class="nc" id="L151">                Stream.of(</span>
+<span class="nc" id="L152">                    CompletableFuture.runAsync(() -&gt; nodeConsumer.accept(root), executorService)),</span>
+<span class="nc" id="L153">                root.getChildren().stream()</span>
+<span class="nc" id="L154">                    .map(</span>
+                        rootChild -&gt;
+<span class="nc" id="L156">                            CompletableFuture.runAsync(</span>
+<span class="nc" id="L157">                                () -&gt; rootChild.accept(new AllNodesVisitor&lt;&gt;(nodeConsumer)),</span>
+                                executorService)))
+<span class="nc" id="L159">            .collect(toUnmodifiableSet())</span>
+<span class="nc" id="L160">            .toArray(CompletableFuture[]::new));</span>
+  }
+
+  @Override
+  public void visitLeafs(final TrieIterator.LeafHandler&lt;V&gt; handler) {
+<span class="nc" id="L165">    final TrieIterator&lt;V&gt; visitor = new TrieIterator&lt;&gt;(handler, true);</span>
+<span class="nc" id="L166">    root.accept(visitor, CompactEncoding.bytesToPath(Bytes32.ZERO));</span>
+<span class="nc" id="L167">  }</span>
+
+  public abstract PathNodeVisitor&lt;V&gt; getGetVisitor();
+
+  public abstract PathNodeVisitor&lt;V&gt; getRemoveVisitor();
+
+  public abstract PathNodeVisitor&lt;V&gt; getPutVisitor(final V value);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

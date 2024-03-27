@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JournaledUpdater.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.evm.worldstate</a> &gt; <span class="el_source">JournaledUpdater.java</span></div><h1>JournaledUpdater.java</h1><pre class="source lang-java linenums">/*
+ * Copyright contributors to Hyperledger Besu
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.evm.worldstate;
+
+import org.hyperledger.besu.collections.undo.UndoMap;
+import org.hyperledger.besu.collections.undo.UndoSet;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Optional;
+
+/**
+ * The Journaled updater.
+ *
+ * @param &lt;W&gt; the WorldView type parameter
+ */
+public class JournaledUpdater&lt;W extends WorldView&gt; implements WorldUpdater {
+
+  final EvmConfiguration evmConfiguration;
+  final WorldUpdater parentWorld;
+  final AbstractWorldUpdater&lt;W, ? extends MutableAccount&gt; rootWorld;
+  final UndoMap&lt;Address, JournaledAccount&gt; accounts;
+  final UndoSet&lt;Address&gt; deleted;
+  final long undoMark;
+
+  /**
+   * Instantiates a new Stacked updater.
+   *
+   * @param world the world
+   * @param evmConfiguration the EVM Configuration parameters
+   */
+  @SuppressWarnings(&quot;unchecked&quot;)
+<span class="nc" id="L52">  public JournaledUpdater(final WorldUpdater world, final EvmConfiguration evmConfiguration) {</span>
+<span class="nc" id="L53">    parentWorld = world;</span>
+<span class="nc" id="L54">    this.evmConfiguration = evmConfiguration;</span>
+<span class="nc bnc" id="L55" title="All 2 branches missed.">    if (world instanceof JournaledUpdater&lt;?&gt;) {</span>
+<span class="nc" id="L56">      JournaledUpdater&lt;W&gt; journaledUpdater = (JournaledUpdater&lt;W&gt;) world;</span>
+<span class="nc" id="L57">      accounts = journaledUpdater.accounts;</span>
+<span class="nc" id="L58">      deleted = journaledUpdater.deleted;</span>
+<span class="nc" id="L59">      rootWorld = journaledUpdater.rootWorld;</span>
+<span class="nc bnc" id="L60" title="All 2 branches missed.">    } else if (world instanceof AbstractWorldUpdater&lt;?, ?&gt;) {</span>
+<span class="nc" id="L61">      accounts = new UndoMap&lt;&gt;(new HashMap&lt;&gt;());</span>
+<span class="nc" id="L62">      deleted = UndoSet.of(new HashSet&lt;&gt;());</span>
+<span class="nc" id="L63">      rootWorld = (AbstractWorldUpdater&lt;W, ? extends MutableAccount&gt;) world;</span>
+    } else {
+<span class="nc" id="L65">      throw new IllegalArgumentException(</span>
+          &quot;WorldUpdater must be a JournaledWorldUpdater or an AbstractWorldUpdater&quot;);
+    }
+<span class="nc" id="L68">    undoMark = accounts.mark();</span>
+<span class="nc" id="L69">  }</span>
+
+  /**
+   * Get an account suitable for mutation. Defer to parent if not tracked locally.
+   *
+   * @param address the account at the address, for mutaton.
+   * @return the mutable account
+   */
+  protected MutableAccount getForMutation(final Address address) {
+<span class="nc" id="L78">    final JournaledAccount wrappedTracker = accounts.get(address);</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">    if (wrappedTracker != null) {</span>
+<span class="nc" id="L80">      return wrappedTracker;</span>
+    }
+<span class="nc" id="L82">    final MutableAccount account = rootWorld.getForMutation(address);</span>
+<span class="nc bnc" id="L83" title="All 2 branches missed.">    return account == null ? null : new UpdateTrackingAccount&lt;&gt;(account);</span>
+  }
+
+  @Override
+  public Collection&lt;? extends Account&gt; getTouchedAccounts() {
+<span class="nc" id="L88">    return new ArrayList&lt;&gt;(accounts.values());</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getDeletedAccountAddresses() {
+<span class="nc" id="L93">    return new ArrayList&lt;&gt;(deleted);</span>
+  }
+
+  /**
+   * Remove all changes done by this layer. Rollback to the state prior to the updater's changes.
+   */
+  protected void reset() {
+<span class="nc" id="L100">    accounts.values().forEach(a -&gt; a.undo(undoMark));</span>
+<span class="nc" id="L101">    accounts.undo(undoMark);</span>
+<span class="nc" id="L102">    deleted.undo(undoMark);</span>
+<span class="nc" id="L103">  }</span>
+
+  @Override
+  public void revert() {
+<span class="nc" id="L107">    reset();</span>
+<span class="nc" id="L108">  }</span>
+
+  @Override
+  public void commit() {
+<span class="nc bnc" id="L112" title="All 2 branches missed.">    if (!(parentWorld instanceof JournaledUpdater&lt;?&gt;)) {</span>
+<span class="nc" id="L113">      accounts.values().forEach(JournaledAccount::commit);</span>
+<span class="nc" id="L114">      deleted.forEach(parentWorld::deleteAccount);</span>
+    }
+<span class="nc" id="L116">  }</span>
+
+  @Override
+  public Optional&lt;WorldUpdater&gt; parentUpdater() {
+<span class="nc" id="L120">    return Optional.of(parentWorld);</span>
+  }
+
+  /** Mark transaction boundary. */
+  @Override
+  public void markTransactionBoundary() {
+<span class="nc" id="L126">    accounts.values().forEach(JournaledAccount::markTransactionBoundary);</span>
+<span class="nc" id="L127">  }</span>
+
+  @Override
+  public MutableAccount createAccount(final Address address, final long nonce, final Wei balance) {
+<span class="nc" id="L131">    JournaledAccount journaledAccount =</span>
+<span class="nc" id="L132">        new JournaledAccount(rootWorld.createAccount(address, nonce, balance));</span>
+<span class="nc" id="L133">    accounts.put(address, journaledAccount);</span>
+<span class="nc" id="L134">    return new JournaledAccount(journaledAccount);</span>
+  }
+
+  @Override
+  public MutableAccount getAccount(final Address address) {
+    // We may have updated it already, so check that first.
+<span class="nc" id="L140">    final JournaledAccount existing = accounts.get(address);</span>
+<span class="nc bnc" id="L141" title="All 2 branches missed.">    if (existing != null) {</span>
+<span class="nc" id="L142">      return existing;</span>
+    }
+<span class="nc bnc" id="L144" title="All 2 branches missed.">    if (deleted.contains(address)) {</span>
+<span class="nc" id="L145">      return null;</span>
+    }
+
+    // Otherwise, get it from our wrapped view and create a new update tracker.
+<span class="nc" id="L149">    final MutableAccount origin = rootWorld.getAccount(address);</span>
+<span class="nc bnc" id="L150" title="All 2 branches missed.">    if (origin == null) {</span>
+<span class="nc" id="L151">      return null;</span>
+    } else {
+<span class="nc" id="L153">      var newAccount = new JournaledAccount(origin);</span>
+<span class="nc" id="L154">      accounts.put(address, newAccount);</span>
+<span class="nc" id="L155">      return newAccount;</span>
+    }
+  }
+
+  @Override
+  public void deleteAccount(final Address address) {
+<span class="nc" id="L161">    deleted.add(address);</span>
+<span class="nc" id="L162">    var account = accounts.get(address);</span>
+<span class="nc bnc" id="L163" title="All 2 branches missed.">    if (account != null) {</span>
+<span class="nc" id="L164">      account.setDeleted(true);</span>
+    }
+<span class="nc" id="L166">  }</span>
+
+  @Override
+  public Account get(final Address address) {
+<span class="nc" id="L170">    final MutableAccount existing = accounts.get(address);</span>
+<span class="nc bnc" id="L171" title="All 2 branches missed.">    if (existing != null) {</span>
+<span class="nc" id="L172">      return existing;</span>
+    }
+<span class="nc bnc" id="L174" title="All 2 branches missed.">    if (deleted.contains(address)) {</span>
+<span class="nc" id="L175">      return null;</span>
+    }
+<span class="nc" id="L177">    return rootWorld.get(address);</span>
+  }
+
+  @Override
+  public WorldUpdater updater() {
+<span class="nc" id="L182">    return new JournaledUpdater&lt;W&gt;(this, evmConfiguration);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

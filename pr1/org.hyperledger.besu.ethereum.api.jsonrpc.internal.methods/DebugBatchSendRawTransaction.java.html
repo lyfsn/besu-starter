@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DebugBatchSendRawTransaction.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">DebugBatchSendRawTransaction.java</span></div><h1>DebugBatchSendRawTransaction.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcSuccessResponse;
+import org.hyperledger.besu.ethereum.api.util.DomainObjectDecodeUtils;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.ethereum.mainnet.ValidationResult;
+import org.hyperledger.besu.ethereum.transaction.TransactionInvalidReason;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
+import java.util.stream.IntStream;
+
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
+import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import com.google.common.base.Suppliers;
+
+public class DebugBatchSendRawTransaction implements JsonRpcMethod {
+  private final Supplier&lt;TransactionPool&gt; transactionPool;
+
+  public DebugBatchSendRawTransaction(final TransactionPool transactionPool) {
+<span class="fc" id="L42">    this(Suppliers.ofInstance(transactionPool));</span>
+<span class="fc" id="L43">  }</span>
+
+<span class="fc" id="L45">  public DebugBatchSendRawTransaction(final Supplier&lt;TransactionPool&gt; transactionPool) {</span>
+<span class="fc" id="L46">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L47">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L51">    return RpcMethod.DEBUG_BATCH_RAW_TRANSACTION.getMethodName();</span>
+  }
+
+  @Override
+  public JsonRpcResponse response(final JsonRpcRequestContext requestContext) {
+<span class="fc" id="L56">    final List&lt;ExecutionStatus&gt; executionStatuses = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L57">    IntStream.range(0, requestContext.getRequest().getParamLength())</span>
+<span class="fc" id="L58">        .forEach(</span>
+            i -&gt;
+<span class="fc" id="L60">                executionStatuses.add(</span>
+<span class="fc" id="L61">                    process(i, requestContext.getRequiredParameter(i, String.class))));</span>
+
+<span class="fc" id="L63">    return new JsonRpcSuccessResponse(requestContext.getRequest().getId(), executionStatuses);</span>
+  }
+
+  private ExecutionStatus process(final int index, final String rawTransaction) {
+    try {
+<span class="fc" id="L68">      final ValidationResult&lt;TransactionInvalidReason&gt; validationResult =</span>
+          transactionPool
+<span class="fc" id="L70">              .get()</span>
+<span class="fc" id="L71">              .addTransactionViaApi(DomainObjectDecodeUtils.decodeRawTransaction(rawTransaction));</span>
+<span class="fc" id="L72">      return validationResult.either(</span>
+<span class="fc" id="L73">          () -&gt; new ExecutionStatus(index),</span>
+<span class="nc" id="L74">          errorReason -&gt; new ExecutionStatus(index, false, errorReason.name()));</span>
+<span class="fc" id="L75">    } catch (final Throwable e) {</span>
+<span class="fc" id="L76">      return new ExecutionStatus(index, false, e.getMessage());</span>
+    }
+  }
+
+  @JsonPropertyOrder({&quot;index&quot;, &quot;success&quot;, &quot;errorMessage&quot;})
+  static class ExecutionStatus {
+    private final int index;
+    private final boolean success;
+    private final String errorMessage;
+
+    ExecutionStatus(final int index) {
+<span class="fc" id="L87">      this(index, true, null);</span>
+<span class="fc" id="L88">    }</span>
+
+<span class="fc" id="L90">    ExecutionStatus(final int index, final boolean success, final String errorMessage) {</span>
+<span class="fc" id="L91">      this.index = index;</span>
+<span class="fc" id="L92">      this.success = success;</span>
+<span class="fc" id="L93">      this.errorMessage = errorMessage;</span>
+<span class="fc" id="L94">    }</span>
+
+    @JsonGetter(value = &quot;index&quot;)
+    public int getIndex() {
+<span class="fc" id="L98">      return index;</span>
+    }
+
+    @JsonGetter(value = &quot;success&quot;)
+    public boolean isSuccess() {
+<span class="fc" id="L103">      return success;</span>
+    }
+
+    @JsonGetter(value = &quot;errorMessage&quot;)
+    @JsonInclude(Include.NON_NULL)
+    public String getErrorMessage() {
+<span class="fc" id="L109">      return errorMessage;</span>
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">      if (this == o) {</span>
+<span class="nc" id="L115">        return true;</span>
+      }
+<span class="pc bpc" id="L117" title="2 of 4 branches missed.">      if (o == null || getClass() != o.getClass()) {</span>
+<span class="nc" id="L118">        return false;</span>
+      }
+<span class="fc" id="L120">      final ExecutionStatus other = (ExecutionStatus) o;</span>
+<span class="pc bpc" id="L121" title="2 of 4 branches missed.">      return index == other.index</span>
+          &amp;&amp; success == other.success
+<span class="pc bpc" id="L123" title="1 of 2 branches missed.">          &amp;&amp; Objects.equals(errorMessage, other.errorMessage);</span>
+    }
+
+    @Override
+    public int hashCode() {
+<span class="nc" id="L128">      return Objects.hash(index, success, errorMessage);</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

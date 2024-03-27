@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BesuEventsImpl.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services</a> &gt; <span class="el_source">BesuEventsImpl.java</span></div><h1>BesuEventsImpl.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services;
+
+import static java.util.stream.Collectors.toUnmodifiableList;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.ethereum.api.query.LogsQuery;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockBody;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.core.LogWithMetadata;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.eth.sync.BlockBroadcaster;
+import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
+import org.hyperledger.besu.ethereum.eth.transactions.TransactionPool;
+import org.hyperledger.besu.evm.log.LogTopic;
+import org.hyperledger.besu.plugin.data.AddedBlockContext;
+import org.hyperledger.besu.plugin.data.BlockHeader;
+import org.hyperledger.besu.plugin.data.PropagatedBlockContext;
+import org.hyperledger.besu.plugin.services.BesuEvents;
+
+import java.util.List;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+
+/** A concrete implementation of BesuEvents used in Besu plugin framework. */
+public class BesuEventsImpl implements BesuEvents {
+  private final Blockchain blockchain;
+  private final BlockBroadcaster blockBroadcaster;
+  private final TransactionPool transactionPool;
+  private final SyncState syncState;
+
+  /**
+   * Constructor for BesuEventsImpl
+   *
+   * @param blockchain An instance of Blockchain
+   * @param blockBroadcaster An instance of BlockBroadcaster
+   * @param transactionPool An instance of TransactionPool
+   * @param syncState An instance of SyncState
+   */
+  public BesuEventsImpl(
+      final Blockchain blockchain,
+      final BlockBroadcaster blockBroadcaster,
+      final TransactionPool transactionPool,
+<span class="fc" id="L60">      final SyncState syncState) {</span>
+<span class="fc" id="L61">    this.blockchain = blockchain;</span>
+<span class="fc" id="L62">    this.blockBroadcaster = blockBroadcaster;</span>
+<span class="fc" id="L63">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L64">    this.syncState = syncState;</span>
+<span class="fc" id="L65">  }</span>
+
+  @Override
+  public long addBlockPropagatedListener(final BlockPropagatedListener listener) {
+<span class="fc" id="L69">    return blockBroadcaster.subscribePropagateNewBlocks(</span>
+        (block, totalDifficulty) -&gt;
+<span class="fc" id="L71">            listener.onBlockPropagated(</span>
+<span class="fc" id="L72">                blockPropagatedContext(block::getHeader, block::getBody, () -&gt; totalDifficulty)));</span>
+  }
+
+  @Override
+  public void removeBlockPropagatedListener(final long listenerIdentifier) {
+<span class="fc" id="L77">    blockBroadcaster.unsubscribePropagateNewBlocks(listenerIdentifier);</span>
+<span class="fc" id="L78">  }</span>
+
+  @Override
+  public long addBlockAddedListener(final BlockAddedListener listener) {
+<span class="fc" id="L82">    return blockchain.observeBlockAdded(</span>
+        event -&gt;
+<span class="fc" id="L84">            listener.onBlockAdded(</span>
+<span class="fc" id="L85">                blockAddedContext(</span>
+<span class="fc" id="L86">                    event.getBlock()::getHeader,</span>
+<span class="fc" id="L87">                    event.getBlock()::getBody,</span>
+<span class="fc" id="L88">                    event::getTransactionReceipts)));</span>
+  }
+
+  @Override
+  public void removeBlockAddedListener(final long listenerIdentifier) {
+<span class="fc" id="L93">    blockchain.removeObserver(listenerIdentifier);</span>
+<span class="fc" id="L94">  }</span>
+
+  @Override
+  public long addBlockReorgListener(final BlockReorgListener listener) {
+<span class="fc" id="L98">    return blockchain.observeChainReorg(</span>
+        (blockWithReceipts, chain) -&gt;
+<span class="fc" id="L100">            listener.onBlockReorg(</span>
+<span class="fc" id="L101">                blockAddedContext(</span>
+<span class="fc" id="L102">                    blockWithReceipts::getHeader,</span>
+<span class="fc" id="L103">                    blockWithReceipts.getBlock()::getBody,</span>
+<span class="fc" id="L104">                    blockWithReceipts::getReceipts)));</span>
+  }
+
+  @Override
+  public void removeBlockReorgListener(final long listenerIdentifier) {
+<span class="fc" id="L109">    blockchain.removeObserver(listenerIdentifier);</span>
+<span class="fc" id="L110">  }</span>
+
+  @Override
+  public long addTransactionAddedListener(final TransactionAddedListener listener) {
+<span class="fc" id="L114">    return transactionPool.subscribePendingTransactions(listener::onTransactionAdded);</span>
+  }
+
+  @Override
+  public void removeTransactionAddedListener(final long listenerIdentifier) {
+<span class="fc" id="L119">    transactionPool.unsubscribePendingTransactions(listenerIdentifier);</span>
+<span class="fc" id="L120">  }</span>
+
+  @Override
+  public long addTransactionDroppedListener(
+      final TransactionDroppedListener transactionDroppedListener) {
+<span class="fc" id="L125">    return transactionPool.subscribeDroppedTransactions(</span>
+<span class="fc" id="L126">        transactionDroppedListener::onTransactionDropped);</span>
+  }
+
+  @Override
+  public void removeTransactionDroppedListener(final long listenerIdentifier) {
+<span class="fc" id="L131">    transactionPool.unsubscribeDroppedTransactions(listenerIdentifier);</span>
+<span class="fc" id="L132">  }</span>
+
+  @Override
+  public long addSyncStatusListener(final SyncStatusListener syncStatusListener) {
+<span class="fc" id="L136">    return syncState.subscribeSyncStatus(syncStatusListener);</span>
+  }
+
+  @Override
+  public void removeSyncStatusListener(final long listenerIdentifier) {
+<span class="fc" id="L141">    syncState.unsubscribeSyncStatus(listenerIdentifier);</span>
+<span class="fc" id="L142">  }</span>
+
+  @Override
+  public long addLogListener(
+      final List&lt;Address&gt; addresses,
+      final List&lt;List&lt;Bytes32&gt;&gt; topics,
+      final LogListener logListener) {
+<span class="nc" id="L149">    final List&lt;List&lt;LogTopic&gt;&gt; besuTopics =</span>
+<span class="nc" id="L150">        topics.stream()</span>
+<span class="nc" id="L151">            .map(subList -&gt; subList.stream().map(LogTopic::wrap).collect(toUnmodifiableList()))</span>
+<span class="nc" id="L152">            .collect(toUnmodifiableList());</span>
+
+<span class="nc" id="L154">    final LogsQuery logsQuery = new LogsQuery(addresses, besuTopics);</span>
+
+<span class="nc" id="L156">    return blockchain.observeLogs(</span>
+        logWithMetadata -&gt; {
+<span class="nc bnc" id="L158" title="All 2 branches missed.">          if (logsQuery.matches(LogWithMetadata.fromPlugin(logWithMetadata))) {</span>
+<span class="nc" id="L159">            logListener.onLogEmitted(logWithMetadata);</span>
+          }
+<span class="nc" id="L161">        });</span>
+  }
+
+  @Override
+  public void removeLogListener(final long listenerIdentifier) {
+<span class="fc" id="L166">    blockchain.removeObserver(listenerIdentifier);</span>
+<span class="fc" id="L167">  }</span>
+
+  private static PropagatedBlockContext blockPropagatedContext(
+      final Supplier&lt;BlockHeader&gt; blockHeaderSupplier,
+      final Supplier&lt;BlockBody&gt; blockBodySupplier,
+      final Supplier&lt;Difficulty&gt; totalDifficultySupplier) {
+<span class="fc" id="L173">    return new PropagatedBlockContext() {</span>
+      @Override
+      public BlockHeader getBlockHeader() {
+<span class="fc" id="L176">        return blockHeaderSupplier.get();</span>
+      }
+
+      @Override
+      public BlockBody getBlockBody() {
+<span class="nc" id="L181">        return blockBodySupplier.get();</span>
+      }
+
+      @Override
+      public UInt256 getTotalDifficulty() {
+<span class="fc" id="L186">        return totalDifficultySupplier.get().toUInt256();</span>
+      }
+    };
+  }
+
+  private static AddedBlockContext blockAddedContext(
+      final Supplier&lt;BlockHeader&gt; blockHeaderSupplier,
+      final Supplier&lt;BlockBody&gt; blockBodySupplier,
+      final Supplier&lt;List&lt;TransactionReceipt&gt;&gt; transactionReceiptsSupplier) {
+<span class="fc" id="L195">    return new AddedBlockContext() {</span>
+      @Override
+      public BlockHeader getBlockHeader() {
+<span class="fc" id="L198">        return blockHeaderSupplier.get();</span>
+      }
+
+      @Override
+      public BlockBody getBlockBody() {
+<span class="nc" id="L203">        return blockBodySupplier.get();</span>
+      }
+
+      @Override
+      public List&lt;TransactionReceipt&gt; getTransactionReceipts() {
+<span class="fc" id="L208">        return transactionReceiptsSupplier.get();</span>
+      }
+    };
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

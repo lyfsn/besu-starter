@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthGetBlockByNumber.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods</a> &gt; <span class="el_source">EthGetBlockByNumber.java</span></div><h1>EthGetBlockByNumber.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.api.jsonrpc.RpcMethod;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.JsonRpcRequestContext;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.parameters.BlockParameter;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.BlockResult;
+import org.hyperledger.besu.ethereum.api.jsonrpc.internal.results.BlockResultFactory;
+import org.hyperledger.besu.ethereum.api.query.BlockchainQueries;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Synchronizer;
+
+import java.util.function.Supplier;
+
+import com.google.common.base.Suppliers;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class EthGetBlockByNumber extends AbstractBlockParameterMethod {
+
+  private final BlockResultFactory blockResult;
+  private final boolean includeCoinbase;
+<span class="fc" id="L37">  private static final Logger LOGGER = LoggerFactory.getLogger(EthGetBlockByNumber.class);</span>
+  private final Synchronizer synchronizer;
+
+  public EthGetBlockByNumber(
+      final BlockchainQueries blockchain,
+      final BlockResultFactory blockResult,
+      final Synchronizer synchronizer) {
+<span class="fc" id="L44">    this(Suppliers.ofInstance(blockchain), blockResult, synchronizer, false);</span>
+<span class="fc" id="L45">  }</span>
+
+  public EthGetBlockByNumber(
+      final Supplier&lt;BlockchainQueries&gt; blockchain,
+      final BlockResultFactory blockResult,
+      final Synchronizer synchronizer,
+      final boolean includeCoinbase) {
+<span class="fc" id="L52">    super(blockchain);</span>
+<span class="fc" id="L53">    this.blockResult = blockResult;</span>
+<span class="fc" id="L54">    this.synchronizer = synchronizer;</span>
+<span class="fc" id="L55">    this.includeCoinbase = includeCoinbase;</span>
+<span class="fc" id="L56">  }</span>
+
+  @Override
+  public String getName() {
+<span class="fc" id="L60">    return RpcMethod.ETH_GET_BLOCK_BY_NUMBER.getMethodName();</span>
+  }
+
+  @Override
+  protected BlockParameter blockParameter(final JsonRpcRequestContext request) {
+<span class="fc" id="L65">    return request.getRequiredParameter(0, BlockParameter.class);</span>
+  }
+
+  @Override
+  protected Object resultByBlockNumber(
+      final JsonRpcRequestContext request, final long blockNumber) {
+<span class="fc bfc" id="L71" title="All 2 branches covered.">    if (isCompleteTransactions(request)) {</span>
+<span class="fc" id="L72">      return transactionComplete(blockNumber);</span>
+    }
+
+<span class="fc" id="L75">    return transactionHash(blockNumber);</span>
+  }
+
+  @Override
+  protected Object latestResult(final JsonRpcRequestContext request) {
+
+<span class="fc" id="L81">    final long headBlockNumber = blockchainQueriesSupplier.get().headBlockNumber();</span>
+<span class="fc" id="L82">    BlockHeader headHeader = blockchainQueriesSupplier.get().headBlockHeader();</span>
+
+<span class="fc" id="L84">    Hash block = headHeader.getHash();</span>
+<span class="fc" id="L85">    Hash stateRoot = headHeader.getStateRoot();</span>
+
+<span class="fc" id="L87">    if (blockchainQueriesSupplier</span>
+<span class="fc" id="L88">        .get()</span>
+<span class="fc" id="L89">        .getWorldStateArchive()</span>
+<span class="pc bpc" id="L90" title="1 of 2 branches missed.">        .isWorldStateAvailable(stateRoot, block)) {</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">      if (this.synchronizer.getSyncStatus().isEmpty()) { // we are already in sync</span>
+<span class="fc" id="L92">        return resultByBlockNumber(request, headBlockNumber);</span>
+      } else { // out of sync, return highest pulled block
+<span class="nc" id="L94">        long headishBlock = this.synchronizer.getSyncStatus().get().getCurrentBlock();</span>
+<span class="nc" id="L95">        return resultByBlockNumber(request, headishBlock);</span>
+      }
+    }
+
+<span class="nc" id="L99">    LOGGER.trace(&quot;no world state available for block {} returning genesis&quot;, headBlockNumber);</span>
+<span class="nc" id="L100">    return resultByBlockNumber(</span>
+        request,
+<span class="nc" id="L102">        blockchainQueriesSupplier.get().getBlockchain().getGenesisBlock().getHeader().getNumber());</span>
+  }
+
+  private BlockResult transactionComplete(final long blockNumber) {
+<span class="fc" id="L106">    return getBlockchainQueries()</span>
+<span class="fc" id="L107">        .blockByNumber(blockNumber)</span>
+<span class="fc" id="L108">        .map(tx -&gt; blockResult.transactionComplete(tx, includeCoinbase))</span>
+<span class="fc" id="L109">        .orElse(null);</span>
+  }
+
+  private BlockResult transactionHash(final long blockNumber) {
+<span class="fc" id="L113">    return getBlockchainQueries()</span>
+<span class="fc" id="L114">        .blockByNumberWithTxHashes(blockNumber)</span>
+<span class="fc" id="L115">        .map(tx -&gt; blockResult.transactionHash(tx, includeCoinbase))</span>
+<span class="fc" id="L116">        .orElse(null);</span>
+  }
+
+  private boolean isCompleteTransactions(final JsonRpcRequestContext request) {
+<span class="fc" id="L120">    return request.getRequiredParameter(1, Boolean.class);</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

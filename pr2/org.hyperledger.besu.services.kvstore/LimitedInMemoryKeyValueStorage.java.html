@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LimitedInMemoryKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.services.kvstore</a> &gt; <span class="el_source">LimitedInMemoryKeyValueStorage.java</span></div><h1>LimitedInMemoryKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.services.kvstore;
+
+import static java.util.stream.Collectors.toUnmodifiableSet;
+
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.collect.ImmutableSet;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.tuweni.bytes.Bytes;
+
+/**
+ * This KeyValueStorage will keep data in memory up to some maximum number of elements. Elements are
+ * evicted as the maximum limit is approached, evicting least-recently-used elements first.
+ */
+public class LimitedInMemoryKeyValueStorage implements KeyValueStorage {
+
+  private final Cache&lt;Bytes, byte[]&gt; storage;
+<span class="fc" id="L47">  private final ReadWriteLock rwLock = new ReentrantReadWriteLock();</span>
+
+  /**
+   * Instantiates a new Limited in memory key value storage.
+   *
+   * @param maxSize the max size
+   */
+<span class="fc" id="L54">  public LimitedInMemoryKeyValueStorage(final long maxSize) {</span>
+<span class="fc" id="L55">    storage = CacheBuilder.newBuilder().maximumSize(maxSize).build();</span>
+<span class="fc" id="L56">  }</span>
+
+  @Override
+  public void clear() {
+<span class="nc" id="L60">    final Lock lock = rwLock.writeLock();</span>
+<span class="nc" id="L61">    lock.lock();</span>
+    try {
+<span class="nc" id="L63">      storage.invalidateAll();</span>
+    } finally {
+<span class="nc" id="L65">      lock.unlock();</span>
+    }
+<span class="nc" id="L67">  }</span>
+
+  @Override
+  public boolean containsKey(final byte[] key) throws StorageException {
+<span class="fc" id="L71">    return get(key).isPresent();</span>
+  }
+
+  @Override
+<span class="fc" id="L75">  public void close() {}</span>
+
+  @Override
+  public Optional&lt;byte[]&gt; get(final byte[] key) {
+<span class="fc" id="L79">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L80">    lock.lock();</span>
+    try {
+<span class="fc" id="L82">      return Optional.ofNullable(storage.getIfPresent(Bytes.wrap(key)));</span>
+    } finally {
+<span class="fc" id="L84">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllKeysThat(final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="fc" id="L90">    return stream()</span>
+<span class="fc" id="L91">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="fc" id="L92">        .map(Pair::getKey)</span>
+<span class="fc" id="L93">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Set&lt;byte[]&gt; getAllValuesFromKeysThat(final Predicate&lt;byte[]&gt; returnCondition) {
+<span class="nc" id="L98">    return stream()</span>
+<span class="nc" id="L99">        .filter(pair -&gt; returnCondition.test(pair.getKey()))</span>
+<span class="nc" id="L100">        .map(Pair::getValue)</span>
+<span class="nc" id="L101">        .collect(toUnmodifiableSet());</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream() {
+<span class="fc" id="L106">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L107">    lock.lock();</span>
+    try {
+<span class="fc" id="L109">      return ImmutableSet.copyOf(storage.asMap().entrySet()).stream()</span>
+<span class="fc" id="L110">          .map(bytesEntry -&gt; Pair.of(bytesEntry.getKey().toArrayUnsafe(), bytesEntry.getValue()));</span>
+    } finally {
+<span class="fc" id="L112">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(final byte[] startKey) {
+<span class="nc bnc" id="L118" title="All 2 branches missed.">    return stream().filter(e -&gt; Bytes.wrap(startKey).compareTo(Bytes.wrap(e.getKey())) &lt;= 0);</span>
+  }
+
+  @Override
+  public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(final byte[] startKey, final byte[] endKey) {
+<span class="nc" id="L123">    return stream()</span>
+<span class="nc bnc" id="L124" title="All 2 branches missed.">        .filter(e -&gt; Bytes.wrap(startKey).compareTo(Bytes.wrap(e.getKey())) &lt;= 0)</span>
+<span class="nc bnc" id="L125" title="All 2 branches missed.">        .takeWhile(e -&gt; Bytes.wrap(endKey).compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
+  }
+
+  @Override
+  public Stream&lt;byte[]&gt; streamKeys() {
+<span class="nc" id="L130">    final Lock lock = rwLock.readLock();</span>
+<span class="nc" id="L131">    lock.lock();</span>
+    try {
+<span class="nc" id="L133">      return ImmutableSet.copyOf(storage.asMap().entrySet()).stream()</span>
+<span class="nc" id="L134">          .map(bytesEntry -&gt; bytesEntry.getKey().toArrayUnsafe());</span>
+    } finally {
+<span class="nc" id="L136">      lock.unlock();</span>
+    }
+  }
+
+  @Override
+  public boolean tryDelete(final byte[] key) {
+<span class="nc" id="L142">    final Lock lock = rwLock.writeLock();</span>
+<span class="nc bnc" id="L143" title="All 2 branches missed.">    if (lock.tryLock()) {</span>
+      try {
+<span class="nc" id="L145">        storage.invalidate(Bytes.wrap(key));</span>
+      } finally {
+<span class="nc" id="L147">        lock.unlock();</span>
+      }
+<span class="nc" id="L149">      return true;</span>
+    }
+<span class="nc" id="L151">    return false;</span>
+  }
+
+  @Override
+  public KeyValueStorageTransaction startTransaction() throws StorageException {
+<span class="fc" id="L156">    return new KeyValueStorageTransactionValidatorDecorator(</span>
+        new MemoryTransaction(), this::isClosed);
+  }
+
+  @Override
+  public boolean isClosed() {
+<span class="fc" id="L162">    return false;</span>
+  }
+
+<span class="fc" id="L165">  private class MemoryTransaction implements KeyValueStorageTransaction {</span>
+
+<span class="fc" id="L167">    private Map&lt;Bytes, byte[]&gt; updatedValues = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L168">    private Set&lt;Bytes&gt; removedKeys = new HashSet&lt;&gt;();</span>
+
+    @Override
+    public void put(final byte[] key, final byte[] value) {
+<span class="fc" id="L172">      updatedValues.put(Bytes.wrap(key), value);</span>
+<span class="fc" id="L173">      removedKeys.remove(Bytes.wrap(key));</span>
+<span class="fc" id="L174">    }</span>
+
+    @Override
+    public void remove(final byte[] key) {
+<span class="fc" id="L178">      removedKeys.add(Bytes.wrap(key));</span>
+<span class="fc" id="L179">      updatedValues.remove(Bytes.wrap(key));</span>
+<span class="fc" id="L180">    }</span>
+
+    @Override
+    public void commit() throws StorageException {
+<span class="fc" id="L184">      final Lock lock = rwLock.writeLock();</span>
+<span class="fc" id="L185">      lock.lock();</span>
+      try {
+<span class="fc" id="L187">        storage.putAll(updatedValues);</span>
+<span class="fc" id="L188">        storage.invalidateAll(removedKeys);</span>
+<span class="fc" id="L189">        updatedValues = null;</span>
+<span class="fc" id="L190">        removedKeys = null;</span>
+      } finally {
+<span class="fc" id="L192">        lock.unlock();</span>
+      }
+<span class="fc" id="L194">    }</span>
+
+    @Override
+    public void rollback() {
+<span class="fc" id="L198">      updatedValues.clear();</span>
+<span class="fc" id="L199">      removedKeys.clear();</span>
+<span class="fc" id="L200">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

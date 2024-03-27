@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AbstractPeerRequestTask.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager.task</a> &gt; <span class="el_source">AbstractPeerRequestTask.java</span></div><h1>AbstractPeerRequestTask.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager.task;
+
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.PeerRequest;
+import org.hyperledger.besu.ethereum.eth.manager.PendingPeerRequest;
+import org.hyperledger.besu.ethereum.eth.manager.RequestManager;
+import org.hyperledger.besu.ethereum.eth.manager.exceptions.PeerBreachedProtocolException;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.util.ExceptionUtils;
+
+import java.time.Duration;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class AbstractPeerRequestTask&lt;R&gt; extends AbstractPeerTask&lt;R&gt; {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(AbstractPeerRequestTask.class);</span>
+<span class="fc" id="L39">  private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);</span>
+
+<span class="fc" id="L41">  private Duration timeout = DEFAULT_TIMEOUT;</span>
+  private final int requestCode;
+  private volatile PendingPeerRequest responseStream;
+
+  protected AbstractPeerRequestTask(
+      final EthContext ethContext, final int requestCode, final MetricsSystem metricsSystem) {
+<span class="fc" id="L47">    super(ethContext, metricsSystem);</span>
+<span class="fc" id="L48">    this.requestCode = requestCode;</span>
+<span class="fc" id="L49">  }</span>
+
+  public AbstractPeerRequestTask&lt;R&gt; setTimeout(final Duration timeout) {
+<span class="fc" id="L52">    this.timeout = timeout;</span>
+<span class="fc" id="L53">    return this;</span>
+  }
+
+  @Override
+  protected final void executeTask() {
+<span class="fc" id="L58">    final CompletableFuture&lt;R&gt; promise = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L59">    responseStream = sendRequest();</span>
+<span class="fc" id="L60">    responseStream.then(</span>
+        stream -&gt; {
+          // Start the timeout now that the request has actually been sent
+<span class="fc" id="L63">          ethContext.getScheduler().failAfterTimeout(promise, timeout);</span>
+
+<span class="fc" id="L65">          stream.then(</span>
+              (streamClosed, message, peer1) -&gt;
+<span class="fc" id="L67">                  handleMessage(promise, streamClosed, message, peer1));</span>
+<span class="fc" id="L68">        },</span>
+<span class="fc" id="L69">        promise::completeExceptionally);</span>
+
+<span class="fc" id="L71">    promise.whenComplete(</span>
+        (r, t) -&gt; {
+<span class="fc" id="L73">          final Optional&lt;RequestManager.ResponseStream&gt; responseStream =</span>
+<span class="fc" id="L74">              this.responseStream.abort();</span>
+<span class="fc bfc" id="L75" title="All 2 branches covered.">          if (t != null) {</span>
+<span class="fc" id="L76">            t = ExceptionUtils.rootCause(t);</span>
+<span class="pc bpc" id="L77" title="1 of 4 branches missed.">            if (t instanceof TimeoutException &amp;&amp; responseStream.isPresent()) {</span>
+<span class="fc" id="L78">              responseStream.get().getPeer().recordRequestTimeout(requestCode);</span>
+            }
+<span class="fc" id="L80">            result.completeExceptionally(t);</span>
+<span class="pc bpc" id="L81" title="1 of 2 branches missed.">          } else if (r != null) {</span>
+            // If we got a response we must have had a response stream...
+<span class="fc" id="L83">            result.complete(new PeerTaskResult&lt;&gt;(responseStream.get().getPeer(), r));</span>
+          }
+<span class="fc" id="L85">        });</span>
+<span class="fc" id="L86">  }</span>
+
+  public PendingPeerRequest sendRequestToPeer(
+      final PeerRequest request, final long minimumBlockNumber) {
+<span class="fc" id="L90">    return ethContext.getEthPeers().executePeerRequest(request, minimumBlockNumber, assignedPeer);</span>
+  }
+
+  private void handleMessage(
+      final CompletableFuture&lt;R&gt; promise,
+      final boolean streamClosed,
+      final MessageData message,
+      final EthPeer peer) {
+<span class="fc bfc" id="L98" title="All 2 branches covered.">    if (promise.isDone()) {</span>
+      // We've already got our response, don't pass on the stream closed event.
+<span class="fc" id="L100">      return;</span>
+    }
+    try {
+<span class="fc" id="L103">      final Optional&lt;R&gt; result = processResponse(streamClosed, message, peer);</span>
+<span class="fc" id="L104">      result.ifPresent(</span>
+          r -&gt; {
+<span class="fc" id="L106">            promise.complete(r);</span>
+<span class="fc" id="L107">            peer.recordUsefulResponse();</span>
+<span class="fc" id="L108">          });</span>
+<span class="nc" id="L109">    } catch (final RLPException e) {</span>
+      // Peer sent us malformed data - disconnect
+<span class="nc" id="L111">      LOG.debug(</span>
+          &quot;Disconnecting with BREACH_OF_PROTOCOL due to malformed message: {}&quot;,
+<span class="nc" id="L113">          peer.getLoggableId(),</span>
+          e);
+<span class="nc" id="L115">      LOG.trace(&quot;Peer {} Malformed message data: {}&quot;, peer, message.getData());</span>
+<span class="nc" id="L116">      peer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+<span class="nc" id="L117">      promise.completeExceptionally(new PeerBreachedProtocolException());</span>
+<span class="fc" id="L118">    }</span>
+<span class="fc" id="L119">  }</span>
+
+  @Override
+  protected void cleanup() {
+<span class="fc" id="L123">    super.cleanup();</span>
+<span class="fc" id="L124">    responseStream.abort().ifPresent(RequestManager.ResponseStream::close);</span>
+<span class="fc" id="L125">  }</span>
+
+  protected abstract PendingPeerRequest sendRequest();
+
+  protected abstract Optional&lt;R&gt; processResponse(
+      boolean streamClosed, MessageData message, EthPeer peer);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

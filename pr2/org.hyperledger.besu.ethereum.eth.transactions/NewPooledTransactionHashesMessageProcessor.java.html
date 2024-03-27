@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NewPooledTransactionHashesMessageProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.transactions</a> &gt; <span class="el_source">NewPooledTransactionHashesMessageProcessor.java</span></div><h1>NewPooledTransactionHashesMessageProcessor.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.transactions;
+
+import static java.time.Instant.now;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.eth.manager.EthContext;
+import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
+import org.hyperledger.besu.ethereum.eth.manager.task.BufferedGetPooledTransactionsFromPeerFetcher;
+import org.hyperledger.besu.ethereum.eth.messages.NewPooledTransactionHashesMessage;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class NewPooledTransactionHashesMessageProcessor {
+
+<span class="fc" id="L39">  private static final Logger LOG =</span>
+<span class="fc" id="L40">      LoggerFactory.getLogger(NewPooledTransactionHashesMessageProcessor.class);</span>
+
+  static final String METRIC_LABEL = &quot;new_pooled_transaction_hashes&quot;;
+
+  private final ConcurrentHashMap&lt;EthPeer, BufferedGetPooledTransactionsFromPeerFetcher&gt;
+      scheduledTasks;
+
+  private final PeerTransactionTracker transactionTracker;
+  private final TransactionPool transactionPool;
+  private final TransactionPoolConfiguration transactionPoolConfiguration;
+  private final EthContext ethContext;
+  private final TransactionPoolMetrics metrics;
+
+  public NewPooledTransactionHashesMessageProcessor(
+      final PeerTransactionTracker transactionTracker,
+      final TransactionPool transactionPool,
+      final TransactionPoolConfiguration transactionPoolConfiguration,
+      final EthContext ethContext,
+<span class="fc" id="L58">      final TransactionPoolMetrics metrics) {</span>
+<span class="fc" id="L59">    this.transactionTracker = transactionTracker;</span>
+<span class="fc" id="L60">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L61">    this.transactionPoolConfiguration = transactionPoolConfiguration;</span>
+<span class="fc" id="L62">    this.ethContext = ethContext;</span>
+<span class="fc" id="L63">    this.metrics = metrics;</span>
+<span class="fc" id="L64">    metrics.initExpiredMessagesCounter(METRIC_LABEL);</span>
+<span class="fc" id="L65">    this.scheduledTasks = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L66">  }</span>
+
+  void processNewPooledTransactionHashesMessage(
+      final EthPeer peer,
+      final NewPooledTransactionHashesMessage transactionsMessage,
+      final Instant startedAt,
+      final Duration keepAlive) {
+    // Check if message is not expired.
+<span class="fc bfc" id="L74" title="All 2 branches covered.">    if (startedAt.plus(keepAlive).isAfter(now())) {</span>
+<span class="fc" id="L75">      this.processNewPooledTransactionHashesMessage(peer, transactionsMessage);</span>
+    } else {
+<span class="fc" id="L77">      metrics.incrementExpiredMessages(METRIC_LABEL);</span>
+    }
+<span class="fc" id="L79">  }</span>
+
+  @SuppressWarnings(&quot;UnstableApiUsage&quot;)
+  private void processNewPooledTransactionHashesMessage(
+      final EthPeer peer, final NewPooledTransactionHashesMessage transactionsMessage) {
+    try {
+<span class="fc" id="L85">      final List&lt;Hash&gt; incomingTransactionHashes = transactionsMessage.pendingTransactionHashes();</span>
+
+<span class="fc" id="L87">      LOG.atTrace()</span>
+<span class="fc" id="L88">          .setMessage(</span>
+              &quot;Received pooled transaction hashes message from {}... incoming hashes {}, incoming list {}&quot;)
+<span class="pc bnc" id="L90" title="All 2 branches missed.">          .addArgument(() -&gt; peer == null ? null : peer.getLoggableId())</span>
+<span class="fc" id="L91">          .addArgument(incomingTransactionHashes::size)</span>
+<span class="fc" id="L92">          .addArgument(incomingTransactionHashes)</span>
+<span class="fc" id="L93">          .log();</span>
+
+<span class="fc" id="L95">      final BufferedGetPooledTransactionsFromPeerFetcher bufferedTask =</span>
+<span class="fc" id="L96">          scheduledTasks.computeIfAbsent(</span>
+              peer,
+              ethPeer -&gt; {
+<span class="fc" id="L99">                final ScheduledFuture&lt;?&gt; scheduledFuture =</span>
+                    ethContext
+<span class="fc" id="L101">                        .getScheduler()</span>
+<span class="fc" id="L102">                        .scheduleFutureTaskWithFixedDelay(</span>
+                            new FetcherCreatorTask(peer),
+                            transactionPoolConfiguration
+<span class="fc" id="L105">                                .getUnstable()</span>
+<span class="fc" id="L106">                                .getEth65TrxAnnouncedBufferingPeriod(),</span>
+                            transactionPoolConfiguration
+<span class="fc" id="L108">                                .getUnstable()</span>
+<span class="fc" id="L109">                                .getEth65TrxAnnouncedBufferingPeriod());</span>
+
+<span class="fc" id="L111">                return new BufferedGetPooledTransactionsFromPeerFetcher(</span>
+                    ethContext,
+                    scheduledFuture,
+                    peer,
+                    transactionPool,
+                    transactionTracker,
+                    metrics,
+                    METRIC_LABEL);
+              });
+
+<span class="fc" id="L121">      bufferedTask.addHashes(</span>
+<span class="fc" id="L122">          incomingTransactionHashes.stream()</span>
+<span class="fc" id="L123">              .filter(hash -&gt; transactionPool.getTransactionByHash(hash).isEmpty())</span>
+<span class="fc" id="L124">              .collect(Collectors.toList()));</span>
+<span class="nc" id="L125">    } catch (final RLPException ex) {</span>
+<span class="nc bnc" id="L126" title="All 2 branches missed.">      if (peer != null) {</span>
+<span class="nc" id="L127">        LOG.debug(</span>
+            &quot;Malformed pooled transaction hashes message received (BREACH_OF_PROTOCOL), disconnecting: {}&quot;,
+            peer,
+            ex);
+<span class="nc" id="L131">        LOG.trace(&quot;Message data: {}&quot;, transactionsMessage.getData());</span>
+<span class="nc" id="L132">        peer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
+      }
+<span class="fc" id="L134">    }</span>
+<span class="fc" id="L135">  }</span>
+
+  public class FetcherCreatorTask implements Runnable {
+    final EthPeer peer;
+
+<span class="fc" id="L140">    public FetcherCreatorTask(final EthPeer peer) {</span>
+<span class="fc" id="L141">      this.peer = peer;</span>
+<span class="fc" id="L142">    }</span>
+
+    @Override
+    public void run() {
+<span class="pc bpc" id="L146" title="1 of 2 branches missed.">      if (peer != null) {</span>
+<span class="fc bfc" id="L147" title="All 2 branches covered.">        if (peer.isDisconnected()) {</span>
+<span class="fc" id="L148">          scheduledTasks.remove(peer).getScheduledFuture().cancel(true);</span>
+<span class="pc bpc" id="L149" title="1 of 2 branches missed.">        } else if (peer.hasAvailableRequestCapacity()) {</span>
+<span class="fc" id="L150">          scheduledTasks.get(peer).requestTransactions();</span>
+        }
+      }
+<span class="fc" id="L153">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

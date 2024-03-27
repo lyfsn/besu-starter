@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PoWSolver.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.mainnet</a> &gt; <span class="el_source">PoWSolver.java</span></div><h1>PoWSolver.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.mainnet;
+
+import org.hyperledger.besu.ethereum.chain.PoWObserver;
+import org.hyperledger.besu.ethereum.core.MiningParameters;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+
+import com.google.common.base.Stopwatch;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.concurrent.ExpiringMap;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class PoWSolver {
+
+<span class="fc" id="L35">  private static final Logger LOG = LoggerFactory.getLogger(PoWSolver.class);</span>
+
+  private final MiningParameters miningParameters;
+
+  public static class PoWSolverJob {
+
+    private final PoWSolverInputs inputs;
+    private final CompletableFuture&lt;PoWSolution&gt; nonceFuture;
+
+<span class="fc" id="L44">    PoWSolverJob(final PoWSolverInputs inputs, final CompletableFuture&lt;PoWSolution&gt; nonceFuture) {</span>
+<span class="fc" id="L45">      this.inputs = inputs;</span>
+<span class="fc" id="L46">      this.nonceFuture = nonceFuture;</span>
+<span class="fc" id="L47">    }</span>
+
+    public static PoWSolverJob createFromInputs(final PoWSolverInputs inputs) {
+<span class="fc" id="L50">      return new PoWSolverJob(inputs, new CompletableFuture&lt;&gt;());</span>
+    }
+
+    PoWSolverInputs getInputs() {
+<span class="fc" id="L54">      return inputs;</span>
+    }
+
+    public boolean isDone() {
+<span class="fc" id="L58">      return nonceFuture.isDone();</span>
+    }
+
+    void solvedWith(final PoWSolution solution) {
+<span class="fc" id="L62">      nonceFuture.complete(solution);</span>
+<span class="fc" id="L63">    }</span>
+
+    public void cancel() {
+<span class="nc" id="L66">      nonceFuture.cancel(false);</span>
+<span class="nc" id="L67">    }</span>
+
+    public void failed(final Throwable ex) {
+<span class="fc" id="L70">      nonceFuture.completeExceptionally(ex);</span>
+<span class="fc" id="L71">    }</span>
+
+    PoWSolution getSolution() throws InterruptedException, ExecutionException {
+<span class="fc" id="L74">      return nonceFuture.get();</span>
+    }
+  }
+
+<span class="fc" id="L78">  private final long NO_MINING_CONDUCTED = -1;</span>
+
+  private final PoWHasher poWHasher;
+<span class="fc" id="L81">  private volatile long hashesPerSecond = NO_MINING_CONDUCTED;</span>
+  private final Boolean stratumMiningEnabled;
+  private final Subscribers&lt;PoWObserver&gt; ethHashObservers;
+  private final EpochCalculator epochCalculator;
+<span class="fc" id="L85">  private volatile Optional&lt;PoWSolverJob&gt; currentJob = Optional.empty();</span>
+<span class="fc" id="L86">  private final ExpiringMap&lt;Bytes, PoWSolverJob&gt; currentJobs = new ExpiringMap&lt;&gt;();</span>
+
+  public PoWSolver(
+      final MiningParameters miningParameters,
+      final PoWHasher poWHasher,
+      final Boolean stratumMiningEnabled,
+      final Subscribers&lt;PoWObserver&gt; ethHashObservers,
+<span class="fc" id="L93">      final EpochCalculator epochCalculator) {</span>
+<span class="fc" id="L94">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L95">    this.poWHasher = poWHasher;</span>
+<span class="fc" id="L96">    this.stratumMiningEnabled = stratumMiningEnabled;</span>
+<span class="fc" id="L97">    this.ethHashObservers = ethHashObservers;</span>
+<span class="pc" id="L98">    ethHashObservers.forEach(observer -&gt; observer.setSubmitWorkCallback(this::submitSolution));</span>
+<span class="fc" id="L99">    this.epochCalculator = epochCalculator;</span>
+<span class="fc" id="L100">  }</span>
+
+  public PoWSolution solveFor(final PoWSolverJob job)
+      throws InterruptedException, ExecutionException {
+<span class="fc" id="L104">    currentJob = Optional.of(job);</span>
+<span class="fc" id="L105">    currentJobs.put(</span>
+<span class="fc" id="L106">        job.getInputs().getPrePowHash(),</span>
+        job,
+<span class="fc" id="L108">        System.currentTimeMillis() + miningParameters.getUnstable().getPowJobTimeToLive());</span>
+<span class="fc bfc" id="L109" title="All 2 branches covered.">    if (stratumMiningEnabled) {</span>
+<span class="fc" id="L110">      LOG.debug(</span>
+<span class="fc" id="L111">          &quot;solving with stratum miner for {} observers&quot;, ethHashObservers.getSubscriberCount());</span>
+<span class="pc" id="L112">      ethHashObservers.forEach(observer -&gt; observer.newJob(job.inputs));</span>
+    } else {
+<span class="fc" id="L114">      LOG.debug(&quot;solving with cpu miner&quot;);</span>
+<span class="fc" id="L115">      findValidNonce();</span>
+    }
+<span class="fc" id="L117">    return job.getSolution();</span>
+  }
+
+  private void findValidNonce() {
+<span class="fc" id="L121">    final Stopwatch operationTimer = Stopwatch.createStarted();</span>
+<span class="fc" id="L122">    final PoWSolverJob job = currentJob.get();</span>
+<span class="fc" id="L123">    long hashesExecuted = 0;</span>
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    for (final Long n : miningParameters.getNonceGenerator().get()) {</span>
+
+<span class="fc bfc" id="L126" title="All 2 branches covered.">      if (job.isDone()) {</span>
+<span class="fc" id="L127">        return;</span>
+      }
+
+<span class="fc" id="L130">      final Optional&lt;PoWSolution&gt; solution = testNonce(job.getInputs(), n);</span>
+<span class="fc" id="L131">      solution.ifPresent(job::solvedWith);</span>
+
+<span class="fc" id="L133">      hashesExecuted++;</span>
+<span class="fc" id="L134">      final double operationDurationSeconds = operationTimer.elapsed(TimeUnit.NANOSECONDS) / 1e9;</span>
+<span class="fc" id="L135">      hashesPerSecond = (long) (hashesExecuted / operationDurationSeconds);</span>
+<span class="fc" id="L136">    }</span>
+<span class="fc" id="L137">    job.failed(new IllegalStateException(&quot;No valid nonce found.&quot;));</span>
+<span class="fc" id="L138">  }</span>
+
+  private Optional&lt;PoWSolution&gt; testNonce(final PoWSolverInputs inputs, final long nonce) {
+<span class="fc" id="L141">    return Optional.ofNullable(</span>
+<span class="fc" id="L142">            poWHasher.hash(nonce, inputs.getBlockNumber(), epochCalculator, inputs.getPrePowHash()))</span>
+<span class="fc bfc" id="L143" title="All 2 branches covered.">        .filter(sol -&gt; UInt256.fromBytes(sol.getSolution()).compareTo(inputs.getTarget()) &lt;= 0);</span>
+  }
+
+  public void cancel() {
+<span class="nc" id="L147">    currentJob.ifPresent(PoWSolverJob::cancel);</span>
+<span class="nc" id="L148">  }</span>
+
+  public Optional&lt;PoWSolverInputs&gt; getWorkDefinition() {
+<span class="fc" id="L151">    return currentJob.flatMap(job -&gt; Optional.of(job.getInputs()));</span>
+  }
+
+  public Optional&lt;Long&gt; hashesPerSecond() {
+<span class="fc bfc" id="L155" title="All 2 branches covered.">    if (hashesPerSecond == NO_MINING_CONDUCTED) {</span>
+<span class="fc" id="L156">      return Optional.empty();</span>
+    }
+<span class="fc" id="L158">    return Optional.of(hashesPerSecond);</span>
+  }
+
+  public boolean submitSolution(final PoWSolution solution) {
+<span class="fc" id="L162">    final Optional&lt;PoWSolverJob&gt; jobSnapshot = currentJob;</span>
+<span class="fc" id="L163">    PoWSolverJob jobToTestWith = null;</span>
+<span class="pc bpc" id="L164" title="1 of 2 branches missed.">    if (jobSnapshot.isEmpty()) {</span>
+<span class="nc" id="L165">      LOG.debug(&quot;No current job, rejecting miner work&quot;);</span>
+<span class="nc" id="L166">      return false;</span>
+    }
+
+<span class="fc" id="L169">    PoWSolverJob headJob = jobSnapshot.get();</span>
+<span class="fc bfc" id="L170" title="All 2 branches covered.">    if (headJob.getInputs().getPrePowHash().equals(solution.getPowHash())) {</span>
+<span class="fc" id="L171">      LOG.debug(&quot;Head job matches the solution pow hash {}&quot;, solution.getPowHash());</span>
+<span class="fc" id="L172">      jobToTestWith = headJob;</span>
+    }
+<span class="fc bfc" id="L174" title="All 2 branches covered.">    if (jobToTestWith == null) {</span>
+<span class="fc" id="L175">      PoWSolverJob ommerCandidate = currentJobs.get(solution.getPowHash());</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">      if (ommerCandidate != null) {</span>
+<span class="fc" id="L177">        long distanceToHead =</span>
+<span class="fc" id="L178">            headJob.getInputs().getBlockNumber() - ommerCandidate.getInputs().getBlockNumber();</span>
+<span class="fc" id="L179">        LOG.debug(</span>
+            &quot;Found ommer candidate {} with block number {}, distance to head {}&quot;,
+<span class="fc" id="L181">            solution.getPowHash(),</span>
+<span class="fc" id="L182">            ommerCandidate.getInputs().getBlockNumber(),</span>
+<span class="fc" id="L183">            distanceToHead);</span>
+<span class="fc bfc" id="L184" title="All 2 branches covered.">        if (distanceToHead &lt;= miningParameters.getUnstable().getMaxOmmerDepth()) {</span>
+<span class="fc" id="L185">          jobToTestWith = ommerCandidate;</span>
+        } else {
+<span class="fc" id="L187">          LOG.debug(&quot;Discarded ommer solution as too far from head {}&quot;, distanceToHead);</span>
+        }
+      }
+    }
+<span class="fc bfc" id="L191" title="All 2 branches covered.">    if (jobToTestWith == null) {</span>
+<span class="fc" id="L192">      LOG.debug(&quot;No matching job found for hash {}, rejecting solution&quot;, solution.getPowHash());</span>
+<span class="fc" id="L193">      return false;</span>
+    }
+<span class="fc bfc" id="L195" title="All 2 branches covered.">    if (jobToTestWith.isDone()) {</span>
+<span class="fc" id="L196">      LOG.debug(&quot;Matching job found for hash {}, but already solved&quot;, solution.getPowHash());</span>
+<span class="fc" id="L197">      return false;</span>
+    }
+<span class="fc" id="L199">    final PoWSolverInputs inputs = jobToTestWith.getInputs();</span>
+
+<span class="fc" id="L201">    final Optional&lt;PoWSolution&gt; calculatedSolution = testNonce(inputs, solution.getNonce());</span>
+
+<span class="pc bpc" id="L203" title="1 of 2 branches missed.">    if (calculatedSolution.isPresent()) {</span>
+<span class="fc" id="L204">      LOG.debug(&quot;Accepting a solution from a miner&quot;);</span>
+<span class="fc" id="L205">      currentJobs.remove(solution.getPowHash());</span>
+<span class="fc" id="L206">      jobToTestWith.solvedWith(calculatedSolution.get());</span>
+<span class="fc" id="L207">      return true;</span>
+    }
+<span class="nc" id="L209">    LOG.debug(&quot;Rejecting a solution from a miner&quot;);</span>
+<span class="nc" id="L210">    return false;</span>
+  }
+
+  public Iterable&lt;Long&gt; getNonceGenerator() {
+<span class="nc" id="L214">    return miningParameters.getNonceGenerator().get();</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

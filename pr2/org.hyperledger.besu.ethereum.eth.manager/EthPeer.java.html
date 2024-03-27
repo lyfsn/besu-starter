@@ -1,0 +1,710 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>EthPeer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.eth.manager</a> &gt; <span class="el_source">EthPeer.java</span></div><h1>EthPeer.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.eth.manager;
+
+import static com.google.common.base.Preconditions.checkArgument;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.Difficulty;
+import org.hyperledger.besu.ethereum.eth.EthProtocol;
+import org.hyperledger.besu.ethereum.eth.SnapProtocol;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV62;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV63;
+import org.hyperledger.besu.ethereum.eth.messages.EthPV65;
+import org.hyperledger.besu.ethereum.eth.messages.GetBlockBodiesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetBlockHeadersMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetNodeDataMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetPooledTransactionsMessage;
+import org.hyperledger.besu.ethereum.eth.messages.GetReceiptsMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetAccountRangeMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetByteCodesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetStorageRangeMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetTrieNodesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.SnapV1;
+import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
+import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection.PeerNotConnected;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Capability;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
+import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
+import org.hyperledger.besu.plugin.services.permissioning.NodeMessagePermissioningProvider;
+
+import java.time.Clock;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import javax.annotation.Nonnull;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class EthPeer implements Comparable&lt;EthPeer&gt; {
+<span class="fc" id="L67">  private static final Logger LOG = LoggerFactory.getLogger(EthPeer.class);</span>
+
+  private static final int MAX_OUTSTANDING_REQUESTS = 5;
+
+  private PeerConnection connection;
+
+<span class="fc" id="L73">  private final int maxTrackedSeenBlocks = 300;</span>
+
+<span class="fc" id="L75">  private final Set&lt;Hash&gt; knownBlocks =</span>
+<span class="fc" id="L76">      Collections.newSetFromMap(</span>
+<span class="fc" id="L77">          Collections.synchronizedMap(</span>
+<span class="fc" id="L78">              new LinkedHashMap&lt;&gt;(16, 0.75f, true) {</span>
+                @Override
+                protected boolean removeEldestEntry(final Map.Entry&lt;Hash, Boolean&gt; eldest) {
+<span class="pc bpc" id="L81" title="1 of 2 branches missed.">                  return size() &gt; maxTrackedSeenBlocks;</span>
+                }
+              }));
+  private final Bytes localNodeId;
+
+<span class="fc" id="L86">  private Optional&lt;BlockHeader&gt; checkpointHeader = Optional.empty();</span>
+
+  private final String protocolName;
+  private final int maxMessageSize;
+  private final Clock clock;
+  private final List&lt;NodeMessagePermissioningProvider&gt; permissioningProviders;
+<span class="fc" id="L92">  private final ChainState chainHeadState = new ChainState();</span>
+<span class="fc" id="L93">  private final AtomicBoolean readyForRequests = new AtomicBoolean(false);</span>
+<span class="fc" id="L94">  private final AtomicBoolean statusHasBeenReceivedFromPeer = new AtomicBoolean(false);</span>
+<span class="fc" id="L95">  private final AtomicBoolean fullyValidated = new AtomicBoolean(false);</span>
+<span class="fc" id="L96">  private final AtomicInteger lastProtocolVersion = new AtomicInteger(0);</span>
+
+<span class="fc" id="L98">  private volatile long lastRequestTimestamp = 0;</span>
+
+  private final Map&lt;String, Map&lt;Integer, RequestManager&gt;&gt; requestManagers;
+
+<span class="fc" id="L102">  private final AtomicReference&lt;Consumer&lt;EthPeer&gt;&gt; onStatusesExchanged = new AtomicReference&lt;&gt;();</span>
+<span class="fc" id="L103">  private final PeerReputation reputation = new PeerReputation();</span>
+<span class="fc" id="L104">  private final Map&lt;PeerValidator, Boolean&gt; validationStatus = new ConcurrentHashMap&lt;&gt;();</span>
+  private final Bytes id;
+
+  private static final Map&lt;Integer, Integer&gt; roundMessages;
+
+  static {
+<span class="fc" id="L110">    roundMessages = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L111">    roundMessages.put(EthPV62.BLOCK_HEADERS, EthPV62.GET_BLOCK_HEADERS);</span>
+<span class="fc" id="L112">    roundMessages.put(EthPV62.BLOCK_BODIES, EthPV62.GET_BLOCK_BODIES);</span>
+<span class="fc" id="L113">    roundMessages.put(EthPV63.RECEIPTS, EthPV63.GET_RECEIPTS);</span>
+<span class="fc" id="L114">    roundMessages.put(EthPV63.NODE_DATA, EthPV63.GET_NODE_DATA);</span>
+<span class="fc" id="L115">    roundMessages.put(EthPV65.POOLED_TRANSACTIONS, EthPV65.GET_POOLED_TRANSACTIONS);</span>
+
+<span class="fc" id="L117">    roundMessages.put(SnapV1.ACCOUNT_RANGE, SnapV1.GET_ACCOUNT_RANGE);</span>
+<span class="fc" id="L118">    roundMessages.put(SnapV1.STORAGE_RANGE, SnapV1.GET_STORAGE_RANGE);</span>
+<span class="fc" id="L119">    roundMessages.put(SnapV1.BYTECODES, SnapV1.GET_BYTECODES);</span>
+<span class="fc" id="L120">    roundMessages.put(SnapV1.TRIE_NODES, SnapV1.GET_TRIE_NODES);</span>
+<span class="fc" id="L121">  }</span>
+
+  @VisibleForTesting
+  public EthPeer(
+      final PeerConnection connection,
+      final String protocolName,
+      final Consumer&lt;EthPeer&gt; onStatusesExchanged,
+      final List&lt;PeerValidator&gt; peerValidators,
+      final int maxMessageSize,
+      final Clock clock,
+      final List&lt;NodeMessagePermissioningProvider&gt; permissioningProviders,
+<span class="fc" id="L132">      final Bytes localNodeId) {</span>
+<span class="fc" id="L133">    this.connection = connection;</span>
+<span class="fc" id="L134">    this.protocolName = protocolName;</span>
+<span class="fc" id="L135">    this.maxMessageSize = maxMessageSize;</span>
+<span class="fc" id="L136">    this.clock = clock;</span>
+<span class="fc" id="L137">    this.permissioningProviders = permissioningProviders;</span>
+<span class="fc" id="L138">    this.onStatusesExchanged.set(onStatusesExchanged);</span>
+<span class="fc" id="L139">    peerValidators.forEach(peerValidator -&gt; validationStatus.put(peerValidator, false));</span>
+<span class="fc" id="L140">    fullyValidated.set(peerValidators.isEmpty());</span>
+
+<span class="fc" id="L142">    this.requestManagers = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L143">    this.localNodeId = localNodeId;</span>
+<span class="fc" id="L144">    this.id = connection.getPeer().getId();</span>
+
+<span class="fc" id="L146">    initEthRequestManagers();</span>
+<span class="fc" id="L147">    initSnapRequestManagers();</span>
+<span class="fc" id="L148">  }</span>
+
+  private void initEthRequestManagers() {
+<span class="fc" id="L151">    final boolean supportsRequestId =</span>
+<span class="fc" id="L152">        getAgreedCapabilities().stream().anyMatch(EthProtocol::isEth66Compatible);</span>
+    // eth protocol
+<span class="fc" id="L154">    requestManagers.put(</span>
+        protocolName,
+<span class="fc" id="L156">        Map.ofEntries(</span>
+<span class="fc" id="L157">            Map.entry(</span>
+<span class="fc" id="L158">                EthPV62.GET_BLOCK_HEADERS,</span>
+                new RequestManager(this, supportsRequestId, protocolName)),
+<span class="fc" id="L160">            Map.entry(</span>
+<span class="fc" id="L161">                EthPV62.GET_BLOCK_BODIES,</span>
+                new RequestManager(this, supportsRequestId, protocolName)),
+<span class="fc" id="L163">            Map.entry(</span>
+<span class="fc" id="L164">                EthPV63.GET_RECEIPTS, new RequestManager(this, supportsRequestId, protocolName)),</span>
+<span class="fc" id="L165">            Map.entry(</span>
+<span class="fc" id="L166">                EthPV63.GET_NODE_DATA, new RequestManager(this, supportsRequestId, protocolName)),</span>
+<span class="fc" id="L167">            Map.entry(</span>
+<span class="fc" id="L168">                EthPV65.GET_POOLED_TRANSACTIONS,</span>
+                new RequestManager(this, supportsRequestId, protocolName))));
+<span class="fc" id="L170">  }</span>
+
+  private void initSnapRequestManagers() {
+    // snap protocol
+<span class="fc" id="L174">    requestManagers.put(</span>
+        SnapProtocol.NAME,
+<span class="fc" id="L176">        Map.ofEntries(</span>
+<span class="fc" id="L177">            Map.entry(SnapV1.GET_ACCOUNT_RANGE, new RequestManager(this, true, SnapProtocol.NAME)),</span>
+<span class="fc" id="L178">            Map.entry(SnapV1.GET_STORAGE_RANGE, new RequestManager(this, true, SnapProtocol.NAME)),</span>
+<span class="fc" id="L179">            Map.entry(SnapV1.GET_BYTECODES, new RequestManager(this, true, SnapProtocol.NAME)),</span>
+<span class="fc" id="L180">            Map.entry(SnapV1.GET_TRIE_NODES, new RequestManager(this, true, SnapProtocol.NAME))));</span>
+<span class="fc" id="L181">  }</span>
+
+  public void markValidated(final PeerValidator validator) {
+<span class="pc bpc" id="L184" title="1 of 2 branches missed.">    if (!validationStatus.containsKey(validator)) {</span>
+<span class="nc" id="L185">      throw new IllegalArgumentException(&quot;Attempt to update unknown validation status&quot;);</span>
+    }
+<span class="fc" id="L187">    validationStatus.put(validator, true);</span>
+<span class="fc" id="L188">    fullyValidated.set(validationStatus.values().stream().allMatch(b -&gt; b));</span>
+<span class="fc" id="L189">  }</span>
+
+  /**
+   * Check if this peer has been fully validated.
+   *
+   * @return {@code true} if all peer validation logic has run and successfully validated this peer
+   */
+  public boolean isFullyValidated() {
+<span class="fc" id="L197">    return fullyValidated.get();</span>
+  }
+
+  public boolean isDisconnected() {
+<span class="fc" id="L201">    return connection.isDisconnected();</span>
+  }
+
+  public long addChainEstimatedHeightListener(final ChainState.EstimatedHeightListener listener) {
+<span class="fc" id="L205">    return chainHeadState.addEstimatedHeightListener(listener);</span>
+  }
+
+  public void removeChainEstimatedHeightListener(final long listenerId) {
+<span class="fc" id="L209">    chainHeadState.removeEstimatedHeightListener(listenerId);</span>
+<span class="fc" id="L210">  }</span>
+
+  public void recordRequestTimeout(final int requestCode) {
+<span class="fc" id="L213">    LOG.atDebug()</span>
+<span class="fc" id="L214">        .setMessage(&quot;Timed out while waiting for response from peer {}...&quot;)</span>
+<span class="fc" id="L215">        .addArgument(this::getLoggableId)</span>
+<span class="fc" id="L216">        .log();</span>
+<span class="fc" id="L217">    LOG.trace(&quot;Timed out while waiting for response from peer {}&quot;, this);</span>
+<span class="fc" id="L218">    reputation.recordRequestTimeout(requestCode).ifPresent(this::disconnect);</span>
+<span class="fc" id="L219">  }</span>
+
+  public void recordUselessResponse(final String requestType) {
+<span class="fc" id="L222">    LOG.atTrace()</span>
+<span class="fc" id="L223">        .setMessage(&quot;Received useless response for request type {} from peer {}...&quot;)</span>
+<span class="fc" id="L224">        .addArgument(requestType)</span>
+<span class="fc" id="L225">        .addArgument(this::getLoggableId)</span>
+<span class="fc" id="L226">        .log();</span>
+<span class="fc" id="L227">    reputation.recordUselessResponse(System.currentTimeMillis()).ifPresent(this::disconnect);</span>
+<span class="fc" id="L228">  }</span>
+
+  public void recordUsefulResponse() {
+<span class="fc" id="L231">    reputation.recordUsefulResponse();</span>
+<span class="fc" id="L232">  }</span>
+
+  public void disconnect(final DisconnectReason reason) {
+<span class="fc" id="L235">    connection.disconnect(reason);</span>
+<span class="fc" id="L236">  }</span>
+
+  public RequestManager.ResponseStream send(final MessageData messageData) throws PeerNotConnected {
+<span class="fc" id="L239">    return send(messageData, this.protocolName);</span>
+  }
+
+  public RequestManager.ResponseStream send(
+      final MessageData messageData, final String protocolName) throws PeerNotConnected {
+<span class="fc" id="L244">    return send(messageData, protocolName, this.connection);</span>
+  }
+
+  /**
+   * This method is only used for sending the status message, as it is possible that we have
+   * multiple connections to the same peer at that time.
+   *
+   * @param messageData the data to send
+   * @param protocolName the protocol to use for sending
+   * @param connectionToUse the connection to use for sending
+   * @return the response stream from the peer
+   * @throws PeerNotConnected if the peer is not connected
+   */
+  public RequestManager.ResponseStream send(
+      final MessageData messageData,
+      final String protocolName,
+      final PeerConnection connectionToUse)
+      throws PeerNotConnected {
+<span class="fc" id="L262">    if (connectionToUse.getAgreedCapabilities().stream()</span>
+<span class="pc bpc" id="L263" title="1 of 2 branches missed.">        .noneMatch(capability -&gt; capability.getName().equalsIgnoreCase(protocolName))) {</span>
+<span class="nc" id="L264">      LOG.atDebug()</span>
+<span class="nc" id="L265">          .setMessage(&quot;Protocol {} unavailable for this peer {}...&quot;)</span>
+<span class="nc" id="L266">          .addArgument(protocolName)</span>
+<span class="nc" id="L267">          .addArgument(this.getLoggableId())</span>
+<span class="nc" id="L268">          .log();</span>
+<span class="nc" id="L269">      return null;</span>
+    }
+<span class="fc" id="L271">    if (permissioningProviders.stream()</span>
+<span class="fc bfc" id="L272" title="All 2 branches covered.">        .anyMatch(</span>
+<span class="fc bfc" id="L273" title="All 2 branches covered.">            p -&gt; !p.isMessagePermitted(connectionToUse.getRemoteEnode(), messageData.getCode()))) {</span>
+<span class="fc" id="L274">      LOG.info(</span>
+          &quot;Permissioning blocked sending of message code {} to {}...&quot;,
+<span class="fc" id="L276">          messageData.getCode(),</span>
+<span class="fc" id="L277">          this.getLoggableId());</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">      if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L279">        LOG.debug(</span>
+            &quot;Permissioning blocked by providers {}&quot;,
+<span class="nc" id="L281">            permissioningProviders.stream()</span>
+<span class="nc" id="L282">                .filter(</span>
+                    p -&gt;
+<span class="nc bnc" id="L284" title="All 2 branches missed.">                        !p.isMessagePermitted(</span>
+<span class="nc" id="L285">                            connectionToUse.getRemoteEnode(), messageData.getCode())));</span>
+      }
+<span class="fc" id="L287">      return null;</span>
+    }
+    // Check message size is within limits
+<span class="pc bpc" id="L290" title="1 of 2 branches missed.">    if (messageData.getSize() &gt; maxMessageSize) {</span>
+      // This is a bug or else a misconfiguration of the max message size.
+<span class="nc" id="L292">      LOG.error(</span>
+          &quot;Sending {} message to peer ({}) which exceeds local message size limit of {} bytes.  Message code: {}, Message Size: {}&quot;,
+          protocolName,
+          this,
+<span class="nc" id="L296">          maxMessageSize,</span>
+<span class="nc" id="L297">          messageData.getCode(),</span>
+<span class="nc" id="L298">          messageData.getSize());</span>
+    }
+
+<span class="pc bpc" id="L301" title="1 of 2 branches missed.">    if (requestManagers.containsKey(protocolName)) {</span>
+<span class="fc" id="L302">      final Map&lt;Integer, RequestManager&gt; managers = this.requestManagers.get(protocolName);</span>
+<span class="pc bpc" id="L303" title="1 of 2 branches missed.">      if (managers.containsKey(messageData.getCode())) {</span>
+<span class="nc" id="L304">        return sendRequest(managers.get(messageData.getCode()), messageData);</span>
+      }
+    }
+
+<span class="fc" id="L308">    connectionToUse.sendForProtocol(protocolName, messageData);</span>
+<span class="fc" id="L309">    return null;</span>
+  }
+
+  public RequestManager.ResponseStream getHeadersByHash(
+      final Hash hash, final int maxHeaders, final int skip, final boolean reverse)
+      throws PeerNotConnected {
+<span class="fc" id="L315">    final GetBlockHeadersMessage message =</span>
+<span class="fc" id="L316">        GetBlockHeadersMessage.create(hash, maxHeaders, skip, reverse);</span>
+<span class="fc" id="L317">    final RequestManager requestManager =</span>
+<span class="fc" id="L318">        requestManagers.get(protocolName).get(EthPV62.GET_BLOCK_HEADERS);</span>
+<span class="fc" id="L319">    return sendRequest(requestManager, message);</span>
+  }
+
+  public RequestManager.ResponseStream getHeadersByNumber(
+      final long blockNumber, final int maxHeaders, final int skip, final boolean reverse)
+      throws PeerNotConnected {
+<span class="fc" id="L325">    final GetBlockHeadersMessage message =</span>
+<span class="fc" id="L326">        GetBlockHeadersMessage.create(blockNumber, maxHeaders, skip, reverse);</span>
+<span class="fc" id="L327">    return sendRequest(requestManagers.get(protocolName).get(EthPV62.GET_BLOCK_HEADERS), message);</span>
+  }
+
+  public RequestManager.ResponseStream getBodies(final List&lt;Hash&gt; blockHashes)
+      throws PeerNotConnected {
+<span class="fc" id="L332">    final GetBlockBodiesMessage message = GetBlockBodiesMessage.create(blockHashes);</span>
+<span class="fc" id="L333">    return sendRequest(requestManagers.get(protocolName).get(EthPV62.GET_BLOCK_BODIES), message);</span>
+  }
+
+  public RequestManager.ResponseStream getReceipts(final List&lt;Hash&gt; blockHashes)
+      throws PeerNotConnected {
+<span class="fc" id="L338">    final GetReceiptsMessage message = GetReceiptsMessage.create(blockHashes);</span>
+<span class="fc" id="L339">    return sendRequest(requestManagers.get(protocolName).get(EthPV63.GET_RECEIPTS), message);</span>
+  }
+
+  public RequestManager.ResponseStream getNodeData(final Iterable&lt;Hash&gt; nodeHashes)
+      throws PeerNotConnected {
+<span class="fc" id="L344">    final GetNodeDataMessage message = GetNodeDataMessage.create(nodeHashes);</span>
+<span class="fc" id="L345">    return sendRequest(requestManagers.get(protocolName).get(EthPV63.GET_NODE_DATA), message);</span>
+  }
+
+  public RequestManager.ResponseStream getPooledTransactions(final List&lt;Hash&gt; hashes)
+      throws PeerNotConnected {
+<span class="fc" id="L350">    final GetPooledTransactionsMessage message = GetPooledTransactionsMessage.create(hashes);</span>
+<span class="fc" id="L351">    return sendRequest(</span>
+<span class="fc" id="L352">        requestManagers.get(protocolName).get(EthPV65.GET_POOLED_TRANSACTIONS), message);</span>
+  }
+
+  public RequestManager.ResponseStream getSnapAccountRange(
+      final Hash stateRoot, final Bytes32 startKeyHash, final Bytes32 endKeyHash)
+      throws PeerNotConnected {
+<span class="nc" id="L358">    final GetAccountRangeMessage getAccountRangeMessage =</span>
+<span class="nc" id="L359">        GetAccountRangeMessage.create(stateRoot, startKeyHash, endKeyHash);</span>
+<span class="nc" id="L360">    getAccountRangeMessage.setRootHash(Optional.of(stateRoot));</span>
+<span class="nc" id="L361">    return sendRequest(</span>
+<span class="nc" id="L362">        requestManagers.get(SnapProtocol.NAME).get(SnapV1.GET_ACCOUNT_RANGE),</span>
+        getAccountRangeMessage);
+  }
+
+  public RequestManager.ResponseStream getSnapStorageRange(
+      final Hash stateRoot,
+      final List&lt;Bytes32&gt; accountHashes,
+      final Bytes32 startKeyHash,
+      final Bytes32 endKeyHash)
+      throws PeerNotConnected {
+<span class="nc" id="L372">    final GetStorageRangeMessage getStorageRangeMessage =</span>
+<span class="nc" id="L373">        GetStorageRangeMessage.create(stateRoot, accountHashes, startKeyHash, endKeyHash);</span>
+<span class="nc" id="L374">    getStorageRangeMessage.setRootHash(Optional.of(stateRoot));</span>
+<span class="nc" id="L375">    return sendRequest(</span>
+<span class="nc" id="L376">        requestManagers.get(SnapProtocol.NAME).get(SnapV1.GET_STORAGE_RANGE),</span>
+        getStorageRangeMessage);
+  }
+
+  public RequestManager.ResponseStream getSnapBytecode(
+      final Hash stateRoot, final List&lt;Bytes32&gt; codeHashes) throws PeerNotConnected {
+<span class="nc" id="L382">    final GetByteCodesMessage getByteCodes = GetByteCodesMessage.create(codeHashes);</span>
+<span class="nc" id="L383">    getByteCodes.setRootHash(Optional.of(stateRoot));</span>
+<span class="nc" id="L384">    return sendRequest(</span>
+<span class="nc" id="L385">        requestManagers.get(SnapProtocol.NAME).get(SnapV1.GET_BYTECODES), getByteCodes);</span>
+  }
+
+  public RequestManager.ResponseStream getSnapTrieNode(
+      final Hash stateRoot, final List&lt;List&lt;Bytes&gt;&gt; paths) throws PeerNotConnected {
+<span class="nc" id="L390">    final GetTrieNodesMessage getTrieNodes = GetTrieNodesMessage.create(stateRoot, paths);</span>
+<span class="nc" id="L391">    getTrieNodes.setRootHash(Optional.of(stateRoot));</span>
+<span class="nc" id="L392">    return sendRequest(</span>
+<span class="nc" id="L393">        requestManagers.get(SnapProtocol.NAME).get(SnapV1.GET_TRIE_NODES), getTrieNodes);</span>
+  }
+
+  private RequestManager.ResponseStream sendRequest(
+      final RequestManager requestManager, final MessageData messageData) throws PeerNotConnected {
+<span class="fc" id="L398">    lastRequestTimestamp = clock.millis();</span>
+<span class="fc" id="L399">    return requestManager.dispatchRequest(</span>
+<span class="fc" id="L400">        msgData -&gt; connection.sendForProtocol(requestManager.getProtocolName(), msgData),</span>
+        messageData);
+  }
+
+  /**
+   * Determines the validity of a message received from a peer. A message is considered valid if
+   * either of the following conditions are met: 1) The message is a request type message (e.g.
+   * GET_BLOCK_HEADERS), or 2) The message is a response type message (e.g. BLOCK_HEADERS), the node
+   * has made at least 1 request for that type of message (i.e. it has sent at least 1
+   * GET_BLOCK_HEADERS request), and it has at least 1 outstanding request of that type which it
+   * expects to receive a response for.
+   *
+   * @param message The message being validated
+   * @param protocolName The protocol type of the message
+   * @return true if the message is valid as per the above logic, otherwise false.
+   */
+  public boolean validateReceivedMessage(final EthMessage message, final String protocolName) {
+<span class="fc" id="L417">    checkArgument(message.getPeer().equals(this), &quot;Mismatched message sent to peer for dispatch&quot;);</span>
+<span class="fc" id="L418">    return getRequestManager(protocolName, message.getData().getCode())</span>
+<span class="fc bfc" id="L419" title="All 2 branches covered.">        .map(requestManager -&gt; requestManager.outstandingRequests() != 0)</span>
+<span class="fc" id="L420">        .orElse(true);</span>
+  }
+
+  /**
+   * Routes messages originating from this peer to listeners.
+   *
+   * @param ethMessage the Eth message to dispatch
+   * @param protocolName Specific protocol name if needed
+   */
+  Optional&lt;RequestManager&gt; dispatch(final EthMessage ethMessage, final String protocolName) {
+<span class="fc" id="L430">    checkArgument(</span>
+<span class="fc" id="L431">        ethMessage.getPeer().equals(this), &quot;Mismatched Eth message sent to peer for dispatch&quot;);</span>
+<span class="fc" id="L432">    final int messageCode = ethMessage.getData().getCode();</span>
+<span class="fc" id="L433">    reputation.resetTimeoutCount(messageCode);</span>
+
+<span class="fc" id="L435">    Optional&lt;RequestManager&gt; requestManager = getRequestManager(protocolName, messageCode);</span>
+<span class="fc" id="L436">    requestManager.ifPresentOrElse(</span>
+<span class="fc" id="L437">        localRequestManager -&gt; localRequestManager.dispatchResponse(ethMessage),</span>
+        () -&gt; {
+<span class="fc" id="L439">          LOG.trace(</span>
+              &quot;Message {} not expected has just been received for protocol {}, peer {} &quot;,
+<span class="fc" id="L441">              messageCode,</span>
+              protocolName,
+              this);
+<span class="fc" id="L444">        });</span>
+<span class="fc" id="L445">    return requestManager;</span>
+  }
+
+  /**
+   * Routes messages originating from this peer to listeners.
+   *
+   * @param ethMessage the Eth message to dispatch
+   */
+  void dispatch(final EthMessage ethMessage) {
+<span class="fc" id="L454">    dispatch(ethMessage, protocolName);</span>
+<span class="fc" id="L455">  }</span>
+
+  /**
+   * Attempt to get a request manager for a received response-type message e.g. BLOCK_HEADERS. If
+   * the message is a request-type message e.g. GET_BLOCK_HEADERS no request manager will exist so
+   * Optional.empty() will be returned.
+   *
+   * @param protocolName the type of protocol the message is for
+   * @param code the message code
+   * @return a request manager for the received response messsage, or Optional.empty() if this is a
+   *     request message
+   */
+  private Optional&lt;RequestManager&gt; getRequestManager(final String protocolName, final int code) {
+<span class="pc bpc" id="L468" title="1 of 2 branches missed.">    if (requestManagers.containsKey(protocolName)) {</span>
+<span class="fc" id="L469">      final Map&lt;Integer, RequestManager&gt; managers = requestManagers.get(protocolName);</span>
+<span class="fc" id="L470">      final Integer requestCode = roundMessages.getOrDefault(code, -1);</span>
+<span class="fc bfc" id="L471" title="All 2 branches covered.">      if (managers.containsKey(requestCode)) {</span>
+<span class="fc" id="L472">        return Optional.of(managers.get(requestCode));</span>
+      }
+    }
+<span class="fc" id="L475">    return Optional.empty();</span>
+  }
+
+  public Map&lt;Integer, AtomicInteger&gt; timeoutCounts() {
+<span class="fc" id="L479">    return reputation.timeoutCounts();</span>
+  }
+
+  public PeerReputation getReputation() {
+<span class="fc" id="L483">    return reputation;</span>
+  }
+
+  void handleDisconnect() {
+<span class="fc" id="L487">    LOG.trace(&quot;handleDisconnect - EthPeer {}&quot;, this);</span>
+
+<span class="fc" id="L489">    requestManagers.forEach(</span>
+<span class="fc" id="L490">        (protocolName, map) -&gt; map.forEach((code, requestManager) -&gt; requestManager.close()));</span>
+<span class="fc" id="L491">  }</span>
+
+  public void registerKnownBlock(final Hash hash) {
+<span class="fc" id="L494">    knownBlocks.add(hash);</span>
+<span class="fc" id="L495">  }</span>
+
+  public void registerStatusSent(final PeerConnection connection) {
+<span class="fc" id="L498">    synchronized (this) {</span>
+<span class="fc" id="L499">      connection.setStatusSent();</span>
+<span class="fc" id="L500">      maybeExecuteStatusesExchangedCallback(connection);</span>
+<span class="fc" id="L501">    }</span>
+<span class="fc" id="L502">  }</span>
+
+  public void registerStatusReceived(
+      final Hash hash,
+      final Difficulty td,
+      final int protocolVersion,
+      final PeerConnection connection) {
+<span class="fc" id="L509">    chainHeadState.statusReceived(hash, td);</span>
+<span class="fc" id="L510">    lastProtocolVersion.set(protocolVersion);</span>
+<span class="fc" id="L511">    statusHasBeenReceivedFromPeer.set(true);</span>
+<span class="fc" id="L512">    synchronized (this) {</span>
+<span class="fc" id="L513">      connection.setStatusReceived();</span>
+<span class="fc" id="L514">      maybeExecuteStatusesExchangedCallback(connection);</span>
+<span class="fc" id="L515">    }</span>
+<span class="fc" id="L516">  }</span>
+
+  private void maybeExecuteStatusesExchangedCallback(final PeerConnection newConnection) {
+<span class="fc" id="L519">    synchronized (this) {</span>
+<span class="fc bfc" id="L520" title="All 2 branches covered.">      if (newConnection.getStatusExchanged()) {</span>
+<span class="fc bfc" id="L521" title="All 2 branches covered.">        if (!this.connection.equals(newConnection)) {</span>
+<span class="fc bfc" id="L522" title="All 2 branches covered.">          if (readyForRequests.get()) {</span>
+            // We have two connections that are ready for requests, figure out which connection to
+            // keep
+<span class="fc bfc" id="L525" title="All 2 branches covered.">            if (compareDuplicateConnections(this.connection, newConnection) &gt; 0) {</span>
+<span class="fc" id="L526">              LOG.trace(&quot;Changed connection from {} to {}&quot;, this.connection, newConnection);</span>
+<span class="fc" id="L527">              this.connection = newConnection;</span>
+            }
+          } else {
+            // use the new connection for now, as it is ready for requests, which the &quot;old&quot; one is
+            // not
+<span class="fc" id="L532">            this.connection = newConnection;</span>
+          }
+        }
+<span class="fc" id="L535">        readyForRequests.set(true);</span>
+<span class="fc" id="L536">        final Consumer&lt;EthPeer&gt; peerConsumer = onStatusesExchanged.getAndSet(null);</span>
+<span class="fc bfc" id="L537" title="All 2 branches covered.">        if (peerConsumer != null) {</span>
+<span class="fc" id="L538">          LOG.trace(&quot;Status message exchange successful. {}&quot;, this);</span>
+<span class="fc" id="L539">          peerConsumer.accept(this);</span>
+        }
+      }
+<span class="fc" id="L542">    }</span>
+<span class="fc" id="L543">  }</span>
+
+  /**
+   * Wait until status has been received and verified before using a peer.
+   *
+   * @return true if the peer is ready to accept requests for data.
+   */
+  public boolean readyForRequests() {
+<span class="fc" id="L551">    return readyForRequests.get();</span>
+  }
+
+  /**
+   * True if the peer has sent its initial status message to us.
+   *
+   * @return true if the peer has sent its initial status message to us.
+   */
+  boolean statusHasBeenReceived() {
+<span class="fc" id="L560">    return statusHasBeenReceivedFromPeer.get();</span>
+  }
+
+  public boolean hasSeenBlock(final Hash hash) {
+<span class="fc" id="L564">    return knownBlocks.contains(hash);</span>
+  }
+
+  /**
+   * Return This peer's current chain state.
+   *
+   * @return This peer's current chain state.
+   */
+  public ChainState chainState() {
+<span class="fc" id="L573">    return chainHeadState;</span>
+  }
+
+  public int getLastProtocolVersion() {
+<span class="fc" id="L577">    return lastProtocolVersion.get();</span>
+  }
+
+  public String getProtocolName() {
+<span class="fc" id="L581">    return protocolName;</span>
+  }
+
+  /**
+   * Return A read-only snapshot of this peer's current {@code chainState} }
+   *
+   * @return A read-only snapshot of this peer's current {@code chainState} }
+   */
+  public ChainHeadEstimate chainStateSnapshot() {
+<span class="fc" id="L590">    return chainHeadState.getSnapshot();</span>
+  }
+
+  public void registerHeight(final Hash blockHash, final long height) {
+<span class="fc" id="L594">    chainHeadState.update(blockHash, height);</span>
+<span class="fc" id="L595">  }</span>
+
+  public int outstandingRequests() {
+<span class="fc" id="L598">    return requestManagers.values().stream()</span>
+<span class="fc" id="L599">        .flatMap(m -&gt; m.values().stream())</span>
+<span class="fc" id="L600">        .mapToInt(RequestManager::outstandingRequests)</span>
+<span class="fc" id="L601">        .sum();</span>
+  }
+
+  public long getLastRequestTimestamp() {
+<span class="fc" id="L605">    return lastRequestTimestamp;</span>
+  }
+
+  public boolean hasAvailableRequestCapacity() {
+<span class="fc bfc" id="L609" title="All 2 branches covered.">    return outstandingRequests() &lt; MAX_OUTSTANDING_REQUESTS;</span>
+  }
+
+  public Set&lt;Capability&gt; getAgreedCapabilities() {
+<span class="fc" id="L613">    return connection.getAgreedCapabilities();</span>
+  }
+
+  public PeerConnection getConnection() {
+<span class="fc" id="L617">    return connection;</span>
+  }
+
+  public Bytes nodeId() {
+<span class="fc" id="L621">    return connection.getPeerInfo().getNodeId();</span>
+  }
+
+  public boolean hasSupportForMessage(final int messageCode) {
+<span class="fc" id="L625">    return getAgreedCapabilities().stream()</span>
+<span class="fc" id="L626">        .anyMatch(cap -&gt; EthProtocol.get().isValidMessageCode(cap.getVersion(), messageCode));</span>
+  }
+
+  @Override
+  public String toString() {
+<span class="fc" id="L631">    return String.format(</span>
+        &quot;PeerId: %s... %s, validated? %s, disconnected? %s, client: %s, %s, %s&quot;,
+<span class="fc" id="L633">        getLoggableId(),</span>
+        reputation,
+<span class="fc" id="L635">        isFullyValidated(),</span>
+<span class="fc" id="L636">        isDisconnected(),</span>
+<span class="fc" id="L637">        connection.getPeerInfo().getClientId(),</span>
+        connection,
+<span class="fc" id="L639">        connection.getPeer().getEnodeURLString());</span>
+  }
+
+  @Nonnull
+  public String getLoggableId() {
+    // 8 bytes plus the 0x prefix is 18 characters
+<span class="fc" id="L645">    return nodeId().toString().substring(0, 18) + &quot;...&quot;;</span>
+  }
+
+  @Override
+  public int compareTo(final @Nonnull EthPeer ethPeer) {
+<span class="fc" id="L650">    final int repCompare = this.reputation.compareTo(ethPeer.reputation);</span>
+<span class="pc bpc" id="L651" title="1 of 2 branches missed.">    if (repCompare != 0) return repCompare;</span>
+
+<span class="fc" id="L653">    final int headStateCompare =</span>
+<span class="fc" id="L654">        Long.compare(</span>
+<span class="fc" id="L655">            this.chainHeadState.getBestBlock().getNumber(),</span>
+<span class="fc" id="L656">            ethPeer.chainHeadState.getBestBlock().getNumber());</span>
+<span class="pc bpc" id="L657" title="1 of 2 branches missed.">    if (headStateCompare != 0) return headStateCompare;</span>
+
+<span class="fc" id="L659">    return getConnection().getPeerInfo().compareTo(ethPeer.getConnection().getPeerInfo());</span>
+  }
+
+  public void setCheckpointHeader(final BlockHeader header) {
+<span class="fc" id="L663">    checkpointHeader = Optional.of(header);</span>
+<span class="fc" id="L664">  }</span>
+
+  public Optional&lt;BlockHeader&gt; getCheckpointHeader() {
+<span class="fc" id="L667">    return checkpointHeader;</span>
+  }
+
+  public Bytes getId() {
+<span class="fc" id="L671">    return id;</span>
+  }
+
+  /**
+   * Compares two connections to the same peer to determine which connection should be kept
+   *
+   * @param a The first connection
+   * @param b The second connection
+   * @return A negative value if {@code a} should be kept, a positive value is {@code b} should be
+   *     kept
+   */
+  private int compareDuplicateConnections(final PeerConnection a, final PeerConnection b) {
+
+<span class="pc bpc" id="L684" title="1 of 2 branches missed.">    if (a.isDisconnected() != b.isDisconnected()) {</span>
+      // One connection has failed - prioritize the one that hasn't failed
+<span class="nc bnc" id="L686" title="All 2 branches missed.">      return a.isDisconnected() ? 1 : -1;</span>
+    }
+
+<span class="fc" id="L689">    final Bytes peerId = a.getPeer().getId();</span>
+    // peerId is the id of the other node
+<span class="pc bpc" id="L691" title="1 of 2 branches missed.">    if (a.inboundInitiated() != b.inboundInitiated()) {</span>
+      // If we have connections initiated in different directions, keep the connection initiated
+      // by the node with the lower id
+<span class="fc bfc" id="L694" title="All 2 branches covered.">      if (localNodeId.compareTo(peerId) &lt; 0) {</span>
+<span class="pc bpc" id="L695" title="1 of 2 branches missed.">        return a.inboundInitiated() ? 1 : -1;</span>
+      } else {
+<span class="pc bpc" id="L697" title="1 of 2 branches missed.">        return a.inboundInitiated() ? -1 : 1;</span>
+      }
+    }
+    // Otherwise, keep older connection
+<span class="nc" id="L701">    LOG.trace(&quot;comparing timestamps &quot; + a.getInitiatedAt() + &quot; with &quot; + b.getInitiatedAt());</span>
+<span class="nc bnc" id="L702" title="All 2 branches missed.">    return a.getInitiatedAt() &lt; b.getInitiatedAt() ? -1 : 1;</span>
+  }
+
+  @FunctionalInterface
+  public interface DisconnectCallback {
+    void onDisconnect(EthPeer peer);
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

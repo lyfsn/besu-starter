@@ -1,0 +1,389 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PrivacyParameters.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.core</a> &gt; <span class="el_source">PrivacyParameters.java</span></div><h1>PrivacyParameters.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.core;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import org.hyperledger.besu.crypto.KeyPair;
+import org.hyperledger.besu.crypto.KeyPairUtil;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.enclave.Enclave;
+import org.hyperledger.besu.enclave.EnclaveFactory;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateGenesisAllocator;
+import org.hyperledger.besu.ethereum.privacy.PrivateStateRootResolver;
+import org.hyperledger.besu.ethereum.privacy.PrivateWorldStateReader;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivacyStorageProvider;
+import org.hyperledger.besu.ethereum.privacy.storage.PrivateStateStorage;
+import org.hyperledger.besu.ethereum.trie.forest.ForestWorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStatePreimageStorage;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.plugin.services.PrivacyPluginService;
+import org.hyperledger.besu.plugin.services.privacy.PrivacyGroupGenesisProvider;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.URI;
+import java.nio.file.Path;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.io.Files;
+
+<span class="fc" id="L48">public class PrivacyParameters {</span>
+
+  // Last address that can be generated for a pre-compiled contract
+<span class="fc" id="L51">  public static final Integer PRIVACY = Byte.MAX_VALUE - 1;</span>
+<span class="fc" id="L52">  public static final Address DEFAULT_PRIVACY = Address.precompiled(PRIVACY);</span>
+<span class="fc" id="L53">  public static final Address FLEXIBLE_PRIVACY = Address.precompiled(PRIVACY - 1);</span>
+
+  // Flexible privacy management contracts (injected in private state)
+<span class="fc" id="L56">  public static final Address FLEXIBLE_PRIVACY_PROXY = Address.precompiled(PRIVACY - 2);</span>
+<span class="fc" id="L57">  public static final Address DEFAULT_FLEXIBLE_PRIVACY_MANAGEMENT =</span>
+<span class="fc" id="L58">      Address.precompiled(PRIVACY - 3);</span>
+
+<span class="fc" id="L60">  public static final Address PLUGIN_PRIVACY = Address.precompiled(PRIVACY - 4);</span>
+
+<span class="fc" id="L62">  public static final URI DEFAULT_ENCLAVE_URL = URI.create(&quot;http://localhost:8888&quot;);</span>
+<span class="fc" id="L63">  public static final PrivacyParameters DEFAULT = new PrivacyParameters();</span>
+
+  private boolean enabled;
+  private URI enclaveUri;
+  private String privacyUserId;
+  private File enclavePublicKeyFile;
+<span class="fc" id="L69">  private Optional&lt;KeyPair&gt; signingKeyPair = Optional.empty();</span>
+  private Enclave enclave;
+  private PrivacyStorageProvider privateStorageProvider;
+  private WorldStateArchive privateWorldStateArchive;
+  private PrivateStateStorage privateStateStorage;
+  private boolean multiTenancyEnabled;
+  private boolean flexiblePrivacyGroupsEnabled;
+  private boolean privacyPluginEnabled;
+  private PrivateStateRootResolver privateStateRootResolver;
+  private PrivateWorldStateReader privateWorldStateReader;
+  private PrivacyPluginService privacyPluginService;
+
+  public Address getPrivacyAddress() {
+<span class="nc bnc" id="L82" title="All 2 branches missed.">    if (isPrivacyPluginEnabled()) {</span>
+<span class="nc" id="L83">      return PLUGIN_PRIVACY;</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">    } else if (isFlexiblePrivacyGroupsEnabled()) {</span>
+<span class="nc" id="L85">      return FLEXIBLE_PRIVACY;</span>
+    } else {
+<span class="nc" id="L87">      return DEFAULT_PRIVACY;</span>
+    }
+  }
+
+  public Boolean isEnabled() {
+<span class="fc" id="L92">    return enabled;</span>
+  }
+
+  private void setEnabled(final boolean enabled) {
+<span class="fc" id="L96">    this.enabled = enabled;</span>
+<span class="fc" id="L97">  }</span>
+
+  public URI getEnclaveUri() {
+<span class="fc" id="L100">    return enclaveUri;</span>
+  }
+
+  private void setEnclaveUri(final URI enclaveUri) {
+<span class="fc" id="L104">    this.enclaveUri = enclaveUri;</span>
+<span class="fc" id="L105">  }</span>
+
+  public String getPrivacyUserId() {
+<span class="fc" id="L108">    return privacyUserId;</span>
+  }
+
+  @VisibleForTesting
+  public void setPrivacyUserId(final String privacyUserId) {
+<span class="fc" id="L113">    this.privacyUserId = privacyUserId;</span>
+<span class="fc" id="L114">  }</span>
+
+  public File getEnclavePublicKeyFile() {
+<span class="nc" id="L117">    return enclavePublicKeyFile;</span>
+  }
+
+  private void setEnclavePublicKeyFile(final File enclavePublicKeyFile) {
+<span class="fc" id="L121">    this.enclavePublicKeyFile = enclavePublicKeyFile;</span>
+<span class="fc" id="L122">  }</span>
+
+  public Optional&lt;KeyPair&gt; getSigningKeyPair() {
+<span class="nc" id="L125">    return signingKeyPair;</span>
+  }
+
+  private void setSigningKeyPair(final KeyPair signingKeyPair) {
+<span class="fc" id="L129">    this.signingKeyPair = Optional.ofNullable(signingKeyPair);</span>
+<span class="fc" id="L130">  }</span>
+
+  public WorldStateArchive getPrivateWorldStateArchive() {
+<span class="fc" id="L133">    return privateWorldStateArchive;</span>
+  }
+
+  private void setPrivateWorldStateArchive(final WorldStateArchive privateWorldStateArchive) {
+<span class="fc" id="L137">    this.privateWorldStateArchive = privateWorldStateArchive;</span>
+<span class="fc" id="L138">  }</span>
+
+  public PrivacyStorageProvider getPrivateStorageProvider() {
+<span class="fc" id="L141">    return privateStorageProvider;</span>
+  }
+
+  private void setPrivateStorageProvider(final PrivacyStorageProvider privateStorageProvider) {
+<span class="fc" id="L145">    this.privateStorageProvider = privateStorageProvider;</span>
+<span class="fc" id="L146">  }</span>
+
+  public PrivateStateStorage getPrivateStateStorage() {
+<span class="fc" id="L149">    return privateStateStorage;</span>
+  }
+
+  private void setPrivateStateStorage(final PrivateStateStorage privateStateStorage) {
+<span class="fc" id="L153">    this.privateStateStorage = privateStateStorage;</span>
+<span class="fc" id="L154">  }</span>
+
+  public Enclave getEnclave() {
+<span class="fc" id="L157">    return enclave;</span>
+  }
+
+  private void setEnclave(final Enclave enclave) {
+<span class="fc" id="L161">    this.enclave = enclave;</span>
+<span class="fc" id="L162">  }</span>
+
+  private void setMultiTenancyEnabled(final boolean multiTenancyEnabled) {
+<span class="fc" id="L165">    this.multiTenancyEnabled = multiTenancyEnabled;</span>
+<span class="fc" id="L166">  }</span>
+
+  public boolean isMultiTenancyEnabled() {
+<span class="fc" id="L169">    return multiTenancyEnabled;</span>
+  }
+
+  private void setFlexiblePrivacyGroupsEnabled(final boolean flexiblePrivacyGroupsEnabled) {
+<span class="fc" id="L173">    this.flexiblePrivacyGroupsEnabled = flexiblePrivacyGroupsEnabled;</span>
+<span class="fc" id="L174">  }</span>
+
+  public boolean isFlexiblePrivacyGroupsEnabled() {
+<span class="fc" id="L177">    return flexiblePrivacyGroupsEnabled;</span>
+  }
+
+  private void setPrivacyPluginEnabled(final boolean privacyPluginEnabled) {
+<span class="fc" id="L181">    this.privacyPluginEnabled = privacyPluginEnabled;</span>
+<span class="fc" id="L182">  }</span>
+
+  public boolean isPrivacyPluginEnabled() {
+<span class="fc" id="L185">    return privacyPluginEnabled;</span>
+  }
+
+  public PrivateStateRootResolver getPrivateStateRootResolver() {
+<span class="fc" id="L189">    return privateStateRootResolver;</span>
+  }
+
+  private void setPrivateStateRootResolver(
+      final PrivateStateRootResolver privateStateRootResolver) {
+<span class="fc" id="L194">    this.privateStateRootResolver = privateStateRootResolver;</span>
+<span class="fc" id="L195">  }</span>
+
+  public PrivateWorldStateReader getPrivateWorldStateReader() {
+<span class="fc" id="L198">    return privateWorldStateReader;</span>
+  }
+
+  private void setPrivateWorldStateReader(final PrivateWorldStateReader privateWorldStateReader) {
+<span class="fc" id="L202">    this.privateWorldStateReader = privateWorldStateReader;</span>
+<span class="fc" id="L203">  }</span>
+
+  private void setPrivacyService(final PrivacyPluginService privacyPluginService) {
+<span class="fc" id="L206">    this.privacyPluginService = privacyPluginService;</span>
+<span class="fc" id="L207">  }</span>
+
+  public PrivacyPluginService getPrivacyService() {
+<span class="fc" id="L210">    return privacyPluginService;</span>
+  }
+
+  public PrivateStateGenesisAllocator getPrivateStateGenesisAllocator() {
+    // Note: the order of plugin registration may cause issues here.
+    // This is why it's instantiated on get. It's needed in the privacy pre-compile constructors
+    // but privacy parameters is built before the plugin has had a chance to register a provider
+    // and have cli options instantiated
+<span class="fc" id="L218">    return new PrivateStateGenesisAllocator(</span>
+<span class="fc" id="L219">        flexiblePrivacyGroupsEnabled, createPrivateGenesisProvider());</span>
+  }
+
+  private PrivacyGroupGenesisProvider createPrivateGenesisProvider() {
+<span class="fc bfc" id="L223" title="All 2 branches covered.">    if (privacyPluginService != null</span>
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">        &amp;&amp; privacyPluginService.getPrivacyGroupGenesisProvider() != null) {</span>
+<span class="fc" id="L225">      return privacyPluginService.getPrivacyGroupGenesisProvider();</span>
+    } else {
+<span class="fc" id="L227">      return (privacyGroupId, blockNumber) -&gt; Collections::emptyList;</span>
+    }
+  }
+
+  @Override
+  public String toString() {
+<span class="nc" id="L233">    return &quot;PrivacyParameters{&quot;</span>
+        + &quot;enabled=&quot;
+        + enabled
+        + &quot;, multiTenancyEnabled = &quot;
+        + multiTenancyEnabled
+        + &quot;, privacyPluginEnabled = &quot;
+        + privacyPluginEnabled
+        + &quot;, flexiblePrivacyGroupsEnabled = &quot;
+        + flexiblePrivacyGroupsEnabled
+        + &quot;, enclaveUri='&quot;
+        + enclaveUri
+        + &quot;, privatePayloadEncryptionService='&quot;
+<span class="nc" id="L245">        + privacyPluginService.getClass().getSimpleName()</span>
+        + '\''
+        + '}';
+  }
+
+<span class="fc" id="L250">  public static class Builder {</span>
+
+    private boolean enabled;
+    private URI enclaveUrl;
+    private File enclavePublicKeyFile;
+    private String privacyUserId;
+    private Path privateKeyPath;
+    private PrivacyStorageProvider storageProvider;
+    private EnclaveFactory enclaveFactory;
+    private boolean multiTenancyEnabled;
+    private Path privacyKeyStoreFile;
+    private Path privacyKeyStorePasswordFile;
+    private Path privacyTlsKnownEnclaveFile;
+    private boolean flexiblePrivacyGroupsEnabled;
+    private boolean privacyPluginEnabled;
+    private PrivacyPluginService privacyPluginService;
+
+    public Builder setEnclaveUrl(final URI enclaveUrl) {
+<span class="fc" id="L268">      this.enclaveUrl = enclaveUrl;</span>
+<span class="fc" id="L269">      return this;</span>
+    }
+
+    public Builder setEnabled(final boolean enabled) {
+<span class="fc" id="L273">      this.enabled = enabled;</span>
+<span class="fc" id="L274">      return this;</span>
+    }
+
+    public Builder setStorageProvider(final PrivacyStorageProvider privateStorageProvider) {
+<span class="fc" id="L278">      this.storageProvider = privateStorageProvider;</span>
+<span class="fc" id="L279">      return this;</span>
+    }
+
+    public Builder setPrivateKeyPath(final Path privateKeyPath) {
+<span class="fc" id="L283">      this.privateKeyPath = privateKeyPath;</span>
+<span class="fc" id="L284">      return this;</span>
+    }
+
+    public Builder setEnclaveFactory(final EnclaveFactory enclaveFactory) {
+<span class="fc" id="L288">      this.enclaveFactory = enclaveFactory;</span>
+<span class="fc" id="L289">      return this;</span>
+    }
+
+    public Builder setMultiTenancyEnabled(final boolean multiTenancyEnabled) {
+<span class="fc" id="L293">      this.multiTenancyEnabled = multiTenancyEnabled;</span>
+<span class="fc" id="L294">      return this;</span>
+    }
+
+    public Builder setPrivacyKeyStoreFile(final Path privacyKeyStoreFile) {
+<span class="nc" id="L298">      this.privacyKeyStoreFile = privacyKeyStoreFile;</span>
+<span class="nc" id="L299">      return this;</span>
+    }
+
+    public Builder setPrivacyKeyStorePasswordFile(final Path privacyKeyStorePasswordFile) {
+<span class="nc" id="L303">      this.privacyKeyStorePasswordFile = privacyKeyStorePasswordFile;</span>
+<span class="nc" id="L304">      return this;</span>
+    }
+
+    public Builder setPrivacyTlsKnownEnclaveFile(final Path privacyTlsKnownEnclaveFile) {
+<span class="nc" id="L308">      this.privacyTlsKnownEnclaveFile = privacyTlsKnownEnclaveFile;</span>
+<span class="nc" id="L309">      return this;</span>
+    }
+
+    public Builder setFlexiblePrivacyGroupsEnabled(final boolean flexiblePrivacyGroupsEnabled) {
+<span class="fc" id="L313">      this.flexiblePrivacyGroupsEnabled = flexiblePrivacyGroupsEnabled;</span>
+<span class="fc" id="L314">      return this;</span>
+    }
+
+    public Builder setPrivacyPluginEnabled(final boolean privacyPluginEnabled) {
+<span class="fc" id="L318">      this.privacyPluginEnabled = privacyPluginEnabled;</span>
+<span class="fc" id="L319">      return this;</span>
+    }
+
+    public Builder setPrivacyUserIdUsingFile(final File publicKeyFile) throws IOException {
+<span class="fc" id="L323">      this.enclavePublicKeyFile = publicKeyFile;</span>
+<span class="fc" id="L324">      this.privacyUserId = Files.asCharSource(publicKeyFile, UTF_8).read();</span>
+      // throws exception if invalid base 64
+<span class="fc" id="L326">      Base64.getDecoder().decode(this.privacyUserId);</span>
+<span class="fc" id="L327">      return this;</span>
+    }
+
+    public Builder setPrivacyService(final PrivacyPluginService privacyPluginService) {
+<span class="fc" id="L331">      this.privacyPluginService = privacyPluginService;</span>
+<span class="fc" id="L332">      return this;</span>
+    }
+
+    public PrivacyParameters build() {
+<span class="fc" id="L336">      final PrivacyParameters config = new PrivacyParameters();</span>
+<span class="fc bfc" id="L337" title="All 2 branches covered.">      if (enabled) {</span>
+<span class="fc" id="L338">        final WorldStateStorageCoordinator privateWorldStateStorage =</span>
+<span class="fc" id="L339">            storageProvider.createWorldStateStorageCoordinator();</span>
+<span class="fc" id="L340">        final WorldStatePreimageStorage privatePreimageStorage =</span>
+<span class="fc" id="L341">            storageProvider.createWorldStatePreimageStorage();</span>
+<span class="fc" id="L342">        final WorldStateArchive privateWorldStateArchive =</span>
+            new ForestWorldStateArchive(
+                privateWorldStateStorage, privatePreimageStorage, EvmConfiguration.DEFAULT);
+
+<span class="fc" id="L346">        final PrivateStateStorage privateStateStorage = storageProvider.createPrivateStateStorage();</span>
+<span class="fc" id="L347">        final PrivateStateRootResolver privateStateRootResolver =</span>
+            new PrivateStateRootResolver(privateStateStorage);
+
+<span class="fc" id="L350">        config.setPrivateStateRootResolver(privateStateRootResolver);</span>
+<span class="fc" id="L351">        config.setPrivateWorldStateReader(</span>
+            new PrivateWorldStateReader(
+                privateStateRootResolver, privateWorldStateArchive, privateStateStorage));
+
+<span class="fc" id="L355">        config.setPrivateWorldStateArchive(privateWorldStateArchive);</span>
+
+<span class="fc" id="L357">        config.setPrivacyService(privacyPluginService);</span>
+
+<span class="fc" id="L359">        config.setPrivateStorageProvider(storageProvider);</span>
+<span class="fc" id="L360">        config.setPrivateStateStorage(privateStateStorage);</span>
+
+<span class="fc" id="L362">        config.setPrivacyUserId(privacyUserId);</span>
+<span class="fc" id="L363">        config.setEnclavePublicKeyFile(enclavePublicKeyFile);</span>
+        // pass TLS options to enclave factory if they are set
+<span class="pc bpc" id="L365" title="1 of 2 branches missed.">        if (privacyKeyStoreFile != null) {</span>
+<span class="nc" id="L366">          config.setEnclave(</span>
+<span class="nc" id="L367">              enclaveFactory.createVertxEnclave(</span>
+                  enclaveUrl,
+                  privacyKeyStoreFile,
+                  privacyKeyStorePasswordFile,
+                  privacyTlsKnownEnclaveFile));
+        } else {
+<span class="fc" id="L373">          config.setEnclave(enclaveFactory.createVertxEnclave(enclaveUrl));</span>
+        }
+<span class="fc" id="L375">        config.setEnclaveUri(enclaveUrl);</span>
+
+<span class="fc bfc" id="L377" title="All 2 branches covered.">        if (privateKeyPath != null) {</span>
+<span class="fc" id="L378">          config.setSigningKeyPair(KeyPairUtil.load(privateKeyPath.toFile()));</span>
+        }
+      }
+<span class="fc" id="L381">      config.setEnabled(enabled);</span>
+<span class="fc" id="L382">      config.setMultiTenancyEnabled(multiTenancyEnabled);</span>
+<span class="fc" id="L383">      config.setFlexiblePrivacyGroupsEnabled(flexiblePrivacyGroupsEnabled);</span>
+<span class="fc" id="L384">      config.setPrivacyPluginEnabled(privacyPluginEnabled);</span>
+<span class="fc" id="L385">      return config;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

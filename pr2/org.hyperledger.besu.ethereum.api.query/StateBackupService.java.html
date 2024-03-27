@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StateBackupService.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.api.query</a> &gt; <span class="el_source">StateBackupService.java</span></div><h1>StateBackupService.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.api.query;
+
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
+
+import org.hyperledger.besu.config.JsonUtil;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.Block;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.TransactionReceipt;
+import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPInput;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.trie.Node;
+import org.hyperledger.besu.ethereum.trie.TrieIterator;
+import org.hyperledger.besu.ethereum.trie.TrieIterator.State;
+import org.hyperledger.besu.ethereum.trie.forest.storage.ForestWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.util.io.RollingFileWriter;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
+
+import com.fasterxml.jackson.annotation.JsonGetter;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class StateBackupService {
+
+<span class="fc" id="L62">  private static final Logger LOG = LoggerFactory.getLogger(StateBackupService.class);</span>
+  private static final Bytes ACCOUNT_END_MARKER;
+
+  static {
+<span class="fc" id="L66">    final BytesValueRLPOutput endMarker = new BytesValueRLPOutput();</span>
+<span class="fc" id="L67">    endMarker.startList();</span>
+<span class="fc" id="L68">    endMarker.endList();</span>
+<span class="fc" id="L69">    ACCOUNT_END_MARKER = endMarker.encoded();</span>
+<span class="fc" id="L70">  }</span>
+
+  private final String besuVersion;
+<span class="nc" id="L73">  private final Lock submissionLock = new ReentrantLock();</span>
+  private final EthScheduler scheduler;
+  private final Blockchain blockchain;
+  private final ForestWorldStateKeyValueStorage worldStateKeyValueStorage;
+<span class="nc" id="L77">  private final BackupStatus backupStatus = new BackupStatus();</span>
+
+  private Path backupDir;
+  private RollingFileWriter accountFileWriter;
+
+  public StateBackupService(
+      final String besuVersion,
+      final Blockchain blockchain,
+      final Path backupDir,
+      final EthScheduler scheduler,
+<span class="nc" id="L87">      final ForestWorldStateKeyValueStorage worldStateKeyValueStorage) {</span>
+<span class="nc" id="L88">    this.besuVersion = besuVersion;</span>
+<span class="nc" id="L89">    this.blockchain = blockchain;</span>
+<span class="nc" id="L90">    this.backupDir = backupDir;</span>
+<span class="nc" id="L91">    this.scheduler = scheduler;</span>
+<span class="nc" id="L92">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+<span class="nc" id="L93">  }</span>
+
+  public Path getBackupDir() {
+<span class="nc" id="L96">    return backupDir;</span>
+  }
+
+  public BackupStatus requestBackup(
+      final long block, final boolean compress, final Optional&lt;Path&gt; backupDir) {
+<span class="nc" id="L101">    boolean requestAccepted = false;</span>
+    try {
+<span class="nc bnc" id="L103" title="All 2 branches missed.">      if (submissionLock.tryLock(100, TimeUnit.MILLISECONDS)) {</span>
+        try {
+<span class="nc bnc" id="L105" title="All 2 branches missed.">          if (!backupStatus.isBackingUp()) {</span>
+<span class="nc" id="L106">            requestAccepted = true;</span>
+<span class="nc" id="L107">            this.backupDir = backupDir.orElse(this.backupDir);</span>
+<span class="nc" id="L108">            backupStatus.targetBlock = block;</span>
+<span class="nc" id="L109">            backupStatus.compressed = compress;</span>
+<span class="nc" id="L110">            backupStatus.currentAccount = Bytes32.ZERO;</span>
+<span class="nc" id="L111">            scheduler.scheduleComputationTask(</span>
+                () -&gt; {
+                  try {
+<span class="nc" id="L114">                    return backup(block, compress);</span>
+
+<span class="nc" id="L116">                  } catch (final IOException ioe) {</span>
+<span class="nc" id="L117">                    LOG.error(&quot;Error writing backups&quot;, ioe);</span>
+<span class="nc" id="L118">                    return backupStatus;</span>
+                  }
+                });
+          }
+        } finally {
+<span class="nc" id="L123">          submissionLock.unlock();</span>
+        }
+      }
+<span class="nc" id="L126">    } catch (final InterruptedException e) {</span>
+      // ignore
+<span class="nc" id="L128">    }</span>
+<span class="nc" id="L129">    backupStatus.requestAccepted = requestAccepted;</span>
+<span class="nc" id="L130">    return backupStatus;</span>
+  }
+
+  public static Path dataFileToIndex(final Path dataName) {
+<span class="fc" id="L134">    return Path.of(dataName.toString().replaceAll(&quot;(.*)[-.]\\d\\d\\d\\d\\.(.)dat&quot;, &quot;$1.$2idx&quot;));</span>
+  }
+
+  public static Path accountFileName(
+      final Path backupDir,
+      final long targetBlock,
+      final int fileNumber,
+      final boolean compressed) {
+<span class="fc" id="L142">    return backupDir.resolve(</span>
+<span class="fc" id="L143">        String.format(</span>
+            &quot;besu-account-backup-%08d-%04d.%sdat&quot;,
+<span class="fc bfc" id="L145" title="All 2 branches covered.">            targetBlock, fileNumber, compressed ? &quot;c&quot; : &quot;r&quot;));</span>
+  }
+
+  public static Path headerFileName(
+      final Path backupDir, final int fileNumber, final boolean compressed) {
+<span class="fc" id="L150">    return backupDir.resolve(</span>
+<span class="fc bfc" id="L151" title="All 2 branches covered.">        String.format(&quot;besu-header-backup-%04d.%sdat&quot;, fileNumber, compressed ? &quot;c&quot; : &quot;r&quot;));</span>
+  }
+
+  public static Path bodyFileName(
+      final Path backupDir, final int fileNumber, final boolean compressed) {
+<span class="fc" id="L156">    return backupDir.resolve(</span>
+<span class="fc bfc" id="L157" title="All 2 branches covered.">        String.format(&quot;besu-body-backup-%04d.%sdat&quot;, fileNumber, compressed ? &quot;c&quot; : &quot;r&quot;));</span>
+  }
+
+  public static Path receiptFileName(
+      final Path backupDir, final int fileNumber, final boolean compressed) {
+<span class="fc" id="L162">    return backupDir.resolve(</span>
+<span class="fc bfc" id="L163" title="All 2 branches covered.">        String.format(&quot;besu-receipt-backup-%04d.%sdat&quot;, fileNumber, compressed ? &quot;c&quot; : &quot;r&quot;));</span>
+  }
+
+  private Path accountFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L167">    return accountFileName(backupDir, backupStatus.targetBlock, fileNumber, compressed);</span>
+  }
+
+  private Path headerFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L171">    return headerFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  private Path bodyFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L175">    return bodyFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  private Path receiptFileName(final int fileNumber, final boolean compressed) {
+<span class="nc" id="L179">    return receiptFileName(backupDir, fileNumber, compressed);</span>
+  }
+
+  private BackupStatus backup(final long block, final boolean compress) throws IOException {
+<span class="nc bnc" id="L183" title="All 2 branches missed.">    checkArgument(</span>
+<span class="nc bnc" id="L184" title="All 2 branches missed.">        block &gt;= 0 &amp;&amp; block &lt;= blockchain.getChainHeadBlockNumber(),</span>
+        &quot;Backup Block must be within blockchain&quot;);
+<span class="nc" id="L186">    backupStatus.targetBlock = block;</span>
+<span class="nc" id="L187">    backupStatus.compressed = compress;</span>
+<span class="nc" id="L188">    backupStatus.currentAccount = Bytes32.ZERO;</span>
+
+<span class="nc" id="L190">    backupChainData();</span>
+<span class="nc" id="L191">    backupLeaves();</span>
+
+<span class="nc" id="L193">    writeManifest();</span>
+
+<span class="nc" id="L195">    return backupStatus;</span>
+  }
+
+  private void writeManifest() throws IOException {
+<span class="nc" id="L199">    final Map&lt;String, Object&gt; manifest = new HashMap&lt;&gt;();</span>
+<span class="nc" id="L200">    manifest.put(&quot;clientVersion&quot;, besuVersion);</span>
+<span class="nc" id="L201">    manifest.put(&quot;compressed&quot;, backupStatus.compressed);</span>
+<span class="nc" id="L202">    manifest.put(&quot;targetBlock&quot;, backupStatus.targetBlock);</span>
+<span class="nc" id="L203">    manifest.put(&quot;accountCount&quot;, backupStatus.accountCount);</span>
+
+<span class="nc" id="L205">    Files.write(</span>
+<span class="nc" id="L206">        backupDir.resolve(&quot;besu-backup-manifest.json&quot;),</span>
+<span class="nc" id="L207">        JsonUtil.getJson(manifest).getBytes(StandardCharsets.UTF_8));</span>
+<span class="nc" id="L208">  }</span>
+
+  private void backupLeaves() throws IOException {
+<span class="nc" id="L211">    final Optional&lt;BlockHeader&gt; header = blockchain.getBlockHeader(backupStatus.targetBlock);</span>
+<span class="nc bnc" id="L212" title="All 2 branches missed.">    if (header.isEmpty()) {</span>
+<span class="nc" id="L213">      backupStatus.currentAccount = null;</span>
+<span class="nc" id="L214">      return;</span>
+    }
+<span class="nc" id="L216">    final Optional&lt;Bytes&gt; worldStateRoot =</span>
+<span class="nc" id="L217">        worldStateKeyValueStorage.getAccountStateTrieNode(header.get().getStateRoot());</span>
+<span class="nc bnc" id="L218" title="All 2 branches missed.">    if (worldStateRoot.isEmpty()) {</span>
+<span class="nc" id="L219">      backupStatus.currentAccount = null;</span>
+<span class="nc" id="L220">      return;</span>
+    }
+
+<span class="nc" id="L223">    try (final RollingFileWriter accountFileWriter =</span>
+        new RollingFileWriter(this::accountFileName, backupStatus.compressed)) {
+<span class="nc" id="L225">      this.accountFileWriter = accountFileWriter;</span>
+
+<span class="nc" id="L227">      final StoredMerklePatriciaTrie&lt;Bytes32, Bytes&gt; accountTrie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="nc" id="L229">              (location, hash) -&gt; worldStateKeyValueStorage.getAccountStateTrieNode(hash),</span>
+<span class="nc" id="L230">              header.get().getStateRoot(),</span>
+<span class="nc" id="L231">              Function.identity(),</span>
+<span class="nc" id="L232">              Function.identity());</span>
+
+<span class="nc" id="L234">      accountTrie.visitLeafs(this::visitAccount);</span>
+<span class="nc" id="L235">      backupStatus.currentAccount = null;</span>
+    }
+<span class="nc" id="L237">  }</span>
+
+  private TrieIterator.State visitAccount(final Bytes32 nodeKey, final Node&lt;Bytes&gt; node) {
+<span class="nc bnc" id="L240" title="All 2 branches missed.">    if (node.getValue().isEmpty()) {</span>
+<span class="nc" id="L241">      return State.CONTINUE;</span>
+    }
+
+<span class="nc" id="L244">    backupStatus.currentAccount = nodeKey;</span>
+<span class="nc" id="L245">    final Bytes nodeValue = node.getValue().orElse(Hash.EMPTY);</span>
+<span class="nc" id="L246">    final StateTrieAccountValue account =</span>
+<span class="nc" id="L247">        StateTrieAccountValue.readFrom(new BytesValueRLPInput(nodeValue, false));</span>
+
+<span class="nc" id="L249">    final Bytes code = worldStateKeyValueStorage.getCode(account.getCodeHash()).orElse(Bytes.EMPTY);</span>
+<span class="nc" id="L250">    backupStatus.codeSize.addAndGet(code.size());</span>
+
+<span class="nc" id="L252">    final BytesValueRLPOutput accountOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L253">    accountOutput.startList();</span>
+<span class="nc" id="L254">    accountOutput.writeBytes(nodeKey); // trie hash</span>
+<span class="nc" id="L255">    accountOutput.writeBytes(nodeValue); // account rlp</span>
+<span class="nc" id="L256">    accountOutput.writeBytes(code); // code</span>
+<span class="nc" id="L257">    accountOutput.endList();</span>
+
+    try {
+<span class="nc" id="L260">      accountFileWriter.writeBytes(accountOutput.encoded().toArrayUnsafe());</span>
+<span class="nc" id="L261">    } catch (final IOException ioe) {</span>
+<span class="nc" id="L262">      LOG.error(&quot;Failure writing backup&quot;, ioe);</span>
+<span class="nc" id="L263">      return State.STOP;</span>
+<span class="nc" id="L264">    }</span>
+
+    // storage is written for each leaf, otherwise the whole trie would have to fit in memory
+<span class="nc" id="L267">    final StoredMerklePatriciaTrie&lt;Bytes32, Bytes&gt; storageTrie =</span>
+        new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="nc" id="L269">            (location, hash) -&gt; worldStateKeyValueStorage.getAccountStateTrieNode(hash),</span>
+<span class="nc" id="L270">            account.getStorageRoot(),</span>
+<span class="nc" id="L271">            Function.identity(),</span>
+<span class="nc" id="L272">            Function.identity());</span>
+<span class="nc" id="L273">    storageTrie.visitLeafs(</span>
+        (storageKey, storageValue) -&gt;
+<span class="nc" id="L275">            visitAccountStorage(storageKey, storageValue, accountFileWriter));</span>
+
+    try {
+<span class="nc" id="L278">      accountFileWriter.writeBytes(ACCOUNT_END_MARKER.toArrayUnsafe());</span>
+<span class="nc" id="L279">    } catch (final IOException ioe) {</span>
+<span class="nc" id="L280">      LOG.error(&quot;Failure writing backup&quot;, ioe);</span>
+<span class="nc" id="L281">      return State.STOP;</span>
+<span class="nc" id="L282">    }</span>
+
+<span class="nc" id="L284">    backupStatus.accountCount.incrementAndGet();</span>
+<span class="nc" id="L285">    return State.CONTINUE;</span>
+  }
+
+  private void backupChainData() throws IOException {
+<span class="nc" id="L289">    try (final RollingFileWriter headerWriter =</span>
+            new RollingFileWriter(this::headerFileName, backupStatus.compressed);
+<span class="nc" id="L291">        final RollingFileWriter bodyWriter =</span>
+            new RollingFileWriter(this::bodyFileName, backupStatus.compressed);
+<span class="nc" id="L293">        final RollingFileWriter receiptsWriter =</span>
+            new RollingFileWriter(this::receiptFileName, backupStatus.compressed)) {
+<span class="nc bnc" id="L295" title="All 2 branches missed.">      for (long blockNumber = 0; blockNumber &lt;= backupStatus.targetBlock; blockNumber++) {</span>
+<span class="nc" id="L296">        final Optional&lt;Block&gt; block = blockchain.getBlockByNumber(blockNumber);</span>
+<span class="nc" id="L297">        checkState(</span>
+<span class="nc" id="L298">            block.isPresent(), &quot;Block data for %s was not found in the archive&quot;, blockNumber);</span>
+
+<span class="nc" id="L300">        final Optional&lt;List&lt;TransactionReceipt&gt;&gt; receipts =</span>
+<span class="nc" id="L301">            blockchain.getTxReceipts(block.get().getHash());</span>
+<span class="nc" id="L302">        checkState(</span>
+<span class="nc" id="L303">            receipts.isPresent(), &quot;Receipts for %s was not found in the archive&quot;, blockNumber);</span>
+
+<span class="nc" id="L305">        final BytesValueRLPOutput headerOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L306">        block.get().getHeader().writeTo(headerOutput);</span>
+<span class="nc" id="L307">        headerWriter.writeBytes(headerOutput.encoded().toArrayUnsafe());</span>
+
+<span class="nc" id="L309">        final BytesValueRLPOutput bodyOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L310">        block.get().getBody().writeWrappedBodyTo(bodyOutput);</span>
+<span class="nc" id="L311">        bodyWriter.writeBytes(bodyOutput.encoded().toArrayUnsafe());</span>
+
+<span class="nc" id="L313">        final BytesValueRLPOutput receiptsOutput = new BytesValueRLPOutput();</span>
+<span class="nc" id="L314">        receiptsOutput.writeList(receipts.get(), TransactionReceipt::writeToWithRevertReason);</span>
+<span class="nc" id="L315">        receiptsWriter.writeBytes(receiptsOutput.encoded().toArrayUnsafe());</span>
+
+<span class="nc" id="L317">        backupStatus.storedBlock = blockNumber;</span>
+      }
+    }
+<span class="nc" id="L320">  }</span>
+
+  private TrieIterator.State visitAccountStorage(
+      final Bytes32 nodeKey, final Node&lt;Bytes&gt; node, final RollingFileWriter accountFileWriter) {
+<span class="nc" id="L324">    backupStatus.currentStorage = nodeKey;</span>
+
+<span class="nc" id="L326">    final BytesValueRLPOutput output = new BytesValueRLPOutput();</span>
+<span class="nc" id="L327">    output.startList();</span>
+<span class="nc" id="L328">    output.writeBytes(nodeKey);</span>
+<span class="nc" id="L329">    output.writeBytes(node.getValue().orElse(Bytes.EMPTY));</span>
+<span class="nc" id="L330">    output.endList();</span>
+
+    try {
+<span class="nc" id="L333">      accountFileWriter.writeBytes(output.encoded().toArrayUnsafe());</span>
+<span class="nc" id="L334">    } catch (final IOException ioe) {</span>
+<span class="nc" id="L335">      LOG.error(&quot;Failure writing backup&quot;, ioe);</span>
+<span class="nc" id="L336">      return State.STOP;</span>
+<span class="nc" id="L337">    }</span>
+
+<span class="nc" id="L339">    backupStatus.storageCount.incrementAndGet();</span>
+<span class="nc" id="L340">    return State.CONTINUE;</span>
+  }
+
+<span class="nc" id="L343">  public static final class BackupStatus {</span>
+    long targetBlock;
+    long storedBlock;
+    boolean compressed;
+    Bytes32 currentAccount;
+    Bytes32 currentStorage;
+<span class="nc" id="L349">    AtomicLong accountCount = new AtomicLong(0);</span>
+<span class="nc" id="L350">    AtomicLong codeSize = new AtomicLong(0);</span>
+<span class="nc" id="L351">    AtomicLong storageCount = new AtomicLong(0);</span>
+    boolean requestAccepted;
+
+    @JsonGetter
+    public String getTargetBlock() {
+<span class="nc" id="L356">      return &quot;0x&quot; + Long.toHexString(targetBlock);</span>
+    }
+
+    @JsonGetter
+    public String getStoredBlock() {
+<span class="nc" id="L361">      return &quot;0x&quot; + Long.toHexString(storedBlock);</span>
+    }
+
+    @JsonGetter
+    public String getCurrentAccount() {
+<span class="nc" id="L366">      return currentAccount.toHexString();</span>
+    }
+
+    @JsonGetter
+    public String getCurrentStorage() {
+<span class="nc" id="L371">      return currentStorage.toHexString();</span>
+    }
+
+    @JsonGetter
+    public boolean isBackingUp() {
+<span class="nc bnc" id="L376" title="All 2 branches missed.">      return currentAccount != null;</span>
+    }
+
+    @JsonIgnore
+    public long getAccountCount() {
+<span class="nc" id="L381">      return accountCount.get();</span>
+    }
+
+    @JsonIgnore
+    public long getCodeSize() {
+<span class="nc" id="L386">      return codeSize.get();</span>
+    }
+
+    @JsonIgnore
+    public long getStorageCount() {
+<span class="nc" id="L391">      return storageCount.get();</span>
+    }
+
+    @JsonIgnore
+    public Bytes getCurrentAccountBytes() {
+<span class="nc" id="L396">      return currentAccount;</span>
+    }
+
+    @JsonIgnore
+    public long getStoredBlockNum() {
+<span class="nc" id="L401">      return storedBlock;</span>
+    }
+
+    @JsonIgnore
+    public long getTargetBlockNum() {
+<span class="nc" id="L406">      return targetBlock;</span>
+    }
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>
