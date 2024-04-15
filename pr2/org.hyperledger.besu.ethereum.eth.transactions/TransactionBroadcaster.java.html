@@ -30,169 +30,194 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.stream.Collectors;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TransactionBroadcaster implements TransactionBatchAddedListener {
-<span class="fc" id="L39">  private static final Logger LOG = LoggerFactory.getLogger(TransactionBroadcaster.class);</span>
+<span class="fc" id="L41">  private static final Logger LOG = LoggerFactory.getLogger(TransactionBroadcaster.class);</span>
 
-<span class="fc" id="L41">  private static final EnumSet&lt;TransactionType&gt; ANNOUNCE_HASH_ONLY_TX_TYPES = EnumSet.of(BLOB);</span>
+<span class="fc" id="L43">  private static final EnumSet&lt;TransactionType&gt; ANNOUNCE_HASH_ONLY_TX_TYPES = EnumSet.of(BLOB);</span>
 
-<span class="fc" id="L43">  private static final Boolean HASH_ONLY_BROADCAST = Boolean.TRUE;</span>
-<span class="fc" id="L44">  private static final Boolean FULL_BROADCAST = Boolean.FALSE;</span>
+<span class="fc" id="L45">  private static final Boolean HASH_ONLY_BROADCAST = Boolean.TRUE;</span>
+<span class="fc" id="L46">  private static final Boolean FULL_BROADCAST = Boolean.FALSE;</span>
 
   private final PeerTransactionTracker transactionTracker;
   private final TransactionsMessageSender transactionsMessageSender;
   private final NewPooledTransactionHashesMessageSender newPooledTransactionHashesMessageSender;
   private final EthContext ethContext;
+  private final Random random;
 
   public TransactionBroadcaster(
       final EthContext ethContext,
       final PeerTransactionTracker transactionTracker,
       final TransactionsMessageSender transactionsMessageSender,
-<span class="fc" id="L55">      final NewPooledTransactionHashesMessageSender newPooledTransactionHashesMessageSender) {</span>
-<span class="fc" id="L56">    this.transactionTracker = transactionTracker;</span>
-<span class="fc" id="L57">    this.transactionsMessageSender = transactionsMessageSender;</span>
-<span class="fc" id="L58">    this.newPooledTransactionHashesMessageSender = newPooledTransactionHashesMessageSender;</span>
-<span class="fc" id="L59">    this.ethContext = ethContext;</span>
-<span class="fc" id="L60">  }</span>
+      final NewPooledTransactionHashesMessageSender newPooledTransactionHashesMessageSender) {
+<span class="fc" id="L59">    this(</span>
+        ethContext,
+        transactionTracker,
+        transactionsMessageSender,
+        newPooledTransactionHashesMessageSender,
+        null);
+<span class="fc" id="L65">  }</span>
+
+  @VisibleForTesting
+  protected TransactionBroadcaster(
+      final EthContext ethContext,
+      final PeerTransactionTracker transactionTracker,
+      final TransactionsMessageSender transactionsMessageSender,
+      final NewPooledTransactionHashesMessageSender newPooledTransactionHashesMessageSender,
+<span class="fc" id="L73">      final Long seed) {</span>
+<span class="fc" id="L74">    this.transactionTracker = transactionTracker;</span>
+<span class="fc" id="L75">    this.transactionsMessageSender = transactionsMessageSender;</span>
+<span class="fc" id="L76">    this.newPooledTransactionHashesMessageSender = newPooledTransactionHashesMessageSender;</span>
+<span class="fc" id="L77">    this.ethContext = ethContext;</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    this.random = seed != null ? new Random(seed) : new Random();</span>
+<span class="fc" id="L79">  }</span>
 
   public void relayTransactionPoolTo(
       final EthPeer peer, final Collection&lt;PendingTransaction&gt; pendingTransactions) {
-<span class="fc bfc" id="L64" title="All 2 branches covered.">    if (!pendingTransactions.isEmpty()) {</span>
-<span class="fc bfc" id="L65" title="All 2 branches covered.">      if (peer.hasSupportForMessage(EthPV65.NEW_POOLED_TRANSACTION_HASHES)) {</span>
-<span class="fc" id="L66">        sendTransactionHashes(toTransactionList(pendingTransactions), List.of(peer));</span>
+<span class="fc bfc" id="L83" title="All 2 branches covered.">    if (!pendingTransactions.isEmpty()) {</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">      if (peer.hasSupportForMessage(EthPV65.NEW_POOLED_TRANSACTION_HASHES)) {</span>
+<span class="fc" id="L85">        sendTransactionHashes(toTransactionList(pendingTransactions), List.of(peer));</span>
       } else {
-<span class="fc" id="L68">        sendFullTransactions(toTransactionList(pendingTransactions), List.of(peer));</span>
+        // we need to exclude txs that support hash only broadcasting
+<span class="fc" id="L88">        final var fullBroadcastTxs =</span>
+<span class="fc" id="L89">            pendingTransactions.stream()</span>
+<span class="fc" id="L90">                .map(PendingTransaction::getTransaction)</span>
+<span class="pc bpc" id="L91" title="1 of 2 branches missed.">                .filter(tx -&gt; !ANNOUNCE_HASH_ONLY_TX_TYPES.contains(tx.getType()))</span>
+<span class="fc" id="L92">                .toList();</span>
+<span class="fc" id="L93">        sendFullTransactions(fullBroadcastTxs, List.of(peer));</span>
       }
     }
-<span class="fc" id="L71">  }</span>
+<span class="fc" id="L96">  }</span>
 
   @Override
   public void onTransactionsAdded(final Collection&lt;Transaction&gt; transactions) {
-<span class="fc" id="L75">    final int currPeerCount = ethContext.getEthPeers().peerCount();</span>
-<span class="fc bfc" id="L76" title="All 2 branches covered.">    if (currPeerCount == 0) {</span>
-<span class="fc" id="L77">      return;</span>
+<span class="fc" id="L100">    final int currPeerCount = ethContext.getEthPeers().peerCount();</span>
+<span class="fc bfc" id="L101" title="All 2 branches covered.">    if (currPeerCount == 0) {</span>
+<span class="fc" id="L102">      return;</span>
     }
 
-<span class="fc" id="L80">    final int numPeersToSendFullTransactions = (int) Math.ceil(Math.sqrt(currPeerCount));</span>
+<span class="fc" id="L105">    final int numPeersToSendFullTransactions = (int) Math.round(Math.sqrt(currPeerCount));</span>
 
-<span class="fc" id="L82">    final Map&lt;Boolean, List&lt;Transaction&gt;&gt; transactionByBroadcastMode =</span>
-<span class="fc" id="L83">        transactions.stream()</span>
-<span class="fc" id="L84">            .collect(</span>
-<span class="fc" id="L85">                Collectors.partitioningBy(</span>
-<span class="fc" id="L86">                    tx -&gt; ANNOUNCE_HASH_ONLY_TX_TYPES.contains(tx.getType())));</span>
+<span class="fc" id="L107">    final Map&lt;Boolean, List&lt;Transaction&gt;&gt; transactionByBroadcastMode =</span>
+<span class="fc" id="L108">        transactions.stream()</span>
+<span class="fc" id="L109">            .collect(</span>
+<span class="fc" id="L110">                Collectors.partitioningBy(</span>
+<span class="fc" id="L111">                    tx -&gt; ANNOUNCE_HASH_ONLY_TX_TYPES.contains(tx.getType())));</span>
 
-<span class="fc" id="L88">    final List&lt;EthPeer&gt; sendOnlyFullTransactionPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
-<span class="fc" id="L89">    final List&lt;EthPeer&gt; sendOnlyHashPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
-<span class="fc" id="L90">    final List&lt;EthPeer&gt; sendMixedPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
+<span class="fc" id="L113">    final List&lt;EthPeer&gt; sendOnlyFullTransactionPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
+<span class="fc" id="L114">    final List&lt;EthPeer&gt; sendOnlyHashPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
+<span class="fc" id="L115">    final List&lt;EthPeer&gt; sendMixedPeers = new ArrayList&lt;&gt;(currPeerCount);</span>
 
-<span class="fc" id="L92">    ethContext</span>
-<span class="fc" id="L93">        .getEthPeers()</span>
-<span class="fc" id="L94">        .streamAvailablePeers()</span>
-<span class="fc" id="L95">        .forEach(</span>
+<span class="fc" id="L117">    ethContext</span>
+<span class="fc" id="L118">        .getEthPeers()</span>
+<span class="fc" id="L119">        .streamAvailablePeers()</span>
+<span class="fc" id="L120">        .forEach(</span>
             peer -&gt; {
-<span class="fc bfc" id="L97" title="All 2 branches covered.">              if (peer.hasSupportForMessage(EthPV65.NEW_POOLED_TRANSACTION_HASHES)) {</span>
-<span class="fc" id="L98">                sendOnlyHashPeers.add(peer);</span>
+<span class="fc bfc" id="L122" title="All 2 branches covered.">              if (peer.hasSupportForMessage(EthPV65.NEW_POOLED_TRANSACTION_HASHES)) {</span>
+<span class="fc" id="L123">                sendOnlyHashPeers.add(peer);</span>
               } else {
-<span class="fc" id="L100">                sendOnlyFullTransactionPeers.add(peer);</span>
+<span class="fc" id="L125">                sendOnlyFullTransactionPeers.add(peer);</span>
               }
-<span class="fc" id="L102">            });</span>
+<span class="fc" id="L127">            });</span>
 
-<span class="fc bfc" id="L104" title="All 2 branches covered.">    if (sendOnlyFullTransactionPeers.size() &lt; numPeersToSendFullTransactions) {</span>
-<span class="fc" id="L105">      final int delta =</span>
-<span class="fc" id="L106">          Math.min(</span>
-<span class="fc" id="L107">              numPeersToSendFullTransactions - sendOnlyFullTransactionPeers.size(),</span>
-<span class="fc" id="L108">              sendOnlyHashPeers.size());</span>
+<span class="fc bfc" id="L129" title="All 2 branches covered.">    if (sendOnlyFullTransactionPeers.size() &lt; numPeersToSendFullTransactions) {</span>
+<span class="fc" id="L130">      final int delta =</span>
+<span class="fc" id="L131">          Math.min(</span>
+<span class="fc" id="L132">              numPeersToSendFullTransactions - sendOnlyFullTransactionPeers.size(),</span>
+<span class="fc" id="L133">              sendOnlyHashPeers.size());</span>
 
-<span class="fc" id="L110">      Collections.shuffle(sendOnlyHashPeers);</span>
+<span class="fc" id="L135">      Collections.shuffle(sendOnlyHashPeers, random);</span>
 
       // move peers from the mixed list to reach the required size for full transaction peers
-<span class="fc" id="L113">      movePeersBetweenLists(sendOnlyHashPeers, sendMixedPeers, delta);</span>
+<span class="fc" id="L138">      movePeersBetweenLists(sendOnlyHashPeers, sendMixedPeers, delta);</span>
     }
 
-<span class="fc" id="L116">    LOG.atTrace()</span>
-<span class="fc" id="L117">        .setMessage(</span>
+<span class="fc" id="L141">    LOG.atTrace()</span>
+<span class="fc" id="L142">        .setMessage(</span>
             &quot;Sending full transactions to {} peers, transaction hashes only to {} peers and mixed to {} peers.&quot;
                 + &quot; Peers w/o eth/65 {}, peers with eth/65 {}&quot;)
-<span class="fc" id="L120">        .addArgument(sendOnlyFullTransactionPeers::size)</span>
-<span class="fc" id="L121">        .addArgument(sendOnlyHashPeers::size)</span>
-<span class="fc" id="L122">        .addArgument(sendMixedPeers::size)</span>
-<span class="fc" id="L123">        .addArgument(sendOnlyFullTransactionPeers)</span>
-<span class="pc" id="L124">        .addArgument(() -&gt; sendOnlyHashPeers.toString() + sendMixedPeers.toString())</span>
-<span class="fc" id="L125">        .log();</span>
+<span class="fc" id="L145">        .addArgument(sendOnlyFullTransactionPeers::size)</span>
+<span class="fc" id="L146">        .addArgument(sendOnlyHashPeers::size)</span>
+<span class="fc" id="L147">        .addArgument(sendMixedPeers::size)</span>
+<span class="fc" id="L148">        .addArgument(sendOnlyFullTransactionPeers)</span>
+<span class="pc" id="L149">        .addArgument(() -&gt; sendOnlyHashPeers.toString() + sendMixedPeers)</span>
+<span class="fc" id="L150">        .log();</span>
 
-<span class="fc" id="L127">    sendToFullTransactionsPeers(</span>
-<span class="fc" id="L128">        transactionByBroadcastMode.get(FULL_BROADCAST), sendOnlyFullTransactionPeers);</span>
+<span class="fc" id="L152">    sendToFullTransactionsPeers(</span>
+<span class="fc" id="L153">        transactionByBroadcastMode.get(FULL_BROADCAST), sendOnlyFullTransactionPeers);</span>
 
-<span class="fc" id="L130">    sendToOnlyHashPeers(transactionByBroadcastMode, sendOnlyHashPeers);</span>
+<span class="fc" id="L155">    sendToOnlyHashPeers(transactionByBroadcastMode, sendOnlyHashPeers);</span>
 
-<span class="fc" id="L132">    sendToMixedPeers(transactionByBroadcastMode, sendMixedPeers);</span>
-<span class="fc" id="L133">  }</span>
+<span class="fc" id="L157">    sendToMixedPeers(transactionByBroadcastMode, sendMixedPeers);</span>
+<span class="fc" id="L158">  }</span>
 
   private void sendToFullTransactionsPeers(
       final List&lt;Transaction&gt; fullBroadcastTransactions, final List&lt;EthPeer&gt; fullTransactionPeers) {
-<span class="fc" id="L137">    sendFullTransactions(fullBroadcastTransactions, fullTransactionPeers);</span>
-<span class="fc" id="L138">  }</span>
+<span class="fc" id="L162">    sendFullTransactions(fullBroadcastTransactions, fullTransactionPeers);</span>
+<span class="fc" id="L163">  }</span>
 
   private void sendToOnlyHashPeers(
       final Map&lt;Boolean, List&lt;Transaction&gt;&gt; txsByHashOnlyBroadcast,
       final List&lt;EthPeer&gt; hashOnlyPeers) {
-<span class="fc" id="L143">    final List&lt;Transaction&gt; allTransactions =</span>
-<span class="fc" id="L144">        txsByHashOnlyBroadcast.values().stream().flatMap(List::stream).collect(Collectors.toList());</span>
+<span class="fc" id="L168">    final List&lt;Transaction&gt; allTransactions =</span>
+<span class="fc" id="L169">        txsByHashOnlyBroadcast.values().stream().flatMap(List::stream).toList();</span>
 
-<span class="fc" id="L146">    sendTransactionHashes(allTransactions, hashOnlyPeers);</span>
-<span class="fc" id="L147">  }</span>
+<span class="fc" id="L171">    sendTransactionHashes(allTransactions, hashOnlyPeers);</span>
+<span class="fc" id="L172">  }</span>
 
   private void sendToMixedPeers(
       final Map&lt;Boolean, List&lt;Transaction&gt;&gt; txsByHashOnlyBroadcast,
       final List&lt;EthPeer&gt; mixedPeers) {
-<span class="fc" id="L152">    sendFullTransactions(txsByHashOnlyBroadcast.get(FULL_BROADCAST), mixedPeers);</span>
-<span class="fc" id="L153">    sendTransactionHashes(txsByHashOnlyBroadcast.get(HASH_ONLY_BROADCAST), mixedPeers);</span>
-<span class="fc" id="L154">  }</span>
+<span class="fc" id="L177">    sendFullTransactions(txsByHashOnlyBroadcast.get(FULL_BROADCAST), mixedPeers);</span>
+<span class="fc" id="L178">    sendTransactionHashes(txsByHashOnlyBroadcast.get(HASH_ONLY_BROADCAST), mixedPeers);</span>
+<span class="fc" id="L179">  }</span>
 
   private void sendFullTransactions(
       final List&lt;Transaction&gt; transactions, final List&lt;EthPeer&gt; fullTransactionPeers) {
-<span class="fc bfc" id="L158" title="All 2 branches covered.">    if (!transactions.isEmpty()) {</span>
-<span class="fc" id="L159">      fullTransactionPeers.forEach(</span>
+<span class="fc bfc" id="L183" title="All 2 branches covered.">    if (!transactions.isEmpty()) {</span>
+<span class="fc" id="L184">      fullTransactionPeers.forEach(</span>
           peer -&gt; {
-<span class="fc" id="L161">            transactions.forEach(</span>
-<span class="fc" id="L162">                transaction -&gt; transactionTracker.addToPeerSendQueue(peer, transaction));</span>
-<span class="fc" id="L163">            ethContext</span>
-<span class="fc" id="L164">                .getScheduler()</span>
-<span class="fc" id="L165">                .scheduleSyncWorkerTask(</span>
-<span class="fc" id="L166">                    () -&gt; transactionsMessageSender.sendTransactionsToPeer(peer));</span>
-<span class="fc" id="L167">          });</span>
+<span class="fc" id="L186">            transactions.forEach(</span>
+<span class="fc" id="L187">                transaction -&gt; transactionTracker.addToPeerSendQueue(peer, transaction));</span>
+<span class="fc" id="L188">            ethContext</span>
+<span class="fc" id="L189">                .getScheduler()</span>
+<span class="fc" id="L190">                .scheduleSyncWorkerTask(</span>
+<span class="fc" id="L191">                    () -&gt; transactionsMessageSender.sendTransactionsToPeer(peer));</span>
+<span class="fc" id="L192">          });</span>
     }
-<span class="fc" id="L169">  }</span>
+<span class="fc" id="L194">  }</span>
 
   private void sendTransactionHashes(
       final List&lt;Transaction&gt; transactions, final List&lt;EthPeer&gt; transactionHashPeers) {
-<span class="fc bfc" id="L173" title="All 2 branches covered.">    if (!transactions.isEmpty()) {</span>
-<span class="fc" id="L174">      transactionHashPeers.stream()</span>
-<span class="fc" id="L175">          .forEach(</span>
+<span class="fc bfc" id="L198" title="All 2 branches covered.">    if (!transactions.isEmpty()) {</span>
+<span class="fc" id="L199">      transactionHashPeers.stream()</span>
+<span class="fc" id="L200">          .forEach(</span>
               peer -&gt; {
-<span class="fc" id="L177">                transactions.forEach(</span>
-<span class="fc" id="L178">                    transaction -&gt; transactionTracker.addToPeerSendQueue(peer, transaction));</span>
-<span class="fc" id="L179">                ethContext</span>
-<span class="fc" id="L180">                    .getScheduler()</span>
-<span class="fc" id="L181">                    .scheduleSyncWorkerTask(</span>
+<span class="fc" id="L202">                transactions.forEach(</span>
+<span class="fc" id="L203">                    transaction -&gt; transactionTracker.addToPeerHashSendQueue(peer, transaction));</span>
+<span class="fc" id="L204">                ethContext</span>
+<span class="fc" id="L205">                    .getScheduler()</span>
+<span class="fc" id="L206">                    .scheduleSyncWorkerTask(</span>
                         () -&gt;
-<span class="fc" id="L183">                            newPooledTransactionHashesMessageSender.sendTransactionHashesToPeer(</span>
+<span class="fc" id="L208">                            newPooledTransactionHashesMessageSender.sendTransactionHashesToPeer(</span>
                                 peer));
-<span class="fc" id="L185">              });</span>
+<span class="fc" id="L210">              });</span>
     }
-<span class="fc" id="L187">  }</span>
+<span class="fc" id="L212">  }</span>
 
   private void movePeersBetweenLists(
       final List&lt;EthPeer&gt; sourceList, final List&lt;EthPeer&gt; destinationList, final int num) {
 
-<span class="fc" id="L192">    final int stopIndex = sourceList.size() - num;</span>
-<span class="fc bfc" id="L193" title="All 2 branches covered.">    for (int i = sourceList.size() - 1; i &gt;= stopIndex; i--) {</span>
-<span class="fc" id="L194">      destinationList.add(sourceList.remove(i));</span>
+<span class="fc" id="L217">    final int stopIndex = sourceList.size() - num;</span>
+<span class="fc bfc" id="L218" title="All 2 branches covered.">    for (int i = sourceList.size() - 1; i &gt;= stopIndex; i--) {</span>
+<span class="fc" id="L219">      destinationList.add(sourceList.remove(i));</span>
     }
-<span class="fc" id="L196">  }</span>
+<span class="fc" id="L221">  }</span>
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -32,6 +32,7 @@ import org.hyperledger.besu.ethereum.eth.transactions.TransactionAddedResult;
 import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolConfiguration;
 import org.hyperledger.besu.ethereum.eth.transactions.TransactionPoolReplacementHandler;
 import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
 import org.hyperledger.besu.evm.account.Account;
 import org.hyperledger.besu.evm.account.AccountState;
 import org.hyperledger.besu.metrics.BesuMetricCategory;
@@ -61,6 +62,8 @@ import java.util.stream.StreamSupport;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.Marker;
+import org.slf4j.MarkerFactory;
 
 /**
  * Holds the current set of pending transactions with the ability to iterate them based on priority
@@ -69,23 +72,24 @@ import org.slf4j.LoggerFactory;
  * &lt;p&gt;This class is safe for use across multiple threads.
  */
 public abstract class AbstractPendingTransactionsSorter implements PendingTransactions {
-<span class="fc" id="L72">  private static final Logger LOG =</span>
-<span class="fc" id="L73">      LoggerFactory.getLogger(AbstractPendingTransactionsSorter.class);</span>
+<span class="fc" id="L75">  private static final Logger LOG =</span>
+<span class="fc" id="L76">      LoggerFactory.getLogger(AbstractPendingTransactionsSorter.class);</span>
+<span class="fc" id="L77">  private static final Marker INVALID_TX_REMOVED = MarkerFactory.getMarker(&quot;INVALID_TX_REMOVED&quot;);</span>
 
   protected final Clock clock;
   protected final TransactionPoolConfiguration poolConfig;
 
-<span class="fc" id="L78">  protected final Object lock = new Object();</span>
+<span class="fc" id="L82">  protected final Object lock = new Object();</span>
   protected final Map&lt;Hash, PendingTransaction&gt; pendingTransactions;
 
-<span class="fc" id="L81">  protected final Map&lt;Address, PendingTransactionsForSender&gt; transactionsBySender =</span>
+<span class="fc" id="L85">  protected final Map&lt;Address, PendingTransactionsForSender&gt; transactionsBySender =</span>
       new ConcurrentHashMap&lt;&gt;();
 
-<span class="fc" id="L84">  protected final Subscribers&lt;PendingTransactionAddedListener&gt; pendingTransactionSubscribers =</span>
-<span class="fc" id="L85">      Subscribers.create();</span>
+<span class="fc" id="L88">  protected final Subscribers&lt;PendingTransactionAddedListener&gt; pendingTransactionSubscribers =</span>
+<span class="fc" id="L89">      Subscribers.create();</span>
 
-<span class="fc" id="L87">  protected final Subscribers&lt;PendingTransactionDroppedListener&gt; transactionDroppedListeners =</span>
-<span class="fc" id="L88">      Subscribers.create();</span>
+<span class="fc" id="L91">  protected final Subscribers&lt;PendingTransactionDroppedListener&gt; transactionDroppedListeners =</span>
+<span class="fc" id="L92">      Subscribers.create();</span>
 
   protected final LabelledMetric&lt;Counter&gt; transactionRemovedCounter;
   protected final Counter localTransactionAddedCounter;
@@ -100,101 +104,102 @@ public abstract class AbstractPendingTransactionsSorter implements PendingTransa
       final TransactionPoolConfiguration poolConfig,
       final Clock clock,
       final MetricsSystem metricsSystem,
-<span class="fc" id="L103">      final Supplier&lt;BlockHeader&gt; chainHeadHeaderSupplier) {</span>
-<span class="fc" id="L104">    this.poolConfig = poolConfig;</span>
-<span class="fc" id="L105">    this.pendingTransactions = new ConcurrentHashMap&lt;&gt;(poolConfig.getTxPoolMaxSize());</span>
-<span class="fc" id="L106">    this.clock = clock;</span>
-<span class="fc" id="L107">    this.chainHeadHeaderSupplier = chainHeadHeaderSupplier;</span>
-<span class="fc" id="L108">    this.transactionReplacementHandler =</span>
-<span class="fc" id="L109">        new TransactionPoolReplacementHandler(poolConfig.getPriceBump());</span>
-<span class="fc" id="L110">    final LabelledMetric&lt;Counter&gt; transactionAddedCounter =</span>
-<span class="fc" id="L111">        metricsSystem.createLabelledCounter(</span>
+<span class="fc" id="L107">      final Supplier&lt;BlockHeader&gt; chainHeadHeaderSupplier) {</span>
+<span class="fc" id="L108">    this.poolConfig = poolConfig;</span>
+<span class="fc" id="L109">    this.pendingTransactions = new ConcurrentHashMap&lt;&gt;(poolConfig.getTxPoolMaxSize());</span>
+<span class="fc" id="L110">    this.clock = clock;</span>
+<span class="fc" id="L111">    this.chainHeadHeaderSupplier = chainHeadHeaderSupplier;</span>
+<span class="fc" id="L112">    this.transactionReplacementHandler =</span>
+        new TransactionPoolReplacementHandler(
+<span class="fc" id="L114">            poolConfig.getPriceBump(), poolConfig.getBlobPriceBump());</span>
+<span class="fc" id="L115">    final LabelledMetric&lt;Counter&gt; transactionAddedCounter =</span>
+<span class="fc" id="L116">        metricsSystem.createLabelledCounter(</span>
             BesuMetricCategory.TRANSACTION_POOL,
             &quot;transactions_added_total&quot;,
             &quot;Count of transactions added to the transaction pool&quot;,
             &quot;source&quot;);
-<span class="fc" id="L116">    localTransactionAddedCounter = transactionAddedCounter.labels(&quot;local&quot;);</span>
-<span class="fc" id="L117">    remoteTransactionAddedCounter = transactionAddedCounter.labels(&quot;remote&quot;);</span>
+<span class="fc" id="L121">    localTransactionAddedCounter = transactionAddedCounter.labels(&quot;local&quot;);</span>
+<span class="fc" id="L122">    remoteTransactionAddedCounter = transactionAddedCounter.labels(&quot;remote&quot;);</span>
 
-<span class="fc" id="L119">    transactionRemovedCounter =</span>
-<span class="fc" id="L120">        metricsSystem.createLabelledCounter(</span>
+<span class="fc" id="L124">    transactionRemovedCounter =</span>
+<span class="fc" id="L125">        metricsSystem.createLabelledCounter(</span>
             BesuMetricCategory.TRANSACTION_POOL,
             &quot;transactions_removed_total&quot;,
             &quot;Count of transactions removed from the transaction pool&quot;,
             &quot;source&quot;,
             &quot;operation&quot;);
 
-<span class="fc" id="L127">    metricsSystem.createIntegerGauge(</span>
+<span class="fc" id="L132">    metricsSystem.createIntegerGauge(</span>
         BesuMetricCategory.TRANSACTION_POOL,
         &quot;transactions&quot;,
         &quot;Current size of the transaction pool&quot;,
-<span class="fc" id="L131">        pendingTransactions::size);</span>
+<span class="fc" id="L136">        pendingTransactions::size);</span>
 
-<span class="fc" id="L133">    this.blobCache = new BlobCache();</span>
-<span class="fc" id="L134">  }</span>
+<span class="fc" id="L138">    this.blobCache = new BlobCache();</span>
+<span class="fc" id="L139">  }</span>
 
   @Override
   public void reset() {
-<span class="nc" id="L138">    pendingTransactions.clear();</span>
-<span class="nc" id="L139">    transactionsBySender.clear();</span>
-<span class="nc" id="L140">  }</span>
+<span class="nc" id="L143">    pendingTransactions.clear();</span>
+<span class="nc" id="L144">    transactionsBySender.clear();</span>
+<span class="nc" id="L145">  }</span>
 
   @Override
   public void evictOldTransactions() {
-<span class="fc" id="L144">    final long removeTransactionsBefore =</span>
+<span class="fc" id="L149">    final long removeTransactionsBefore =</span>
         clock
-<span class="fc" id="L146">            .instant()</span>
-<span class="fc" id="L147">            .minus(poolConfig.getPendingTxRetentionPeriod(), ChronoUnit.HOURS)</span>
-<span class="fc" id="L148">            .toEpochMilli();</span>
+<span class="fc" id="L151">            .instant()</span>
+<span class="fc" id="L152">            .minus(poolConfig.getPendingTxRetentionPeriod(), ChronoUnit.HOURS)</span>
+<span class="fc" id="L153">            .toEpochMilli();</span>
 
-<span class="fc" id="L150">    pendingTransactions.values().stream()</span>
-<span class="fc bfc" id="L151" title="All 2 branches covered.">        .filter(transaction -&gt; transaction.getAddedAt() &lt; removeTransactionsBefore)</span>
-<span class="fc" id="L152">        .forEach(</span>
+<span class="fc" id="L155">    pendingTransactions.values().stream()</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">        .filter(transaction -&gt; transaction.getAddedAt() &lt; removeTransactionsBefore)</span>
+<span class="fc" id="L157">        .forEach(</span>
             transactionInfo -&gt; {
-<span class="fc" id="L154">              LOG.atTrace()</span>
-<span class="fc" id="L155">                  .setMessage(&quot;Evicted {} due to age&quot;)</span>
-<span class="fc" id="L156">                  .addArgument(transactionInfo::toTraceLog)</span>
-<span class="fc" id="L157">                  .log();</span>
-<span class="fc" id="L158">              removeTransaction(transactionInfo.getTransaction());</span>
-<span class="fc" id="L159">            });</span>
-<span class="fc" id="L160">  }</span>
+<span class="fc" id="L159">              LOG.atTrace()</span>
+<span class="fc" id="L160">                  .setMessage(&quot;Evicted {} due to age&quot;)</span>
+<span class="fc" id="L161">                  .addArgument(transactionInfo::toTraceLog)</span>
+<span class="fc" id="L162">                  .log();</span>
+<span class="fc" id="L163">              removeTransaction(transactionInfo.getTransaction());</span>
+<span class="fc" id="L164">            });</span>
+<span class="fc" id="L165">  }</span>
 
   @Override
   public List&lt;Transaction&gt; getLocalTransactions() {
-<span class="fc" id="L164">    return pendingTransactions.values().stream()</span>
-<span class="fc" id="L165">        .filter(PendingTransaction::isReceivedFromLocalSource)</span>
-<span class="fc" id="L166">        .map(PendingTransaction::getTransaction)</span>
-<span class="fc" id="L167">        .collect(Collectors.toList());</span>
+<span class="fc" id="L169">    return pendingTransactions.values().stream()</span>
+<span class="fc" id="L170">        .filter(PendingTransaction::isReceivedFromLocalSource)</span>
+<span class="fc" id="L171">        .map(PendingTransaction::getTransaction)</span>
+<span class="fc" id="L172">        .collect(Collectors.toList());</span>
   }
 
   @Override
   public List&lt;Transaction&gt; getPriorityTransactions() {
-<span class="fc" id="L172">    return pendingTransactions.values().stream()</span>
-<span class="fc" id="L173">        .filter(PendingTransaction::hasPriority)</span>
-<span class="fc" id="L174">        .map(PendingTransaction::getTransaction)</span>
-<span class="fc" id="L175">        .collect(Collectors.toList());</span>
+<span class="fc" id="L177">    return pendingTransactions.values().stream()</span>
+<span class="fc" id="L178">        .filter(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L179">        .map(PendingTransaction::getTransaction)</span>
+<span class="fc" id="L180">        .collect(Collectors.toList());</span>
   }
 
   @Override
   public TransactionAddedResult addTransaction(
       final PendingTransaction transaction, final Optional&lt;Account&gt; maybeSenderAccount) {
 
-<span class="fc" id="L182">    final TransactionAddedResult transactionAddedStatus =</span>
-<span class="fc" id="L183">        internalAddTransaction(transaction, maybeSenderAccount);</span>
-<span class="fc bfc" id="L184" title="All 2 branches covered.">    if (transactionAddedStatus.equals(ADDED)) {</span>
-<span class="fc bfc" id="L185" title="All 2 branches covered.">      if (!transaction.isReceivedFromLocalSource()) {</span>
-<span class="fc" id="L186">        remoteTransactionAddedCounter.inc();</span>
+<span class="fc" id="L187">    final TransactionAddedResult transactionAddedStatus =</span>
+<span class="fc" id="L188">        internalAddTransaction(transaction, maybeSenderAccount);</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">    if (transactionAddedStatus.equals(ADDED)) {</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">      if (!transaction.isReceivedFromLocalSource()) {</span>
+<span class="fc" id="L191">        remoteTransactionAddedCounter.inc();</span>
       } else {
-<span class="fc" id="L188">        localTransactionAddedCounter.inc();</span>
+<span class="fc" id="L193">        localTransactionAddedCounter.inc();</span>
       }
     }
-<span class="fc" id="L191">    return transactionAddedStatus;</span>
+<span class="fc" id="L196">    return transactionAddedStatus;</span>
   }
 
   void removeTransaction(final Transaction transaction) {
-<span class="fc" id="L195">    removeTransaction(transaction, false);</span>
-<span class="fc" id="L196">    notifyTransactionDropped(transaction);</span>
-<span class="fc" id="L197">  }</span>
+<span class="fc" id="L200">    removeTransaction(transaction, false);</span>
+<span class="fc" id="L201">    notifyTransactionDropped(transaction);</span>
+<span class="fc" id="L202">  }</span>
 
   @Override
   public void manageBlockAdded(
@@ -202,24 +207,24 @@ public abstract class AbstractPendingTransactionsSorter implements PendingTransa
       final List&lt;Transaction&gt; confirmedTransactions,
       final List&lt;Transaction&gt; reorgTransactions,
       final FeeMarket feeMarket) {
-<span class="fc" id="L205">    synchronized (lock) {</span>
-<span class="fc" id="L206">      confirmedTransactions.forEach(this::transactionAddedToBlock);</span>
-<span class="fc" id="L207">      manageBlockAdded(blockHeader);</span>
-<span class="fc" id="L208">    }</span>
-<span class="fc" id="L209">  }</span>
+<span class="fc" id="L210">    synchronized (lock) {</span>
+<span class="fc" id="L211">      confirmedTransactions.forEach(this::transactionAddedToBlock);</span>
+<span class="fc" id="L212">      manageBlockAdded(blockHeader);</span>
+<span class="fc" id="L213">    }</span>
+<span class="fc" id="L214">  }</span>
 
   protected abstract void manageBlockAdded(final BlockHeader blockHeader);
 
   public void transactionAddedToBlock(final Transaction transaction) {
-<span class="fc" id="L214">    removeTransaction(transaction, true);</span>
-<span class="fc" id="L215">  }</span>
+<span class="fc" id="L219">    removeTransaction(transaction, true);</span>
+<span class="fc" id="L220">  }</span>
 
   private void incrementTransactionRemovedCounter(
       final boolean receivedFromLocalSource, final boolean addedToBlock) {
-<span class="fc bfc" id="L219" title="All 2 branches covered.">    final String location = receivedFromLocalSource ? &quot;local&quot; : &quot;remote&quot;;</span>
-<span class="fc bfc" id="L220" title="All 2 branches covered.">    final String operation = addedToBlock ? &quot;addedToBlock&quot; : &quot;dropped&quot;;</span>
-<span class="fc" id="L221">    transactionRemovedCounter.labels(location, operation).inc();</span>
-<span class="fc" id="L222">  }</span>
+<span class="fc bfc" id="L224" title="All 2 branches covered.">    final String location = receivedFromLocalSource ? &quot;local&quot; : &quot;remote&quot;;</span>
+<span class="fc bfc" id="L225" title="All 2 branches covered.">    final String operation = addedToBlock ? &quot;addedToBlock&quot; : &quot;dropped&quot;;</span>
+<span class="fc" id="L226">    transactionRemovedCounter.labels(location, operation).inc();</span>
+<span class="fc" id="L227">  }</span>
 
   // There's a small edge case here we could encounter.
   // When we pass an upgrade block that has a new transaction type, we start allowing transactions
@@ -230,181 +235,199 @@ public abstract class AbstractPendingTransactionsSorter implements PendingTransa
   // right now.
   @Override
   public void selectTransactions(final TransactionSelector selector) {
-<span class="fc" id="L233">    synchronized (lock) {</span>
-<span class="fc" id="L234">      final Set&lt;Transaction&gt; transactionsToRemove = new HashSet&lt;&gt;();</span>
-<span class="fc" id="L235">      final Map&lt;Address, AccountTransactionOrder&gt; accountTransactions = new HashMap&lt;&gt;();</span>
-<span class="fc" id="L236">      final Iterator&lt;PendingTransaction&gt; prioritizedTransactions = prioritizedTransactions();</span>
-<span class="fc bfc" id="L237" title="All 2 branches covered.">      while (prioritizedTransactions.hasNext()) {</span>
-<span class="fc" id="L238">        final PendingTransaction highestPriorityPendingTransaction = prioritizedTransactions.next();</span>
-<span class="fc" id="L239">        final AccountTransactionOrder accountTransactionOrder =</span>
-<span class="fc" id="L240">            accountTransactions.computeIfAbsent(</span>
-<span class="fc" id="L241">                highestPriorityPendingTransaction.getSender(), this::createSenderTransactionOrder);</span>
+<span class="fc" id="L238">    synchronized (lock) {</span>
+<span class="fc" id="L239">      final Set&lt;Transaction&gt; transactionsToRemove = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L240">      final Map&lt;Address, AccountTransactionOrder&gt; accountTransactions = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L241">      final Iterator&lt;PendingTransaction&gt; prioritizedTransactions = prioritizedTransactions();</span>
+<span class="fc bfc" id="L242" title="All 2 branches covered.">      while (prioritizedTransactions.hasNext()) {</span>
+<span class="fc" id="L243">        final PendingTransaction highestPriorityPendingTransaction = prioritizedTransactions.next();</span>
+<span class="fc" id="L244">        final AccountTransactionOrder accountTransactionOrder =</span>
+<span class="fc" id="L245">            accountTransactions.computeIfAbsent(</span>
+<span class="fc" id="L246">                highestPriorityPendingTransaction.getSender(), this::createSenderTransactionOrder);</span>
 
         for (final PendingTransaction transactionToProcess :
-<span class="fc bfc" id="L244" title="All 2 branches covered.">            accountTransactionOrder.transactionsToProcess(highestPriorityPendingTransaction)) {</span>
-<span class="fc" id="L245">          final TransactionSelectionResult result =</span>
-<span class="fc" id="L246">              selector.evaluateTransaction(transactionToProcess);</span>
+<span class="fc bfc" id="L249" title="All 2 branches covered.">            accountTransactionOrder.transactionsToProcess(highestPriorityPendingTransaction)) {</span>
+<span class="fc" id="L250">          final TransactionSelectionResult result =</span>
+<span class="fc" id="L251">              selector.evaluateTransaction(transactionToProcess);</span>
 
-<span class="fc bfc" id="L248" title="All 2 branches covered.">          if (result.discard()) {</span>
-<span class="fc" id="L249">            transactionsToRemove.add(transactionToProcess.getTransaction());</span>
+<span class="fc bfc" id="L253" title="All 2 branches covered.">          if (result.discard()) {</span>
+<span class="fc" id="L254">            transactionsToRemove.add(transactionToProcess.getTransaction());</span>
+<span class="fc" id="L255">            logDiscardedTransaction(transactionToProcess, result);</span>
           }
 
-<span class="fc bfc" id="L252" title="All 2 branches covered.">          if (result.stop()) {</span>
-<span class="fc" id="L253">            transactionsToRemove.forEach(this::removeTransaction);</span>
-<span class="fc" id="L254">            return;</span>
+<span class="fc bfc" id="L258" title="All 2 branches covered.">          if (result.stop()) {</span>
+<span class="fc" id="L259">            transactionsToRemove.forEach(this::removeTransaction);</span>
+<span class="fc" id="L260">            return;</span>
           }
-<span class="fc" id="L256">        }</span>
-<span class="fc" id="L257">      }</span>
-<span class="fc" id="L258">      transactionsToRemove.forEach(this::removeTransaction);</span>
-<span class="fc" id="L259">    }</span>
-<span class="fc" id="L260">  }</span>
+<span class="fc" id="L262">        }</span>
+<span class="fc" id="L263">      }</span>
+<span class="fc" id="L264">      transactionsToRemove.forEach(this::removeTransaction);</span>
+<span class="fc" id="L265">    }</span>
+<span class="fc" id="L266">  }</span>
+
+  private void logDiscardedTransaction(
+      final PendingTransaction pendingTransaction, final TransactionSelectionResult result) {
+<span class="fc" id="L270">    LOG.atInfo()</span>
+<span class="fc" id="L271">        .addMarker(INVALID_TX_REMOVED)</span>
+<span class="fc" id="L272">        .addKeyValue(&quot;txhash&quot;, pendingTransaction::getHash)</span>
+<span class="fc" id="L273">        .addKeyValue(&quot;txlog&quot;, pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L274">        .addKeyValue(&quot;reason&quot;, result)</span>
+<span class="fc" id="L275">        .addKeyValue(</span>
+            &quot;txrlp&quot;,
+            () -&gt; {
+<span class="fc" id="L278">              final BytesValueRLPOutput rlp = new BytesValueRLPOutput();</span>
+<span class="fc" id="L279">              pendingTransaction.getTransaction().writeTo(rlp);</span>
+<span class="fc" id="L280">              return rlp.encoded().toHexString();</span>
+            })
+<span class="fc" id="L282">        .log();</span>
+<span class="fc" id="L283">  }</span>
 
   private AccountTransactionOrder createSenderTransactionOrder(final Address address) {
-<span class="fc" id="L263">    return new AccountTransactionOrder(</span>
-<span class="fc" id="L264">        transactionsBySender.get(address).streamPendingTransactions());</span>
+<span class="fc" id="L286">    return new AccountTransactionOrder(</span>
+<span class="fc" id="L287">        transactionsBySender.get(address).streamPendingTransactions());</span>
   }
 
   private TransactionAddedResult addTransactionForSenderAndNonce(
       final PendingTransaction pendingTransaction, final Optional&lt;Account&gt; maybeSenderAccount) {
 
-<span class="fc" id="L270">    PendingTransactionsForSender pendingTxsForSender =</span>
-<span class="fc" id="L271">        transactionsBySender.computeIfAbsent(</span>
-<span class="fc" id="L272">            pendingTransaction.getSender(),</span>
-<span class="fc" id="L273">            address -&gt; new PendingTransactionsForSender(maybeSenderAccount));</span>
+<span class="fc" id="L293">    PendingTransactionsForSender pendingTxsForSender =</span>
+<span class="fc" id="L294">        transactionsBySender.computeIfAbsent(</span>
+<span class="fc" id="L295">            pendingTransaction.getSender(),</span>
+<span class="fc" id="L296">            address -&gt; new PendingTransactionsForSender(maybeSenderAccount));</span>
 
-<span class="fc" id="L275">    PendingTransaction existingPendingTx =</span>
-<span class="fc" id="L276">        pendingTxsForSender.getPendingTransactionForNonce(pendingTransaction.getNonce());</span>
+<span class="fc" id="L298">    PendingTransaction existingPendingTx =</span>
+<span class="fc" id="L299">        pendingTxsForSender.getPendingTransactionForNonce(pendingTransaction.getNonce());</span>
 
     final Optional&lt;Transaction&gt; maybeReplacedTransaction;
-<span class="fc bfc" id="L279" title="All 2 branches covered.">    if (existingPendingTx != null) {</span>
-<span class="fc bfc" id="L280" title="All 2 branches covered.">      if (!transactionReplacementHandler.shouldReplace(</span>
-<span class="fc" id="L281">          existingPendingTx, pendingTransaction, chainHeadHeaderSupplier.get())) {</span>
-<span class="fc" id="L282">        LOG.atTrace()</span>
-<span class="fc" id="L283">            .setMessage(&quot;Reject underpriced transaction replacement {}&quot;)</span>
-<span class="fc" id="L284">            .addArgument(pendingTransaction::toTraceLog)</span>
-<span class="fc" id="L285">            .log();</span>
-<span class="fc" id="L286">        return REJECTED_UNDERPRICED_REPLACEMENT;</span>
+<span class="fc bfc" id="L302" title="All 2 branches covered.">    if (existingPendingTx != null) {</span>
+<span class="fc bfc" id="L303" title="All 2 branches covered.">      if (!transactionReplacementHandler.shouldReplace(</span>
+<span class="fc" id="L304">          existingPendingTx, pendingTransaction, chainHeadHeaderSupplier.get())) {</span>
+<span class="fc" id="L305">        LOG.atTrace()</span>
+<span class="fc" id="L306">            .setMessage(&quot;Reject underpriced transaction replacement {}&quot;)</span>
+<span class="fc" id="L307">            .addArgument(pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L308">            .log();</span>
+<span class="fc" id="L309">        return REJECTED_UNDERPRICED_REPLACEMENT;</span>
       }
-<span class="fc" id="L288">      LOG.atTrace()</span>
-<span class="fc" id="L289">          .setMessage(&quot;Replace existing transaction {}, with new transaction {}&quot;)</span>
-<span class="fc" id="L290">          .addArgument(existingPendingTx::toTraceLog)</span>
-<span class="fc" id="L291">          .addArgument(pendingTransaction::toTraceLog)</span>
-<span class="fc" id="L292">          .log();</span>
-<span class="fc" id="L293">      maybeReplacedTransaction = Optional.of(existingPendingTx.getTransaction());</span>
+<span class="fc" id="L311">      LOG.atTrace()</span>
+<span class="fc" id="L312">          .setMessage(&quot;Replace existing transaction {}, with new transaction {}&quot;)</span>
+<span class="fc" id="L313">          .addArgument(existingPendingTx::toTraceLog)</span>
+<span class="fc" id="L314">          .addArgument(pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L315">          .log();</span>
+<span class="fc" id="L316">      maybeReplacedTransaction = Optional.of(existingPendingTx.getTransaction());</span>
     } else {
-<span class="fc" id="L295">      maybeReplacedTransaction = Optional.empty();</span>
+<span class="fc" id="L318">      maybeReplacedTransaction = Optional.empty();</span>
     }
 
-<span class="fc" id="L298">    pendingTxsForSender.updateSenderAccount(maybeSenderAccount);</span>
-<span class="fc" id="L299">    pendingTxsForSender.trackPendingTransaction(pendingTransaction);</span>
-<span class="fc" id="L300">    LOG.atTrace()</span>
-<span class="fc" id="L301">        .setMessage(&quot;Tracked transaction by sender {}&quot;)</span>
-<span class="fc" id="L302">        .addArgument(pendingTxsForSender::toTraceLog)</span>
-<span class="fc" id="L303">        .log();</span>
-<span class="fc" id="L304">    maybeReplacedTransaction.ifPresent(this::removeTransaction);</span>
-<span class="fc" id="L305">    return ADDED;</span>
+<span class="fc" id="L321">    pendingTxsForSender.updateSenderAccount(maybeSenderAccount);</span>
+<span class="fc" id="L322">    pendingTxsForSender.trackPendingTransaction(pendingTransaction);</span>
+<span class="fc" id="L323">    LOG.atTrace()</span>
+<span class="fc" id="L324">        .setMessage(&quot;Tracked transaction by sender {}&quot;)</span>
+<span class="fc" id="L325">        .addArgument(pendingTxsForSender::toTraceLog)</span>
+<span class="fc" id="L326">        .log();</span>
+<span class="fc" id="L327">    maybeReplacedTransaction.ifPresent(this::removeTransaction);</span>
+<span class="fc" id="L328">    return ADDED;</span>
   }
 
   private void removePendingTransactionBySenderAndNonce(
       final PendingTransaction pendingTransaction) {
-<span class="fc" id="L310">    final Transaction transaction = pendingTransaction.getTransaction();</span>
-<span class="fc" id="L311">    Optional.ofNullable(transactionsBySender.get(transaction.getSender()))</span>
-<span class="fc" id="L312">        .ifPresent(</span>
+<span class="fc" id="L333">    final Transaction transaction = pendingTransaction.getTransaction();</span>
+<span class="fc" id="L334">    Optional.ofNullable(transactionsBySender.get(transaction.getSender()))</span>
+<span class="fc" id="L335">        .ifPresent(</span>
             pendingTxsForSender -&gt; {
-<span class="fc" id="L314">              pendingTxsForSender.removeTrackedPendingTransaction(pendingTransaction);</span>
-<span class="fc bfc" id="L315" title="All 2 branches covered.">              if (pendingTxsForSender.transactionCount() == 0) {</span>
-<span class="fc" id="L316">                LOG.trace(</span>
+<span class="fc" id="L337">              pendingTxsForSender.removeTrackedPendingTransaction(pendingTransaction);</span>
+<span class="fc bfc" id="L338" title="All 2 branches covered.">              if (pendingTxsForSender.transactionCount() == 0) {</span>
+<span class="fc" id="L339">                LOG.trace(</span>
                     &quot;Removing sender {} from transactionBySender since no more tracked transactions&quot;,
-<span class="fc" id="L318">                    transaction.getSender());</span>
-<span class="fc" id="L319">                transactionsBySender.remove(transaction.getSender());</span>
+<span class="fc" id="L341">                    transaction.getSender());</span>
+<span class="fc" id="L342">                transactionsBySender.remove(transaction.getSender());</span>
               } else {
-<span class="fc" id="L321">                LOG.atTrace()</span>
-<span class="fc" id="L322">                    .setMessage(&quot;Tracked transaction by sender {} after the removal of {}&quot;)</span>
-<span class="fc" id="L323">                    .addArgument(pendingTxsForSender::toTraceLog)</span>
-<span class="fc" id="L324">                    .addArgument(transaction::toTraceLog)</span>
-<span class="fc" id="L325">                    .log();</span>
+<span class="fc" id="L344">                LOG.atTrace()</span>
+<span class="fc" id="L345">                    .setMessage(&quot;Tracked transaction by sender {} after the removal of {}&quot;)</span>
+<span class="fc" id="L346">                    .addArgument(pendingTxsForSender::toTraceLog)</span>
+<span class="fc" id="L347">                    .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L348">                    .log();</span>
               }
-<span class="fc" id="L327">            });</span>
-<span class="fc" id="L328">  }</span>
+<span class="fc" id="L350">            });</span>
+<span class="fc" id="L351">  }</span>
 
   private void notifyTransactionAdded(final Transaction transaction) {
-<span class="fc" id="L331">    pendingTransactionSubscribers.forEach(listener -&gt; listener.onTransactionAdded(transaction));</span>
-<span class="fc" id="L332">  }</span>
+<span class="fc" id="L354">    pendingTransactionSubscribers.forEach(listener -&gt; listener.onTransactionAdded(transaction));</span>
+<span class="fc" id="L355">  }</span>
 
   private void notifyTransactionDropped(final Transaction transaction) {
-<span class="fc" id="L335">    transactionDroppedListeners.forEach(listener -&gt; listener.onTransactionDropped(transaction));</span>
-<span class="fc" id="L336">  }</span>
+<span class="fc" id="L358">    transactionDroppedListeners.forEach(listener -&gt; listener.onTransactionDropped(transaction));</span>
+<span class="fc" id="L359">  }</span>
 
   @Override
   public long maxSize() {
-<span class="nc" id="L340">    return poolConfig.getTxPoolMaxSize();</span>
+<span class="nc" id="L363">    return poolConfig.getTxPoolMaxSize();</span>
   }
 
   @Override
   public int size() {
-<span class="fc" id="L345">    return pendingTransactions.size();</span>
+<span class="fc" id="L368">    return pendingTransactions.size();</span>
   }
 
   @Override
   public boolean containsTransaction(final Transaction transaction) {
-<span class="fc" id="L350">    return pendingTransactions.containsKey(transaction.getHash());</span>
+<span class="fc" id="L373">    return pendingTransactions.containsKey(transaction.getHash());</span>
   }
 
   @Override
   public Optional&lt;Transaction&gt; getTransactionByHash(final Hash transactionHash) {
-<span class="fc" id="L355">    return Optional.ofNullable(pendingTransactions.get(transactionHash))</span>
-<span class="fc" id="L356">        .map(PendingTransaction::getTransaction);</span>
+<span class="fc" id="L378">    return Optional.ofNullable(pendingTransactions.get(transactionHash))</span>
+<span class="fc" id="L379">        .map(PendingTransaction::getTransaction);</span>
   }
 
   @Override
   public List&lt;PendingTransaction&gt; getPendingTransactions() {
-<span class="fc" id="L361">    return new ArrayList&lt;&gt;(pendingTransactions.values());</span>
+<span class="fc" id="L384">    return new ArrayList&lt;&gt;(pendingTransactions.values());</span>
   }
 
   @Override
   public long subscribePendingTransactions(final PendingTransactionAddedListener listener) {
-<span class="fc" id="L366">    return pendingTransactionSubscribers.subscribe(listener);</span>
+<span class="fc" id="L389">    return pendingTransactionSubscribers.subscribe(listener);</span>
   }
 
   @Override
   public void unsubscribePendingTransactions(final long id) {
-<span class="fc" id="L371">    pendingTransactionSubscribers.unsubscribe(id);</span>
-<span class="fc" id="L372">  }</span>
+<span class="fc" id="L394">    pendingTransactionSubscribers.unsubscribe(id);</span>
+<span class="fc" id="L395">  }</span>
 
   @Override
   public long subscribeDroppedTransactions(final PendingTransactionDroppedListener listener) {
-<span class="fc" id="L376">    return transactionDroppedListeners.subscribe(listener);</span>
+<span class="fc" id="L399">    return transactionDroppedListeners.subscribe(listener);</span>
   }
 
   @Override
   public void unsubscribeDroppedTransactions(final long id) {
-<span class="fc" id="L381">    transactionDroppedListeners.unsubscribe(id);</span>
-<span class="fc" id="L382">  }</span>
+<span class="fc" id="L404">    transactionDroppedListeners.unsubscribe(id);</span>
+<span class="fc" id="L405">  }</span>
 
   @Override
   public OptionalLong getNextNonceForSender(final Address sender) {
-<span class="fc" id="L386">    final PendingTransactionsForSender pendingTransactionsForSender =</span>
-<span class="fc" id="L387">        transactionsBySender.get(sender);</span>
-<span class="fc bfc" id="L388" title="All 2 branches covered.">    return pendingTransactionsForSender == null</span>
-<span class="fc" id="L389">        ? OptionalLong.empty()</span>
-<span class="fc" id="L390">        : pendingTransactionsForSender.maybeNextNonce();</span>
+<span class="fc" id="L409">    final PendingTransactionsForSender pendingTransactionsForSender =</span>
+<span class="fc" id="L410">        transactionsBySender.get(sender);</span>
+<span class="fc bfc" id="L411" title="All 2 branches covered.">    return pendingTransactionsForSender == null</span>
+<span class="fc" id="L412">        ? OptionalLong.empty()</span>
+<span class="fc" id="L413">        : pendingTransactionsForSender.maybeNextNonce();</span>
   }
 
   private void removeTransaction(final Transaction transaction, final boolean addedToBlock) {
-<span class="fc" id="L394">    synchronized (lock) {</span>
-<span class="fc" id="L395">      final PendingTransaction removedPendingTx = pendingTransactions.remove(transaction.getHash());</span>
-<span class="fc bfc" id="L396" title="All 2 branches covered.">      if (removedPendingTx != null) {</span>
-<span class="fc" id="L397">        removePrioritizedTransaction(removedPendingTx);</span>
-<span class="fc" id="L398">        removePendingTransactionBySenderAndNonce(removedPendingTx);</span>
-<span class="fc" id="L399">        incrementTransactionRemovedCounter(</span>
-<span class="fc" id="L400">            removedPendingTx.isReceivedFromLocalSource(), addedToBlock);</span>
-<span class="pc bpc" id="L401" title="1 of 4 branches missed.">        if (removedPendingTx.getTransaction().getBlobsWithCommitments().isPresent()</span>
+<span class="fc" id="L417">    synchronized (lock) {</span>
+<span class="fc" id="L418">      final PendingTransaction removedPendingTx = pendingTransactions.remove(transaction.getHash());</span>
+<span class="fc bfc" id="L419" title="All 2 branches covered.">      if (removedPendingTx != null) {</span>
+<span class="fc" id="L420">        removePrioritizedTransaction(removedPendingTx);</span>
+<span class="fc" id="L421">        removePendingTransactionBySenderAndNonce(removedPendingTx);</span>
+<span class="fc" id="L422">        incrementTransactionRemovedCounter(</span>
+<span class="fc" id="L423">            removedPendingTx.isReceivedFromLocalSource(), addedToBlock);</span>
+<span class="pc bpc" id="L424" title="1 of 4 branches missed.">        if (removedPendingTx.getTransaction().getBlobsWithCommitments().isPresent()</span>
             &amp;&amp; addedToBlock) {
-<span class="fc" id="L403">          this.blobCache.cacheBlobs(removedPendingTx.getTransaction());</span>
+<span class="fc" id="L426">          this.blobCache.cacheBlobs(removedPendingTx.getTransaction());</span>
         }
       }
-<span class="fc" id="L406">    }</span>
-<span class="fc" id="L407">  }</span>
+<span class="fc" id="L429">    }</span>
+<span class="fc" id="L430">  }</span>
 
   protected abstract void removePrioritizedTransaction(PendingTransaction removedPendingTx);
 
@@ -414,86 +437,87 @@ public abstract class AbstractPendingTransactionsSorter implements PendingTransa
 
   private TransactionAddedResult internalAddTransaction(
       final PendingTransaction pendingTransaction, final Optional&lt;Account&gt; maybeSenderAccount) {
-<span class="fc" id="L417">    final Transaction transaction = pendingTransaction.getTransaction();</span>
-<span class="fc" id="L418">    synchronized (lock) {</span>
-<span class="fc bfc" id="L419" title="All 2 branches covered.">      if (pendingTransactions.containsKey(pendingTransaction.getHash())) {</span>
-<span class="fc" id="L420">        LOG.atTrace()</span>
-<span class="fc" id="L421">            .setMessage(&quot;Already known transaction {}&quot;)</span>
-<span class="fc" id="L422">            .addArgument(pendingTransaction::toTraceLog)</span>
-<span class="fc" id="L423">            .log();</span>
-<span class="fc" id="L424">        return ALREADY_KNOWN;</span>
+<span class="fc" id="L440">    final Transaction transaction = pendingTransaction.getTransaction();</span>
+<span class="fc" id="L441">    synchronized (lock) {</span>
+<span class="fc bfc" id="L442" title="All 2 branches covered.">      if (pendingTransactions.containsKey(pendingTransaction.getHash())) {</span>
+<span class="fc" id="L443">        LOG.atTrace()</span>
+<span class="fc" id="L444">            .setMessage(&quot;Already known transaction {}&quot;)</span>
+<span class="fc" id="L445">            .addArgument(pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L446">            .log();</span>
+<span class="fc" id="L447">        return ALREADY_KNOWN;</span>
       }
 
-<span class="fc" id="L427">      if (transaction.getNonce() - maybeSenderAccount.map(AccountState::getNonce).orElse(0L)</span>
-<span class="fc bfc" id="L428" title="All 2 branches covered.">          &gt;= poolConfig.getTxPoolMaxFutureTransactionByAccount()) {</span>
-<span class="fc" id="L429">        LOG.atTrace()</span>
-<span class="fc" id="L430">            .setMessage(</span>
+<span class="fc" id="L450">      if (transaction.getNonce() - maybeSenderAccount.map(AccountState::getNonce).orElse(0L)</span>
+<span class="fc bfc" id="L451" title="All 2 branches covered.">          &gt;= poolConfig.getTxPoolMaxFutureTransactionByAccount()) {</span>
+<span class="fc" id="L452">        LOG.atTrace()</span>
+<span class="fc" id="L453">            .setMessage(</span>
                 &quot;Transaction {} not added because nonce too far in the future for sender {}&quot;)
-<span class="fc" id="L432">            .addArgument(transaction::toTraceLog)</span>
-<span class="fc" id="L433">            .addArgument(</span>
+<span class="fc" id="L455">            .addArgument(transaction::toTraceLog)</span>
+<span class="fc" id="L456">            .addArgument(</span>
                 () -&gt;
-<span class="nc" id="L435">                    maybeSenderAccount</span>
-<span class="nc" id="L436">                        .map(Account::getAddress)</span>
-<span class="nc" id="L437">                        .map(Address::toString)</span>
-<span class="nc" id="L438">                        .orElse(&quot;unknown&quot;))</span>
-<span class="fc" id="L439">            .log();</span>
-<span class="fc" id="L440">        return NONCE_TOO_FAR_IN_FUTURE_FOR_SENDER;</span>
+<span class="nc" id="L458">                    maybeSenderAccount</span>
+<span class="nc" id="L459">                        .map(Account::getAddress)</span>
+<span class="nc" id="L460">                        .map(Address::toString)</span>
+<span class="nc" id="L461">                        .orElse(&quot;unknown&quot;))</span>
+<span class="fc" id="L462">            .log();</span>
+<span class="fc" id="L463">        return NONCE_TOO_FAR_IN_FUTURE_FOR_SENDER;</span>
       }
 
-<span class="fc" id="L443">      final TransactionAddedResult transactionAddedStatus =</span>
-<span class="fc" id="L444">          addTransactionForSenderAndNonce(pendingTransaction, maybeSenderAccount);</span>
+<span class="fc" id="L466">      final TransactionAddedResult transactionAddedStatus =</span>
+<span class="fc" id="L467">          addTransactionForSenderAndNonce(pendingTransaction, maybeSenderAccount);</span>
 
-<span class="fc bfc" id="L446" title="All 2 branches covered.">      if (!transactionAddedStatus.equals(ADDED)) {</span>
-<span class="fc" id="L447">        return transactionAddedStatus;</span>
+<span class="fc bfc" id="L469" title="All 2 branches covered.">      if (!transactionAddedStatus.equals(ADDED)) {</span>
+<span class="fc" id="L470">        return transactionAddedStatus;</span>
       }
 
-<span class="fc" id="L450">      pendingTransactions.put(pendingTransaction.getHash(), pendingTransaction);</span>
-<span class="fc" id="L451">      prioritizeTransaction(pendingTransaction);</span>
+<span class="fc" id="L473">      pendingTransactions.put(pendingTransaction.getHash(), pendingTransaction);</span>
+<span class="fc" id="L474">      prioritizeTransaction(pendingTransaction);</span>
 
-<span class="fc bfc" id="L453" title="All 2 branches covered.">      if (pendingTransactions.size() &gt; poolConfig.getTxPoolMaxSize()) {</span>
-<span class="fc" id="L454">        evictLessPriorityTransactions();</span>
+<span class="fc bfc" id="L476" title="All 2 branches covered.">      if (pendingTransactions.size() &gt; poolConfig.getTxPoolMaxSize()) {</span>
+<span class="fc" id="L477">        evictLessPriorityTransactions();</span>
       }
-<span class="fc" id="L456">    }</span>
-<span class="fc" id="L457">    notifyTransactionAdded(pendingTransaction.getTransaction());</span>
-<span class="fc" id="L458">    return ADDED;</span>
+<span class="fc" id="L479">    }</span>
+<span class="fc" id="L480">    notifyTransactionAdded(pendingTransaction.getTransaction());</span>
+<span class="fc" id="L481">    return ADDED;</span>
   }
 
   protected abstract PendingTransaction getLeastPriorityTransaction();
 
   private void evictLessPriorityTransactions() {
-<span class="fc" id="L464">    final PendingTransaction leastPriorityTx = getLeastPriorityTransaction();</span>
+<span class="fc" id="L487">    final PendingTransaction leastPriorityTx = getLeastPriorityTransaction();</span>
     // evict all txs for the sender with nonce &gt;= the least priority one to avoid gaps
-<span class="fc" id="L466">    final var pendingTxsForSender = transactionsBySender.get(leastPriorityTx.getSender());</span>
-<span class="fc" id="L467">    final var txsToEvict = pendingTxsForSender.getPendingTransactions(leastPriorityTx.getNonce());</span>
+<span class="fc" id="L489">    final var pendingTxsForSender = transactionsBySender.get(leastPriorityTx.getSender());</span>
+<span class="fc" id="L490">    final var txsToEvict = pendingTxsForSender.getPendingTransactions(leastPriorityTx.getNonce());</span>
 
     // remove backward to avoid gaps
-<span class="fc bfc" id="L470" title="All 2 branches covered.">    for (int i = txsToEvict.size() - 1; i &gt;= 0; i--) {</span>
-<span class="fc" id="L471">      removeTransaction(txsToEvict.get(i).getTransaction());</span>
+<span class="fc bfc" id="L493" title="All 2 branches covered.">    for (int i = txsToEvict.size() - 1; i &gt;= 0; i--) {</span>
+<span class="fc" id="L494">      removeTransaction(txsToEvict.get(i).getTransaction());</span>
     }
-<span class="fc" id="L473">  }</span>
+<span class="fc" id="L496">  }</span>
 
   @Override
   public String logStats() {
-<span class="fc" id="L477">    return &quot;Pending &quot; + pendingTransactions.size();</span>
+<span class="fc" id="L500">    return &quot;Pending &quot; + pendingTransactions.size();</span>
   }
 
   @Override
   public String toTraceLog() {
-<span class="nc" id="L482">    synchronized (lock) {</span>
-<span class="nc" id="L483">      StringBuilder sb =</span>
+<span class="nc" id="L505">    synchronized (lock) {</span>
+<span class="nc" id="L506">      StringBuilder sb =</span>
           new StringBuilder(
               &quot;Prioritized transactions { &quot;
-<span class="nc" id="L486">                  + StreamSupport.stream(</span>
-<span class="nc" id="L487">                          Spliterators.spliteratorUnknownSize(</span>
-<span class="nc" id="L488">                              prioritizedTransactions(), Spliterator.ORDERED),</span>
+<span class="nc" id="L509">                  + StreamSupport.stream(</span>
+<span class="nc" id="L510">                          Spliterators.spliteratorUnknownSize(</span>
+<span class="nc" id="L511">                              prioritizedTransactions(), Spliterator.ORDERED),</span>
                           false)
-<span class="nc" id="L490">                      .map(PendingTransaction::toTraceLog)</span>
-<span class="nc" id="L491">                      .collect(Collectors.joining(&quot;; &quot;))</span>
+<span class="nc" id="L513">                      .map(PendingTransaction::toTraceLog)</span>
+<span class="nc" id="L514">                      .collect(Collectors.joining(&quot;; &quot;))</span>
                   + &quot; }&quot;);
 
-<span class="nc" id="L494">      return sb.toString();</span>
+<span class="nc" id="L517">      return sb.toString();</span>
     }
   }
+
   /**
    * @param transaction to restore blobs onto
    * @return an optional copy of the supplied transaction, but with the BlobsWithCommitments
@@ -501,7 +525,7 @@ public abstract class AbstractPendingTransactionsSorter implements PendingTransa
    */
   @Override
   public Optional&lt;Transaction&gt; restoreBlob(final Transaction transaction) {
-<span class="fc" id="L504">    return blobCache.restoreBlob(transaction);</span>
+<span class="fc" id="L528">    return blobCache.restoreBlob(transaction);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

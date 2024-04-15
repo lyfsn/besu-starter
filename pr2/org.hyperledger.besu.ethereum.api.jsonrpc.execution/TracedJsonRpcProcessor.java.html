@@ -20,6 +20,10 @@ import org.hyperledger.besu.ethereum.api.jsonrpc.internal.methods.JsonRpcMethod;
 import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcErrorResponse;
 import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponse;
 import org.hyperledger.besu.ethereum.api.jsonrpc.internal.response.JsonRpcResponseType;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.metrics.LabelledMetric;
 
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.StatusCode;
@@ -27,10 +31,19 @@ import io.opentelemetry.api.trace.StatusCode;
 public class TracedJsonRpcProcessor implements JsonRpcProcessor {
 
   private final JsonRpcProcessor rpcProcessor;
+  protected final LabelledMetric&lt;Counter&gt; rpcErrorsCounter;
 
-<span class="fc" id="L31">  public TracedJsonRpcProcessor(final JsonRpcProcessor rpcProcessor) {</span>
-<span class="fc" id="L32">    this.rpcProcessor = rpcProcessor;</span>
-<span class="fc" id="L33">  }</span>
+  public TracedJsonRpcProcessor(
+<span class="fc" id="L37">      final JsonRpcProcessor rpcProcessor, final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L38">    this.rpcProcessor = rpcProcessor;</span>
+<span class="fc" id="L39">    this.rpcErrorsCounter =</span>
+<span class="fc" id="L40">        metricsSystem.createLabelledCounter(</span>
+            BesuMetricCategory.RPC,
+            &quot;errors_count&quot;,
+            &quot;Number of errors per RPC method and RPC error type&quot;,
+            &quot;rpcMethod&quot;,
+            &quot;errorType&quot;);
+<span class="fc" id="L46">  }</span>
 
   @Override
   public JsonRpcResponse process(
@@ -38,25 +51,26 @@ public class TracedJsonRpcProcessor implements JsonRpcProcessor {
       final JsonRpcMethod method,
       final Span metricSpan,
       final JsonRpcRequestContext request) {
-<span class="fc" id="L41">    JsonRpcResponse jsonRpcResponse = rpcProcessor.process(id, method, metricSpan, request);</span>
-<span class="fc bfc" id="L42" title="All 2 branches covered.">    if (JsonRpcResponseType.ERROR == jsonRpcResponse.getType()) {</span>
-<span class="fc" id="L43">      JsonRpcErrorResponse errorResponse = (JsonRpcErrorResponse) jsonRpcResponse;</span>
-<span class="pc bpc" id="L44" title="1 of 4 branches missed.">      switch (errorResponse.getErrorType()) {</span>
+<span class="fc" id="L54">    JsonRpcResponse jsonRpcResponse = rpcProcessor.process(id, method, metricSpan, request);</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">    if (JsonRpcResponseType.ERROR == jsonRpcResponse.getType()) {</span>
+<span class="fc" id="L56">      JsonRpcErrorResponse errorResponse = (JsonRpcErrorResponse) jsonRpcResponse;</span>
+<span class="fc" id="L57">      this.rpcErrorsCounter.labels(method.getName(), errorResponse.getErrorType().name()).inc();</span>
+<span class="pc bpc" id="L58" title="1 of 4 branches missed.">      switch (errorResponse.getErrorType()) {</span>
         case INVALID_PARAMS:
-<span class="fc" id="L46">          metricSpan.setStatus(StatusCode.ERROR, &quot;Invalid Params&quot;);</span>
-<span class="fc" id="L47">          break;</span>
+<span class="fc" id="L60">          metricSpan.setStatus(StatusCode.ERROR, &quot;Invalid Params&quot;);</span>
+<span class="fc" id="L61">          break;</span>
         case UNAUTHORIZED:
-<span class="nc" id="L49">          metricSpan.setStatus(StatusCode.ERROR, &quot;Unauthorized&quot;);</span>
-<span class="nc" id="L50">          break;</span>
+<span class="nc" id="L63">          metricSpan.setStatus(StatusCode.ERROR, &quot;Unauthorized&quot;);</span>
+<span class="nc" id="L64">          break;</span>
         case INTERNAL_ERROR:
-<span class="fc" id="L52">          metricSpan.setStatus(StatusCode.ERROR, &quot;Error processing JSON-RPC requestBody&quot;);</span>
-<span class="fc" id="L53">          break;</span>
+<span class="fc" id="L66">          metricSpan.setStatus(StatusCode.ERROR, &quot;Error processing JSON-RPC requestBody&quot;);</span>
+<span class="fc" id="L67">          break;</span>
         default:
-<span class="fc" id="L55">          metricSpan.setStatus(StatusCode.ERROR, &quot;Unexpected error&quot;);</span>
+<span class="fc" id="L69">          metricSpan.setStatus(StatusCode.ERROR, &quot;Unexpected error&quot;);</span>
       }
     }
-<span class="fc" id="L58">    metricSpan.end();</span>
-<span class="fc" id="L59">    return jsonRpcResponse;</span>
+<span class="fc" id="L72">    metricSpan.end();</span>
+<span class="fc" id="L73">    return jsonRpcResponse;</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

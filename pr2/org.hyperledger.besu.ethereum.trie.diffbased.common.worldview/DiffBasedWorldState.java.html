@@ -1,0 +1,335 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DiffBasedWorldState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common.worldview</a> &gt; <span class="el_source">DiffBasedWorldState.java</span></div><h1>DiffBasedWorldState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.common.worldview;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_BRANCH_STORAGE;
+import static org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage.WORLD_BLOCK_HASH_KEY;
+import static org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage.WORLD_ROOT_HASH_KEY;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.StorageSubscriber;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.cache.DiffBasedCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedLayeredWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedSnapshotWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.DiffBasedWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.worldstate.WorldUpdater;
+import org.hyperledger.besu.plugin.services.exception.StorageException;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.util.Optional;
+import java.util.stream.Stream;
+import javax.annotation.Nonnull;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class DiffBasedWorldState
+    implements MutableWorldState, DiffBasedWorldView, StorageSubscriber {
+
+<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(DiffBasedWorldState.class);</span>
+
+  protected DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage;
+  protected final DiffBasedCachedWorldStorageManager cachedWorldStorageManager;
+  protected final TrieLogManager trieLogManager;
+  protected DiffBasedWorldStateUpdateAccumulator&lt;?&gt; accumulator;
+
+  protected Hash worldStateRootHash;
+  protected Hash worldStateBlockHash;
+  protected boolean isFrozen;
+
+  protected DiffBasedWorldState(
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final DiffBasedCachedWorldStorageManager cachedWorldStorageManager,
+<span class="fc" id="L69">      final TrieLogManager trieLogManager) {</span>
+<span class="fc" id="L70">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L71">    this.worldStateRootHash =</span>
+<span class="fc" id="L72">        Hash.wrap(</span>
+<span class="fc" id="L73">            Bytes32.wrap(</span>
+<span class="fc" id="L74">                worldStateKeyValueStorage.getWorldStateRootHash().orElse(getEmptyTrieHash())));</span>
+<span class="fc" id="L75">    this.worldStateBlockHash =</span>
+<span class="fc" id="L76">        Hash.wrap(</span>
+<span class="fc" id="L77">            Bytes32.wrap(worldStateKeyValueStorage.getWorldStateBlockHash().orElse(Hash.ZERO)));</span>
+<span class="fc" id="L78">    this.cachedWorldStorageManager = cachedWorldStorageManager;</span>
+<span class="fc" id="L79">    this.trieLogManager = trieLogManager;</span>
+<span class="fc" id="L80">  }</span>
+
+  /**
+   * Having a protected method to override the accumulator solves the chicken-egg problem of needing
+   * a worldstate reference (this) when construction the Accumulator.
+   *
+   * @param accumulator accumulator to use.
+   */
+  public void setAccumulator(final DiffBasedWorldStateUpdateAccumulator&lt;?&gt; accumulator) {
+<span class="fc" id="L89">    this.accumulator = accumulator;</span>
+<span class="fc" id="L90">  }</span>
+
+  /**
+   * Returns the world state block hash of this world state
+   *
+   * @return the world state block hash.
+   */
+  public Hash getWorldStateBlockHash() {
+<span class="fc" id="L98">    return worldStateBlockHash;</span>
+  }
+
+  /**
+   * Returns the world state root hash of this world state
+   *
+   * @return the world state root hash.
+   */
+  public Hash getWorldStateRootHash() {
+<span class="fc" id="L107">    return worldStateRootHash;</span>
+  }
+
+  @Override
+  public boolean isPersisted() {
+<span class="fc" id="L112">    return isPersisted(worldStateKeyValueStorage);</span>
+  }
+
+  private boolean isPersisted(final WorldStateKeyValueStorage worldStateKeyValueStorage) {
+<span class="fc bfc" id="L116" title="All 2 branches covered.">    return !(worldStateKeyValueStorage instanceof DiffBasedSnapshotWorldStateKeyValueStorage);</span>
+  }
+
+  /**
+   * Reset the worldState to this block header
+   *
+   * @param blockHeader block to use
+   */
+  public void resetWorldStateTo(final BlockHeader blockHeader) {
+<span class="nc" id="L125">    worldStateBlockHash = blockHeader.getBlockHash();</span>
+<span class="nc" id="L126">    worldStateRootHash = blockHeader.getStateRoot();</span>
+<span class="nc" id="L127">  }</span>
+
+  @Override
+  public DiffBasedWorldStateKeyValueStorage getWorldStateStorage() {
+<span class="nc" id="L131">    return worldStateKeyValueStorage;</span>
+  }
+
+  public DiffBasedWorldStateUpdateAccumulator&lt;?&gt; getAccumulator() {
+<span class="nc" id="L135">    return accumulator;</span>
+  }
+
+  @Override
+  public void persist(final BlockHeader blockHeader) {
+<span class="fc" id="L140">    final Optional&lt;BlockHeader&gt; maybeBlockHeader = Optional.ofNullable(blockHeader);</span>
+<span class="fc" id="L141">    LOG.atDebug()</span>
+<span class="fc" id="L142">        .setMessage(&quot;Persist world state for block {}&quot;)</span>
+<span class="fc" id="L143">        .addArgument(maybeBlockHeader)</span>
+<span class="fc" id="L144">        .log();</span>
+
+<span class="fc" id="L146">    final DiffBasedWorldStateUpdateAccumulator&lt;?&gt; localCopy = accumulator.copy();</span>
+
+<span class="fc" id="L148">    boolean success = false;</span>
+
+<span class="fc" id="L150">    final DiffBasedWorldStateKeyValueStorage.Updater stateUpdater =</span>
+<span class="fc" id="L151">        worldStateKeyValueStorage.updater();</span>
+<span class="fc" id="L152">    Runnable saveTrieLog = () -&gt; {};</span>
+
+    try {
+<span class="fc" id="L155">      final Hash newWorldStateRootHash =</span>
+<span class="fc bfc" id="L156" title="All 2 branches covered.">          calculateRootHash(isFrozen ? Optional.empty() : Optional.of(stateUpdater), accumulator);</span>
+      // if we are persisted with a block header, and the prior state is the parent
+      // then persist the TrieLog for that transition.
+      // If specified but not a direct descendant simply store the new block hash.
+<span class="fc bfc" id="L160" title="All 2 branches covered.">      if (blockHeader != null) {</span>
+<span class="fc" id="L161">        verifyWorldStateRoot(newWorldStateRootHash, blockHeader);</span>
+<span class="fc" id="L162">        saveTrieLog =</span>
+            () -&gt; {
+<span class="fc" id="L164">              trieLogManager.saveTrieLog(localCopy, newWorldStateRootHash, blockHeader, this);</span>
+              // not save a frozen state in the cache
+<span class="fc bfc" id="L166" title="All 2 branches covered.">              if (!isFrozen) {</span>
+<span class="fc" id="L167">                cachedWorldStorageManager.addCachedLayer(blockHeader, newWorldStateRootHash, this);</span>
+              }
+<span class="fc" id="L169">            };</span>
+
+<span class="fc" id="L171">        stateUpdater</span>
+<span class="fc" id="L172">            .getWorldStateTransaction()</span>
+<span class="fc" id="L173">            .put(TRIE_BRANCH_STORAGE, WORLD_BLOCK_HASH_KEY, blockHeader.getHash().toArrayUnsafe());</span>
+<span class="fc" id="L174">        worldStateBlockHash = blockHeader.getHash();</span>
+      } else {
+<span class="fc" id="L176">        stateUpdater.getWorldStateTransaction().remove(TRIE_BRANCH_STORAGE, WORLD_BLOCK_HASH_KEY);</span>
+<span class="fc" id="L177">        worldStateBlockHash = null;</span>
+      }
+
+<span class="fc" id="L180">      stateUpdater</span>
+<span class="fc" id="L181">          .getWorldStateTransaction()</span>
+<span class="fc" id="L182">          .put(TRIE_BRANCH_STORAGE, WORLD_ROOT_HASH_KEY, newWorldStateRootHash.toArrayUnsafe());</span>
+<span class="fc" id="L183">      worldStateRootHash = newWorldStateRootHash;</span>
+<span class="fc" id="L184">      success = true;</span>
+    } finally {
+<span class="pc bpc" id="L186" title="1 of 2 branches missed.">      if (success) {</span>
+<span class="fc" id="L187">        stateUpdater.commit();</span>
+<span class="fc" id="L188">        accumulator.reset();</span>
+<span class="fc" id="L189">        saveTrieLog.run();</span>
+      } else {
+<span class="nc" id="L191">        stateUpdater.rollback();</span>
+<span class="nc" id="L192">        accumulator.reset();</span>
+      }
+    }
+<span class="fc" id="L195">  }</span>
+
+  protected void verifyWorldStateRoot(final Hash calculatedStateRoot, final BlockHeader header) {
+<span class="pc bpc" id="L198" title="1 of 2 branches missed.">    if (!calculatedStateRoot.equals(header.getStateRoot())) {</span>
+<span class="nc" id="L199">      throw new RuntimeException(</span>
+          &quot;World State Root does not match expected value, header &quot;
+<span class="nc" id="L201">              + header.getStateRoot().toHexString()</span>
+              + &quot; calculated &quot;
+<span class="nc" id="L203">              + calculatedStateRoot.toHexString());</span>
+    }
+<span class="fc" id="L205">  }</span>
+
+  @Override
+  public WorldUpdater updater() {
+<span class="fc" id="L209">    return accumulator;</span>
+  }
+
+  @Override
+  public Hash rootHash() {
+<span class="fc bfc" id="L214" title="All 4 branches covered.">    if (isFrozen &amp;&amp; accumulator.isAccumulatorStateChanged()) {</span>
+<span class="fc" id="L215">      worldStateRootHash = calculateRootHash(Optional.empty(), accumulator.copy());</span>
+<span class="fc" id="L216">      accumulator.resetAccumulatorStateChanged();</span>
+    }
+<span class="fc" id="L218">    return Hash.wrap(worldStateRootHash);</span>
+  }
+
+<span class="fc" id="L221">  protected static final KeyValueStorageTransaction noOpTx =</span>
+<span class="fc" id="L222">      new KeyValueStorageTransaction() {</span>
+
+        @Override
+        public void put(final byte[] key, final byte[] value) {
+          // no-op
+<span class="nc" id="L227">        }</span>
+
+        @Override
+        public void remove(final byte[] key) {
+          // no-op
+<span class="nc" id="L232">        }</span>
+
+        @Override
+        public void commit() throws StorageException {
+          // no-op
+<span class="nc" id="L237">        }</span>
+
+        @Override
+        public void rollback() {
+          // no-op
+<span class="nc" id="L242">        }</span>
+      };
+
+<span class="fc" id="L245">  protected static final SegmentedKeyValueStorageTransaction noOpSegmentedTx =</span>
+<span class="fc" id="L246">      new SegmentedKeyValueStorageTransaction() {</span>
+
+        @Override
+        public void put(
+            final SegmentIdentifier segmentIdentifier, final byte[] key, final byte[] value) {
+          // no-op
+<span class="fc" id="L252">        }</span>
+
+        @Override
+        public void remove(final SegmentIdentifier segmentIdentifier, final byte[] key) {
+          // no-op
+<span class="fc" id="L257">        }</span>
+
+        @Override
+        public void commit() throws StorageException {
+          // no-op
+<span class="nc" id="L262">        }</span>
+
+        @Override
+        public void rollback() {
+          // no-op
+<span class="nc" id="L267">        }</span>
+      };
+
+  public Hash blockHash() {
+<span class="fc" id="L271">    return worldStateBlockHash;</span>
+  }
+
+  @Override
+  public Stream&lt;StreamableAccount&gt; streamAccounts(final Bytes32 startKeyHash, final int limit) {
+<span class="nc" id="L276">    throw new RuntimeException(&quot;storage format do not provide account streaming.&quot;);</span>
+  }
+
+  @Override
+  public UInt256 getPriorStorageValue(final Address address, final UInt256 storageKey) {
+<span class="nc" id="L281">    return getStorageValue(address, storageKey);</span>
+  }
+
+  @Override
+  public void close() {
+    try {
+<span class="fc bfc" id="L287" title="All 2 branches covered.">      if (!isPersisted()) {</span>
+<span class="fc" id="L288">        this.worldStateKeyValueStorage.close();</span>
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">        if (isFrozen) {</span>
+<span class="fc" id="L290">          closeFrozenStorage();</span>
+        }
+      }
+<span class="nc" id="L293">    } catch (Exception e) {</span>
+      // no op
+<span class="fc" id="L295">    }</span>
+<span class="fc" id="L296">  }</span>
+
+  private void closeFrozenStorage() {
+    try {
+<span class="fc" id="L300">      final DiffBasedLayeredWorldStateKeyValueStorage worldStateLayerStorage =</span>
+          (DiffBasedLayeredWorldStateKeyValueStorage) worldStateKeyValueStorage;
+<span class="pc bpc" id="L302" title="1 of 2 branches missed.">      if (!isPersisted(worldStateLayerStorage.getParentWorldStateStorage())) {</span>
+<span class="fc" id="L303">        worldStateLayerStorage.getParentWorldStateStorage().close();</span>
+      }
+<span class="nc" id="L305">    } catch (Exception e) {</span>
+      // no op
+<span class="fc" id="L307">    }</span>
+<span class="fc" id="L308">  }</span>
+
+  @Override
+  public abstract Hash frontierRootHash();
+
+  @Override
+  public abstract MutableWorldState freeze();
+
+  @Override
+  public abstract Account get(final Address address);
+
+  @Override
+  public abstract UInt256 getStorageValue(final Address address, final UInt256 storageKey);
+
+  @Override
+  public abstract Optional&lt;UInt256&gt; getStorageValueByStorageSlotKey(
+      final Address address, final StorageSlotKey storageSlotKey);
+
+  @Override
+  public abstract Optional&lt;Bytes&gt; getCode(@Nonnull final Address address, final Hash codeHash);
+
+  protected abstract Hash calculateRootHash(
+      final Optional&lt;DiffBasedWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final DiffBasedWorldStateUpdateAccumulator&lt;?&gt; worldStateUpdater);
+
+  protected abstract Hash getEmptyTrieHash();
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

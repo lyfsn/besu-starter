@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FlatDbStrategyProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat</a> &gt; <span class="el_source">FlatDbStrategyProvider.java</span></div><h1>FlatDbStrategyProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.CODE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_BRANCH_STORAGE;
+
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.flat.FullFlatDbStrategy;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.flat.PartialFlatDbStrategy;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Optional;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class FlatDbStrategyProvider {
+<span class="fc" id="L38">  private static final Logger LOG = LoggerFactory.getLogger(FlatDbStrategyProvider.class);</span>
+
+  // 0x666C61744462537461747573
+<span class="fc" id="L41">  public static final byte[] FLAT_DB_MODE = &quot;flatDbStatus&quot;.getBytes(StandardCharsets.UTF_8);</span>
+  private final MetricsSystem metricsSystem;
+  private final DataStorageConfiguration dataStorageConfiguration;
+  protected FlatDbMode flatDbMode;
+  protected FlatDbStrategy flatDbStrategy;
+
+  public FlatDbStrategyProvider(
+<span class="fc" id="L48">      final MetricsSystem metricsSystem, final DataStorageConfiguration dataStorageConfiguration) {</span>
+<span class="fc" id="L49">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L50">    this.dataStorageConfiguration = dataStorageConfiguration;</span>
+<span class="fc" id="L51">  }</span>
+
+  public void loadFlatDbStrategy(final SegmentedKeyValueStorage composedWorldStateStorage) {
+    // derive our flatdb strategy from db or default:
+<span class="fc" id="L55">    var newFlatDbMode = deriveFlatDbStrategy(composedWorldStateStorage);</span>
+
+    // if  flatDbMode is not loaded or has changed, reload flatDbStrategy
+<span class="fc bfc" id="L58" title="All 4 branches covered.">    if (this.flatDbMode == null || !this.flatDbMode.equals(newFlatDbMode)) {</span>
+<span class="fc" id="L59">      this.flatDbMode = newFlatDbMode;</span>
+      final CodeStorageStrategy codeStorageStrategy =
+<span class="fc bfc" id="L61" title="All 2 branches covered.">          deriveUseCodeStorageByHash(composedWorldStateStorage)</span>
+<span class="fc" id="L62">              ? new CodeHashCodeStorageStrategy()</span>
+<span class="fc" id="L63">              : new AccountHashCodeStorageStrategy();</span>
+<span class="fc bfc" id="L64" title="All 2 branches covered.">      if (flatDbMode == FlatDbMode.FULL) {</span>
+<span class="fc" id="L65">        this.flatDbStrategy = new FullFlatDbStrategy(metricsSystem, codeStorageStrategy);</span>
+      } else {
+<span class="fc" id="L67">        this.flatDbStrategy = new PartialFlatDbStrategy(metricsSystem, codeStorageStrategy);</span>
+      }
+    }
+<span class="fc" id="L70">  }</span>
+
+  @VisibleForTesting
+  FlatDbMode deriveFlatDbStrategy(final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc" id="L74">    var flatDbMode =</span>
+<span class="fc" id="L75">        FlatDbMode.fromVersion(</span>
+            composedWorldStateStorage
+<span class="fc" id="L77">                .get(TRIE_BRANCH_STORAGE, FLAT_DB_MODE)</span>
+<span class="fc" id="L78">                .map(Bytes::wrap)</span>
+<span class="fc" id="L79">                .orElse(FlatDbMode.PARTIAL.getVersion()));</span>
+<span class="fc" id="L80">    LOG.info(&quot;Bonsai flat db mode found {}&quot;, flatDbMode);</span>
+
+<span class="fc" id="L82">    return flatDbMode;</span>
+  }
+
+  protected boolean deriveUseCodeStorageByHash(
+      final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc" id="L87">    final boolean configCodeUsingHash =</span>
+<span class="fc" id="L88">        dataStorageConfiguration.getUnstable().getBonsaiCodeStoredByCodeHashEnabled();</span>
+<span class="fc" id="L89">    boolean codeUsingCodeByHash =</span>
+<span class="fc" id="L90">        detectCodeStorageByHash(composedWorldStateStorage)</span>
+<span class="fc" id="L91">            .map(</span>
+                dbCodeUsingHash -&gt; {
+<span class="fc bfc" id="L93" title="All 2 branches covered.">                  if (dbCodeUsingHash != configCodeUsingHash) {</span>
+<span class="fc" id="L94">                    LOG.warn(</span>
+                        &quot;Bonsai db is using code storage mode {} but config specifies mode {}. Using mode from database&quot;,
+                        dbCodeUsingHash,
+<span class="fc" id="L97">                        configCodeUsingHash);</span>
+                  }
+<span class="fc" id="L99">                  return dbCodeUsingHash;</span>
+                })
+<span class="fc" id="L101">            .orElse(configCodeUsingHash);</span>
+<span class="fc" id="L102">    LOG.info(&quot;Bonsai db mode with code stored using code hash enabled = {}&quot;, codeUsingCodeByHash);</span>
+<span class="fc" id="L103">    return codeUsingCodeByHash;</span>
+  }
+
+  private Optional&lt;Boolean&gt; detectCodeStorageByHash(
+      final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc" id="L108">    return composedWorldStateStorage.stream(CODE_STORAGE)</span>
+<span class="fc" id="L109">        .limit(1)</span>
+<span class="fc" id="L110">        .findFirst()</span>
+<span class="fc" id="L111">        .map(</span>
+            keypair -&gt;
+<span class="fc" id="L113">                CodeHashCodeStorageStrategy.isCodeHashValue(keypair.getKey(), keypair.getValue()));</span>
+  }
+
+  public FlatDbStrategy getFlatDbStrategy(
+      final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc bfc" id="L118" title="All 2 branches covered.">    if (flatDbStrategy == null) {</span>
+<span class="fc" id="L119">      loadFlatDbStrategy(composedWorldStateStorage);</span>
+    }
+<span class="fc" id="L121">    return flatDbStrategy;</span>
+  }
+
+  public void upgradeToFullFlatDbMode(final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc" id="L125">    final SegmentedKeyValueStorageTransaction transaction =</span>
+<span class="fc" id="L126">        composedWorldStateStorage.startTransaction();</span>
+    // TODO: consider ARCHIVE mode
+<span class="fc" id="L128">    transaction.put(</span>
+<span class="fc" id="L129">        TRIE_BRANCH_STORAGE, FLAT_DB_MODE, FlatDbMode.FULL.getVersion().toArrayUnsafe());</span>
+<span class="fc" id="L130">    transaction.commit();</span>
+<span class="fc" id="L131">    loadFlatDbStrategy(composedWorldStateStorage); // force reload of flat db reader strategy</span>
+<span class="fc" id="L132">  }</span>
+
+  public void downgradeToPartialFlatDbMode(
+      final SegmentedKeyValueStorage composedWorldStateStorage) {
+<span class="fc" id="L136">    final SegmentedKeyValueStorageTransaction transaction =</span>
+<span class="fc" id="L137">        composedWorldStateStorage.startTransaction();</span>
+<span class="fc" id="L138">    transaction.put(</span>
+<span class="fc" id="L139">        TRIE_BRANCH_STORAGE, FLAT_DB_MODE, FlatDbMode.PARTIAL.getVersion().toArrayUnsafe());</span>
+<span class="fc" id="L140">    transaction.commit();</span>
+<span class="fc" id="L141">    loadFlatDbStrategy(composedWorldStateStorage); // force reload of flat db reader strategy</span>
+<span class="fc" id="L142">  }</span>
+
+  public FlatDbMode getFlatDbMode() {
+<span class="fc" id="L145">    return flatDbMode;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -29,6 +29,7 @@ import org.hyperledger.besu.evm.gascalculator.GasCalculator;
 import org.hyperledger.besu.evm.internal.Words;
 
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import org.apache.tuweni.bytes.Bytes;
 
@@ -36,7 +37,7 @@ import org.apache.tuweni.bytes.Bytes;
 public abstract class AbstractCreateOperation extends AbstractOperation {
 
   /** The constant UNDERFLOW_RESPONSE. */
-<span class="fc" id="L39">  protected static final OperationResult UNDERFLOW_RESPONSE =</span>
+<span class="fc" id="L40">  protected static final OperationResult UNDERFLOW_RESPONSE =</span>
       new OperationResult(0L, ExceptionalHaltReason.INSUFFICIENT_STACK_ITEMS);
 
   /** The maximum init code size */
@@ -59,144 +60,158 @@ public abstract class AbstractCreateOperation extends AbstractOperation {
       final int stackItemsProduced,
       final GasCalculator gasCalculator,
       final int maxInitcodeSize) {
-<span class="fc" id="L62">    super(opcode, name, stackItemsConsumed, stackItemsProduced, gasCalculator);</span>
-<span class="fc" id="L63">    this.maxInitcodeSize = maxInitcodeSize;</span>
-<span class="fc" id="L64">  }</span>
+<span class="fc" id="L63">    super(opcode, name, stackItemsConsumed, stackItemsProduced, gasCalculator);</span>
+<span class="fc" id="L64">    this.maxInitcodeSize = maxInitcodeSize;</span>
+<span class="fc" id="L65">  }</span>
 
   @Override
   public OperationResult execute(final MessageFrame frame, final EVM evm) {
     // manual check because some reads won't come until the &quot;complete&quot; step.
-<span class="fc bfc" id="L69" title="All 2 branches covered.">    if (frame.stackSize() &lt; getStackItemsConsumed()) {</span>
-<span class="fc" id="L70">      return UNDERFLOW_RESPONSE;</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">    if (frame.stackSize() &lt; getStackItemsConsumed()) {</span>
+<span class="nc" id="L71">      return UNDERFLOW_RESPONSE;</span>
     }
 
-<span class="fc" id="L73">    final long cost = cost(frame);</span>
-<span class="fc bfc" id="L74" title="All 2 branches covered.">    if (frame.isStatic()) {</span>
-<span class="fc" id="L75">      return new OperationResult(cost, ExceptionalHaltReason.ILLEGAL_STATE_CHANGE);</span>
-<span class="fc bfc" id="L76" title="All 2 branches covered.">    } else if (frame.getRemainingGas() &lt; cost) {</span>
-<span class="fc" id="L77">      return new OperationResult(cost, ExceptionalHaltReason.INSUFFICIENT_GAS);</span>
+<span class="fc" id="L74">    Supplier&lt;Code&gt; codeSupplier = () -&gt; getInitCode(frame, evm);</span>
+
+<span class="fc" id="L76">    final long cost = cost(frame, codeSupplier);</span>
+<span class="pc bpc" id="L77" title="1 of 2 branches missed.">    if (frame.isStatic()) {</span>
+<span class="nc" id="L78">      return new OperationResult(cost, ExceptionalHaltReason.ILLEGAL_STATE_CHANGE);</span>
+<span class="fc bfc" id="L79" title="All 2 branches covered.">    } else if (frame.getRemainingGas() &lt; cost) {</span>
+<span class="fc" id="L80">      return new OperationResult(cost, ExceptionalHaltReason.INSUFFICIENT_GAS);</span>
     }
-<span class="fc" id="L79">    final Wei value = Wei.wrap(frame.getStackItem(0));</span>
+<span class="fc" id="L82">    final Wei value = Wei.wrap(frame.getStackItem(0));</span>
 
-<span class="fc" id="L81">    final Address address = frame.getRecipientAddress();</span>
-<span class="fc" id="L82">    final MutableAccount account = frame.getWorldUpdater().getAccount(address);</span>
+<span class="fc" id="L84">    final Address address = frame.getRecipientAddress();</span>
+<span class="fc" id="L85">    final MutableAccount account = frame.getWorldUpdater().getAccount(address);</span>
 
-<span class="fc" id="L84">    frame.clearReturnData();</span>
-<span class="fc" id="L85">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
-<span class="fc" id="L86">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
-<span class="fc bfc" id="L87" title="All 2 branches covered.">    if (inputSize &gt; maxInitcodeSize) {</span>
-<span class="fc" id="L88">      frame.popStackItems(getStackItemsConsumed());</span>
-<span class="fc" id="L89">      return new OperationResult(cost, ExceptionalHaltReason.CODE_TOO_LARGE);</span>
+<span class="fc" id="L87">    frame.clearReturnData();</span>
+<span class="fc" id="L88">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L89">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc bfc" id="L90" title="All 2 branches covered.">    if (inputSize &gt; maxInitcodeSize) {</span>
+<span class="fc" id="L91">      frame.popStackItems(getStackItemsConsumed());</span>
+<span class="fc" id="L92">      return new OperationResult(cost, ExceptionalHaltReason.CODE_TOO_LARGE);</span>
     }
 
-<span class="fc bfc" id="L92" title="All 2 branches covered.">    if (value.compareTo(account.getBalance()) &gt; 0</span>
-<span class="fc bfc" id="L93" title="All 2 branches covered.">        || frame.getDepth() &gt;= 1024</span>
-<span class="fc bfc" id="L94" title="All 2 branches covered.">        || account.getNonce() == -1) {</span>
-<span class="fc" id="L95">      fail(frame);</span>
+<span class="fc bfc" id="L95" title="All 2 branches covered.">    if (value.compareTo(account.getBalance()) &gt; 0</span>
+<span class="fc bfc" id="L96" title="All 2 branches covered.">        || frame.getDepth() &gt;= 1024</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">        || account.getNonce() == -1</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        || codeSupplier.get() == null) {</span>
+<span class="fc" id="L99">      fail(frame);</span>
     } else {
-<span class="fc" id="L97">      account.incrementNonce();</span>
+<span class="fc" id="L101">      account.incrementNonce();</span>
 
-<span class="fc" id="L99">      final Bytes inputData = frame.readMemory(inputOffset, inputSize);</span>
+<span class="fc" id="L103">      final Bytes inputData = frame.readMemory(inputOffset, inputSize);</span>
       // Never cache CREATEx initcode. The amount of reuse is very low, and caching mostly
       // addresses disk loading delay, and we already have the code.
-<span class="fc" id="L102">      Code code = evm.getCode(null, inputData);</span>
+<span class="fc" id="L106">      Code code = evm.getCodeUncached(inputData);</span>
 
-<span class="pc bpc" id="L104" title="1 of 4 branches missed.">      if (code.isValid() &amp;&amp; frame.getCode().getEofVersion() &lt;= code.getEofVersion()) {</span>
-<span class="fc" id="L105">        frame.decrementRemainingGas(cost);</span>
-<span class="fc" id="L106">        spawnChildMessage(frame, code, evm);</span>
-<span class="fc" id="L107">        frame.incrementRemainingGas(cost);</span>
+<span class="pc bpc" id="L108" title="1 of 4 branches missed.">      if (code.isValid() &amp;&amp; frame.getCode().getEofVersion() &lt;= code.getEofVersion()) {</span>
+<span class="fc" id="L109">        frame.decrementRemainingGas(cost);</span>
+<span class="fc" id="L110">        spawnChildMessage(frame, code, evm);</span>
+<span class="fc" id="L111">        frame.incrementRemainingGas(cost);</span>
       } else {
-<span class="fc" id="L109">        fail(frame);</span>
+<span class="fc" id="L113">        fail(frame);</span>
       }
     }
 
-<span class="fc" id="L113">    return new OperationResult(cost, null);</span>
+<span class="fc" id="L117">    return new OperationResult(cost, null);</span>
   }
 
   /**
    * Cost operation.
    *
    * @param frame the frame
+   * @param codeSupplier a supplier for the initcode, if needed for costing
    * @return the long
    */
-  protected abstract long cost(final MessageFrame frame);
+  protected abstract long cost(final MessageFrame frame, Supplier&lt;Code&gt; codeSupplier);
 
   /**
    * Target contract address.
    *
    * @param frame the frame
+   * @param initcode the initcode for the new contract.
    * @return the address
    */
-  protected abstract Address targetContractAddress(MessageFrame frame);
+  protected abstract Address targetContractAddress(MessageFrame frame, Code initcode);
+
+  /**
+   * Gets the initcode that will be run.
+   *
+   * @param frame The message frame the operation executed in
+   * @param evm the EVM executing the message frame
+   * @return the initcode, raw bytes, unparsed and unvalidated
+   */
+  protected abstract Code getInitCode(MessageFrame frame, EVM evm);
 
   private void fail(final MessageFrame frame) {
-<span class="fc" id="L133">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
-<span class="fc" id="L134">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
-<span class="fc" id="L135">    frame.readMutableMemory(inputOffset, inputSize);</span>
-<span class="fc" id="L136">    frame.popStackItems(getStackItemsConsumed());</span>
-<span class="fc" id="L137">    frame.pushStackItem(FAILURE_STACK_ITEM);</span>
-<span class="fc" id="L138">  }</span>
+<span class="fc" id="L148">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L149">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc" id="L150">    frame.readMutableMemory(inputOffset, inputSize);</span>
+<span class="fc" id="L151">    frame.popStackItems(getStackItemsConsumed());</span>
+<span class="fc" id="L152">    frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L153">  }</span>
 
   private void spawnChildMessage(final MessageFrame parent, final Code code, final EVM evm) {
-<span class="fc" id="L141">    final Wei value = Wei.wrap(parent.getStackItem(0));</span>
+<span class="fc" id="L156">    final Wei value = Wei.wrap(parent.getStackItem(0));</span>
 
-<span class="fc" id="L143">    final Address contractAddress = targetContractAddress(parent);</span>
+<span class="fc" id="L158">    final Address contractAddress = targetContractAddress(parent, code);</span>
 
-<span class="fc" id="L145">    final long childGasStipend =</span>
-<span class="fc" id="L146">        gasCalculator().gasAvailableForChildCreate(parent.getRemainingGas());</span>
-<span class="fc" id="L147">    parent.decrementRemainingGas(childGasStipend);</span>
+<span class="fc" id="L160">    final long childGasStipend =</span>
+<span class="fc" id="L161">        gasCalculator().gasAvailableForChildCreate(parent.getRemainingGas());</span>
+<span class="fc" id="L162">    parent.decrementRemainingGas(childGasStipend);</span>
 
     // frame addition is automatically handled by parent messageFrameStack
-<span class="fc" id="L150">    MessageFrame.builder()</span>
-<span class="fc" id="L151">        .parentMessageFrame(parent)</span>
-<span class="fc" id="L152">        .type(MessageFrame.Type.CONTRACT_CREATION)</span>
-<span class="fc" id="L153">        .initialGas(childGasStipend)</span>
-<span class="fc" id="L154">        .address(contractAddress)</span>
-<span class="fc" id="L155">        .contract(contractAddress)</span>
-<span class="fc" id="L156">        .inputData(Bytes.EMPTY)</span>
-<span class="fc" id="L157">        .sender(parent.getRecipientAddress())</span>
-<span class="fc" id="L158">        .value(value)</span>
-<span class="fc" id="L159">        .apparentValue(value)</span>
-<span class="fc" id="L160">        .code(code)</span>
-<span class="fc" id="L161">        .completer(child -&gt; complete(parent, child, evm))</span>
-<span class="fc" id="L162">        .build();</span>
+<span class="fc" id="L165">    MessageFrame.builder()</span>
+<span class="fc" id="L166">        .parentMessageFrame(parent)</span>
+<span class="fc" id="L167">        .type(MessageFrame.Type.CONTRACT_CREATION)</span>
+<span class="fc" id="L168">        .initialGas(childGasStipend)</span>
+<span class="fc" id="L169">        .address(contractAddress)</span>
+<span class="fc" id="L170">        .contract(contractAddress)</span>
+<span class="fc" id="L171">        .inputData(Bytes.EMPTY)</span>
+<span class="fc" id="L172">        .sender(parent.getRecipientAddress())</span>
+<span class="fc" id="L173">        .value(value)</span>
+<span class="fc" id="L174">        .apparentValue(value)</span>
+<span class="fc" id="L175">        .code(code)</span>
+<span class="fc" id="L176">        .completer(child -&gt; complete(parent, child, evm))</span>
+<span class="fc" id="L177">        .build();</span>
 
-<span class="fc" id="L164">    parent.setState(MessageFrame.State.CODE_SUSPENDED);</span>
-<span class="fc" id="L165">  }</span>
+<span class="fc" id="L179">    parent.setState(MessageFrame.State.CODE_SUSPENDED);</span>
+<span class="fc" id="L180">  }</span>
 
   private void complete(final MessageFrame frame, final MessageFrame childFrame, final EVM evm) {
-<span class="fc" id="L168">    frame.setState(MessageFrame.State.CODE_EXECUTING);</span>
+<span class="fc" id="L183">    frame.setState(MessageFrame.State.CODE_EXECUTING);</span>
 
-<span class="fc" id="L170">    Code outputCode =</span>
-<span class="fc" id="L171">        CodeFactory.createCode(childFrame.getOutputData(), evm.getMaxEOFVersion(), true);</span>
-<span class="fc" id="L172">    frame.popStackItems(getStackItemsConsumed());</span>
+<span class="fc" id="L185">    Code outputCode =</span>
+<span class="fc" id="L186">        CodeFactory.createCode(childFrame.getOutputData(), evm.getMaxEOFVersion(), true);</span>
+<span class="fc" id="L187">    frame.popStackItems(getStackItemsConsumed());</span>
 
-<span class="fc bfc" id="L174" title="All 2 branches covered.">    if (outputCode.isValid()) {</span>
-<span class="fc" id="L175">      frame.incrementRemainingGas(childFrame.getRemainingGas());</span>
-<span class="fc" id="L176">      frame.addLogs(childFrame.getLogs());</span>
-<span class="fc" id="L177">      frame.addSelfDestructs(childFrame.getSelfDestructs());</span>
-<span class="fc" id="L178">      frame.addCreates(childFrame.getCreates());</span>
-<span class="fc" id="L179">      frame.incrementGasRefund(childFrame.getGasRefund());</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">    if (outputCode.isValid()) {</span>
+<span class="fc" id="L190">      frame.incrementRemainingGas(childFrame.getRemainingGas());</span>
+<span class="fc" id="L191">      frame.addLogs(childFrame.getLogs());</span>
+<span class="fc" id="L192">      frame.addSelfDestructs(childFrame.getSelfDestructs());</span>
+<span class="fc" id="L193">      frame.addCreates(childFrame.getCreates());</span>
+<span class="fc" id="L194">      frame.incrementGasRefund(childFrame.getGasRefund());</span>
 
-<span class="fc bfc" id="L181" title="All 2 branches covered.">      if (childFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
-<span class="fc" id="L182">        Address createdAddress = childFrame.getContractAddress();</span>
-<span class="fc" id="L183">        frame.pushStackItem(Words.fromAddress(createdAddress));</span>
-<span class="fc" id="L184">        onSuccess(frame, createdAddress);</span>
-<span class="fc" id="L185">      } else {</span>
-<span class="fc" id="L186">        frame.setReturnData(childFrame.getOutputData());</span>
-<span class="fc" id="L187">        frame.pushStackItem(FAILURE_STACK_ITEM);</span>
-<span class="fc" id="L188">        onFailure(frame, childFrame.getExceptionalHaltReason());</span>
+<span class="fc bfc" id="L196" title="All 2 branches covered.">      if (childFrame.getState() == MessageFrame.State.COMPLETED_SUCCESS) {</span>
+<span class="fc" id="L197">        Address createdAddress = childFrame.getContractAddress();</span>
+<span class="fc" id="L198">        frame.pushStackItem(Words.fromAddress(createdAddress));</span>
+<span class="fc" id="L199">        onSuccess(frame, createdAddress);</span>
+<span class="fc" id="L200">      } else {</span>
+<span class="fc" id="L201">        frame.setReturnData(childFrame.getOutputData());</span>
+<span class="fc" id="L202">        frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L203">        onFailure(frame, childFrame.getExceptionalHaltReason());</span>
       }
     } else {
-<span class="fc" id="L191">      frame.getWorldUpdater().deleteAccount(childFrame.getRecipientAddress());</span>
-<span class="fc" id="L192">      frame.setReturnData(childFrame.getOutputData());</span>
-<span class="fc" id="L193">      frame.pushStackItem(FAILURE_STACK_ITEM);</span>
-<span class="fc" id="L194">      onInvalid(frame, (CodeInvalid) outputCode);</span>
+<span class="fc" id="L206">      frame.getWorldUpdater().deleteAccount(childFrame.getRecipientAddress());</span>
+<span class="fc" id="L207">      frame.setReturnData(childFrame.getOutputData());</span>
+<span class="fc" id="L208">      frame.pushStackItem(FAILURE_STACK_ITEM);</span>
+<span class="fc" id="L209">      onInvalid(frame, (CodeInvalid) outputCode);</span>
     }
 
-<span class="fc" id="L197">    final int currentPC = frame.getPC();</span>
-<span class="fc" id="L198">    frame.setPC(currentPC + 1);</span>
-<span class="fc" id="L199">  }</span>
+<span class="fc" id="L212">    final int currentPC = frame.getPC();</span>
+<span class="fc" id="L213">    frame.setPC(currentPC + 1);</span>
+<span class="fc" id="L214">  }</span>
 
   /**
    * Called when the child {@code CONTRACT_CREATION} message has completed successfully, used to
@@ -207,7 +222,7 @@ public abstract class AbstractCreateOperation extends AbstractOperation {
    */
   protected void onSuccess(final MessageFrame frame, final Address createdAddress) {
     // no-op by default
-<span class="fc" id="L210">  }</span>
+<span class="fc" id="L225">  }</span>
 
   /**
    * Called when the child {@code CONTRACT_CREATION} message has failed to execute, used to give
@@ -219,7 +234,7 @@ public abstract class AbstractCreateOperation extends AbstractOperation {
   protected void onFailure(
       final MessageFrame frame, final Optional&lt;ExceptionalHaltReason&gt; haltReason) {
     // no-op by default
-<span class="fc" id="L222">  }</span>
+<span class="fc" id="L237">  }</span>
 
   /**
    * Called when the child {@code CONTRACT_CREATION} message has completed successfully but the
@@ -231,6 +246,6 @@ public abstract class AbstractCreateOperation extends AbstractOperation {
    */
   protected void onInvalid(final MessageFrame frame, final CodeInvalid invalidCode) {
     // no-op by default
-<span class="nc" id="L234">  }</span>
+<span class="nc" id="L249">  }</span>
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

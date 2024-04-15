@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiAccount.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.bonsai</a> &gt; <span class="el_source">BonsaiAccount.java</span></div><h1>BonsaiAccount.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.bonsai;
+
+import org.hyperledger.besu.datatypes.AccountValue;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.rlp.RLPException;
+import org.hyperledger.besu.ethereum.rlp.RLPInput;
+import org.hyperledger.besu.ethereum.rlp.RLPOutput;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedAccount;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldView;
+import org.hyperledger.besu.evm.ModificationNotAllowedException;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.evm.worldstate.UpdateTrackingAccount;
+
+import java.util.NavigableMap;
+import java.util.Objects;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class BonsaiAccount extends DiffBasedAccount {
+  private Hash storageRoot;
+
+  public BonsaiAccount(
+      final DiffBasedWorldView context,
+      final Address address,
+      final Hash addressHash,
+      final long nonce,
+      final Wei balance,
+      final Hash storageRoot,
+      final Hash codeHash,
+      final boolean mutable) {
+<span class="fc" id="L52">    super(context, address, addressHash, nonce, balance, codeHash, mutable);</span>
+<span class="fc" id="L53">    this.storageRoot = storageRoot;</span>
+<span class="fc" id="L54">  }</span>
+
+  public BonsaiAccount(
+      final DiffBasedWorldView context,
+      final Address address,
+      final AccountValue stateTrieAccount,
+      final boolean mutable) {
+<span class="fc" id="L61">    super(</span>
+        context,
+        address,
+<span class="fc" id="L64">        address.addressHash(),</span>
+<span class="fc" id="L65">        stateTrieAccount.getNonce(),</span>
+<span class="fc" id="L66">        stateTrieAccount.getBalance(),</span>
+<span class="fc" id="L67">        stateTrieAccount.getCodeHash(),</span>
+        mutable);
+<span class="fc" id="L69">    this.storageRoot = stateTrieAccount.getStorageRoot();</span>
+<span class="fc" id="L70">  }</span>
+
+  public BonsaiAccount(final BonsaiAccount toCopy) {
+<span class="fc" id="L73">    this(toCopy, toCopy.context, false);</span>
+<span class="fc" id="L74">  }</span>
+
+  public BonsaiAccount(
+      final BonsaiAccount toCopy, final DiffBasedWorldView context, final boolean mutable) {
+<span class="fc" id="L78">    super(</span>
+        context,
+        toCopy.address,
+        toCopy.addressHash,
+        toCopy.nonce,
+        toCopy.balance,
+        toCopy.codeHash,
+        toCopy.code,
+        mutable);
+<span class="fc" id="L87">    this.storageRoot = toCopy.storageRoot;</span>
+<span class="fc" id="L88">    updatedStorage.putAll(toCopy.updatedStorage);</span>
+<span class="fc" id="L89">  }</span>
+
+  public BonsaiAccount(
+      final DiffBasedWorldView context, final UpdateTrackingAccount&lt;BonsaiAccount&gt; tracked) {
+<span class="fc" id="L93">    super(</span>
+        context,
+<span class="fc" id="L95">        tracked.getAddress(),</span>
+<span class="fc" id="L96">        tracked.getAddressHash(),</span>
+<span class="fc" id="L97">        tracked.getNonce(),</span>
+<span class="fc" id="L98">        tracked.getBalance(),</span>
+<span class="fc" id="L99">        tracked.getCodeHash(),</span>
+<span class="fc" id="L100">        tracked.getCode(),</span>
+        true);
+<span class="fc" id="L102">    this.storageRoot = Hash.EMPTY_TRIE_HASH;</span>
+<span class="fc" id="L103">    updatedStorage.putAll(tracked.getUpdatedStorage());</span>
+<span class="fc" id="L104">  }</span>
+
+  public static BonsaiAccount fromRLP(
+      final DiffBasedWorldView context,
+      final Address address,
+      final Bytes encoded,
+      final boolean mutable)
+      throws RLPException {
+<span class="fc" id="L112">    final RLPInput in = RLP.input(encoded);</span>
+<span class="fc" id="L113">    in.enterList();</span>
+
+<span class="fc" id="L115">    final long nonce = in.readLongScalar();</span>
+<span class="fc" id="L116">    final Wei balance = Wei.of(in.readUInt256Scalar());</span>
+<span class="fc" id="L117">    final Hash storageRoot = Hash.wrap(in.readBytes32());</span>
+<span class="fc" id="L118">    final Hash codeHash = Hash.wrap(in.readBytes32());</span>
+
+<span class="fc" id="L120">    in.leaveList();</span>
+
+<span class="fc" id="L122">    return new BonsaiAccount(</span>
+<span class="fc" id="L123">        context, address, address.addressHash(), nonce, balance, storageRoot, codeHash, mutable);</span>
+  }
+
+  @Override
+  public NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntriesFrom(
+      final Bytes32 startKeyHash, final int limit) {
+<span class="fc" id="L129">    return ((BonsaiWorldStateKeyValueStorage) context.getWorldStateStorage())</span>
+<span class="fc" id="L130">        .storageEntriesFrom(this.addressHash, startKeyHash, limit);</span>
+  }
+
+  @Override
+  public void writeTo(final RLPOutput out) {
+<span class="fc" id="L135">    out.startList();</span>
+
+<span class="fc" id="L137">    out.writeLongScalar(nonce);</span>
+<span class="fc" id="L138">    out.writeUInt256Scalar(balance);</span>
+<span class="fc" id="L139">    out.writeBytes(storageRoot);</span>
+<span class="fc" id="L140">    out.writeBytes(codeHash);</span>
+
+<span class="fc" id="L142">    out.endList();</span>
+<span class="fc" id="L143">  }</span>
+
+  @Override
+  public Hash getStorageRoot() {
+<span class="fc" id="L147">    return storageRoot;</span>
+  }
+
+  public void setStorageRoot(final Hash storageRoot) {
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">    if (immutable) {</span>
+<span class="nc" id="L152">      throw new ModificationNotAllowedException();</span>
+    }
+<span class="fc" id="L154">    this.storageRoot = storageRoot;</span>
+<span class="fc" id="L155">  }</span>
+
+  @Override
+  public String toString() {
+<span class="nc" id="L159">    return &quot;AccountState{&quot;</span>
+        + &quot;address=&quot;
+        + address
+        + &quot;, nonce=&quot;
+        + nonce
+        + &quot;, balance=&quot;
+        + balance
+        + &quot;, storageRoot=&quot;
+        + storageRoot
+        + &quot;, codeHash=&quot;
+        + codeHash
+        + '}';
+  }
+
+  /**
+   * Throws an exception if the two accounts represent different stored states
+   *
+   * @param source The bonsai account to compare
+   * @param account The State Trie account to compare
+   * @param context a description to be added to the thrown exceptions
+   * @throws IllegalStateException if the stored values differ
+   */
+  public static void assertCloseEnoughForDiffing(
+      final BonsaiAccount source, final AccountValue account, final String context) {
+<span class="pc bpc" id="L183" title="1 of 2 branches missed.">    if (source == null) {</span>
+<span class="nc" id="L184">      throw new IllegalStateException(context + &quot;: source is null but target isn't&quot;);</span>
+    } else {
+<span class="pc bpc" id="L186" title="1 of 2 branches missed.">      if (source.nonce != account.getNonce()) {</span>
+<span class="nc" id="L187">        throw new IllegalStateException(context + &quot;: nonces differ&quot;);</span>
+      }
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">      if (!Objects.equals(source.balance, account.getBalance())) {</span>
+<span class="nc" id="L190">        throw new IllegalStateException(context + &quot;: balances differ&quot;);</span>
+      }
+<span class="pc bpc" id="L192" title="1 of 2 branches missed.">      if (!Objects.equals(source.storageRoot, account.getStorageRoot())) {</span>
+<span class="nc" id="L193">        throw new IllegalStateException(context + &quot;: Storage Roots differ&quot;);</span>
+      }
+    }
+<span class="fc" id="L196">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

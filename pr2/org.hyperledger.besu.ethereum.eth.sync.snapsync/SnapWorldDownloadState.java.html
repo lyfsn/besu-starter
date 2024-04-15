@@ -29,7 +29,8 @@ import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.StorageRangeDataR
 import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.AccountFlatDatabaseHealingRangeRequest;
 import org.hyperledger.besu.ethereum.eth.sync.snapsync.request.heal.StorageFlatDatabaseHealingRangeRequest;
 import org.hyperledger.besu.ethereum.eth.sync.worldstate.WorldDownloadState;
-import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.RangeManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
 import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
 import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
 import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
@@ -46,6 +47,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -58,25 +60,25 @@ import org.slf4j.LoggerFactory;
 
 public class SnapWorldDownloadState extends WorldDownloadState&lt;SnapDataRequest&gt; {
 
-<span class="fc" id="L61">  private static final Logger LOG = LoggerFactory.getLogger(SnapWorldDownloadState.class);</span>
+<span class="fc" id="L63">  private static final Logger LOG = LoggerFactory.getLogger(SnapWorldDownloadState.class);</span>
 
-<span class="fc" id="L63">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingAccountRequests =</span>
+<span class="fc" id="L65">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingAccountRequests =</span>
       new InMemoryTaskQueue&lt;&gt;();
-<span class="fc" id="L65">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingStorageRequests =</span>
+<span class="fc" id="L67">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingStorageRequests =</span>
       new InMemoryTaskQueue&lt;&gt;();
-<span class="fc" id="L67">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingLargeStorageRequests =</span>
+<span class="fc" id="L69">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingLargeStorageRequests =</span>
       new InMemoryTaskQueue&lt;&gt;();
-<span class="fc" id="L69">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingCodeRequests =</span>
+<span class="fc" id="L71">  protected final InMemoryTaskQueue&lt;SnapDataRequest&gt; pendingCodeRequests =</span>
       new InMemoryTaskQueue&lt;&gt;();
-<span class="fc" id="L71">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt; pendingTrieNodeRequests =</span>
+<span class="fc" id="L73">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt; pendingTrieNodeRequests =</span>
       new InMemoryTasksPriorityQueues&lt;&gt;();
 
-<span class="fc" id="L74">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt;</span>
+<span class="fc" id="L76">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt;</span>
       pendingAccountFlatDatabaseHealingRequests = new InMemoryTasksPriorityQueues&lt;&gt;();
 
-<span class="fc" id="L77">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt;</span>
+<span class="fc" id="L79">  protected final InMemoryTasksPriorityQueues&lt;SnapDataRequest&gt;</span>
       pendingStorageFlatDatabaseHealingRequests = new InMemoryTasksPriorityQueues&lt;&gt;();
-<span class="fc" id="L79">  private HashSet&lt;Bytes&gt; accountsHealingList = new HashSet&lt;&gt;();</span>
+<span class="fc" id="L81">  private Set&lt;Bytes&gt; accountsHealingList = new HashSet&lt;&gt;();</span>
   private DynamicPivotBlockSelector pivotBlockSelector;
 
   private final SnapSyncStatePersistenceManager snapContext;
@@ -99,213 +101,213 @@ public class SnapWorldDownloadState extends WorldDownloadState&lt;SnapDataReques
       final long minMillisBeforeStalling,
       final SnapSyncMetricsManager metricsManager,
       final Clock clock) {
-<span class="fc" id="L102">    super(</span>
+<span class="fc" id="L104">    super(</span>
         worldStateStorageCoordinator,
         pendingRequests,
         maxRequestsWithoutProgress,
         minMillisBeforeStalling,
         clock);
-<span class="fc" id="L108">    this.snapContext = snapContext;</span>
-<span class="fc" id="L109">    this.blockchain = blockchain;</span>
-<span class="fc" id="L110">    this.snapSyncState = snapSyncState;</span>
-<span class="fc" id="L111">    this.metricsManager = metricsManager;</span>
-<span class="fc" id="L112">    this.blockObserverId = OptionalLong.empty();</span>
-<span class="fc" id="L113">    metricsManager</span>
-<span class="fc" id="L114">        .getMetricsSystem()</span>
-<span class="fc" id="L115">        .createLongGauge(</span>
+<span class="fc" id="L110">    this.snapContext = snapContext;</span>
+<span class="fc" id="L111">    this.blockchain = blockchain;</span>
+<span class="fc" id="L112">    this.snapSyncState = snapSyncState;</span>
+<span class="fc" id="L113">    this.metricsManager = metricsManager;</span>
+<span class="fc" id="L114">    this.blockObserverId = OptionalLong.empty();</span>
+<span class="fc" id="L115">    metricsManager</span>
+<span class="fc" id="L116">        .getMetricsSystem()</span>
+<span class="fc" id="L117">        .createLongGauge(</span>
             BesuMetricCategory.SYNCHRONIZER,
             &quot;snap_world_state_pending_account_requests_current&quot;,
             &quot;Number of account pending requests for snap sync world state download&quot;,
-<span class="fc" id="L119">            pendingAccountRequests::size);</span>
-<span class="fc" id="L120">    metricsManager</span>
-<span class="fc" id="L121">        .getMetricsSystem()</span>
-<span class="fc" id="L122">        .createLongGauge(</span>
+<span class="fc" id="L121">            pendingAccountRequests::size);</span>
+<span class="fc" id="L122">    metricsManager</span>
+<span class="fc" id="L123">        .getMetricsSystem()</span>
+<span class="fc" id="L124">        .createLongGauge(</span>
             BesuMetricCategory.SYNCHRONIZER,
             &quot;snap_world_state_pending_storage_requests_current&quot;,
             &quot;Number of storage pending requests for snap sync world state download&quot;,
-<span class="fc" id="L126">            pendingStorageRequests::size);</span>
-<span class="fc" id="L127">    metricsManager</span>
-<span class="fc" id="L128">        .getMetricsSystem()</span>
-<span class="fc" id="L129">        .createLongGauge(</span>
+<span class="fc" id="L128">            pendingStorageRequests::size);</span>
+<span class="fc" id="L129">    metricsManager</span>
+<span class="fc" id="L130">        .getMetricsSystem()</span>
+<span class="fc" id="L131">        .createLongGauge(</span>
             BesuMetricCategory.SYNCHRONIZER,
             &quot;snap_world_state_pending_big_storage_requests_current&quot;,
             &quot;Number of storage pending requests for snap sync world state download&quot;,
-<span class="fc" id="L133">            pendingLargeStorageRequests::size);</span>
-<span class="fc" id="L134">    metricsManager</span>
-<span class="fc" id="L135">        .getMetricsSystem()</span>
-<span class="fc" id="L136">        .createLongGauge(</span>
+<span class="fc" id="L135">            pendingLargeStorageRequests::size);</span>
+<span class="fc" id="L136">    metricsManager</span>
+<span class="fc" id="L137">        .getMetricsSystem()</span>
+<span class="fc" id="L138">        .createLongGauge(</span>
             BesuMetricCategory.SYNCHRONIZER,
             &quot;snap_world_state_pending_code_requests_current&quot;,
             &quot;Number of code pending requests for snap sync world state download&quot;,
-<span class="fc" id="L140">            pendingCodeRequests::size);</span>
-<span class="fc" id="L141">    metricsManager</span>
-<span class="fc" id="L142">        .getMetricsSystem()</span>
-<span class="fc" id="L143">        .createLongGauge(</span>
+<span class="fc" id="L142">            pendingCodeRequests::size);</span>
+<span class="fc" id="L143">    metricsManager</span>
+<span class="fc" id="L144">        .getMetricsSystem()</span>
+<span class="fc" id="L145">        .createLongGauge(</span>
             BesuMetricCategory.SYNCHRONIZER,
             &quot;snap_world_state_pending_trie_node_requests_current&quot;,
             &quot;Number of trie node pending requests for snap sync world state download&quot;,
-<span class="fc" id="L147">            pendingTrieNodeRequests::size);</span>
-<span class="fc" id="L148">  }</span>
+<span class="fc" id="L149">            pendingTrieNodeRequests::size);</span>
+<span class="fc" id="L150">  }</span>
 
   @Override
   public synchronized void notifyTaskAvailable() {
-<span class="nc" id="L152">    notifyAll();</span>
-<span class="nc" id="L153">  }</span>
+<span class="nc" id="L154">    notifyAll();</span>
+<span class="nc" id="L155">  }</span>
 
   @Override
   protected synchronized void markAsStalled(final int maxNodeRequestRetries) {
     // TODO retry when mark as stalled
-<span class="nc" id="L158">  }</span>
+<span class="nc" id="L160">  }</span>
 
   @Override
   public synchronized boolean checkCompletion(final BlockHeader header) {
 
     // Check if all snapsync tasks are completed
-<span class="pc bpc" id="L164" title="1 of 2 branches missed.">    if (!internalFuture.isDone()</span>
-<span class="fc bfc" id="L165" title="All 2 branches covered.">        &amp;&amp; pendingAccountRequests.allTasksCompleted()</span>
-<span class="pc bpc" id="L166" title="1 of 2 branches missed.">        &amp;&amp; pendingCodeRequests.allTasksCompleted()</span>
-<span class="fc bfc" id="L167" title="All 2 branches covered.">        &amp;&amp; pendingStorageRequests.allTasksCompleted()</span>
-<span class="pc bpc" id="L168" title="1 of 2 branches missed.">        &amp;&amp; pendingLargeStorageRequests.allTasksCompleted()</span>
-<span class="fc bfc" id="L169" title="All 2 branches covered.">        &amp;&amp; pendingTrieNodeRequests.allTasksCompleted()</span>
-<span class="fc bfc" id="L170" title="All 2 branches covered.">        &amp;&amp; pendingAccountFlatDatabaseHealingRequests.allTasksCompleted()</span>
-<span class="pc bpc" id="L171" title="1 of 2 branches missed.">        &amp;&amp; pendingStorageFlatDatabaseHealingRequests.allTasksCompleted()) {</span>
+<span class="pc bpc" id="L166" title="1 of 2 branches missed.">    if (!internalFuture.isDone()</span>
+<span class="fc bfc" id="L167" title="All 2 branches covered.">        &amp;&amp; pendingAccountRequests.allTasksCompleted()</span>
+<span class="pc bpc" id="L168" title="1 of 2 branches missed.">        &amp;&amp; pendingCodeRequests.allTasksCompleted()</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">        &amp;&amp; pendingStorageRequests.allTasksCompleted()</span>
+<span class="pc bpc" id="L170" title="1 of 2 branches missed.">        &amp;&amp; pendingLargeStorageRequests.allTasksCompleted()</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">        &amp;&amp; pendingTrieNodeRequests.allTasksCompleted()</span>
+<span class="fc bfc" id="L172" title="All 2 branches covered.">        &amp;&amp; pendingAccountFlatDatabaseHealingRequests.allTasksCompleted()</span>
+<span class="pc bpc" id="L173" title="1 of 2 branches missed.">        &amp;&amp; pendingStorageFlatDatabaseHealingRequests.allTasksCompleted()) {</span>
 
       // if all snapsync tasks are completed and the healing process was not running
-<span class="fc bfc" id="L174" title="All 2 branches covered.">      if (!snapSyncState.isHealTrieInProgress()) {</span>
+<span class="fc bfc" id="L176" title="All 2 branches covered.">      if (!snapSyncState.isHealTrieInProgress()) {</span>
         // Register blockchain observer if not already registered
-<span class="fc" id="L176">        blockObserverId =</span>
-<span class="fc bfc" id="L177" title="All 2 branches covered.">            blockObserverId.isEmpty()</span>
-<span class="fc" id="L178">                ? OptionalLong.of(blockchain.observeBlockAdded(createBlockchainObserver()))</span>
-<span class="fc" id="L179">                : blockObserverId;</span>
+<span class="fc" id="L178">        blockObserverId =</span>
+<span class="fc bfc" id="L179" title="All 2 branches covered.">            blockObserverId.isEmpty()</span>
+<span class="fc" id="L180">                ? OptionalLong.of(blockchain.observeBlockAdded(createBlockchainObserver()))</span>
+<span class="fc" id="L181">                : blockObserverId;</span>
         // Start the healing process
-<span class="fc" id="L181">        startTrieHeal();</span>
+<span class="fc" id="L183">        startTrieHeal();</span>
       }
       // if all snapsync tasks are completed and the healing was running and blockchain is behind
       // the pivot block
-<span class="fc bfc" id="L185" title="All 2 branches covered.">      else if (pivotBlockSelector.isBlockchainBehind()) {</span>
-<span class="fc" id="L186">        LOG.info(&quot;Pausing world state download while waiting for sync to complete&quot;);</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">      else if (pivotBlockSelector.isBlockchainBehind()) {</span>
+<span class="fc" id="L188">        LOG.info(&quot;Pausing world state download while waiting for sync to complete&quot;);</span>
         // Set the snapsync to wait for the blockchain to catch up
-<span class="fc" id="L188">        snapSyncState.setWaitingBlockchain(true);</span>
+<span class="fc" id="L190">        snapSyncState.setWaitingBlockchain(true);</span>
       }
       // if all snapsync tasks are completed and the healing was running and the blockchain is not
       // behind the pivot block
       else {
         // Remove the blockchain observer
-<span class="fc" id="L194">        blockObserverId.ifPresent(blockchain::removeObserver);</span>
+<span class="fc" id="L196">        blockObserverId.ifPresent(blockchain::removeObserver);</span>
         // If the flat database healing process is not in progress and the flat database mode is
         // FULL
-<span class="fc bfc" id="L197" title="All 2 branches covered.">        if (!snapSyncState.isHealFlatDatabaseInProgress()</span>
-<span class="fc bfc" id="L198" title="All 2 branches covered.">            &amp;&amp; worldStateStorageCoordinator.isMatchingFlatMode(FlatDbMode.FULL)) {</span>
-<span class="fc" id="L199">          startFlatDatabaseHeal(header);</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        if (!snapSyncState.isHealFlatDatabaseInProgress()</span>
+<span class="fc bfc" id="L200" title="All 2 branches covered.">            &amp;&amp; worldStateStorageCoordinator.isMatchingFlatMode(FlatDbMode.FULL)) {</span>
+<span class="fc" id="L201">          startFlatDatabaseHeal(header);</span>
         }
         // If the flat database healing process is in progress or the flat database mode is not FULL
         else {
-<span class="fc" id="L203">          final WorldStateKeyValueStorage.Updater updater = worldStateStorageCoordinator.updater();</span>
-<span class="fc" id="L204">          applyForStrategy(</span>
+<span class="fc" id="L205">          final WorldStateKeyValueStorage.Updater updater = worldStateStorageCoordinator.updater();</span>
+<span class="fc" id="L206">          applyForStrategy(</span>
               updater,
               onBonsai -&gt; {
-<span class="fc" id="L207">                onBonsai.saveWorldState(header.getHash(), header.getStateRoot(), rootNodeData);</span>
-<span class="fc" id="L208">              },</span>
+<span class="fc" id="L209">                onBonsai.saveWorldState(header.getHash(), header.getStateRoot(), rootNodeData);</span>
+<span class="fc" id="L210">              },</span>
               onForest -&gt; {
-<span class="fc" id="L210">                onForest.saveWorldState(header.getStateRoot(), rootNodeData);</span>
-<span class="fc" id="L211">              });</span>
-<span class="fc" id="L212">          updater.commit();</span>
+<span class="fc" id="L212">                onForest.saveWorldState(header.getStateRoot(), rootNodeData);</span>
+<span class="fc" id="L213">              });</span>
+<span class="fc" id="L214">          updater.commit();</span>
 
           // Notify that the snap sync has completed
-<span class="fc" id="L215">          metricsManager.notifySnapSyncCompleted();</span>
+<span class="fc" id="L217">          metricsManager.notifySnapSyncCompleted();</span>
           // Clear the snap context
-<span class="fc" id="L217">          snapContext.clear();</span>
-<span class="fc" id="L218">          internalFuture.complete(null);</span>
-<span class="fc" id="L219">          return true;</span>
+<span class="fc" id="L219">          snapContext.clear();</span>
+<span class="fc" id="L220">          internalFuture.complete(null);</span>
+<span class="fc" id="L221">          return true;</span>
         }
       }
     }
-<span class="fc" id="L223">    return false;</span>
+<span class="fc" id="L225">    return false;</span>
   }
 
   @Override
   protected synchronized void cleanupQueues() {
-<span class="fc" id="L228">    super.cleanupQueues();</span>
-<span class="fc" id="L229">    pendingAccountRequests.clear();</span>
-<span class="fc" id="L230">    pendingStorageRequests.clear();</span>
-<span class="fc" id="L231">    pendingLargeStorageRequests.clear();</span>
-<span class="fc" id="L232">    pendingCodeRequests.clear();</span>
-<span class="fc" id="L233">    pendingTrieNodeRequests.clear();</span>
-<span class="fc" id="L234">  }</span>
+<span class="fc" id="L230">    super.cleanupQueues();</span>
+<span class="fc" id="L231">    pendingAccountRequests.clear();</span>
+<span class="fc" id="L232">    pendingStorageRequests.clear();</span>
+<span class="fc" id="L233">    pendingLargeStorageRequests.clear();</span>
+<span class="fc" id="L234">    pendingCodeRequests.clear();</span>
+<span class="fc" id="L235">    pendingTrieNodeRequests.clear();</span>
+<span class="fc" id="L236">  }</span>
 
   /** Method to start the healing process of the trie */
   public synchronized void startTrieHeal() {
-<span class="fc" id="L238">    snapContext.clearAccountRangeTasks();</span>
-<span class="fc" id="L239">    snapSyncState.setHealTrieStatus(true);</span>
+<span class="fc" id="L240">    snapContext.clearAccountRangeTasks();</span>
+<span class="fc" id="L241">    snapSyncState.setHealTrieStatus(true);</span>
     // Try to find a new pivot block before starting the healing process
-<span class="fc" id="L241">    pivotBlockSelector.switchToNewPivotBlock(</span>
+<span class="fc" id="L243">    pivotBlockSelector.switchToNewPivotBlock(</span>
         (blockHeader, newPivotBlockFound) -&gt; {
-<span class="fc" id="L243">          snapContext.clearAccountRangeTasks();</span>
-<span class="fc" id="L244">          LOG.info(</span>
+<span class="fc" id="L245">          snapContext.clearAccountRangeTasks();</span>
+<span class="fc" id="L246">          LOG.info(</span>
               &quot;Running world state heal process from peers with pivot block {}&quot;,
-<span class="fc" id="L246">              blockHeader.getNumber());</span>
-<span class="fc" id="L247">          enqueueRequest(</span>
-<span class="fc" id="L248">              createAccountTrieNodeDataRequest(</span>
-<span class="fc" id="L249">                  blockHeader.getStateRoot(), Bytes.EMPTY, accountsHealingList));</span>
-<span class="fc" id="L250">        });</span>
-<span class="fc" id="L251">  }</span>
+<span class="fc" id="L248">              blockHeader.getNumber());</span>
+<span class="fc" id="L249">          enqueueRequest(</span>
+<span class="fc" id="L250">              createAccountTrieNodeDataRequest(</span>
+<span class="fc" id="L251">                  blockHeader.getStateRoot(), Bytes.EMPTY, accountsHealingList));</span>
+<span class="fc" id="L252">        });</span>
+<span class="fc" id="L253">  }</span>
 
   /** Method to reload the healing process of the trie */
   public synchronized void reloadTrieHeal() {
     // Clear the flat database and trie log from the world state storage if needed
-<span class="fc" id="L256">    worldStateStorageCoordinator.applyOnMatchingStrategy(</span>
+<span class="fc" id="L258">    worldStateStorageCoordinator.applyOnMatchingStrategy(</span>
         DataStorageFormat.BONSAI,
         worldStateKeyValueStorage -&gt; {
-<span class="fc" id="L259">          final BonsaiWorldStateKeyValueStorage strategy =</span>
-<span class="fc" id="L260">              worldStateStorageCoordinator.getStrategy(BonsaiWorldStateKeyValueStorage.class);</span>
-<span class="fc" id="L261">          strategy.clearFlatDatabase();</span>
-<span class="fc" id="L262">          strategy.clearTrieLog();</span>
-<span class="fc" id="L263">        });</span>
+<span class="fc" id="L261">          final BonsaiWorldStateKeyValueStorage strategy =</span>
+<span class="fc" id="L262">              worldStateStorageCoordinator.getStrategy(BonsaiWorldStateKeyValueStorage.class);</span>
+<span class="fc" id="L263">          strategy.clearFlatDatabase();</span>
+<span class="fc" id="L264">          strategy.clearTrieLog();</span>
+<span class="fc" id="L265">        });</span>
     // Clear pending trie node and code requests
-<span class="fc" id="L265">    pendingTrieNodeRequests.clear();</span>
-<span class="fc" id="L266">    pendingCodeRequests.clear();</span>
+<span class="fc" id="L267">    pendingTrieNodeRequests.clear();</span>
+<span class="fc" id="L268">    pendingCodeRequests.clear();</span>
 
-<span class="fc" id="L268">    snapSyncState.setHealTrieStatus(false);</span>
-<span class="fc" id="L269">    checkCompletion(snapSyncState.getPivotBlockHeader().orElseThrow());</span>
-<span class="fc" id="L270">  }</span>
+<span class="fc" id="L270">    snapSyncState.setHealTrieStatus(false);</span>
+<span class="fc" id="L271">    checkCompletion(snapSyncState.getPivotBlockHeader().orElseThrow());</span>
+<span class="fc" id="L272">  }</span>
 
   public synchronized void startFlatDatabaseHeal(final BlockHeader header) {
-<span class="fc" id="L273">    LOG.info(&quot;Initiating the healing process for the flat database&quot;);</span>
-<span class="fc" id="L274">    snapSyncState.setHealFlatDatabaseInProgress(true);</span>
-<span class="fc" id="L275">    final Map&lt;Bytes32, Bytes32&gt; ranges = RangeManager.generateAllRanges(16);</span>
-<span class="fc" id="L276">    ranges.forEach(</span>
+<span class="fc" id="L275">    LOG.info(&quot;Initiating the healing process for the flat database&quot;);</span>
+<span class="fc" id="L276">    snapSyncState.setHealFlatDatabaseInProgress(true);</span>
+<span class="fc" id="L277">    final Map&lt;Bytes32, Bytes32&gt; ranges = RangeManager.generateAllRanges(16);</span>
+<span class="fc" id="L278">    ranges.forEach(</span>
         (key, value) -&gt;
-<span class="fc" id="L278">            enqueueRequest(</span>
-<span class="fc" id="L279">                createAccountFlatHealingRangeRequest(header.getStateRoot(), key, value)));</span>
-<span class="fc" id="L280">  }</span>
+<span class="fc" id="L280">            enqueueRequest(</span>
+<span class="fc" id="L281">                createAccountFlatHealingRangeRequest(header.getStateRoot(), key, value)));</span>
+<span class="fc" id="L282">  }</span>
 
   @Override
   public synchronized void enqueueRequest(final SnapDataRequest request) {
-<span class="pc bpc" id="L284" title="1 of 2 branches missed.">    if (!internalFuture.isDone()) {</span>
-<span class="pc bpc" id="L285" title="1 of 2 branches missed.">      if (request instanceof BytecodeRequest) {</span>
-<span class="nc" id="L286">        pendingCodeRequests.add(request);</span>
-<span class="pc bpc" id="L287" title="1 of 2 branches missed.">      } else if (request instanceof StorageRangeDataRequest) {</span>
-<span class="nc bnc" id="L288" title="All 2 branches missed.">        if (!((StorageRangeDataRequest) request).getStartKeyHash().equals(RangeManager.MIN_RANGE)) {</span>
-<span class="nc" id="L289">          pendingLargeStorageRequests.add(request);</span>
+<span class="pc bpc" id="L286" title="1 of 2 branches missed.">    if (!internalFuture.isDone()) {</span>
+<span class="pc bpc" id="L287" title="1 of 2 branches missed.">      if (request instanceof BytecodeRequest) {</span>
+<span class="nc" id="L288">        pendingCodeRequests.add(request);</span>
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">      } else if (request instanceof StorageRangeDataRequest) {</span>
+<span class="nc bnc" id="L290" title="All 2 branches missed.">        if (!((StorageRangeDataRequest) request).getStartKeyHash().equals(RangeManager.MIN_RANGE)) {</span>
+<span class="nc" id="L291">          pendingLargeStorageRequests.add(request);</span>
         } else {
-<span class="nc" id="L291">          pendingStorageRequests.add(request);</span>
+<span class="nc" id="L293">          pendingStorageRequests.add(request);</span>
         }
-<span class="pc bpc" id="L293" title="1 of 2 branches missed.">      } else if (request instanceof AccountRangeDataRequest) {</span>
-<span class="nc" id="L294">        pendingAccountRequests.add(request);</span>
-<span class="fc bfc" id="L295" title="All 2 branches covered.">      } else if (request instanceof AccountFlatDatabaseHealingRangeRequest) {</span>
-<span class="fc" id="L296">        pendingAccountFlatDatabaseHealingRequests.add(request);</span>
-<span class="pc bpc" id="L297" title="1 of 2 branches missed.">      } else if (request instanceof StorageFlatDatabaseHealingRangeRequest) {</span>
-<span class="nc" id="L298">        pendingStorageFlatDatabaseHealingRequests.add(request);</span>
+<span class="pc bpc" id="L295" title="1 of 2 branches missed.">      } else if (request instanceof AccountRangeDataRequest) {</span>
+<span class="nc" id="L296">        pendingAccountRequests.add(request);</span>
+<span class="fc bfc" id="L297" title="All 2 branches covered.">      } else if (request instanceof AccountFlatDatabaseHealingRangeRequest) {</span>
+<span class="fc" id="L298">        pendingAccountFlatDatabaseHealingRequests.add(request);</span>
+<span class="pc bpc" id="L299" title="1 of 2 branches missed.">      } else if (request instanceof StorageFlatDatabaseHealingRangeRequest) {</span>
+<span class="nc" id="L300">        pendingStorageFlatDatabaseHealingRequests.add(request);</span>
       } else {
-<span class="fc" id="L300">        pendingTrieNodeRequests.add(request);</span>
+<span class="fc" id="L302">        pendingTrieNodeRequests.add(request);</span>
       }
-<span class="fc" id="L302">      notifyAll();</span>
+<span class="fc" id="L304">      notifyAll();</span>
     }
-<span class="fc" id="L304">  }</span>
+<span class="fc" id="L306">  }</span>
 
-  public synchronized void setAccountsHealingList(final HashSet&lt;Bytes&gt; addAccountToHealingList) {
-<span class="nc" id="L307">    this.accountsHealingList = addAccountToHealingList;</span>
-<span class="nc" id="L308">  }</span>
+  public synchronized void setAccountsHealingList(final Set&lt;Bytes&gt; addAccountToHealingList) {
+<span class="nc" id="L309">    this.accountsHealingList = addAccountToHealingList;</span>
+<span class="nc" id="L310">  }</span>
 
   /**
    * Adds an account to the list of accounts to be repaired during the healing process. If the
@@ -315,137 +317,137 @@ public class SnapWorldDownloadState extends WorldDownloadState&lt;SnapDataReques
    * @param account The account to be added for repair.
    */
   public synchronized void addAccountToHealingList(final Bytes account) {
-<span class="nc bnc" id="L318" title="All 2 branches missed.">    if (!accountsHealingList.contains(account)) {</span>
-<span class="nc" id="L319">      snapContext.addAccountToHealingList(account);</span>
-<span class="nc" id="L320">      accountsHealingList.add(account);</span>
+<span class="nc bnc" id="L320" title="All 2 branches missed.">    if (!accountsHealingList.contains(account)) {</span>
+<span class="nc" id="L321">      snapContext.addAccountToHealingList(account);</span>
+<span class="nc" id="L322">      accountsHealingList.add(account);</span>
     }
-<span class="nc" id="L322">  }</span>
+<span class="nc" id="L324">  }</span>
 
-  public HashSet&lt;Bytes&gt; getAccountsHealingList() {
-<span class="nc" id="L325">    return accountsHealingList;</span>
+  public Set&lt;Bytes&gt; getAccountsHealingList() {
+<span class="nc" id="L327">    return accountsHealingList;</span>
   }
 
   @Override
   public synchronized void enqueueRequests(final Stream&lt;SnapDataRequest&gt; requests) {
-<span class="nc bnc" id="L330" title="All 2 branches missed.">    if (!internalFuture.isDone()) {</span>
-<span class="nc" id="L331">      requests.forEach(this::enqueueRequest);</span>
+<span class="nc bnc" id="L332" title="All 2 branches missed.">    if (!internalFuture.isDone()) {</span>
+<span class="nc" id="L333">      requests.forEach(this::enqueueRequest);</span>
     }
-<span class="nc" id="L333">  }</span>
+<span class="nc" id="L335">  }</span>
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueRequestBlocking(
       final List&lt;TaskCollection&lt;SnapDataRequest&gt;&gt; queueDependencies,
       final TaskCollection&lt;SnapDataRequest&gt; queue,
       final Consumer&lt;Void&gt; unBlocked) {
-<span class="nc" id="L339">    boolean isWaiting = false;</span>
-<span class="nc bnc" id="L340" title="All 2 branches missed.">    while (!internalFuture.isDone()) {</span>
-<span class="nc" id="L341">      while (queueDependencies.stream()</span>
-<span class="nc" id="L342">          .map(TaskCollection::allTasksCompleted)</span>
-<span class="nc bnc" id="L343" title="All 2 branches missed.">          .anyMatch(Predicate.isEqual(false))) {</span>
+<span class="nc" id="L341">    boolean isWaiting = false;</span>
+<span class="nc bnc" id="L342" title="All 2 branches missed.">    while (!internalFuture.isDone()) {</span>
+<span class="nc" id="L343">      while (queueDependencies.stream()</span>
+<span class="nc" id="L344">          .map(TaskCollection::allTasksCompleted)</span>
+<span class="nc bnc" id="L345" title="All 2 branches missed.">          .anyMatch(Predicate.isEqual(false))) {</span>
         try {
-<span class="nc" id="L345">          isWaiting = true;</span>
-<span class="nc" id="L346">          wait();</span>
-<span class="nc" id="L347">        } catch (final InterruptedException e) {</span>
-<span class="nc" id="L348">          Thread.currentThread().interrupt();</span>
-<span class="nc" id="L349">          return null;</span>
-<span class="nc" id="L350">        }</span>
+<span class="nc" id="L347">          isWaiting = true;</span>
+<span class="nc" id="L348">          wait();</span>
+<span class="nc" id="L349">        } catch (final InterruptedException e) {</span>
+<span class="nc" id="L350">          Thread.currentThread().interrupt();</span>
+<span class="nc" id="L351">          return null;</span>
+<span class="nc" id="L352">        }</span>
       }
-<span class="nc bnc" id="L352" title="All 2 branches missed.">      if (isWaiting) {</span>
-<span class="nc" id="L353">        unBlocked.accept(null);</span>
+<span class="nc bnc" id="L354" title="All 2 branches missed.">      if (isWaiting) {</span>
+<span class="nc" id="L355">        unBlocked.accept(null);</span>
       }
-<span class="nc" id="L355">      isWaiting = false;</span>
-<span class="nc" id="L356">      Task&lt;SnapDataRequest&gt; task = queue.remove();</span>
-<span class="nc bnc" id="L357" title="All 2 branches missed.">      if (task != null) {</span>
-<span class="nc" id="L358">        return task;</span>
+<span class="nc" id="L357">      isWaiting = false;</span>
+<span class="nc" id="L358">      Task&lt;SnapDataRequest&gt; task = queue.remove();</span>
+<span class="nc bnc" id="L359" title="All 2 branches missed.">      if (task != null) {</span>
+<span class="nc" id="L360">        return task;</span>
       }
 
       try {
-<span class="nc" id="L362">        wait();</span>
-<span class="nc" id="L363">      } catch (final InterruptedException e) {</span>
-<span class="nc" id="L364">        Thread.currentThread().interrupt();</span>
-<span class="nc" id="L365">        return null;</span>
-<span class="nc" id="L366">      }</span>
-<span class="nc" id="L367">    }</span>
-<span class="nc" id="L368">    return null;</span>
+<span class="nc" id="L364">        wait();</span>
+<span class="nc" id="L365">      } catch (final InterruptedException e) {</span>
+<span class="nc" id="L366">        Thread.currentThread().interrupt();</span>
+<span class="nc" id="L367">        return null;</span>
+<span class="nc" id="L368">      }</span>
+<span class="nc" id="L369">    }</span>
+<span class="nc" id="L370">    return null;</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueAccountRequestBlocking() {
-<span class="nc" id="L372">    return dequeueRequestBlocking(</span>
-<span class="nc" id="L373">        List.of(pendingStorageRequests, pendingLargeStorageRequests, pendingCodeRequests),</span>
+<span class="nc" id="L374">    return dequeueRequestBlocking(</span>
+<span class="nc" id="L375">        List.of(pendingStorageRequests, pendingLargeStorageRequests, pendingCodeRequests),</span>
         pendingAccountRequests,
-<span class="nc" id="L375">        unused -&gt; snapContext.updatePersistedTasks(pendingAccountRequests.asList()));</span>
+<span class="nc" id="L377">        unused -&gt; snapContext.updatePersistedTasks(pendingAccountRequests.asList()));</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueLargeStorageRequestBlocking() {
-<span class="nc" id="L379">    return dequeueRequestBlocking(Collections.emptyList(), pendingLargeStorageRequests, __ -&gt; {});</span>
+<span class="nc" id="L381">    return dequeueRequestBlocking(Collections.emptyList(), pendingLargeStorageRequests, __ -&gt; {});</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueStorageRequestBlocking() {
-<span class="nc" id="L383">    return dequeueRequestBlocking(Collections.emptyList(), pendingStorageRequests, __ -&gt; {});</span>
+<span class="nc" id="L385">    return dequeueRequestBlocking(Collections.emptyList(), pendingStorageRequests, __ -&gt; {});</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueCodeRequestBlocking() {
-<span class="nc" id="L387">    return dequeueRequestBlocking(List.of(pendingStorageRequests), pendingCodeRequests, __ -&gt; {});</span>
+<span class="nc" id="L389">    return dequeueRequestBlocking(List.of(pendingStorageRequests), pendingCodeRequests, __ -&gt; {});</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueTrieNodeRequestBlocking() {
-<span class="nc" id="L391">    return dequeueRequestBlocking(</span>
-<span class="nc" id="L392">        List.of(pendingAccountRequests, pendingStorageRequests, pendingLargeStorageRequests),</span>
+<span class="nc" id="L393">    return dequeueRequestBlocking(</span>
+<span class="nc" id="L394">        List.of(pendingAccountRequests, pendingStorageRequests, pendingLargeStorageRequests),</span>
         pendingTrieNodeRequests,
-<span class="nc" id="L394">        __ -&gt; {});</span>
+<span class="nc" id="L396">        __ -&gt; {});</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueAccountFlatDatabaseHealingRequestBlocking() {
-<span class="nc" id="L398">    return dequeueRequestBlocking(</span>
-<span class="nc" id="L399">        List.of(</span>
+<span class="nc" id="L400">    return dequeueRequestBlocking(</span>
+<span class="nc" id="L401">        List.of(</span>
             pendingAccountRequests,
             pendingStorageRequests,
             pendingLargeStorageRequests,
             pendingTrieNodeRequests,
             pendingStorageFlatDatabaseHealingRequests),
         pendingAccountFlatDatabaseHealingRequests,
-<span class="nc" id="L406">        __ -&gt; {});</span>
+<span class="nc" id="L408">        __ -&gt; {});</span>
   }
 
   public synchronized Task&lt;SnapDataRequest&gt; dequeueStorageFlatDatabaseHealingRequestBlocking() {
-<span class="nc" id="L410">    return dequeueRequestBlocking(</span>
-<span class="nc" id="L411">        List.of(</span>
+<span class="nc" id="L412">    return dequeueRequestBlocking(</span>
+<span class="nc" id="L413">        List.of(</span>
             pendingAccountRequests,
             pendingStorageRequests,
             pendingLargeStorageRequests,
             pendingTrieNodeRequests),
         pendingStorageFlatDatabaseHealingRequests,
-<span class="nc" id="L417">        __ -&gt; {});</span>
+<span class="nc" id="L419">        __ -&gt; {});</span>
   }
 
   public SnapSyncMetricsManager getMetricsManager() {
-<span class="nc" id="L421">    return metricsManager;</span>
+<span class="nc" id="L423">    return metricsManager;</span>
   }
 
   public void setPivotBlockSelector(final DynamicPivotBlockSelector pivotBlockSelector) {
-<span class="fc" id="L425">    this.pivotBlockSelector = pivotBlockSelector;</span>
-<span class="fc" id="L426">  }</span>
+<span class="fc" id="L427">    this.pivotBlockSelector = pivotBlockSelector;</span>
+<span class="fc" id="L428">  }</span>
 
   public BlockAddedObserver createBlockchainObserver() {
-<span class="fc" id="L429">    return addedBlockContext -&gt; {</span>
-<span class="fc" id="L430">      final AtomicBoolean foundNewPivotBlock = new AtomicBoolean(false);</span>
-<span class="fc" id="L431">      pivotBlockSelector.check(</span>
+<span class="fc" id="L431">    return addedBlockContext -&gt; {</span>
+<span class="fc" id="L432">      final AtomicBoolean foundNewPivotBlock = new AtomicBoolean(false);</span>
+<span class="fc" id="L433">      pivotBlockSelector.check(</span>
           (____, isNewPivotBlock) -&gt; {
-<span class="pc bpc" id="L433" title="1 of 2 branches missed.">            if (isNewPivotBlock) {</span>
-<span class="fc" id="L434">              foundNewPivotBlock.set(true);</span>
+<span class="pc bpc" id="L435" title="1 of 2 branches missed.">            if (isNewPivotBlock) {</span>
+<span class="fc" id="L436">              foundNewPivotBlock.set(true);</span>
             }
-<span class="fc" id="L436">          });</span>
+<span class="fc" id="L438">          });</span>
 
-<span class="fc" id="L438">      final boolean isNewPivotBlockFound = foundNewPivotBlock.get();</span>
-<span class="fc" id="L439">      final boolean isBlockchainCaughtUp =</span>
-<span class="pc bpc" id="L440" title="1 of 4 branches missed.">          snapSyncState.isWaitingBlockchain() &amp;&amp; !pivotBlockSelector.isBlockchainBehind();</span>
+<span class="fc" id="L440">      final boolean isNewPivotBlockFound = foundNewPivotBlock.get();</span>
+<span class="fc" id="L441">      final boolean isBlockchainCaughtUp =</span>
+<span class="pc bpc" id="L442" title="1 of 4 branches missed.">          snapSyncState.isWaitingBlockchain() &amp;&amp; !pivotBlockSelector.isBlockchainBehind();</span>
 
-<span class="pc bpc" id="L442" title="1 of 4 branches missed.">      if (isNewPivotBlockFound</span>
+<span class="pc bpc" id="L444" title="1 of 4 branches missed.">      if (isNewPivotBlockFound</span>
           || isBlockchainCaughtUp) { // restart heal if we found a new pivot block or if close to
         // head again
-<span class="fc" id="L445">        snapSyncState.setWaitingBlockchain(false);</span>
-<span class="fc" id="L446">        reloadTrieHeal();</span>
+<span class="fc" id="L447">        snapSyncState.setWaitingBlockchain(false);</span>
+<span class="fc" id="L448">        reloadTrieHeal();</span>
       }
-<span class="fc" id="L448">    };</span>
+<span class="fc" id="L450">    };</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

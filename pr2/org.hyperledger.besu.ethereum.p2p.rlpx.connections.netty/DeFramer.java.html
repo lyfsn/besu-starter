@@ -184,98 +184,104 @@ final class DeFramer extends ByteToMessageDecoder {
 <span class="fc" id="L184">          LOG.debug(&quot;Disconnecting because no capabilities are shared: {}&quot;, peerInfo);</span>
 <span class="fc" id="L185">          connectFuture.completeExceptionally(</span>
               new IncompatiblePeerException(&quot;No shared capabilities&quot;));
-<span class="fc" id="L187">          connection.disconnect(DisconnectMessage.DisconnectReason.USELESS_PEER);</span>
+<span class="fc" id="L187">          connection.disconnect(</span>
+              DisconnectMessage.DisconnectReason.USELESS_PEER_NO_SHARED_CAPABILITIES);
         }
 
         // Setup next stage
-<span class="fc" id="L191">        final AtomicBoolean waitingForPong = new AtomicBoolean(false);</span>
-<span class="fc" id="L192">        ctx.channel()</span>
-<span class="fc" id="L193">            .pipeline()</span>
-<span class="fc" id="L194">            .addLast(</span>
+<span class="fc" id="L192">        final AtomicBoolean waitingForPong = new AtomicBoolean(false);</span>
+<span class="fc" id="L193">        ctx.channel()</span>
+<span class="fc" id="L194">            .pipeline()</span>
+<span class="fc" id="L195">            .addLast(</span>
                 new IdleStateHandler(15, 0, 0),
                 new WireKeepAlive(connection, waitingForPong),
                 new ApiHandler(
                     capabilityMultiplexer, connection, connectionEventDispatcher, waitingForPong),
                 new MessageFramer(capabilityMultiplexer, framer));
-<span class="fc" id="L200">        connectFuture.complete(connection);</span>
+<span class="fc" id="L201">        connectFuture.complete(connection);</span>
 
-<span class="fc bfc" id="L202" title="All 2 branches covered.">      } else if (message.getCode() == WireMessageCodes.DISCONNECT) {</span>
+<span class="fc bfc" id="L203" title="All 2 branches covered.">      } else if (message.getCode() == WireMessageCodes.DISCONNECT) {</span>
 
-<span class="fc" id="L204">        final DisconnectMessage disconnectMessage = DisconnectMessage.readFrom(message);</span>
-<span class="fc" id="L205">        LOG.debug(</span>
+<span class="fc" id="L205">        final DisconnectMessage disconnectMessage = DisconnectMessage.readFrom(message);</span>
+<span class="fc" id="L206">        LOG.debug(</span>
             &quot;Peer {} disconnected before sending HELLO.  Reason: {}&quot;,
-<span class="fc" id="L207">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
-<span class="fc" id="L208">            disconnectMessage.getReason());</span>
-<span class="fc" id="L209">        ctx.close();</span>
-<span class="fc" id="L210">        connectFuture.completeExceptionally(</span>
-<span class="fc" id="L211">            new PeerDisconnectedException(disconnectMessage.getReason()));</span>
+<span class="fc" id="L208">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
+<span class="fc" id="L209">            disconnectMessage.getReason());</span>
+<span class="fc" id="L210">        ctx.close();</span>
+<span class="fc" id="L211">        connectFuture.completeExceptionally(</span>
+<span class="fc" id="L212">            new PeerDisconnectedException(disconnectMessage.getReason()));</span>
 
-<span class="fc" id="L213">      } else {</span>
+<span class="fc" id="L214">      } else {</span>
         // Unexpected message - disconnect
 
-<span class="fc" id="L216">        LOG.debug(</span>
+<span class="fc" id="L217">        LOG.debug(</span>
             &quot;Message received before HELLO's exchanged (BREACH_OF_PROTOCOL), disconnecting.  Peer: {}, Code: {}, Data: {}&quot;,
-<span class="fc" id="L218">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
-<span class="fc" id="L219">            message.getCode(),</span>
-<span class="fc" id="L220">            message.getData().toString());</span>
-<span class="fc" id="L221">        ctx.writeAndFlush(</span>
+<span class="fc" id="L219">            expectedPeer.map(Peer::getEnodeURLString).orElse(&quot;unknown&quot;),</span>
+<span class="fc" id="L220">            message.getCode(),</span>
+<span class="fc" id="L221">            message.getData().toString());</span>
+<span class="fc" id="L222">        ctx.writeAndFlush(</span>
                 new OutboundMessage(
                     null,
-<span class="fc" id="L224">                    DisconnectMessage.create(</span>
-                        DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL)))
-<span class="fc" id="L226">            .addListener((f) -&gt; ctx.close());</span>
-<span class="fc" id="L227">        connectFuture.completeExceptionally(</span>
+<span class="fc" id="L225">                    DisconnectMessage.create(</span>
+                        DisconnectMessage.DisconnectReason
+                            .BREACH_OF_PROTOCOL_MESSAGE_RECEIVED_BEFORE_HELLO_EXCHANGE)))
+<span class="fc" id="L228">            .addListener((f) -&gt; ctx.close());</span>
+<span class="fc" id="L229">        connectFuture.completeExceptionally(</span>
             new BreachOfProtocolException(&quot;Message received before HELLO's exchanged&quot;));
       }
     }
-<span class="fc" id="L231">  }</span>
+<span class="fc" id="L233">  }</span>
 
   private Optional&lt;Peer&gt; createPeer(final PeerInfo peerInfo, final ChannelHandlerContext ctx) {
-<span class="fc" id="L234">    final InetSocketAddress remoteAddress = ((InetSocketAddress) ctx.channel().remoteAddress());</span>
-<span class="fc bfc" id="L235" title="All 2 branches covered.">    if (remoteAddress == null) {</span>
-<span class="fc" id="L236">      return Optional.empty();</span>
+<span class="fc" id="L236">    final InetSocketAddress remoteAddress = ((InetSocketAddress) ctx.channel().remoteAddress());</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">    if (remoteAddress == null) {</span>
+<span class="fc" id="L238">      return Optional.empty();</span>
     }
-<span class="fc" id="L238">    final int port = peerInfo.getPort();</span>
-<span class="fc" id="L239">    return Optional.of(</span>
-<span class="fc" id="L240">        DefaultPeer.fromEnodeURL(</span>
-<span class="fc" id="L241">            EnodeURLImpl.builder()</span>
-<span class="fc" id="L242">                .nodeId(peerInfo.getNodeId())</span>
-<span class="fc" id="L243">                .ipAddress(remoteAddress.getAddress())</span>
-<span class="fc" id="L244">                .listeningPort(port)</span>
+<span class="fc" id="L240">    final int port = peerInfo.getPort();</span>
+<span class="fc" id="L241">    return Optional.of(</span>
+<span class="fc" id="L242">        DefaultPeer.fromEnodeURL(</span>
+<span class="fc" id="L243">            EnodeURLImpl.builder()</span>
+<span class="fc" id="L244">                .nodeId(peerInfo.getNodeId())</span>
+<span class="fc" id="L245">                .ipAddress(remoteAddress.getAddress())</span>
+<span class="fc" id="L246">                .listeningPort(port)</span>
                 // Discovery information is unknown, so disable it
-<span class="fc" id="L246">                .disableDiscovery()</span>
-<span class="fc" id="L247">                .build()));</span>
+<span class="fc" id="L248">                .disableDiscovery()</span>
+<span class="fc" id="L249">                .build()));</span>
   }
 
   @Override
   public void exceptionCaught(final ChannelHandlerContext ctx, final Throwable throwable)
       throws Exception {
     final Throwable cause =
-<span class="pc bpc" id="L254" title="2 of 4 branches missed.">        throwable instanceof DecoderException &amp;&amp; throwable.getCause() != null</span>
-<span class="fc" id="L255">            ? throwable.getCause()</span>
-<span class="pc" id="L256">            : throwable;</span>
-<span class="pc bpc" id="L257" title="1 of 6 branches missed.">    if (cause instanceof FramingException</span>
+<span class="pc bpc" id="L256" title="2 of 4 branches missed.">        throwable instanceof DecoderException &amp;&amp; throwable.getCause() != null</span>
+<span class="fc" id="L257">            ? throwable.getCause()</span>
+<span class="pc" id="L258">            : throwable;</span>
+<span class="pc bpc" id="L259" title="1 of 6 branches missed.">    if (cause instanceof FramingException</span>
         || cause instanceof RLPException
         || cause instanceof IllegalArgumentException) {
-<span class="fc" id="L260">      LOG.debug(&quot;Invalid incoming message (BREACH_OF_PROTOCOL)&quot;, throwable);</span>
-<span class="pc bpc" id="L261" title="1 of 4 branches missed.">      if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
-<span class="fc" id="L262">        connectFuture.get().disconnect(DisconnectMessage.DisconnectReason.BREACH_OF_PROTOCOL);</span>
-<span class="fc" id="L263">        return;</span>
+<span class="fc" id="L262">      LOG.debug(&quot;Invalid incoming message (BREACH_OF_PROTOCOL)&quot;, throwable);</span>
+<span class="pc bpc" id="L263" title="1 of 4 branches missed.">      if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
+<span class="fc" id="L264">        connectFuture</span>
+<span class="fc" id="L265">            .get()</span>
+<span class="fc" id="L266">            .disconnect(</span>
+                DisconnectMessage.DisconnectReason
+                    .BREACH_OF_PROTOCOL_INVALID_MESSAGE_RECEIVED_CAUGHT_EXCEPTION);
+<span class="fc" id="L269">        return;</span>
       }
-<span class="pc bpc" id="L265" title="1 of 2 branches missed.">    } else if (cause instanceof IOException) {</span>
+<span class="pc bpc" id="L271" title="1 of 2 branches missed.">    } else if (cause instanceof IOException) {</span>
       // IO failures are routine when communicating with random peers across the network.
-<span class="nc" id="L267">      LOG.debug(&quot;IO error while processing incoming message&quot;, throwable);</span>
+<span class="nc" id="L273">      LOG.debug(&quot;IO error while processing incoming message&quot;, throwable);</span>
     } else {
-<span class="fc" id="L269">      LOG.error(&quot;Exception while processing incoming message&quot;, throwable);</span>
+<span class="fc" id="L275">      LOG.error(&quot;Exception while processing incoming message&quot;, throwable);</span>
     }
-<span class="pc bpc" id="L271" title="2 of 4 branches missed.">    if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
-<span class="nc" id="L272">      connectFuture</span>
-<span class="nc" id="L273">          .get()</span>
-<span class="nc" id="L274">          .terminateConnection(DisconnectMessage.DisconnectReason.TCP_SUBSYSTEM_ERROR, false);</span>
+<span class="pc bpc" id="L277" title="2 of 4 branches missed.">    if (connectFuture.isDone() &amp;&amp; !connectFuture.isCompletedExceptionally()) {</span>
+<span class="nc" id="L278">      connectFuture</span>
+<span class="nc" id="L279">          .get()</span>
+<span class="nc" id="L280">          .terminateConnection(DisconnectMessage.DisconnectReason.TCP_SUBSYSTEM_ERROR, false);</span>
     } else {
-<span class="fc" id="L276">      connectFuture.completeExceptionally(throwable);</span>
-<span class="fc" id="L277">      ctx.close();</span>
+<span class="fc" id="L282">      connectFuture.completeExceptionally(throwable);</span>
+<span class="fc" id="L283">      ctx.close();</span>
     }
-<span class="fc" id="L279">  }</span>
+<span class="fc" id="L285">  }</span>
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

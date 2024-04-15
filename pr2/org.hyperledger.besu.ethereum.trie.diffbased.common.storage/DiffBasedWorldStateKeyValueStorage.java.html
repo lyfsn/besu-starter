@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DiffBasedWorldStateKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common.storage</a> &gt; <span class="el_source">DiffBasedWorldStateKeyValueStorage.java</span></div><h1>DiffBasedWorldStateKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.diffbased.common.storage;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_INFO_STATE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_STORAGE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.CODE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_BRANCH_STORAGE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.StorageSubscriber;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat.FlatDbStrategy;
+import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+import org.hyperledger.besu.util.Subscribers;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import kotlin.Pair;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class DiffBasedWorldStateKeyValueStorage
+    implements WorldStateKeyValueStorage, AutoCloseable {
+<span class="fc" id="L52">  private static final Logger LOG =</span>
+<span class="fc" id="L53">      LoggerFactory.getLogger(DiffBasedWorldStateKeyValueStorage.class);</span>
+
+  // 0x776f726c64526f6f74
+<span class="fc" id="L56">  public static final byte[] WORLD_ROOT_HASH_KEY = &quot;worldRoot&quot;.getBytes(StandardCharsets.UTF_8);</span>
+  // 0x776f726c64426c6f636b48617368
+<span class="fc" id="L58">  public static final byte[] WORLD_BLOCK_HASH_KEY =</span>
+<span class="fc" id="L59">      &quot;worldBlockHash&quot;.getBytes(StandardCharsets.UTF_8);</span>
+
+<span class="pc" id="L61">  private final AtomicBoolean shouldClose = new AtomicBoolean(false);</span>
+
+<span class="pc" id="L63">  protected final AtomicBoolean isClosed = new AtomicBoolean(false);</span>
+
+<span class="pc" id="L65">  protected final Subscribers&lt;StorageSubscriber&gt; subscribers = Subscribers.create();</span>
+  protected final SegmentedKeyValueStorage composedWorldStateStorage;
+  protected final KeyValueStorage trieLogStorage;
+
+<span class="nc" id="L69">  public DiffBasedWorldStateKeyValueStorage(final StorageProvider provider) {</span>
+<span class="nc" id="L70">    this.composedWorldStateStorage =</span>
+<span class="nc" id="L71">        provider.getStorageBySegmentIdentifiers(</span>
+<span class="nc" id="L72">            List.of(</span>
+                ACCOUNT_INFO_STATE, CODE_STORAGE, ACCOUNT_STORAGE_STORAGE, TRIE_BRANCH_STORAGE));
+<span class="nc" id="L74">    this.trieLogStorage =</span>
+<span class="nc" id="L75">        provider.getStorageBySegmentIdentifier(KeyValueSegmentIdentifier.TRIE_LOG_STORAGE);</span>
+<span class="nc" id="L76">  }</span>
+
+  public DiffBasedWorldStateKeyValueStorage(
+      final SegmentedKeyValueStorage composedWorldStateStorage,
+<span class="fc" id="L80">      final KeyValueStorage trieLogStorage) {</span>
+<span class="fc" id="L81">    this.composedWorldStateStorage = composedWorldStateStorage;</span>
+<span class="fc" id="L82">    this.trieLogStorage = trieLogStorage;</span>
+<span class="fc" id="L83">  }</span>
+
+  public abstract FlatDbMode getFlatDbMode();
+
+  public abstract FlatDbStrategy getFlatDbStrategy();
+
+  @Override
+  public abstract DataStorageFormat getDataStorageFormat();
+
+  public SegmentedKeyValueStorage getComposedWorldStateStorage() {
+<span class="fc" id="L93">    return composedWorldStateStorage;</span>
+  }
+
+  public KeyValueStorage getTrieLogStorage() {
+<span class="fc" id="L97">    return trieLogStorage;</span>
+  }
+
+  public Optional&lt;byte[]&gt; getTrieLog(final Hash blockHash) {
+<span class="fc" id="L101">    return trieLogStorage.get(blockHash.toArrayUnsafe());</span>
+  }
+
+  public Stream&lt;byte[]&gt; streamTrieLogKeys(final long limit) {
+<span class="fc" id="L105">    return trieLogStorage.streamKeys().limit(limit);</span>
+  }
+
+  public Optional&lt;Bytes&gt; getStateTrieNode(final Bytes location) {
+<span class="fc" id="L109">    return composedWorldStateStorage</span>
+<span class="fc" id="L110">        .get(TRIE_BRANCH_STORAGE, location.toArrayUnsafe())</span>
+<span class="fc" id="L111">        .map(Bytes::wrap);</span>
+  }
+
+  public Optional&lt;Bytes&gt; getWorldStateRootHash() {
+<span class="fc" id="L115">    return composedWorldStateStorage.get(TRIE_BRANCH_STORAGE, WORLD_ROOT_HASH_KEY).map(Bytes::wrap);</span>
+  }
+
+  public Optional&lt;Hash&gt; getWorldStateBlockHash() {
+<span class="fc" id="L119">    return composedWorldStateStorage</span>
+<span class="fc" id="L120">        .get(TRIE_BRANCH_STORAGE, WORLD_BLOCK_HASH_KEY)</span>
+<span class="fc" id="L121">        .map(Bytes32::wrap)</span>
+<span class="fc" id="L122">        .map(Hash::wrap);</span>
+  }
+
+  public NavigableMap&lt;Bytes32, Bytes&gt; streamFlatAccounts(
+      final Bytes startKeyHash, final Bytes32 endKeyHash, final long max) {
+<span class="fc" id="L127">    return getFlatDbStrategy()</span>
+<span class="fc" id="L128">        .streamAccountFlatDatabase(composedWorldStateStorage, startKeyHash, endKeyHash, max);</span>
+  }
+
+  public NavigableMap&lt;Bytes32, Bytes&gt; streamFlatAccounts(
+      final Bytes startKeyHash,
+      final Bytes32 endKeyHash,
+      final Predicate&lt;Pair&lt;Bytes32, Bytes&gt;&gt; takeWhile) {
+<span class="fc" id="L135">    return getFlatDbStrategy()</span>
+<span class="fc" id="L136">        .streamAccountFlatDatabase(composedWorldStateStorage, startKeyHash, endKeyHash, takeWhile);</span>
+  }
+
+  public NavigableMap&lt;Bytes32, Bytes&gt; streamFlatStorages(
+      final Hash accountHash, final Bytes startKeyHash, final Bytes32 endKeyHash, final long max) {
+<span class="fc" id="L141">    return getFlatDbStrategy()</span>
+<span class="fc" id="L142">        .streamStorageFlatDatabase(</span>
+            composedWorldStateStorage, accountHash, startKeyHash, endKeyHash, max);
+  }
+
+  public NavigableMap&lt;Bytes32, Bytes&gt; streamFlatStorages(
+      final Hash accountHash,
+      final Bytes startKeyHash,
+      final Bytes32 endKeyHash,
+      final Predicate&lt;Pair&lt;Bytes32, Bytes&gt;&gt; takeWhile) {
+<span class="fc" id="L151">    return getFlatDbStrategy()</span>
+<span class="fc" id="L152">        .streamStorageFlatDatabase(</span>
+            composedWorldStateStorage, accountHash, startKeyHash, endKeyHash, takeWhile);
+  }
+
+  public boolean isWorldStateAvailable(final Bytes32 rootHash, final Hash blockHash) {
+<span class="fc" id="L157">    return composedWorldStateStorage</span>
+<span class="fc" id="L158">        .get(TRIE_BRANCH_STORAGE, WORLD_ROOT_HASH_KEY)</span>
+<span class="fc" id="L159">        .map(Bytes32::wrap)</span>
+<span class="pc bpc" id="L160" title="3 of 4 branches missed.">        .map(hash -&gt; hash.equals(rootHash) || trieLogStorage.containsKey(blockHash.toArrayUnsafe()))</span>
+<span class="fc" id="L161">        .orElse(false);</span>
+  }
+
+  @Override
+  public void clear() {
+<span class="fc" id="L166">    subscribers.forEach(StorageSubscriber::onClearStorage);</span>
+<span class="fc" id="L167">    getFlatDbStrategy().clearAll(composedWorldStateStorage);</span>
+<span class="fc" id="L168">    composedWorldStateStorage.clear(TRIE_BRANCH_STORAGE);</span>
+<span class="fc" id="L169">    trieLogStorage.clear();</span>
+<span class="fc" id="L170">  }</span>
+
+  public void clearTrieLog() {
+<span class="fc" id="L173">    subscribers.forEach(StorageSubscriber::onClearTrieLog);</span>
+<span class="fc" id="L174">    trieLogStorage.clear();</span>
+<span class="fc" id="L175">  }</span>
+
+  public void clearFlatDatabase() {
+<span class="fc" id="L178">    subscribers.forEach(StorageSubscriber::onClearFlatDatabaseStorage);</span>
+<span class="fc" id="L179">    getFlatDbStrategy().resetOnResync(composedWorldStateStorage);</span>
+<span class="fc" id="L180">  }</span>
+
+  @Override
+  public abstract Updater updater();
+
+  public boolean pruneTrieLog(final Hash blockHash) {
+    try {
+<span class="fc" id="L187">      return trieLogStorage.tryDelete(blockHash.toArrayUnsafe());</span>
+<span class="fc" id="L188">    } catch (Exception e) {</span>
+<span class="fc" id="L189">      LOG.error(&quot;Error pruning trie log for block hash {}&quot;, blockHash, e);</span>
+<span class="fc" id="L190">      return false;</span>
+    }
+  }
+
+  @Override
+  public synchronized void close() throws Exception {
+    // when the storage clears, close
+<span class="fc" id="L197">    shouldClose.set(true);</span>
+<span class="fc" id="L198">    tryClose();</span>
+<span class="fc" id="L199">  }</span>
+
+  public synchronized long subscribe(final StorageSubscriber sub) {
+<span class="fc bfc" id="L202" title="All 2 branches covered.">    if (isClosed.get()) {</span>
+<span class="fc" id="L203">      throw new RuntimeException(&quot;Storage is marked to close or has already closed&quot;);</span>
+    }
+<span class="fc" id="L205">    return subscribers.subscribe(sub);</span>
+  }
+
+  public synchronized void unSubscribe(final long id) {
+<span class="fc" id="L209">    subscribers.unsubscribe(id);</span>
+    try {
+<span class="fc" id="L211">      tryClose();</span>
+<span class="nc" id="L212">    } catch (Exception e) {</span>
+<span class="nc" id="L213">      LOG.atWarn()</span>
+<span class="nc" id="L214">          .setMessage(&quot;exception while trying to close : {}&quot;)</span>
+<span class="nc" id="L215">          .addArgument(e::getMessage)</span>
+<span class="nc" id="L216">          .log();</span>
+<span class="fc" id="L217">    }</span>
+<span class="fc" id="L218">  }</span>
+
+  protected synchronized void tryClose() throws Exception {
+<span class="fc bfc" id="L221" title="All 4 branches covered.">    if (shouldClose.get() &amp;&amp; subscribers.getSubscriberCount() &lt; 1) {</span>
+<span class="fc" id="L222">      doClose();</span>
+    }
+<span class="fc" id="L224">  }</span>
+
+  protected synchronized void doClose() throws Exception {
+<span class="nc bnc" id="L227" title="All 2 branches missed.">    if (!isClosed.get()) {</span>
+      // alert any subscribers we are closing:
+<span class="nc" id="L229">      subscribers.forEach(StorageSubscriber::onCloseStorage);</span>
+
+      // close all of the KeyValueStorages:
+<span class="nc" id="L232">      composedWorldStateStorage.close();</span>
+<span class="nc" id="L233">      trieLogStorage.close();</span>
+
+      // set storage closed
+<span class="nc" id="L236">      isClosed.set(true);</span>
+    }
+<span class="nc" id="L238">  }</span>
+
+  public interface Updater extends WorldStateKeyValueStorage.Updater {
+
+    DiffBasedWorldStateKeyValueStorage.Updater saveWorldState(
+        final Bytes blockHash, final Bytes32 nodeHash, final Bytes node);
+
+    SegmentedKeyValueStorageTransaction getWorldStateTransaction();
+
+    KeyValueStorageTransaction getTrieLogStorageTransaction();
+
+    @Override
+    void commit();
+
+    void rollback();
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

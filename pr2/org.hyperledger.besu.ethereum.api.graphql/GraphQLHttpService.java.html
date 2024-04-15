@@ -15,7 +15,6 @@
 package org.hyperledger.besu.ethereum.api.graphql;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.Streams.stream;
 import static io.vertx.core.http.HttpMethod.GET;
 import static io.vertx.core.http.HttpMethod.POST;
 
@@ -44,8 +43,6 @@ import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
 import com.google.common.net.MediaType;
 import graphql.ExecutionInput;
 import graphql.ExecutionResult;
@@ -62,6 +59,7 @@ import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.DecodeException;
 import io.vertx.core.json.Json;
 import io.vertx.core.json.jackson.JacksonCodec;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
@@ -72,15 +70,15 @@ import org.slf4j.LoggerFactory;
 
 public class GraphQLHttpService {
 
-<span class="fc" id="L75">  private static final Logger LOG = LoggerFactory.getLogger(GraphQLHttpService.class);</span>
+<span class="fc" id="L73">  private static final Logger LOG = LoggerFactory.getLogger(GraphQLHttpService.class);</span>
 
-<span class="fc" id="L77">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
+<span class="fc" id="L75">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
   private static final String APPLICATION_JSON = &quot;application/json&quot;;
   private static final String GRAPH_QL_ROUTE = &quot;/graphql&quot;;
-<span class="fc" id="L80">  private static final MediaType MEDIA_TYPE_JUST_JSON = MediaType.JSON_UTF_8.withoutParameters();</span>
+<span class="fc" id="L78">  private static final MediaType MEDIA_TYPE_JUST_JSON = MediaType.JSON_UTF_8.withoutParameters();</span>
   private static final String EMPTY_RESPONSE = &quot;&quot;;
 
-<span class="fc" id="L83">  private static final TypeReference&lt;Map&lt;String, Object&gt;&gt; MAP_TYPE = new TypeReference&lt;&gt;() {};</span>
+<span class="fc" id="L81">  private static final TypeReference&lt;Map&lt;String, Object&gt;&gt; MAP_TYPE = new TypeReference&lt;&gt;() {};</span>
 
   private final Vertx vertx;
   private final GraphQLConfiguration config;
@@ -110,335 +108,323 @@ public class GraphQLHttpService {
       final GraphQLConfiguration config,
       final GraphQL graphQL,
       final Map&lt;GraphQLContextType, Object&gt; graphQlContextMap,
-<span class="fc" id="L113">      final EthScheduler scheduler) {</span>
-<span class="fc" id="L114">    this.dataDir = dataDir;</span>
+<span class="fc" id="L111">      final EthScheduler scheduler) {</span>
+<span class="fc" id="L112">    this.dataDir = dataDir;</span>
 
-<span class="fc" id="L116">    validateConfig(config);</span>
-<span class="fc" id="L117">    this.config = config;</span>
-<span class="fc" id="L118">    this.vertx = vertx;</span>
-<span class="fc" id="L119">    this.graphQL = graphQL;</span>
-<span class="fc" id="L120">    this.graphQlContextMap = graphQlContextMap;</span>
-<span class="fc" id="L121">    this.scheduler = scheduler;</span>
-<span class="fc" id="L122">  }</span>
+<span class="fc" id="L114">    validateConfig(config);</span>
+<span class="fc" id="L115">    this.config = config;</span>
+<span class="fc" id="L116">    this.vertx = vertx;</span>
+<span class="fc" id="L117">    this.graphQL = graphQL;</span>
+<span class="fc" id="L118">    this.graphQlContextMap = graphQlContextMap;</span>
+<span class="fc" id="L119">    this.scheduler = scheduler;</span>
+<span class="fc" id="L120">  }</span>
 
   private void validateConfig(final GraphQLConfiguration config) {
-<span class="fc" id="L125">    checkArgument(</span>
-<span class="pc bpc" id="L126" title="3 of 4 branches missed.">        config.getPort() == 0 || NetworkUtility.isValidPort(config.getPort()),</span>
+<span class="fc" id="L123">    checkArgument(</span>
+<span class="pc bpc" id="L124" title="3 of 4 branches missed.">        config.getPort() == 0 || NetworkUtility.isValidPort(config.getPort()),</span>
         &quot;Invalid port configuration.&quot;);
-<span class="pc bpc" id="L128" title="1 of 2 branches missed.">    checkArgument(config.getHost() != null, &quot;Required host is not configured.&quot;);</span>
-<span class="fc" id="L129">  }</span>
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">    checkArgument(config.getHost() != null, &quot;Required host is not configured.&quot;);</span>
+<span class="fc" id="L127">  }</span>
 
   public CompletableFuture&lt;?&gt; start() {
-<span class="fc" id="L132">    LOG.info(&quot;Starting GraphQL HTTP service on {}:{}&quot;, config.getHost(), config.getPort());</span>
+<span class="fc" id="L130">    LOG.info(&quot;Starting GraphQL HTTP service on {}:{}&quot;, config.getHost(), config.getPort());</span>
     // Create the HTTP server and a router object.
-<span class="fc" id="L134">    httpServer =</span>
-<span class="fc" id="L135">        vertx.createHttpServer(</span>
+<span class="fc" id="L132">    httpServer =</span>
+<span class="fc" id="L133">        vertx.createHttpServer(</span>
             new HttpServerOptions()
-<span class="fc" id="L137">                .setHost(config.getHost())</span>
-<span class="fc" id="L138">                .setPort(config.getPort())</span>
-<span class="fc" id="L139">                .setHandle100ContinueAutomatically(true)</span>
-<span class="fc" id="L140">                .setCompressionSupported(true));</span>
+<span class="fc" id="L135">                .setHost(config.getHost())</span>
+<span class="fc" id="L136">                .setPort(config.getPort())</span>
+<span class="fc" id="L137">                .setHandle100ContinueAutomatically(true)</span>
+<span class="fc" id="L138">                .setCompressionSupported(true));</span>
 
     // Handle graphql http requests
-<span class="fc" id="L143">    final Router router = Router.router(vertx);</span>
+<span class="fc" id="L141">    final Router router = Router.router(vertx);</span>
 
     // Verify Host header to avoid rebind attack.
-<span class="fc" id="L146">    router.route().handler(checkWhitelistHostHeader());</span>
+<span class="fc" id="L144">    router.route().handler(checkAllowlistHostHeader());</span>
 
-<span class="fc" id="L148">    router</span>
-<span class="fc" id="L149">        .route()</span>
-<span class="fc" id="L150">        .handler(</span>
-<span class="fc" id="L151">            CorsHandler.create(buildCorsRegexFromConfig())</span>
-<span class="fc" id="L152">                .allowedHeader(&quot;*&quot;)</span>
-<span class="fc" id="L153">                .allowedHeader(&quot;content-type&quot;));</span>
-<span class="fc" id="L154">    router</span>
-<span class="fc" id="L155">        .route()</span>
-<span class="fc" id="L156">        .handler(</span>
-<span class="fc" id="L157">            BodyHandler.create()</span>
-<span class="fc" id="L158">                .setUploadsDirectory(dataDir.resolve(&quot;uploads&quot;).toString())</span>
-<span class="fc" id="L159">                .setDeleteUploadedFilesOnEnd(true)</span>
-<span class="fc" id="L160">                .setPreallocateBodyBuffer(true));</span>
-<span class="fc" id="L161">    router.route(&quot;/&quot;).method(GET).method(POST).handler(this::handleEmptyRequestAndRedirect);</span>
-<span class="fc" id="L162">    router</span>
-<span class="fc" id="L163">        .route(GRAPH_QL_ROUTE)</span>
-<span class="fc" id="L164">        .method(GET)</span>
-<span class="fc" id="L165">        .method(POST)</span>
-<span class="fc" id="L166">        .produces(APPLICATION_JSON)</span>
-<span class="fc" id="L167">        .handler(</span>
-<span class="fc" id="L168">            TimeoutHandler.create(</span>
-<span class="fc" id="L169">                TimeUnit.SECONDS.toMillis(config.getHttpTimeoutSec()),</span>
+<span class="fc" id="L146">    router</span>
+<span class="fc" id="L147">        .route()</span>
+<span class="fc" id="L148">        .handler(</span>
+<span class="fc" id="L149">            CorsHandler.create(buildCorsRegexFromConfig())</span>
+<span class="fc" id="L150">                .allowedHeader(&quot;*&quot;)</span>
+<span class="fc" id="L151">                .allowedHeader(&quot;content-type&quot;));</span>
+<span class="fc" id="L152">    router</span>
+<span class="fc" id="L153">        .route()</span>
+<span class="fc" id="L154">        .handler(</span>
+<span class="fc" id="L155">            BodyHandler.create()</span>
+<span class="fc" id="L156">                .setUploadsDirectory(dataDir.resolve(&quot;uploads&quot;).toString())</span>
+<span class="fc" id="L157">                .setDeleteUploadedFilesOnEnd(true)</span>
+<span class="fc" id="L158">                .setPreallocateBodyBuffer(true));</span>
+<span class="fc" id="L159">    router.route(&quot;/&quot;).method(GET).method(POST).handler(this::handleEmptyRequestAndRedirect);</span>
+<span class="fc" id="L160">    router</span>
+<span class="fc" id="L161">        .route(GRAPH_QL_ROUTE)</span>
+<span class="fc" id="L162">        .method(GET)</span>
+<span class="fc" id="L163">        .method(POST)</span>
+<span class="fc" id="L164">        .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L165">        .handler(</span>
+<span class="fc" id="L166">            TimeoutHandler.create(</span>
+<span class="fc" id="L167">                TimeUnit.SECONDS.toMillis(config.getHttpTimeoutSec()),</span>
                 TimeoutOptions.DEFAULT_ERROR_CODE))
-<span class="fc" id="L171">        .handler(this::handleGraphQLRequest);</span>
+<span class="fc" id="L169">        .handler(this::handleGraphQLRequest);</span>
 
-<span class="fc" id="L173">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
-<span class="fc" id="L174">    httpServer</span>
-<span class="fc" id="L175">        .requestHandler(router)</span>
-<span class="fc" id="L176">        .listen(</span>
+<span class="fc" id="L171">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L172">    httpServer</span>
+<span class="fc" id="L173">        .requestHandler(router)</span>
+<span class="fc" id="L174">        .listen(</span>
             res -&gt; {
-<span class="pc bpc" id="L178" title="1 of 2 branches missed.">              if (!res.failed()) {</span>
-<span class="fc" id="L179">                resultFuture.complete(null);</span>
-<span class="fc" id="L180">                LOG.info(</span>
+<span class="pc bpc" id="L176" title="1 of 2 branches missed.">              if (!res.failed()) {</span>
+<span class="fc" id="L177">                resultFuture.complete(null);</span>
+<span class="fc" id="L178">                LOG.info(</span>
                     &quot;GraphQL HTTP service started and listening on {}:{}&quot;,
-<span class="fc" id="L182">                    config.getHost(),</span>
-<span class="fc" id="L183">                    httpServer.actualPort());</span>
-<span class="fc" id="L184">                return;</span>
+<span class="fc" id="L180">                    config.getHost(),</span>
+<span class="fc" id="L181">                    httpServer.actualPort());</span>
+<span class="fc" id="L182">                return;</span>
               }
-<span class="nc" id="L186">              httpServer = null;</span>
-<span class="nc" id="L187">              final Throwable cause = res.cause();</span>
-<span class="nc bnc" id="L188" title="All 2 branches missed.">              if (cause instanceof SocketException) {</span>
-<span class="nc" id="L189">                resultFuture.completeExceptionally(</span>
+<span class="nc" id="L184">              httpServer = null;</span>
+<span class="nc" id="L185">              final Throwable cause = res.cause();</span>
+<span class="nc bnc" id="L186" title="All 2 branches missed.">              if (cause instanceof SocketException) {</span>
+<span class="nc" id="L187">                resultFuture.completeExceptionally(</span>
                     new GraphQLServiceException(
-<span class="nc" id="L191">                        String.format(</span>
+<span class="nc" id="L189">                        String.format(</span>
                             &quot;Failed to bind Ethereum GraphQL HTTP listener to %s:%s: %s&quot;,
-<span class="nc" id="L193">                            config.getHost(), config.getPort(), cause.getMessage())));</span>
-<span class="nc" id="L194">                return;</span>
+<span class="nc" id="L191">                            config.getHost(), config.getPort(), cause.getMessage())));</span>
+<span class="nc" id="L192">                return;</span>
               }
-<span class="nc" id="L196">              resultFuture.completeExceptionally(cause);</span>
-<span class="nc" id="L197">            });</span>
+<span class="nc" id="L194">              resultFuture.completeExceptionally(cause);</span>
+<span class="nc" id="L195">            });</span>
 
-<span class="fc" id="L199">    return resultFuture;</span>
+<span class="fc" id="L197">    return resultFuture;</span>
   }
 
-  private Handler&lt;RoutingContext&gt; checkWhitelistHostHeader() {
-<span class="fc" id="L203">    return event -&gt; {</span>
-<span class="fc" id="L204">      final Optional&lt;String&gt; hostHeader = getAndValidateHostHeader(event);</span>
-<span class="fc bfc" id="L205" title="All 2 branches covered.">      if (config.getHostsAllowlist().contains(&quot;*&quot;)</span>
-<span class="fc bfc" id="L206" title="All 4 branches covered.">          || (hostHeader.isPresent() &amp;&amp; hostIsInAllowlist(hostHeader.get()))) {</span>
-<span class="fc" id="L207">        event.next();</span>
+  private Handler&lt;RoutingContext&gt; checkAllowlistHostHeader() {
+<span class="fc" id="L201">    return event -&gt; {</span>
+<span class="fc" id="L202">      final Optional&lt;String&gt; hostHeader = getAndValidateHostHeader(event);</span>
+<span class="fc bfc" id="L203" title="All 2 branches covered.">      if (config.getHostsAllowlist().contains(&quot;*&quot;)</span>
+<span class="fc bfc" id="L204" title="All 4 branches covered.">          || (hostHeader.isPresent() &amp;&amp; hostIsInAllowlist(hostHeader.get()))) {</span>
+<span class="fc" id="L205">        event.next();</span>
       } else {
-<span class="fc" id="L209">        final HttpServerResponse response = event.response();</span>
-<span class="pc bpc" id="L210" title="1 of 2 branches missed.">        if (!response.closed()) {</span>
-<span class="fc" id="L211">          response</span>
-<span class="fc" id="L212">              .setStatusCode(403)</span>
-<span class="fc" id="L213">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
-<span class="fc" id="L214">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
+<span class="fc" id="L207">        final HttpServerResponse response = event.response();</span>
+<span class="pc bpc" id="L208" title="1 of 2 branches missed.">        if (!response.closed()) {</span>
+<span class="fc" id="L209">          response</span>
+<span class="fc" id="L210">              .setStatusCode(403)</span>
+<span class="fc" id="L211">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
+<span class="fc" id="L212">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
         }
       }
-<span class="fc" id="L217">    };</span>
+<span class="fc" id="L215">    };</span>
   }
 
   private Optional&lt;String&gt; getAndValidateHostHeader(final RoutingContext event) {
-    String hostname =
-<span class="pc bpc" id="L222" title="1 of 2 branches missed.">        event.request().getHeader(HttpHeaders.HOST) != null</span>
-<span class="fc" id="L223">            ? event.request().getHeader(HttpHeaders.HOST)</span>
-<span class="pc" id="L224">            : event.request().host();</span>
-<span class="fc" id="L225">    final Iterable&lt;String&gt; splitHostHeader = Splitter.on(':').split(hostname);</span>
-<span class="fc" id="L226">    final long hostPieces = stream(splitHostHeader).count();</span>
-<span class="fc bfc" id="L227" title="All 2 branches covered.">    if (hostPieces &gt; 1) {</span>
-      // If the host contains a colon, verify the host is correctly formed - host [ &quot;:&quot; port ]
-<span class="fc bfc" id="L229" title="All 4 branches covered.">      if (hostPieces &gt; 2 || !Iterables.get(splitHostHeader, 1).matches(&quot;\\d{1,5}+&quot;)) {</span>
-<span class="fc" id="L230">        return Optional.empty();</span>
-      }
-    }
-<span class="fc" id="L233">    return Optional.ofNullable(Iterables.get(splitHostHeader, 0));</span>
+<span class="fc" id="L219">    final HostAndPort hostAndPort = event.request().authority();</span>
+<span class="fc" id="L220">    return Optional.ofNullable(hostAndPort).map(HostAndPort::host);</span>
   }
 
   private boolean hostIsInAllowlist(final String hostHeader) {
-<span class="fc" id="L237">    if (config.getHostsAllowlist().stream()</span>
-<span class="fc bfc" id="L238" title="All 2 branches covered.">        .anyMatch(</span>
-<span class="fc" id="L239">            allowlistEntry -&gt; allowlistEntry.toLowerCase().equals(hostHeader.toLowerCase()))) {</span>
-<span class="fc" id="L240">      return true;</span>
+<span class="fc" id="L224">    if (config.getHostsAllowlist().stream()</span>
+<span class="fc bfc" id="L225" title="All 2 branches covered.">        .anyMatch(allowlistEntry -&gt; allowlistEntry.equalsIgnoreCase(hostHeader))) {</span>
+<span class="fc" id="L226">      return true;</span>
     } else {
-<span class="fc" id="L242">      LOG.trace(&quot;Host not in allowlist: '{}'&quot;, hostHeader);</span>
-<span class="fc" id="L243">      return false;</span>
+<span class="fc" id="L228">      LOG.trace(&quot;Host not in allowlist: '{}'&quot;, hostHeader);</span>
+<span class="fc" id="L229">      return false;</span>
     }
   }
 
   public CompletableFuture&lt;?&gt; stop() {
-<span class="pc bpc" id="L248" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
-<span class="nc" id="L249">      return CompletableFuture.completedFuture(null);</span>
+<span class="pc bpc" id="L234" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L235">      return CompletableFuture.completedFuture(null);</span>
     }
 
-<span class="fc" id="L252">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
-<span class="fc" id="L253">    httpServer.close(</span>
+<span class="fc" id="L238">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L239">    httpServer.close(</span>
         res -&gt; {
-<span class="pc bpc" id="L255" title="1 of 2 branches missed.">          if (res.failed()) {</span>
-<span class="nc" id="L256">            resultFuture.completeExceptionally(res.cause());</span>
+<span class="pc bpc" id="L241" title="1 of 2 branches missed.">          if (res.failed()) {</span>
+<span class="nc" id="L242">            resultFuture.completeExceptionally(res.cause());</span>
           } else {
-<span class="fc" id="L258">            httpServer = null;</span>
-<span class="fc" id="L259">            resultFuture.complete(null);</span>
+<span class="fc" id="L244">            httpServer = null;</span>
+<span class="fc" id="L245">            resultFuture.complete(null);</span>
           }
-<span class="fc" id="L261">        });</span>
-<span class="fc" id="L262">    return resultFuture;</span>
+<span class="fc" id="L247">        });</span>
+<span class="fc" id="L248">    return resultFuture;</span>
   }
 
   public InetSocketAddress socketAddress() {
-<span class="fc bfc" id="L266" title="All 2 branches covered.">    if (httpServer == null) {</span>
-<span class="fc" id="L267">      return EMPTY_SOCKET_ADDRESS;</span>
+<span class="fc bfc" id="L252" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L253">      return EMPTY_SOCKET_ADDRESS;</span>
     }
-<span class="fc" id="L269">    return new InetSocketAddress(config.getHost(), httpServer.actualPort());</span>
+<span class="fc" id="L255">    return new InetSocketAddress(config.getHost(), httpServer.actualPort());</span>
   }
 
   @VisibleForTesting
   public String url() {
-<span class="fc bfc" id="L274" title="All 2 branches covered.">    if (httpServer == null) {</span>
-<span class="fc" id="L275">      return &quot;&quot;;</span>
+<span class="fc bfc" id="L260" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L261">      return &quot;&quot;;</span>
     }
-<span class="fc" id="L277">    return NetworkUtility.urlForSocketAddress(&quot;http&quot;, socketAddress());</span>
+<span class="fc" id="L263">    return NetworkUtility.urlForSocketAddress(&quot;http&quot;, socketAddress());</span>
   }
 
   // Empty Get/Post requests to / will be redirected to /graphql using 308 Permanent Redirect
   private void handleEmptyRequestAndRedirect(final RoutingContext routingContext) {
-<span class="fc" id="L282">    final HttpServerResponse response = routingContext.response();</span>
-<span class="pc bpc" id="L283" title="1 of 2 branches missed.">    if (response.closed()) {</span>
-<span class="nc" id="L284">      return;</span>
+<span class="fc" id="L268">    final HttpServerResponse response = routingContext.response();</span>
+<span class="pc bpc" id="L269" title="1 of 2 branches missed.">    if (response.closed()) {</span>
+<span class="nc" id="L270">      return;</span>
     }
-<span class="fc" id="L286">    response.setStatusCode(HttpResponseStatus.PERMANENT_REDIRECT.code());</span>
-<span class="fc" id="L287">    response.putHeader(&quot;Location&quot;, &quot;/graphql&quot;);</span>
-<span class="fc" id="L288">    response.end();</span>
-<span class="fc" id="L289">  }</span>
+<span class="fc" id="L272">    response.setStatusCode(HttpResponseStatus.PERMANENT_REDIRECT.code());</span>
+<span class="fc" id="L273">    response.putHeader(&quot;Location&quot;, &quot;/graphql&quot;);</span>
+<span class="fc" id="L274">    response.end();</span>
+<span class="fc" id="L275">  }</span>
 
   private void handleGraphQLRequest(final RoutingContext routingContext) {
     try {
       final String query;
       final String operationName;
       final Map&lt;String, Object&gt; variables;
-<span class="fc" id="L296">      final HttpServerRequest request = routingContext.request();</span>
+<span class="fc" id="L282">      final HttpServerRequest request = routingContext.request();</span>
 
-<span class="pc bpc" id="L298" title="1 of 3 branches missed.">      switch (request.method().name()) {</span>
+<span class="pc bpc" id="L284" title="1 of 3 branches missed.">      switch (request.method().name()) {</span>
         case &quot;GET&quot;:
-<span class="fc" id="L300">          final String queryString = request.getParam(&quot;query&quot;);</span>
-<span class="fc" id="L301">          query = Objects.requireNonNullElse(queryString, &quot;&quot;);</span>
-<span class="fc" id="L302">          operationName = request.getParam(&quot;operationName&quot;);</span>
-<span class="fc" id="L303">          final String variableString = request.getParam(&quot;variables&quot;);</span>
-<span class="pc bpc" id="L304" title="1 of 2 branches missed.">          if (variableString != null) {</span>
-<span class="nc" id="L305">            variables = JacksonCodec.decodeValue(variableString, MAP_TYPE);</span>
+<span class="fc" id="L286">          final String queryString = request.getParam(&quot;query&quot;);</span>
+<span class="fc" id="L287">          query = Objects.requireNonNullElse(queryString, &quot;&quot;);</span>
+<span class="fc" id="L288">          operationName = request.getParam(&quot;operationName&quot;);</span>
+<span class="fc" id="L289">          final String variableString = request.getParam(&quot;variables&quot;);</span>
+<span class="pc bpc" id="L290" title="1 of 2 branches missed.">          if (variableString != null) {</span>
+<span class="nc" id="L291">            variables = JacksonCodec.decodeValue(variableString, MAP_TYPE);</span>
           } else {
-<span class="fc" id="L307">            variables = Collections.emptyMap();</span>
+<span class="fc" id="L293">            variables = Collections.emptyMap();</span>
           }
-<span class="fc" id="L309">          break;</span>
+<span class="fc" id="L295">          break;</span>
         case &quot;POST&quot;:
-<span class="fc" id="L311">          final String contentType = request.getHeader(HttpHeaders.CONTENT_TYPE);</span>
-<span class="fc bfc" id="L312" title="All 4 branches covered.">          if (contentType != null &amp;&amp; MediaType.parse(contentType).is(MEDIA_TYPE_JUST_JSON)) {</span>
-<span class="fc" id="L313">            final String requestBody = routingContext.getBodyAsString().trim();</span>
-<span class="fc" id="L314">            final GraphQLJsonRequest jsonRequest =</span>
-<span class="fc" id="L315">                Json.decodeValue(requestBody, GraphQLJsonRequest.class);</span>
-<span class="fc" id="L316">            final String jsonQuery = jsonRequest.getQuery();</span>
-<span class="fc" id="L317">            query = Objects.requireNonNullElse(jsonQuery, &quot;&quot;);</span>
-<span class="fc" id="L318">            operationName = jsonRequest.getOperationName();</span>
-<span class="fc" id="L319">            final Map&lt;String, Object&gt; jsonVariables = jsonRequest.getVariables();</span>
-<span class="fc" id="L320">            variables = Objects.requireNonNullElse(jsonVariables, Collections.emptyMap());</span>
-<span class="fc" id="L321">          } else {</span>
+<span class="fc" id="L297">          final String contentType = request.getHeader(HttpHeaders.CONTENT_TYPE);</span>
+<span class="fc bfc" id="L298" title="All 4 branches covered.">          if (contentType != null &amp;&amp; MediaType.parse(contentType).is(MEDIA_TYPE_JUST_JSON)) {</span>
+<span class="fc" id="L299">            final String requestBody = routingContext.getBodyAsString().trim();</span>
+<span class="fc" id="L300">            final GraphQLJsonRequest jsonRequest =</span>
+<span class="fc" id="L301">                Json.decodeValue(requestBody, GraphQLJsonRequest.class);</span>
+<span class="fc" id="L302">            final String jsonQuery = jsonRequest.getQuery();</span>
+<span class="fc" id="L303">            query = Objects.requireNonNullElse(jsonQuery, &quot;&quot;);</span>
+<span class="fc" id="L304">            operationName = jsonRequest.getOperationName();</span>
+<span class="fc" id="L305">            final Map&lt;String, Object&gt; jsonVariables = jsonRequest.getVariables();</span>
+<span class="fc" id="L306">            variables = Objects.requireNonNullElse(jsonVariables, Collections.emptyMap());</span>
+<span class="fc" id="L307">          } else {</span>
             // treat all else as application/graphql
-<span class="fc" id="L323">            final String requestQuery = routingContext.getBodyAsString().trim();</span>
-<span class="fc" id="L324">            query = Objects.requireNonNullElse(requestQuery, &quot;&quot;);</span>
-<span class="fc" id="L325">            operationName = null;</span>
-<span class="fc" id="L326">            variables = Collections.emptyMap();</span>
+<span class="fc" id="L309">            final String requestQuery = routingContext.getBodyAsString().trim();</span>
+<span class="fc" id="L310">            query = Objects.requireNonNullElse(requestQuery, &quot;&quot;);</span>
+<span class="fc" id="L311">            operationName = null;</span>
+<span class="fc" id="L312">            variables = Collections.emptyMap();</span>
           }
-<span class="fc" id="L328">          break;</span>
+<span class="fc" id="L314">          break;</span>
         default:
-<span class="nc" id="L330">          routingContext</span>
-<span class="nc" id="L331">              .response()</span>
-<span class="nc" id="L332">              .setStatusCode(HttpResponseStatus.METHOD_NOT_ALLOWED.code())</span>
-<span class="nc" id="L333">              .end();</span>
-<span class="nc" id="L334">          return;</span>
+<span class="nc" id="L316">          routingContext</span>
+<span class="nc" id="L317">              .response()</span>
+<span class="nc" id="L318">              .setStatusCode(HttpResponseStatus.METHOD_NOT_ALLOWED.code())</span>
+<span class="nc" id="L319">              .end();</span>
+<span class="nc" id="L320">          return;</span>
       }
 
-<span class="fc" id="L337">      final HttpServerResponse response = routingContext.response();</span>
-<span class="fc" id="L338">      vertx.executeBlocking(</span>
+<span class="fc" id="L323">      final HttpServerResponse response = routingContext.response();</span>
+<span class="fc" id="L324">      vertx.executeBlocking(</span>
           future -&gt; {
             try {
-<span class="fc" id="L341">              final GraphQLResponse graphQLResponse = process(query, operationName, variables);</span>
-<span class="fc" id="L342">              future.complete(graphQLResponse);</span>
-<span class="nc" id="L343">            } catch (final Exception e) {</span>
-<span class="nc" id="L344">              future.fail(e);</span>
-<span class="fc" id="L345">            }</span>
-<span class="fc" id="L346">          },</span>
+<span class="fc" id="L327">              final GraphQLResponse graphQLResponse = process(query, operationName, variables);</span>
+<span class="fc" id="L328">              future.complete(graphQLResponse);</span>
+<span class="nc" id="L329">            } catch (final Exception e) {</span>
+<span class="nc" id="L330">              future.fail(e);</span>
+<span class="fc" id="L331">            }</span>
+<span class="fc" id="L332">          },</span>
           false,
           (res) -&gt; {
-<span class="pc bpc" id="L349" title="1 of 2 branches missed.">            if (response.closed()) {</span>
-<span class="nc" id="L350">              return;</span>
+<span class="pc bpc" id="L335" title="1 of 2 branches missed.">            if (response.closed()) {</span>
+<span class="nc" id="L336">              return;</span>
             }
-<span class="fc" id="L352">            response.putHeader(&quot;Content-Type&quot;, MediaType.JSON_UTF_8.toString());</span>
-<span class="pc bpc" id="L353" title="1 of 2 branches missed.">            if (res.failed()) {</span>
-<span class="nc" id="L354">              response.setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code());</span>
-<span class="nc" id="L355">              response.end(</span>
-<span class="nc" id="L356">                  serialise(</span>
+<span class="fc" id="L338">            response.putHeader(&quot;Content-Type&quot;, MediaType.JSON_UTF_8.toString());</span>
+<span class="pc bpc" id="L339" title="1 of 2 branches missed.">            if (res.failed()) {</span>
+<span class="nc" id="L340">              response.setStatusCode(HttpResponseStatus.INTERNAL_SERVER_ERROR.code());</span>
+<span class="nc" id="L341">              response.end(</span>
+<span class="nc" id="L342">                  serialise(</span>
                       new GraphQLErrorResponse(
-<span class="nc" id="L358">                          Collections.singletonMap(</span>
+<span class="nc" id="L344">                          Collections.singletonMap(</span>
                               &quot;errors&quot;,
-<span class="nc" id="L360">                              Collections.singletonList(</span>
-<span class="nc" id="L361">                                  Collections.singletonMap(</span>
-<span class="nc" id="L362">                                      &quot;message&quot;, res.cause().getMessage()))))));</span>
+<span class="nc" id="L346">                              Collections.singletonList(</span>
+<span class="nc" id="L347">                                  Collections.singletonMap(</span>
+<span class="nc" id="L348">                                      &quot;message&quot;, res.cause().getMessage()))))));</span>
             } else {
-<span class="fc" id="L364">              final GraphQLResponse graphQLResponse = (GraphQLResponse) res.result();</span>
-<span class="fc" id="L365">              response.setStatusCode(status(graphQLResponse).code());</span>
-<span class="fc" id="L366">              response.end(serialise(graphQLResponse));</span>
+<span class="fc" id="L350">              final GraphQLResponse graphQLResponse = (GraphQLResponse) res.result();</span>
+<span class="fc" id="L351">              response.setStatusCode(status(graphQLResponse).code());</span>
+<span class="fc" id="L352">              response.end(serialise(graphQLResponse));</span>
             }
-<span class="fc" id="L368">          });</span>
+<span class="fc" id="L354">          });</span>
 
-<span class="nc" id="L370">    } catch (final DecodeException ex) {</span>
-<span class="nc" id="L371">      handleGraphQLError(routingContext, ex);</span>
-<span class="fc" id="L372">    }</span>
-<span class="fc" id="L373">  }</span>
+<span class="nc" id="L356">    } catch (final DecodeException ex) {</span>
+<span class="nc" id="L357">      handleGraphQLError(routingContext, ex);</span>
+<span class="fc" id="L358">    }</span>
+<span class="fc" id="L359">  }</span>
 
   private HttpResponseStatus status(final GraphQLResponse response) {
 
-<span class="pc bpc" id="L377" title="1 of 3 branches missed.">    switch (response.getType()) {</span>
+<span class="pc bpc" id="L363" title="1 of 3 branches missed.">    switch (response.getType()) {</span>
       case UNAUTHORIZED:
-<span class="nc" id="L379">        return HttpResponseStatus.UNAUTHORIZED;</span>
+<span class="nc" id="L365">        return HttpResponseStatus.UNAUTHORIZED;</span>
       case ERROR:
-<span class="fc" id="L381">        return HttpResponseStatus.BAD_REQUEST;</span>
+<span class="fc" id="L367">        return HttpResponseStatus.BAD_REQUEST;</span>
       case SUCCESS:
       case NONE:
       default:
-<span class="fc" id="L385">        return HttpResponseStatus.OK;</span>
+<span class="fc" id="L371">        return HttpResponseStatus.OK;</span>
     }
   }
 
   private String serialise(final GraphQLResponse response) {
 
-<span class="pc bpc" id="L391" title="1 of 2 branches missed.">    if (response.getType() == GraphQLResponseType.NONE) {</span>
-<span class="nc" id="L392">      return EMPTY_RESPONSE;</span>
+<span class="pc bpc" id="L377" title="1 of 2 branches missed.">    if (response.getType() == GraphQLResponseType.NONE) {</span>
+<span class="nc" id="L378">      return EMPTY_RESPONSE;</span>
     }
 
-<span class="fc" id="L395">    return Json.encodePrettily(response.getResult());</span>
+<span class="fc" id="L381">    return Json.encodePrettily(response.getResult());</span>
   }
 
   private GraphQLResponse process(
       final String requestJson, final String operationName, final Map&lt;String, Object&gt; variables) {
-<span class="fc" id="L400">    Map&lt;GraphQLContextType, Object&gt; contextMap = new ConcurrentHashMap&lt;&gt;();</span>
-<span class="fc" id="L401">    contextMap.putAll(graphQlContextMap);</span>
-<span class="fc" id="L402">    contextMap.put(</span>
+<span class="fc" id="L386">    Map&lt;GraphQLContextType, Object&gt; contextMap = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L387">    contextMap.putAll(graphQlContextMap);</span>
+<span class="fc" id="L388">    contextMap.put(</span>
         GraphQLContextType.IS_ALIVE_HANDLER,
-<span class="fc" id="L404">        new IsAliveHandler(scheduler, config.getHttpTimeoutSec()));</span>
+<span class="fc" id="L390">        new IsAliveHandler(scheduler, config.getHttpTimeoutSec()));</span>
     final ExecutionInput executionInput =
-<span class="fc" id="L406">        ExecutionInput.newExecutionInput()</span>
-<span class="fc" id="L407">            .query(requestJson)</span>
-<span class="fc" id="L408">            .operationName(operationName)</span>
-<span class="fc" id="L409">            .variables(variables)</span>
-<span class="fc" id="L410">            .graphQLContext(contextMap)</span>
-<span class="fc" id="L411">            .build();</span>
-<span class="fc" id="L412">    final ExecutionResult result = graphQL.execute(executionInput);</span>
-<span class="fc" id="L413">    final Map&lt;String, Object&gt; toSpecificationResult = result.toSpecification();</span>
-<span class="fc" id="L414">    final List&lt;GraphQLError&gt; errors = result.getErrors();</span>
-<span class="fc bfc" id="L415" title="All 2 branches covered.">    if (errors.size() == 0) {</span>
-<span class="fc" id="L416">      return new GraphQLSuccessResponse(toSpecificationResult);</span>
+<span class="fc" id="L392">        ExecutionInput.newExecutionInput()</span>
+<span class="fc" id="L393">            .query(requestJson)</span>
+<span class="fc" id="L394">            .operationName(operationName)</span>
+<span class="fc" id="L395">            .variables(variables)</span>
+<span class="fc" id="L396">            .graphQLContext(contextMap)</span>
+<span class="fc" id="L397">            .build();</span>
+<span class="fc" id="L398">    final ExecutionResult result = graphQL.execute(executionInput);</span>
+<span class="fc" id="L399">    final Map&lt;String, Object&gt; toSpecificationResult = result.toSpecification();</span>
+<span class="fc" id="L400">    final List&lt;GraphQLError&gt; errors = result.getErrors();</span>
+<span class="fc bfc" id="L401" title="All 2 branches covered.">    if (errors.size() == 0) {</span>
+<span class="fc" id="L402">      return new GraphQLSuccessResponse(toSpecificationResult);</span>
     } else {
-<span class="fc" id="L418">      return new GraphQLErrorResponse(toSpecificationResult);</span>
+<span class="fc" id="L404">      return new GraphQLErrorResponse(toSpecificationResult);</span>
     }
   }
 
   private void handleGraphQLError(final RoutingContext routingContext, final Exception ex) {
-<span class="nc" id="L423">    LOG.debug(&quot;Error handling GraphQL request&quot;, ex);</span>
-<span class="nc" id="L424">    final HttpServerResponse response = routingContext.response();</span>
-<span class="nc bnc" id="L425" title="All 2 branches missed.">    if (!response.closed()) {</span>
-<span class="nc" id="L426">      response</span>
-<span class="nc" id="L427">          .setStatusCode(HttpResponseStatus.BAD_REQUEST.code())</span>
-<span class="nc" id="L428">          .end(Json.encode(new GraphQLErrorResponse(ex.getMessage())));</span>
+<span class="nc" id="L409">    LOG.debug(&quot;Error handling GraphQL request&quot;, ex);</span>
+<span class="nc" id="L410">    final HttpServerResponse response = routingContext.response();</span>
+<span class="nc bnc" id="L411" title="All 2 branches missed.">    if (!response.closed()) {</span>
+<span class="nc" id="L412">      response</span>
+<span class="nc" id="L413">          .setStatusCode(HttpResponseStatus.BAD_REQUEST.code())</span>
+<span class="nc" id="L414">          .end(Json.encode(new GraphQLErrorResponse(ex.getMessage())));</span>
     }
-<span class="nc" id="L430">  }</span>
+<span class="nc" id="L416">  }</span>
 
   private String buildCorsRegexFromConfig() {
-<span class="fc bfc" id="L433" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().isEmpty()) {</span>
-<span class="fc" id="L434">      return &quot;&quot;;</span>
+<span class="fc bfc" id="L419" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().isEmpty()) {</span>
+<span class="fc" id="L420">      return &quot;&quot;;</span>
     }
-<span class="fc bfc" id="L436" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().contains(&quot;*&quot;)) {</span>
-<span class="fc" id="L437">      return &quot;*&quot;;</span>
+<span class="fc bfc" id="L422" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().contains(&quot;*&quot;)) {</span>
+<span class="fc" id="L423">      return &quot;*&quot;;</span>
     } else {
-<span class="fc" id="L439">      final StringJoiner stringJoiner = new StringJoiner(&quot;|&quot;);</span>
-<span class="fc bfc" id="L440" title="All 2 branches covered.">      config.getCorsAllowedDomains().stream().filter(s -&gt; !s.isEmpty()).forEach(stringJoiner::add);</span>
-<span class="fc" id="L441">      return stringJoiner.toString();</span>
+<span class="fc" id="L425">      final StringJoiner stringJoiner = new StringJoiner(&quot;|&quot;);</span>
+<span class="fc bfc" id="L426" title="All 2 branches covered.">      config.getCorsAllowedDomains().stream().filter(s -&gt; !s.isEmpty()).forEach(stringJoiner::add);</span>
+<span class="fc" id="L427">      return stringJoiner.toString();</span>
     }
   }
 }

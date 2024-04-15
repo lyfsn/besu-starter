@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PartialFlatDbStrategy.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.flat</a> &gt; <span class="el_source">PartialFlatDbStrategy.java</span></div><h1>PartialFlatDbStrategy.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+package org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.flat;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_INFO_STATE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_STORAGE_STORAGE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat.CodeStorageStrategy;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat.FlatDbStrategy;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredNodeFactory;
+import org.hyperledger.besu.metrics.BesuMetricCategory;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.metrics.Counter;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.rlp.RLP;
+
+/**
+ * This class represents a strategy for reading data from a partial flat database. It extends the
+ * FlatDbReaderStrategy and provides additional functionality for reading data from a merkle trie.
+ * If data is missing in the flat database, this strategy falls back to the merkle trie to retrieve
+ * the data. It adds a fallback mechanism for the `getAccount` and `getStorageValueByStorageSlotKey`
+ * methods, which checks if the data is present in the flat database, and if not, queries the merkle
+ * trie
+ */
+public class PartialFlatDbStrategy extends FlatDbStrategy {
+
+  protected final Counter getAccountMerkleTrieCounter;
+  protected final Counter getAccountMissingMerkleTrieCounter;
+
+  protected final Counter getStorageValueMerkleTrieCounter;
+  protected final Counter getStorageValueMissingMerkleTrieCounter;
+
+  public PartialFlatDbStrategy(
+      final MetricsSystem metricsSystem, final CodeStorageStrategy codeStorageStrategy) {
+<span class="fc" id="L59">    super(metricsSystem, codeStorageStrategy);</span>
+<span class="fc" id="L60">    getAccountMerkleTrieCounter =</span>
+<span class="fc" id="L61">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_account_merkle_trie&quot;,
+            &quot;Number of accounts not found in the flat database, but found in the merkle trie&quot;);
+
+<span class="fc" id="L66">    getAccountMissingMerkleTrieCounter =</span>
+<span class="fc" id="L67">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_account_missing_merkle_trie&quot;,
+            &quot;Number of accounts not found (either in the flat database or the merkle trie)&quot;);
+
+<span class="fc" id="L72">    getStorageValueMerkleTrieCounter =</span>
+<span class="fc" id="L73">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_storagevalue_merkle_trie&quot;,
+            &quot;Number of storage slots not found in the flat database, but found in the merkle trie&quot;);
+
+<span class="fc" id="L78">    getStorageValueMissingMerkleTrieCounter =</span>
+<span class="fc" id="L79">        metricsSystem.createCounter(</span>
+            BesuMetricCategory.BLOCKCHAIN,
+            &quot;get_storagevalue_missing_merkle_trie&quot;,
+            &quot;Number of storage slots not found (either in the flat database or in the merkle trie)&quot;);
+<span class="fc" id="L83">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getFlatAccount(
+      final Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      final NodeLoader nodeLoader,
+      final Hash accountHash,
+      final SegmentedKeyValueStorage storage) {
+<span class="fc" id="L91">    getAccountCounter.inc();</span>
+<span class="fc" id="L92">    Optional&lt;Bytes&gt; response =</span>
+<span class="fc" id="L93">        storage.get(ACCOUNT_INFO_STATE, accountHash.toArrayUnsafe()).map(Bytes::wrap);</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">    if (response.isEmpty()) {</span>
+      // after a snapsync/fastsync we only have the trie branches.
+<span class="fc" id="L96">      final Optional&lt;Bytes&gt; worldStateRootHash = worldStateRootHashSupplier.get();</span>
+<span class="fc bfc" id="L97" title="All 2 branches covered.">      if (worldStateRootHash.isPresent()) {</span>
+<span class="fc" id="L98">        response =</span>
+            new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="fc" id="L100">                    new StoredNodeFactory&lt;&gt;(nodeLoader, Function.identity(), Function.identity()),</span>
+<span class="fc" id="L101">                    Bytes32.wrap(worldStateRootHash.get()))</span>
+<span class="fc" id="L102">                .get(accountHash);</span>
+<span class="fc bfc" id="L103" title="All 2 branches covered.">        if (response.isEmpty()) {</span>
+<span class="fc" id="L104">          getAccountMissingMerkleTrieCounter.inc();</span>
+        } else {
+<span class="fc" id="L106">          getAccountMerkleTrieCounter.inc();</span>
+        }
+      }
+<span class="fc" id="L109">    } else {</span>
+<span class="fc" id="L110">      getAccountFoundInFlatDatabaseCounter.inc();</span>
+    }
+
+<span class="fc" id="L113">    return response;</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getFlatStorageValueByStorageSlotKey(
+      final Supplier&lt;Optional&lt;Bytes&gt;&gt; worldStateRootHashSupplier,
+      final Supplier&lt;Optional&lt;Hash&gt;&gt; storageRootSupplier,
+      final NodeLoader nodeLoader,
+      final Hash accountHash,
+      final StorageSlotKey storageSlotKey,
+      final SegmentedKeyValueStorage storage) {
+<span class="fc" id="L124">    getStorageValueCounter.inc();</span>
+<span class="fc" id="L125">    Optional&lt;Bytes&gt; response =</span>
+        storage
+<span class="fc" id="L127">            .get(</span>
+                ACCOUNT_STORAGE_STORAGE,
+<span class="fc" id="L129">                Bytes.concatenate(accountHash, storageSlotKey.getSlotHash()).toArrayUnsafe())</span>
+<span class="fc" id="L130">            .map(Bytes::wrap);</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (response.isEmpty()) {</span>
+<span class="fc" id="L132">      final Optional&lt;Hash&gt; storageRoot = storageRootSupplier.get();</span>
+<span class="fc" id="L133">      final Optional&lt;Bytes&gt; worldStateRootHash = worldStateRootHashSupplier.get();</span>
+<span class="pc bpc" id="L134" title="1 of 4 branches missed.">      if (storageRoot.isPresent() &amp;&amp; worldStateRootHash.isPresent()) {</span>
+<span class="fc" id="L135">        response =</span>
+            new StoredMerklePatriciaTrie&lt;&gt;(
+<span class="fc" id="L137">                    new StoredNodeFactory&lt;&gt;(nodeLoader, Function.identity(), Function.identity()),</span>
+<span class="fc" id="L138">                    storageRoot.get())</span>
+<span class="fc" id="L139">                .get(storageSlotKey.getSlotHash())</span>
+<span class="fc" id="L140">                .map(bytes -&gt; Bytes32.leftPad(RLP.decodeValue(bytes)));</span>
+<span class="fc bfc" id="L141" title="All 2 branches covered.">        if (response.isEmpty()) getStorageValueMissingMerkleTrieCounter.inc();</span>
+<span class="fc" id="L142">        else getStorageValueMerkleTrieCounter.inc();</span>
+      }
+<span class="fc" id="L144">    } else {</span>
+<span class="fc" id="L145">      getStorageValueFlatDatabaseCounter.inc();</span>
+    }
+<span class="fc" id="L147">    return response;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

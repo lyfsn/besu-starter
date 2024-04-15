@@ -26,6 +26,7 @@ import static org.hyperledger.besu.ethereum.eth.transactions.layered.Transaction
 
 import org.hyperledger.besu.datatypes.Address;
 import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.TransactionType;
 import org.hyperledger.besu.ethereum.core.BlockHeader;
 import org.hyperledger.besu.ethereum.core.Transaction;
 import org.hyperledger.besu.ethereum.eth.transactions.BlobCache;
@@ -39,6 +40,7 @@ import org.hyperledger.besu.ethereum.mainnet.feemarket.FeeMarket;
 import org.hyperledger.besu.util.Subscribers;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,24 +59,24 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public abstract class AbstractTransactionsLayer implements TransactionsLayer {
-<span class="fc" id="L60">  private static final Logger LOG = LoggerFactory.getLogger(AbstractTransactionsLayer.class);</span>
-<span class="fc" id="L61">  private static final NavigableMap&lt;Long, PendingTransaction&gt; EMPTY_SENDER_TXS = new TreeMap&lt;&gt;();</span>
+<span class="fc" id="L62">  private static final Logger LOG = LoggerFactory.getLogger(AbstractTransactionsLayer.class);</span>
+<span class="fc" id="L63">  private static final NavigableMap&lt;Long, PendingTransaction&gt; EMPTY_SENDER_TXS = new TreeMap&lt;&gt;();</span>
   protected final TransactionPoolConfiguration poolConfig;
   protected final TransactionsLayer nextLayer;
   protected final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
       transactionReplacementTester;
   protected final TransactionPoolMetrics metrics;
-<span class="fc" id="L67">  protected final Map&lt;Hash, PendingTransaction&gt; pendingTransactions = new HashMap&lt;&gt;();</span>
-<span class="fc" id="L68">  protected final Map&lt;Address, NavigableMap&lt;Long, PendingTransaction&gt;&gt; txsBySender =</span>
+<span class="fc" id="L69">  protected final Map&lt;Hash, PendingTransaction&gt; pendingTransactions = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L70">  protected final Map&lt;Address, NavigableMap&lt;Long, PendingTransaction&gt;&gt; txsBySender =</span>
       new HashMap&lt;&gt;();
-<span class="fc" id="L70">  private final Subscribers&lt;PendingTransactionAddedListener&gt; onAddedListeners =</span>
-<span class="fc" id="L71">      Subscribers.create();</span>
-<span class="fc" id="L72">  private final Subscribers&lt;PendingTransactionDroppedListener&gt; onDroppedListeners =</span>
+<span class="fc" id="L72">  private final Subscribers&lt;PendingTransactionAddedListener&gt; onAddedListeners =</span>
 <span class="fc" id="L73">      Subscribers.create();</span>
-<span class="fc" id="L74">  private OptionalLong nextLayerOnAddedListenerId = OptionalLong.empty();</span>
-<span class="fc" id="L75">  private OptionalLong nextLayerOnDroppedListenerId = OptionalLong.empty();</span>
-<span class="fc" id="L76">  protected long spaceUsed = 0;</span>
-
+<span class="fc" id="L74">  private final Subscribers&lt;PendingTransactionDroppedListener&gt; onDroppedListeners =</span>
+<span class="fc" id="L75">      Subscribers.create();</span>
+<span class="fc" id="L76">  private OptionalLong nextLayerOnAddedListenerId = OptionalLong.empty();</span>
+<span class="fc" id="L77">  private OptionalLong nextLayerOnDroppedListenerId = OptionalLong.empty();</span>
+<span class="fc" id="L78">  protected long spaceUsed = 0;</span>
+<span class="fc" id="L79">  protected final int[] txCountByType = new int[TransactionType.values().length];</span>
   private final BlobCache blobCache;
 
   protected AbstractTransactionsLayer(
@@ -83,59 +85,65 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
       final BiFunction&lt;PendingTransaction, PendingTransaction, Boolean&gt;
           transactionReplacementTester,
       final TransactionPoolMetrics metrics,
-<span class="fc" id="L86">      final BlobCache blobCache) {</span>
-<span class="fc" id="L87">    this.poolConfig = poolConfig;</span>
-<span class="fc" id="L88">    this.nextLayer = nextLayer;</span>
-<span class="fc" id="L89">    this.transactionReplacementTester = transactionReplacementTester;</span>
-<span class="fc" id="L90">    this.metrics = metrics;</span>
-<span class="fc" id="L91">    metrics.initSpaceUsed(this::getLayerSpaceUsed, name());</span>
-<span class="fc" id="L92">    metrics.initTransactionCount(pendingTransactions::size, name());</span>
-<span class="fc" id="L93">    metrics.initUniqueSenderCount(txsBySender::size, name());</span>
-<span class="fc" id="L94">    this.blobCache = blobCache;</span>
-<span class="fc" id="L95">  }</span>
+<span class="fc" id="L88">      final BlobCache blobCache) {</span>
+<span class="fc" id="L89">    this.poolConfig = poolConfig;</span>
+<span class="fc" id="L90">    this.nextLayer = nextLayer;</span>
+<span class="fc" id="L91">    this.transactionReplacementTester = transactionReplacementTester;</span>
+<span class="fc" id="L92">    this.metrics = metrics;</span>
+<span class="fc" id="L93">    metrics.initSpaceUsed(this::getLayerSpaceUsed, name());</span>
+<span class="fc" id="L94">    metrics.initTransactionCount(pendingTransactions::size, name());</span>
+<span class="fc" id="L95">    metrics.initUniqueSenderCount(txsBySender::size, name());</span>
+<span class="fc" id="L96">    Arrays.stream(TransactionType.values())</span>
+<span class="fc" id="L97">        .forEach(</span>
+            type -&gt;
+<span class="fc" id="L99">                metrics.initTransactionCountByType(</span>
+<span class="pc" id="L100">                    () -&gt; txCountByType[type.ordinal()], name(), type));</span>
+<span class="fc" id="L101">    this.blobCache = blobCache;</span>
+<span class="fc" id="L102">  }</span>
 
   protected abstract boolean gapsAllowed();
 
   @Override
   public void reset() {
-<span class="fc" id="L101">    pendingTransactions.clear();</span>
-<span class="fc" id="L102">    txsBySender.clear();</span>
-<span class="fc" id="L103">    spaceUsed = 0;</span>
-<span class="fc" id="L104">    nextLayer.reset();</span>
-<span class="fc" id="L105">  }</span>
+<span class="fc" id="L108">    pendingTransactions.clear();</span>
+<span class="fc" id="L109">    txsBySender.clear();</span>
+<span class="fc" id="L110">    spaceUsed = 0;</span>
+<span class="fc" id="L111">    Arrays.fill(txCountByType, 0);</span>
+<span class="fc" id="L112">    nextLayer.reset();</span>
+<span class="fc" id="L113">  }</span>
 
   @Override
   public Optional&lt;Transaction&gt; getByHash(final Hash transactionHash) {
-<span class="fc" id="L109">    final var currLayerTx = pendingTransactions.get(transactionHash);</span>
-<span class="fc bfc" id="L110" title="All 2 branches covered.">    if (currLayerTx == null) {</span>
-<span class="fc" id="L111">      return nextLayer.getByHash(transactionHash);</span>
+<span class="fc" id="L117">    final var currLayerTx = pendingTransactions.get(transactionHash);</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">    if (currLayerTx == null) {</span>
+<span class="fc" id="L119">      return nextLayer.getByHash(transactionHash);</span>
     }
-<span class="fc" id="L113">    return Optional.of(currLayerTx.getTransaction());</span>
+<span class="fc" id="L121">    return Optional.of(currLayerTx.getTransaction());</span>
   }
 
   @Override
   public boolean contains(final Transaction transaction) {
-<span class="fc bfc" id="L118" title="All 2 branches covered.">    return pendingTransactions.containsKey(transaction.getHash())</span>
-<span class="fc bfc" id="L119" title="All 2 branches covered.">        || nextLayer.contains(transaction);</span>
+<span class="fc bfc" id="L126" title="All 2 branches covered.">    return pendingTransactions.containsKey(transaction.getHash())</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">        || nextLayer.contains(transaction);</span>
   }
 
   @Override
   public List&lt;PendingTransaction&gt; getAll() {
-<span class="fc" id="L124">    final List&lt;PendingTransaction&gt; allNextLayers = nextLayer.getAll();</span>
-<span class="fc" id="L125">    final List&lt;PendingTransaction&gt; allTxs =</span>
-<span class="fc" id="L126">        new ArrayList&lt;&gt;(pendingTransactions.size() + allNextLayers.size());</span>
-<span class="fc" id="L127">    allTxs.addAll(pendingTransactions.values());</span>
-<span class="fc" id="L128">    allTxs.addAll(allNextLayers);</span>
-<span class="fc" id="L129">    return allTxs;</span>
+<span class="fc" id="L132">    final List&lt;PendingTransaction&gt; allNextLayers = nextLayer.getAll();</span>
+<span class="fc" id="L133">    final List&lt;PendingTransaction&gt; allTxs =</span>
+<span class="fc" id="L134">        new ArrayList&lt;&gt;(pendingTransactions.size() + allNextLayers.size());</span>
+<span class="fc" id="L135">    allTxs.addAll(pendingTransactions.values());</span>
+<span class="fc" id="L136">    allTxs.addAll(allNextLayers);</span>
+<span class="fc" id="L137">    return allTxs;</span>
   }
 
   @Override
   public long getCumulativeUsedSpace() {
-<span class="nc" id="L134">    return getLayerSpaceUsed() + nextLayer.getCumulativeUsedSpace();</span>
+<span class="nc" id="L142">    return getLayerSpaceUsed() + nextLayer.getCumulativeUsedSpace();</span>
   }
 
   protected long getLayerSpaceUsed() {
-<span class="fc" id="L138">    return spaceUsed;</span>
+<span class="fc" id="L146">    return spaceUsed;</span>
   }
 
   protected abstract TransactionAddedResult canAdd(
@@ -145,98 +153,98 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
   public TransactionAddedResult add(final PendingTransaction pendingTransaction, final int gap) {
 
     // is replacing an existing one?
-<span class="fc" id="L148">    TransactionAddedResult addStatus = maybeReplaceTransaction(pendingTransaction);</span>
-<span class="fc bfc" id="L149" title="All 2 branches covered.">    if (addStatus == null) {</span>
-<span class="fc" id="L150">      addStatus = canAdd(pendingTransaction, gap);</span>
+<span class="fc" id="L156">    TransactionAddedResult addStatus = maybeReplaceTransaction(pendingTransaction);</span>
+<span class="fc bfc" id="L157" title="All 2 branches covered.">    if (addStatus == null) {</span>
+<span class="fc" id="L158">      addStatus = canAdd(pendingTransaction, gap);</span>
     }
 
-<span class="fc bfc" id="L153" title="All 2 branches covered.">    if (addStatus.equals(TRY_NEXT_LAYER)) {</span>
-<span class="fc" id="L154">      return addToNextLayer(pendingTransaction, gap);</span>
+<span class="fc bfc" id="L161" title="All 2 branches covered.">    if (addStatus.equals(TRY_NEXT_LAYER)) {</span>
+<span class="fc" id="L162">      return addToNextLayer(pendingTransaction, gap);</span>
     }
 
-<span class="fc bfc" id="L157" title="All 2 branches covered.">    if (addStatus.isSuccess()) {</span>
-<span class="fc" id="L158">      processAdded(pendingTransaction.detachedCopy());</span>
-<span class="fc" id="L159">      addStatus.maybeReplacedTransaction().ifPresent(this::replaced);</span>
+<span class="fc bfc" id="L165" title="All 2 branches covered.">    if (addStatus.isSuccess()) {</span>
+<span class="fc" id="L166">      processAdded(pendingTransaction.detachedCopy());</span>
+<span class="fc" id="L167">      addStatus.maybeReplacedTransaction().ifPresent(this::replaced);</span>
 
-<span class="fc" id="L161">      nextLayer.notifyAdded(pendingTransaction);</span>
+<span class="fc" id="L169">      nextLayer.notifyAdded(pendingTransaction);</span>
 
-<span class="fc bfc" id="L163" title="All 2 branches covered.">      if (!maybeFull()) {</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">      if (!maybeFull()) {</span>
         // if there is space try to see if the added tx filled some gaps
-<span class="fc" id="L165">        tryFillGap(addStatus, pendingTransaction);</span>
+<span class="fc" id="L173">        tryFillGap(addStatus, pendingTransaction);</span>
       }
 
-<span class="fc" id="L168">      notifyTransactionAdded(pendingTransaction);</span>
+<span class="fc" id="L176">      notifyTransactionAdded(pendingTransaction);</span>
     } else {
-<span class="fc" id="L170">      final var rejectReason = addStatus.maybeInvalidReason().orElseThrow();</span>
-<span class="fc" id="L171">      metrics.incrementRejected(pendingTransaction, rejectReason, name());</span>
-<span class="fc" id="L172">      LOG.atTrace()</span>
-<span class="fc" id="L173">          .setMessage(&quot;Transaction {} rejected reason {}&quot;)</span>
-<span class="fc" id="L174">          .addArgument(pendingTransaction::toTraceLog)</span>
-<span class="fc" id="L175">          .addArgument(rejectReason)</span>
-<span class="fc" id="L176">          .log();</span>
+<span class="fc" id="L178">      final var rejectReason = addStatus.maybeInvalidReason().orElseThrow();</span>
+<span class="fc" id="L179">      metrics.incrementRejected(pendingTransaction, rejectReason, name());</span>
+<span class="fc" id="L180">      LOG.atTrace()</span>
+<span class="fc" id="L181">          .setMessage(&quot;Transaction {} rejected reason {}&quot;)</span>
+<span class="fc" id="L182">          .addArgument(pendingTransaction::toTraceLog)</span>
+<span class="fc" id="L183">          .addArgument(rejectReason)</span>
+<span class="fc" id="L184">          .log();</span>
     }
 
-<span class="fc" id="L179">    return addStatus;</span>
+<span class="fc" id="L187">    return addStatus;</span>
   }
 
   private boolean maybeFull() {
-<span class="fc" id="L183">    final long cacheFreeSpace = cacheFreeSpace();</span>
-<span class="fc" id="L184">    final int overflowTxsCount = pendingTransactions.size() - maxTransactionsNumber();</span>
-<span class="fc bfc" id="L185" title="All 4 branches covered.">    if (cacheFreeSpace &lt; 0 || overflowTxsCount &gt; 0) {</span>
-<span class="fc" id="L186">      LOG.atDebug()</span>
-<span class="fc" id="L187">          .setMessage(&quot;Layer full: {}&quot;)</span>
-<span class="fc" id="L188">          .addArgument(</span>
+<span class="fc" id="L191">    final long cacheFreeSpace = cacheFreeSpace();</span>
+<span class="fc" id="L192">    final int overflowTxsCount = pendingTransactions.size() - maxTransactionsNumber();</span>
+<span class="fc bfc" id="L193" title="All 4 branches covered.">    if (cacheFreeSpace &lt; 0 || overflowTxsCount &gt; 0) {</span>
+<span class="fc" id="L194">      LOG.atDebug()</span>
+<span class="fc" id="L195">          .setMessage(&quot;Layer full: {}&quot;)</span>
+<span class="fc" id="L196">          .addArgument(</span>
               () -&gt;
-<span class="nc bnc" id="L190" title="All 2 branches missed.">                  cacheFreeSpace &lt; 0</span>
-<span class="nc" id="L191">                      ? &quot;need to free &quot; + (-cacheFreeSpace) + &quot; space&quot;</span>
-<span class="nc" id="L192">                      : &quot;need to evict &quot; + overflowTxsCount + &quot; transaction(s)&quot;)</span>
-<span class="fc" id="L193">          .log();</span>
+<span class="nc bnc" id="L198" title="All 2 branches missed.">                  cacheFreeSpace &lt; 0</span>
+<span class="nc" id="L199">                      ? &quot;need to free &quot; + (-cacheFreeSpace) + &quot; space&quot;</span>
+<span class="nc" id="L200">                      : &quot;need to evict &quot; + overflowTxsCount + &quot; transaction(s)&quot;)</span>
+<span class="fc" id="L201">          .log();</span>
 
-<span class="fc" id="L195">      evict(-cacheFreeSpace, overflowTxsCount);</span>
-<span class="fc" id="L196">      return true;</span>
+<span class="fc" id="L203">      evict(-cacheFreeSpace, overflowTxsCount);</span>
+<span class="fc" id="L204">      return true;</span>
     }
-<span class="fc" id="L198">    return false;</span>
+<span class="fc" id="L206">    return false;</span>
   }
 
   private void tryFillGap(
       final TransactionAddedResult addStatus, final PendingTransaction pendingTransaction) {
     // it makes sense to fill gaps only if the add is not a replacement and this layer does not
     // allow gaps
-<span class="fc bfc" id="L205" title="All 4 branches covered.">    if (!addStatus.isReplacement() &amp;&amp; !gapsAllowed()) {</span>
-<span class="fc" id="L206">      final PendingTransaction promotedTx =</span>
-<span class="fc" id="L207">          nextLayer.promoteFor(pendingTransaction.getSender(), pendingTransaction.getNonce());</span>
-<span class="fc bfc" id="L208" title="All 2 branches covered.">      if (promotedTx != null) {</span>
-<span class="fc" id="L209">        processAdded(promotedTx);</span>
-<span class="fc bfc" id="L210" title="All 2 branches covered.">        if (!maybeFull()) {</span>
-<span class="fc" id="L211">          tryFillGap(ADDED, promotedTx);</span>
+<span class="fc bfc" id="L213" title="All 4 branches covered.">    if (!addStatus.isReplacement() &amp;&amp; !gapsAllowed()) {</span>
+<span class="fc" id="L214">      final PendingTransaction promotedTx =</span>
+<span class="fc" id="L215">          nextLayer.promoteFor(pendingTransaction.getSender(), pendingTransaction.getNonce());</span>
+<span class="fc bfc" id="L216" title="All 2 branches covered.">      if (promotedTx != null) {</span>
+<span class="fc" id="L217">        processAdded(promotedTx);</span>
+<span class="fc bfc" id="L218" title="All 2 branches covered.">        if (!maybeFull()) {</span>
+<span class="fc" id="L219">          tryFillGap(ADDED, promotedTx);</span>
         }
       }
     }
-<span class="fc" id="L215">  }</span>
+<span class="fc" id="L223">  }</span>
 
   @Override
   public void notifyAdded(final PendingTransaction pendingTransaction) {
-<span class="fc" id="L219">    final Address sender = pendingTransaction.getSender();</span>
-<span class="fc" id="L220">    final var senderTxs = txsBySender.get(sender);</span>
-<span class="fc bfc" id="L221" title="All 2 branches covered.">    if (senderTxs != null) {</span>
-<span class="pc bpc" id="L222" title="1 of 2 branches missed.">      if (senderTxs.firstKey() &lt; pendingTransaction.getNonce()) {</span>
+<span class="fc" id="L227">    final Address sender = pendingTransaction.getSender();</span>
+<span class="fc" id="L228">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc bfc" id="L229" title="All 2 branches covered.">    if (senderTxs != null) {</span>
+<span class="pc bpc" id="L230" title="1 of 2 branches missed.">      if (senderTxs.firstKey() &lt; pendingTransaction.getNonce()) {</span>
         // in the case the world state has been updated but the confirmed txs have not yet been
         // processed
-<span class="nc" id="L225">        confirmed(sender, pendingTransaction.getNonce());</span>
-<span class="fc bfc" id="L226" title="All 2 branches covered.">      } else if (senderTxs.firstKey() == pendingTransaction.getNonce()) {</span>
+<span class="nc" id="L233">        confirmed(sender, pendingTransaction.getNonce());</span>
+<span class="fc bfc" id="L234" title="All 2 branches covered.">      } else if (senderTxs.firstKey() == pendingTransaction.getNonce()) {</span>
         // it is a cross layer replacement, namely added to a previous layer
-<span class="fc" id="L228">        final PendingTransaction replacedTx = senderTxs.pollFirstEntry().getValue();</span>
-<span class="fc" id="L229">        processRemove(senderTxs, replacedTx.getTransaction(), CROSS_LAYER_REPLACED);</span>
+<span class="fc" id="L236">        final PendingTransaction replacedTx = senderTxs.pollFirstEntry().getValue();</span>
+<span class="fc" id="L237">        processRemove(senderTxs, replacedTx.getTransaction(), CROSS_LAYER_REPLACED);</span>
 
-<span class="pc bpc" id="L231" title="1 of 2 branches missed.">        if (senderTxs.isEmpty()) {</span>
-<span class="fc" id="L232">          txsBySender.remove(sender);</span>
+<span class="pc bpc" id="L239" title="1 of 2 branches missed.">        if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L240">          txsBySender.remove(sender);</span>
         }
-<span class="fc" id="L234">      } else {</span>
-<span class="fc" id="L235">        internalNotifyAdded(senderTxs, pendingTransaction);</span>
+<span class="fc" id="L242">      } else {</span>
+<span class="fc" id="L243">        internalNotifyAdded(senderTxs, pendingTransaction);</span>
       }
     }
-<span class="fc" id="L238">    nextLayer.notifyAdded(pendingTransaction);</span>
-<span class="fc" id="L239">  }</span>
+<span class="fc" id="L246">    nextLayer.notifyAdded(pendingTransaction);</span>
+<span class="fc" id="L247">  }</span>
 
   protected abstract void internalNotifyAdded(
       final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
@@ -244,27 +252,27 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
 
   @Override
   public PendingTransaction promoteFor(final Address sender, final long nonce) {
-<span class="fc" id="L247">    final var senderTxs = txsBySender.get(sender);</span>
-<span class="fc bfc" id="L248" title="All 2 branches covered.">    if (senderTxs != null) {</span>
-<span class="fc" id="L249">      long expectedNonce = nonce + 1;</span>
-<span class="fc bfc" id="L250" title="All 2 branches covered.">      if (senderTxs.firstKey() == expectedNonce) {</span>
-<span class="fc" id="L251">        final PendingTransaction promotedTx = senderTxs.pollFirstEntry().getValue();</span>
-<span class="fc" id="L252">        processRemove(senderTxs, promotedTx.getTransaction(), PROMOTED);</span>
-<span class="fc" id="L253">        metrics.incrementRemoved(promotedTx, &quot;promoted&quot;, name());</span>
+<span class="fc" id="L255">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc bfc" id="L256" title="All 2 branches covered.">    if (senderTxs != null) {</span>
+<span class="fc" id="L257">      long expectedNonce = nonce + 1;</span>
+<span class="fc bfc" id="L258" title="All 2 branches covered.">      if (senderTxs.firstKey() == expectedNonce) {</span>
+<span class="fc" id="L259">        final PendingTransaction promotedTx = senderTxs.pollFirstEntry().getValue();</span>
+<span class="fc" id="L260">        processRemove(senderTxs, promotedTx.getTransaction(), PROMOTED);</span>
+<span class="fc" id="L261">        metrics.incrementRemoved(promotedTx, &quot;promoted&quot;, name());</span>
 
-<span class="fc bfc" id="L255" title="All 2 branches covered.">        if (senderTxs.isEmpty()) {</span>
-<span class="fc" id="L256">          txsBySender.remove(sender);</span>
+<span class="fc bfc" id="L263" title="All 2 branches covered.">        if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L264">          txsBySender.remove(sender);</span>
         }
-<span class="fc" id="L258">        return promotedTx;</span>
+<span class="fc" id="L266">        return promotedTx;</span>
       }
     }
-<span class="fc" id="L261">    return nextLayer.promoteFor(sender, nonce);</span>
+<span class="fc" id="L269">    return nextLayer.promoteFor(sender, nonce);</span>
   }
 
   private TransactionAddedResult addToNextLayer(
       final PendingTransaction pendingTransaction, final int distance) {
-<span class="fc" id="L266">    return addToNextLayer(</span>
-<span class="fc" id="L267">        txsBySender.getOrDefault(pendingTransaction.getSender(), EMPTY_SENDER_TXS),</span>
+<span class="fc" id="L274">    return addToNextLayer(</span>
+<span class="fc" id="L275">        txsBySender.getOrDefault(pendingTransaction.getSender(), EMPTY_SENDER_TXS),</span>
         pendingTransaction,
         distance);
   }
@@ -274,22 +282,22 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
       final PendingTransaction pendingTransaction,
       final int distance) {
     final int nextLayerDistance;
-<span class="fc bfc" id="L277" title="All 2 branches covered.">    if (senderTxs.isEmpty()) {</span>
-<span class="fc" id="L278">      nextLayerDistance = distance;</span>
+<span class="fc bfc" id="L285" title="All 2 branches covered.">    if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L286">      nextLayerDistance = distance;</span>
     } else {
-<span class="fc" id="L280">      nextLayerDistance = (int) (pendingTransaction.getNonce() - (senderTxs.lastKey() + 1));</span>
+<span class="fc" id="L288">      nextLayerDistance = (int) (pendingTransaction.getNonce() - (senderTxs.lastKey() + 1));</span>
     }
-<span class="fc" id="L282">    return nextLayer.add(pendingTransaction, nextLayerDistance);</span>
+<span class="fc" id="L290">    return nextLayer.add(pendingTransaction, nextLayerDistance);</span>
   }
 
   private void processAdded(final PendingTransaction addedTx) {
-<span class="fc" id="L286">    pendingTransactions.put(addedTx.getHash(), addedTx);</span>
-<span class="fc" id="L287">    final var senderTxs = txsBySender.computeIfAbsent(addedTx.getSender(), s -&gt; new TreeMap&lt;&gt;());</span>
-<span class="fc" id="L288">    senderTxs.put(addedTx.getNonce(), addedTx);</span>
-<span class="fc" id="L289">    increaseSpaceUsed(addedTx);</span>
-<span class="fc" id="L290">    metrics.incrementAdded(addedTx, name());</span>
-<span class="fc" id="L291">    internalAdd(senderTxs, addedTx);</span>
-<span class="fc" id="L292">  }</span>
+<span class="fc" id="L294">    pendingTransactions.put(addedTx.getHash(), addedTx);</span>
+<span class="fc" id="L295">    final var senderTxs = txsBySender.computeIfAbsent(addedTx.getSender(), s -&gt; new TreeMap&lt;&gt;());</span>
+<span class="fc" id="L296">    senderTxs.put(addedTx.getNonce(), addedTx);</span>
+<span class="fc" id="L297">    increaseCounters(addedTx);</span>
+<span class="fc" id="L298">    metrics.incrementAdded(addedTx, name());</span>
+<span class="fc" id="L299">    internalAdd(senderTxs, addedTx);</span>
+<span class="fc" id="L300">  }</span>
 
   protected abstract void internalAdd(
       final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs, final PendingTransaction addedTx);
@@ -297,95 +305,95 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
   protected abstract int maxTransactionsNumber();
 
   private void evict(final long spaceToFree, final int txsToEvict) {
-<span class="fc" id="L300">    final var evictableTx = getEvictable();</span>
-<span class="pc bpc" id="L301" title="1 of 2 branches missed.">    if (evictableTx != null) {</span>
-<span class="fc" id="L302">      final var lessReadySender = evictableTx.getSender();</span>
-<span class="fc" id="L303">      final var lessReadySenderTxs = txsBySender.get(lessReadySender);</span>
+<span class="fc" id="L308">    final var evictableTx = getEvictable();</span>
+<span class="pc bpc" id="L309" title="1 of 2 branches missed.">    if (evictableTx != null) {</span>
+<span class="fc" id="L310">      final var lessReadySender = evictableTx.getSender();</span>
+<span class="fc" id="L311">      final var lessReadySenderTxs = txsBySender.get(lessReadySender);</span>
 
-<span class="fc" id="L305">      long evictedSize = 0;</span>
-<span class="fc" id="L306">      int evictedCount = 0;</span>
+<span class="fc" id="L313">      long evictedSize = 0;</span>
+<span class="fc" id="L314">      int evictedCount = 0;</span>
       PendingTransaction lastTx;
       // lastTx must never be null, because the sender have at least the lessReadyTx
-<span class="fc bfc" id="L309" title="All 4 branches covered.">      while ((evictedSize &lt; spaceToFree || txsToEvict &gt; evictedCount)</span>
-<span class="pc bpc" id="L310" title="1 of 2 branches missed.">          &amp;&amp; !lessReadySenderTxs.isEmpty()) {</span>
-<span class="fc" id="L311">        lastTx = lessReadySenderTxs.pollLastEntry().getValue();</span>
-<span class="fc" id="L312">        processEvict(lessReadySenderTxs, lastTx, EVICTED);</span>
-<span class="fc" id="L313">        ++evictedCount;</span>
-<span class="fc" id="L314">        evictedSize += lastTx.memorySize();</span>
+<span class="fc bfc" id="L317" title="All 4 branches covered.">      while ((evictedSize &lt; spaceToFree || txsToEvict &gt; evictedCount)</span>
+<span class="pc bpc" id="L318" title="1 of 2 branches missed.">          &amp;&amp; !lessReadySenderTxs.isEmpty()) {</span>
+<span class="fc" id="L319">        lastTx = lessReadySenderTxs.pollLastEntry().getValue();</span>
+<span class="fc" id="L320">        processEvict(lessReadySenderTxs, lastTx, EVICTED);</span>
+<span class="fc" id="L321">        ++evictedCount;</span>
+<span class="fc" id="L322">        evictedSize += lastTx.memorySize();</span>
         // evicted can always be added to the next layer
-<span class="fc" id="L316">        addToNextLayer(lessReadySenderTxs, lastTx, 0);</span>
+<span class="fc" id="L324">        addToNextLayer(lessReadySenderTxs, lastTx, 0);</span>
       }
 
-<span class="fc bfc" id="L319" title="All 2 branches covered.">      if (lessReadySenderTxs.isEmpty()) {</span>
-<span class="fc" id="L320">        txsBySender.remove(lessReadySender);</span>
+<span class="fc bfc" id="L327" title="All 2 branches covered.">      if (lessReadySenderTxs.isEmpty()) {</span>
+<span class="fc" id="L328">        txsBySender.remove(lessReadySender);</span>
       }
 
-<span class="fc" id="L323">      final long newSpaceToFree = spaceToFree - evictedSize;</span>
-<span class="fc" id="L324">      final int newTxsToEvict = txsToEvict - evictedCount;</span>
+<span class="fc" id="L331">      final long newSpaceToFree = spaceToFree - evictedSize;</span>
+<span class="fc" id="L332">      final int newTxsToEvict = txsToEvict - evictedCount;</span>
 
-<span class="pc bpc" id="L326" title="4 of 6 branches missed.">      if ((newSpaceToFree &gt; 0 || newTxsToEvict &gt; 0) &amp;&amp; !txsBySender.isEmpty()) {</span>
+<span class="pc bpc" id="L334" title="4 of 6 branches missed.">      if ((newSpaceToFree &gt; 0 || newTxsToEvict &gt; 0) &amp;&amp; !txsBySender.isEmpty()) {</span>
         // try next less valuable sender
-<span class="nc" id="L328">        evict(newSpaceToFree, newTxsToEvict);</span>
+<span class="nc" id="L336">        evict(newSpaceToFree, newTxsToEvict);</span>
       }
     }
-<span class="fc" id="L331">  }</span>
+<span class="fc" id="L339">  }</span>
 
   protected void replaced(final PendingTransaction replacedTx) {
-<span class="fc" id="L334">    pendingTransactions.remove(replacedTx.getHash());</span>
-<span class="fc" id="L335">    decreaseSpaceUsed(replacedTx);</span>
-<span class="fc" id="L336">    metrics.incrementRemoved(replacedTx, REPLACED.label(), name());</span>
-<span class="fc" id="L337">    internalReplaced(replacedTx);</span>
-<span class="fc" id="L338">    notifyTransactionDropped(replacedTx);</span>
-<span class="fc" id="L339">  }</span>
+<span class="fc" id="L342">    pendingTransactions.remove(replacedTx.getHash());</span>
+<span class="fc" id="L343">    decreaseCounters(replacedTx);</span>
+<span class="fc" id="L344">    metrics.incrementRemoved(replacedTx, REPLACED.label(), name());</span>
+<span class="fc" id="L345">    internalReplaced(replacedTx);</span>
+<span class="fc" id="L346">    notifyTransactionDropped(replacedTx);</span>
+<span class="fc" id="L347">  }</span>
 
   protected abstract void internalReplaced(final PendingTransaction replacedTx);
 
   private TransactionAddedResult maybeReplaceTransaction(final PendingTransaction incomingTx) {
 
-<span class="fc" id="L345">    final var existingTxs = txsBySender.get(incomingTx.getSender());</span>
+<span class="fc" id="L353">    final var existingTxs = txsBySender.get(incomingTx.getSender());</span>
 
-<span class="fc bfc" id="L347" title="All 2 branches covered.">    if (existingTxs != null) {</span>
-<span class="fc" id="L348">      final var existingReadyTx = existingTxs.get(incomingTx.getNonce());</span>
-<span class="fc bfc" id="L349" title="All 2 branches covered.">      if (existingReadyTx != null) {</span>
+<span class="fc bfc" id="L355" title="All 2 branches covered.">    if (existingTxs != null) {</span>
+<span class="fc" id="L356">      final var existingReadyTx = existingTxs.get(incomingTx.getNonce());</span>
+<span class="fc bfc" id="L357" title="All 2 branches covered.">      if (existingReadyTx != null) {</span>
 
-<span class="fc bfc" id="L351" title="All 2 branches covered.">        if (existingReadyTx.getHash().equals(incomingTx.getHash())) {</span>
-<span class="fc" id="L352">          return ALREADY_KNOWN;</span>
+<span class="fc bfc" id="L359" title="All 2 branches covered.">        if (existingReadyTx.getHash().equals(incomingTx.getHash())) {</span>
+<span class="fc" id="L360">          return ALREADY_KNOWN;</span>
         }
 
-<span class="fc bfc" id="L355" title="All 2 branches covered.">        if (!transactionReplacementTester.apply(existingReadyTx, incomingTx)) {</span>
-<span class="fc" id="L356">          return REJECTED_UNDERPRICED_REPLACEMENT;</span>
+<span class="fc bfc" id="L363" title="All 2 branches covered.">        if (!transactionReplacementTester.apply(existingReadyTx, incomingTx)) {</span>
+<span class="fc" id="L364">          return REJECTED_UNDERPRICED_REPLACEMENT;</span>
         }
-<span class="fc" id="L358">        return TransactionAddedResult.createForReplacement(existingReadyTx);</span>
+<span class="fc" id="L366">        return TransactionAddedResult.createForReplacement(existingReadyTx);</span>
       }
     }
-<span class="fc" id="L361">    return null;</span>
+<span class="fc" id="L369">    return null;</span>
   }
 
   protected PendingTransaction processRemove(
       final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
       final Transaction transaction,
       final RemovalReason removalReason) {
-<span class="fc" id="L368">    final PendingTransaction removedTx = pendingTransactions.remove(transaction.getHash());</span>
+<span class="fc" id="L376">    final PendingTransaction removedTx = pendingTransactions.remove(transaction.getHash());</span>
 
-<span class="pc bpc" id="L370" title="1 of 2 branches missed.">    if (removedTx != null) {</span>
-<span class="fc" id="L371">      decreaseSpaceUsed(removedTx);</span>
-<span class="fc" id="L372">      metrics.incrementRemoved(removedTx, removalReason.label(), name());</span>
-<span class="fc" id="L373">      internalRemove(senderTxs, removedTx, removalReason);</span>
+<span class="pc bpc" id="L378" title="1 of 2 branches missed.">    if (removedTx != null) {</span>
+<span class="fc" id="L379">      decreaseCounters(removedTx);</span>
+<span class="fc" id="L380">      metrics.incrementRemoved(removedTx, removalReason.label(), name());</span>
+<span class="fc" id="L381">      internalRemove(senderTxs, removedTx, removalReason);</span>
     }
-<span class="fc" id="L375">    return removedTx;</span>
+<span class="fc" id="L383">    return removedTx;</span>
   }
 
   protected PendingTransaction processEvict(
       final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
       final PendingTransaction evictedTx,
       final RemovalReason reason) {
-<span class="fc" id="L382">    final PendingTransaction removedTx = pendingTransactions.remove(evictedTx.getHash());</span>
-<span class="pc bpc" id="L383" title="1 of 2 branches missed.">    if (removedTx != null) {</span>
-<span class="fc" id="L384">      decreaseSpaceUsed(evictedTx);</span>
-<span class="fc" id="L385">      metrics.incrementRemoved(evictedTx, reason.label(), name());</span>
-<span class="fc" id="L386">      internalEvict(senderTxs, removedTx);</span>
+<span class="fc" id="L390">    final PendingTransaction removedTx = pendingTransactions.remove(evictedTx.getHash());</span>
+<span class="pc bpc" id="L391" title="1 of 2 branches missed.">    if (removedTx != null) {</span>
+<span class="fc" id="L392">      decreaseCounters(evictedTx);</span>
+<span class="fc" id="L393">      metrics.incrementRemoved(evictedTx, reason.label(), name());</span>
+<span class="fc" id="L394">      internalEvict(senderTxs, removedTx);</span>
     }
-<span class="fc" id="L388">    return removedTx;</span>
+<span class="fc" id="L396">    return removedTx;</span>
   }
 
   protected abstract void internalEvict(
@@ -397,62 +405,62 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
       final FeeMarket feeMarket,
       final BlockHeader blockHeader,
       final Map&lt;Address, Long&gt; maxConfirmedNonceBySender) {
-<span class="fc" id="L400">    LOG.atDebug()</span>
-<span class="fc" id="L401">        .setMessage(&quot;Managing new added block {}&quot;)</span>
-<span class="fc" id="L402">        .addArgument(blockHeader::toLogString)</span>
-<span class="fc" id="L403">        .log();</span>
+<span class="fc" id="L408">    LOG.atDebug()</span>
+<span class="fc" id="L409">        .setMessage(&quot;Managing new added block {}&quot;)</span>
+<span class="fc" id="L410">        .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L411">        .log();</span>
 
-<span class="fc" id="L405">    nextLayer.blockAdded(feeMarket, blockHeader, maxConfirmedNonceBySender);</span>
-<span class="fc" id="L406">    maxConfirmedNonceBySender.forEach(this::confirmed);</span>
-<span class="fc" id="L407">    internalBlockAdded(blockHeader, feeMarket);</span>
-<span class="fc" id="L408">    promoteTransactions();</span>
-<span class="fc" id="L409">  }</span>
+<span class="fc" id="L413">    nextLayer.blockAdded(feeMarket, blockHeader, maxConfirmedNonceBySender);</span>
+<span class="fc" id="L414">    maxConfirmedNonceBySender.forEach(this::confirmed);</span>
+<span class="fc" id="L415">    internalBlockAdded(blockHeader, feeMarket);</span>
+<span class="fc" id="L416">    promoteTransactions();</span>
+<span class="fc" id="L417">  }</span>
 
   protected abstract void internalBlockAdded(
       final BlockHeader blockHeader, final FeeMarket feeMarket);
 
   final void promoteTransactions() {
-<span class="fc" id="L415">    final int freeSlots = maxTransactionsNumber() - pendingTransactions.size();</span>
-<span class="fc" id="L416">    final long freeSpace = cacheFreeSpace();</span>
+<span class="fc" id="L423">    final int freeSlots = maxTransactionsNumber() - pendingTransactions.size();</span>
+<span class="fc" id="L424">    final long freeSpace = cacheFreeSpace();</span>
 
-<span class="pc bpc" id="L418" title="1 of 4 branches missed.">    if (freeSlots &gt; 0 &amp;&amp; freeSpace &gt; 0) {</span>
-<span class="fc" id="L419">      nextLayer</span>
-<span class="fc" id="L420">          .promote(this::promotionFilter, cacheFreeSpace(), freeSlots)</span>
-<span class="fc" id="L421">          .forEach(this::processAdded);</span>
+<span class="pc bpc" id="L426" title="1 of 4 branches missed.">    if (freeSlots &gt; 0 &amp;&amp; freeSpace &gt; 0) {</span>
+<span class="fc" id="L427">      nextLayer</span>
+<span class="fc" id="L428">          .promote(this::promotionFilter, cacheFreeSpace(), freeSlots)</span>
+<span class="fc" id="L429">          .forEach(this::processAdded);</span>
     }
-<span class="fc" id="L423">  }</span>
+<span class="fc" id="L431">  }</span>
 
   private void confirmed(final Address sender, final long maxConfirmedNonce) {
-<span class="fc" id="L426">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="fc" id="L434">    final var senderTxs = txsBySender.get(sender);</span>
 
-<span class="fc bfc" id="L428" title="All 2 branches covered.">    if (senderTxs != null) {</span>
-<span class="fc" id="L429">      final var confirmedTxs = senderTxs.headMap(maxConfirmedNonce, true);</span>
+<span class="fc bfc" id="L436" title="All 2 branches covered.">    if (senderTxs != null) {</span>
+<span class="fc" id="L437">      final var confirmedTxs = senderTxs.headMap(maxConfirmedNonce, true);</span>
       final var highestNonceRemovedTx =
-<span class="fc bfc" id="L431" title="All 2 branches covered.">          confirmedTxs.isEmpty() ? null : confirmedTxs.lastEntry().getValue();</span>
+<span class="fc bfc" id="L439" title="All 2 branches covered.">          confirmedTxs.isEmpty() ? null : confirmedTxs.lastEntry().getValue();</span>
 
-<span class="fc" id="L433">      final var itConfirmedTxs = confirmedTxs.values().iterator();</span>
-<span class="fc bfc" id="L434" title="All 2 branches covered.">      while (itConfirmedTxs.hasNext()) {</span>
-<span class="fc" id="L435">        final var confirmedTx = itConfirmedTxs.next();</span>
-<span class="fc" id="L436">        itConfirmedTxs.remove();</span>
-<span class="fc bfc" id="L437" title="All 2 branches covered.">        if (confirmedTx.getTransaction().getBlobsWithCommitments().isPresent()) {</span>
-<span class="fc" id="L438">          this.blobCache.cacheBlobs(confirmedTx.getTransaction());</span>
+<span class="fc" id="L441">      final var itConfirmedTxs = confirmedTxs.values().iterator();</span>
+<span class="fc bfc" id="L442" title="All 2 branches covered.">      while (itConfirmedTxs.hasNext()) {</span>
+<span class="fc" id="L443">        final var confirmedTx = itConfirmedTxs.next();</span>
+<span class="fc" id="L444">        itConfirmedTxs.remove();</span>
+<span class="fc bfc" id="L445" title="All 2 branches covered.">        if (confirmedTx.getTransaction().getBlobsWithCommitments().isPresent()) {</span>
+<span class="fc" id="L446">          this.blobCache.cacheBlobs(confirmedTx.getTransaction());</span>
         }
-<span class="fc" id="L440">        processRemove(senderTxs, confirmedTx.getTransaction(), CONFIRMED);</span>
+<span class="fc" id="L448">        processRemove(senderTxs, confirmedTx.getTransaction(), CONFIRMED);</span>
 
-<span class="fc" id="L442">        metrics.incrementRemoved(confirmedTx, &quot;confirmed&quot;, name());</span>
-<span class="fc" id="L443">        LOG.atTrace()</span>
-<span class="fc" id="L444">            .setMessage(&quot;Removed confirmed pending transactions {}&quot;)</span>
-<span class="fc" id="L445">            .addArgument(confirmedTx::toTraceLog)</span>
-<span class="fc" id="L446">            .log();</span>
-<span class="fc" id="L447">      }</span>
+<span class="fc" id="L450">        metrics.incrementRemoved(confirmedTx, &quot;confirmed&quot;, name());</span>
+<span class="fc" id="L451">        LOG.atTrace()</span>
+<span class="fc" id="L452">            .setMessage(&quot;Removed confirmed pending transactions {}&quot;)</span>
+<span class="fc" id="L453">            .addArgument(confirmedTx::toTraceLog)</span>
+<span class="fc" id="L454">            .log();</span>
+<span class="fc" id="L455">      }</span>
 
-<span class="fc bfc" id="L449" title="All 2 branches covered.">      if (senderTxs.isEmpty()) {</span>
-<span class="fc" id="L450">        txsBySender.remove(sender);</span>
+<span class="fc bfc" id="L457" title="All 2 branches covered.">      if (senderTxs.isEmpty()) {</span>
+<span class="fc" id="L458">        txsBySender.remove(sender);</span>
       } else {
-<span class="fc" id="L452">        internalConfirmed(senderTxs, sender, maxConfirmedNonce, highestNonceRemovedTx);</span>
+<span class="fc" id="L460">        internalConfirmed(senderTxs, sender, maxConfirmedNonce, highestNonceRemovedTx);</span>
       }
     }
-<span class="fc" id="L455">  }</span>
+<span class="fc" id="L463">  }</span>
 
   protected abstract void internalConfirmed(
       final NavigableMap&lt;Long, PendingTransaction&gt; senderTxs,
@@ -467,13 +475,15 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
 
   protected abstract PendingTransaction getEvictable();
 
-  protected void increaseSpaceUsed(final PendingTransaction pendingTransaction) {
-<span class="fc" id="L471">    spaceUsed += pendingTransaction.memorySize();</span>
-<span class="fc" id="L472">  }</span>
+  protected void increaseCounters(final PendingTransaction pendingTransaction) {
+<span class="fc" id="L479">    spaceUsed += pendingTransaction.memorySize();</span>
+<span class="fc" id="L480">    ++txCountByType[pendingTransaction.getTransaction().getType().ordinal()];</span>
+<span class="fc" id="L481">  }</span>
 
-  protected void decreaseSpaceUsed(final PendingTransaction pendingTransaction) {
-<span class="fc" id="L475">    spaceUsed -= pendingTransaction.memorySize();</span>
-<span class="fc" id="L476">  }</span>
+  protected void decreaseCounters(final PendingTransaction pendingTransaction) {
+<span class="fc" id="L484">    spaceUsed -= pendingTransaction.memorySize();</span>
+<span class="fc" id="L485">    --txCountByType[pendingTransaction.getTransaction().getType().ordinal()];</span>
+<span class="fc" id="L486">  }</span>
 
   protected abstract long cacheFreeSpace();
 
@@ -481,135 +491,135 @@ public abstract class AbstractTransactionsLayer implements TransactionsLayer {
 
   @Override
   public List&lt;Transaction&gt; getAllLocal() {
-<span class="fc" id="L484">    final var localTxs =</span>
-<span class="fc" id="L485">        pendingTransactions.values().stream()</span>
-<span class="fc" id="L486">            .filter(PendingTransaction::isReceivedFromLocalSource)</span>
-<span class="fc" id="L487">            .map(PendingTransaction::getTransaction)</span>
-<span class="fc" id="L488">            .collect(Collectors.toCollection(ArrayList::new));</span>
-<span class="fc" id="L489">    localTxs.addAll(nextLayer.getAllLocal());</span>
-<span class="fc" id="L490">    return localTxs;</span>
+<span class="fc" id="L494">    final var localTxs =</span>
+<span class="fc" id="L495">        pendingTransactions.values().stream()</span>
+<span class="fc" id="L496">            .filter(PendingTransaction::isReceivedFromLocalSource)</span>
+<span class="fc" id="L497">            .map(PendingTransaction::getTransaction)</span>
+<span class="fc" id="L498">            .collect(Collectors.toCollection(ArrayList::new));</span>
+<span class="fc" id="L499">    localTxs.addAll(nextLayer.getAllLocal());</span>
+<span class="fc" id="L500">    return localTxs;</span>
   }
 
   @Override
   public List&lt;Transaction&gt; getAllPriority() {
-<span class="fc" id="L495">    final var priorityTxs =</span>
-<span class="fc" id="L496">        pendingTransactions.values().stream()</span>
-<span class="fc" id="L497">            .filter(PendingTransaction::hasPriority)</span>
-<span class="fc" id="L498">            .map(PendingTransaction::getTransaction)</span>
-<span class="fc" id="L499">            .collect(Collectors.toCollection(ArrayList::new));</span>
-<span class="fc" id="L500">    priorityTxs.addAll(nextLayer.getAllPriority());</span>
-<span class="fc" id="L501">    return priorityTxs;</span>
+<span class="fc" id="L505">    final var priorityTxs =</span>
+<span class="fc" id="L506">        pendingTransactions.values().stream()</span>
+<span class="fc" id="L507">            .filter(PendingTransaction::hasPriority)</span>
+<span class="fc" id="L508">            .map(PendingTransaction::getTransaction)</span>
+<span class="fc" id="L509">            .collect(Collectors.toCollection(ArrayList::new));</span>
+<span class="fc" id="L510">    priorityTxs.addAll(nextLayer.getAllPriority());</span>
+<span class="fc" id="L511">    return priorityTxs;</span>
   }
 
   Stream&lt;PendingTransaction&gt; stream(final Address sender) {
-<span class="fc" id="L505">    return txsBySender.getOrDefault(sender, EMPTY_SENDER_TXS).values().stream();</span>
+<span class="fc" id="L515">    return txsBySender.getOrDefault(sender, EMPTY_SENDER_TXS).values().stream();</span>
   }
 
   @Override
   public List&lt;PendingTransaction&gt; getAllFor(final Address sender) {
-<span class="fc" id="L510">    return Stream.concat(stream(sender), nextLayer.getAllFor(sender).stream()).toList();</span>
+<span class="fc" id="L520">    return Stream.concat(stream(sender), nextLayer.getAllFor(sender).stream()).toList();</span>
   }
 
   abstract Stream&lt;PendingTransaction&gt; stream();
 
   @Override
   public int count() {
-<span class="fc" id="L517">    return pendingTransactions.size() + nextLayer.count();</span>
+<span class="fc" id="L527">    return pendingTransactions.size() + nextLayer.count();</span>
   }
 
   protected void notifyTransactionAdded(final PendingTransaction pendingTransaction) {
-<span class="fc" id="L521">    onAddedListeners.forEach(</span>
-<span class="fc" id="L522">        listener -&gt; listener.onTransactionAdded(pendingTransaction.getTransaction()));</span>
-<span class="fc" id="L523">  }</span>
+<span class="fc" id="L531">    onAddedListeners.forEach(</span>
+<span class="fc" id="L532">        listener -&gt; listener.onTransactionAdded(pendingTransaction.getTransaction()));</span>
+<span class="fc" id="L533">  }</span>
 
   protected void notifyTransactionDropped(final PendingTransaction pendingTransaction) {
-<span class="fc" id="L526">    onDroppedListeners.forEach(</span>
-<span class="fc" id="L527">        listener -&gt; listener.onTransactionDropped(pendingTransaction.getTransaction()));</span>
-<span class="fc" id="L528">  }</span>
+<span class="fc" id="L536">    onDroppedListeners.forEach(</span>
+<span class="fc" id="L537">        listener -&gt; listener.onTransactionDropped(pendingTransaction.getTransaction()));</span>
+<span class="fc" id="L538">  }</span>
 
   @Override
   public long subscribeToAdded(final PendingTransactionAddedListener listener) {
-<span class="fc" id="L532">    nextLayerOnAddedListenerId = OptionalLong.of(nextLayer.subscribeToAdded(listener));</span>
-<span class="fc" id="L533">    return onAddedListeners.subscribe(listener);</span>
+<span class="fc" id="L542">    nextLayerOnAddedListenerId = OptionalLong.of(nextLayer.subscribeToAdded(listener));</span>
+<span class="fc" id="L543">    return onAddedListeners.subscribe(listener);</span>
   }
 
   @Override
   public void unsubscribeFromAdded(final long id) {
-<span class="fc" id="L538">    nextLayerOnAddedListenerId.ifPresent(nextLayer::unsubscribeFromAdded);</span>
-<span class="fc" id="L539">    onAddedListeners.unsubscribe(id);</span>
-<span class="fc" id="L540">  }</span>
+<span class="fc" id="L548">    nextLayerOnAddedListenerId.ifPresent(nextLayer::unsubscribeFromAdded);</span>
+<span class="fc" id="L549">    onAddedListeners.unsubscribe(id);</span>
+<span class="fc" id="L550">  }</span>
 
   @Override
   public long subscribeToDropped(final PendingTransactionDroppedListener listener) {
-<span class="fc" id="L544">    nextLayerOnDroppedListenerId = OptionalLong.of(nextLayer.subscribeToDropped(listener));</span>
-<span class="fc" id="L545">    return onDroppedListeners.subscribe(listener);</span>
+<span class="fc" id="L554">    nextLayerOnDroppedListenerId = OptionalLong.of(nextLayer.subscribeToDropped(listener));</span>
+<span class="fc" id="L555">    return onDroppedListeners.subscribe(listener);</span>
   }
 
   @Override
   public void unsubscribeFromDropped(final long id) {
-<span class="fc" id="L550">    nextLayerOnDroppedListenerId.ifPresent(nextLayer::unsubscribeFromDropped);</span>
-<span class="fc" id="L551">    onDroppedListeners.unsubscribe(id);</span>
-<span class="fc" id="L552">  }</span>
+<span class="fc" id="L560">    nextLayerOnDroppedListenerId.ifPresent(nextLayer::unsubscribeFromDropped);</span>
+<span class="fc" id="L561">    onDroppedListeners.unsubscribe(id);</span>
+<span class="fc" id="L562">  }</span>
 
   @Override
   public String logStats() {
-<span class="fc" id="L556">    return internalLogStats() + &quot; | &quot; + nextLayer.logStats();</span>
+<span class="fc" id="L566">    return internalLogStats() + &quot; | &quot; + nextLayer.logStats();</span>
   }
 
   @Override
   public String logSender(final Address sender) {
-<span class="nc" id="L561">    final var senderTxs = txsBySender.get(sender);</span>
-<span class="nc" id="L562">    return name()</span>
+<span class="nc" id="L571">    final var senderTxs = txsBySender.get(sender);</span>
+<span class="nc" id="L572">    return name()</span>
         + &quot;[&quot;
-<span class="nc bnc" id="L564" title="All 2 branches missed.">        + (Objects.isNull(senderTxs) ? &quot;Empty&quot; : senderTxs.keySet())</span>
+<span class="nc bnc" id="L574" title="All 2 branches missed.">        + (Objects.isNull(senderTxs) ? &quot;Empty&quot; : senderTxs.keySet())</span>
         + &quot;] &quot;
-<span class="nc" id="L566">        + nextLayer.logSender(sender);</span>
+<span class="nc" id="L576">        + nextLayer.logSender(sender);</span>
   }
 
   protected abstract String internalLogStats();
 
   boolean consistencyCheck(
-      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
-<span class="nc" id="L573">    final BinaryOperator&lt;PendingTransaction&gt; noMergeExpected =</span>
+      final Map&lt;Address, NavigableMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender) {
+<span class="nc" id="L583">    final BinaryOperator&lt;PendingTransaction&gt; noMergeExpected =</span>
         (a, b) -&gt; {
-<span class="nc" id="L575">          throw new IllegalArgumentException();</span>
+<span class="nc" id="L585">          throw new IllegalArgumentException();</span>
         };
-<span class="nc" id="L577">    final var controlTxsBySender =</span>
-<span class="nc" id="L578">        pendingTransactions.values().stream()</span>
-<span class="nc" id="L579">            .collect(</span>
-<span class="nc" id="L580">                Collectors.groupingBy(</span>
+<span class="nc" id="L587">    final var controlTxsBySender =</span>
+<span class="nc" id="L588">        pendingTransactions.values().stream()</span>
+<span class="nc" id="L589">            .collect(</span>
+<span class="nc" id="L590">                Collectors.groupingBy(</span>
                     PendingTransaction::getSender,
-<span class="nc" id="L582">                    Collectors.toMap(</span>
+<span class="nc" id="L592">                    Collectors.toMap(</span>
                         PendingTransaction::getNonce,
-<span class="nc" id="L584">                        Function.identity(),</span>
+<span class="nc" id="L594">                        Function.identity(),</span>
                         noMergeExpected,
                         TreeMap::new)));
 
-<span class="nc bnc" id="L588" title="All 2 branches missed.">    assert txsBySender.equals(controlTxsBySender)</span>
+<span class="nc bnc" id="L598" title="All 2 branches missed.">    assert txsBySender.equals(controlTxsBySender)</span>
         : &quot;pendingTransactions and txsBySender do not contain the same txs&quot;;
 
-<span class="nc bnc" id="L591" title="All 2 branches missed.">    assert pendingTransactions.values().stream().mapToInt(PendingTransaction::memorySize).sum()</span>
+<span class="nc bnc" id="L601" title="All 2 branches missed.">    assert pendingTransactions.values().stream().mapToInt(PendingTransaction::memorySize).sum()</span>
             == spaceUsed
         : &quot;space used does not match&quot;;
 
-<span class="nc" id="L595">    internalConsistencyCheck(prevLayerTxsBySender);</span>
+<span class="nc" id="L605">    internalConsistencyCheck(prevLayerTxsBySender);</span>
 
-<span class="nc bnc" id="L597" title="All 2 branches missed.">    if (nextLayer instanceof AbstractTransactionsLayer) {</span>
-<span class="nc" id="L598">      txsBySender.forEach(</span>
+<span class="nc bnc" id="L607" title="All 2 branches missed.">    if (nextLayer instanceof AbstractTransactionsLayer) {</span>
+<span class="nc" id="L608">      txsBySender.forEach(</span>
           (sender, txsByNonce) -&gt;
               prevLayerTxsBySender
-<span class="nc" id="L601">                  .computeIfAbsent(sender, s -&gt; new TreeMap&lt;&gt;())</span>
-<span class="nc" id="L602">                  .putAll(txsByNonce));</span>
-<span class="nc" id="L603">      return ((AbstractTransactionsLayer) nextLayer).consistencyCheck(prevLayerTxsBySender);</span>
+<span class="nc" id="L611">                  .computeIfAbsent(sender, s -&gt; new TreeMap&lt;&gt;())</span>
+<span class="nc" id="L612">                  .putAll(txsByNonce));</span>
+<span class="nc" id="L613">      return ((AbstractTransactionsLayer) nextLayer).consistencyCheck(prevLayerTxsBySender);</span>
     }
-<span class="nc" id="L605">    return true;</span>
+<span class="nc" id="L615">    return true;</span>
   }
 
   protected abstract void internalConsistencyCheck(
-      final Map&lt;Address, TreeMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender);
+      final Map&lt;Address, NavigableMap&lt;Long, PendingTransaction&gt;&gt; prevLayerTxsBySender);
 
   public BlobCache getBlobCache() {
-<span class="fc" id="L612">    return blobCache;</span>
+<span class="fc" id="L622">    return blobCache;</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

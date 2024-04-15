@@ -15,6 +15,10 @@
  */
 package org.hyperledger.besu.services.kvstore;
 
+import static java.util.Spliterator.DISTINCT;
+import static java.util.Spliterator.ORDERED;
+import static java.util.Spliterator.SORTED;
+
 import org.hyperledger.besu.plugin.services.exception.StorageException;
 import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
 import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
@@ -22,13 +26,17 @@ import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTran
 import org.hyperledger.besu.plugin.services.storage.SnappedKeyValueStorage;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.Spliterators;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.Lock;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import com.google.common.collect.Streams;
 import org.apache.commons.lang3.tuple.Pair;
@@ -40,7 +48,7 @@ import org.slf4j.LoggerFactory;
 public class LayeredKeyValueStorage extends SegmentedInMemoryKeyValueStorage
     implements SnappedKeyValueStorage {
 
-<span class="fc" id="L43">  private static final Logger LOG = LoggerFactory.getLogger(LayeredKeyValueStorage.class);</span>
+<span class="fc" id="L51">  private static final Logger LOG = LoggerFactory.getLogger(LayeredKeyValueStorage.class);</span>
 
   private final SegmentedKeyValueStorage parent;
 
@@ -50,8 +58,8 @@ public class LayeredKeyValueStorage extends SegmentedInMemoryKeyValueStorage
    * @param parent the parent key value storage for this layered storage.
    */
   public LayeredKeyValueStorage(final SegmentedKeyValueStorage parent) {
-<span class="fc" id="L53">    this(new ConcurrentHashMap&lt;&gt;(), parent);</span>
-<span class="fc" id="L54">  }</span>
+<span class="fc" id="L61">    this(new ConcurrentHashMap&lt;&gt;(), parent);</span>
+<span class="fc" id="L62">  }</span>
 
   /**
    * Constructor which takes an explicit backing map for the layered key value storage.
@@ -60,191 +68,252 @@ public class LayeredKeyValueStorage extends SegmentedInMemoryKeyValueStorage
    * @param parent the parent key value storage for this layered storage.
    */
   public LayeredKeyValueStorage(
-      final ConcurrentMap&lt;SegmentIdentifier, Map&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; map,
+      final ConcurrentMap&lt;SegmentIdentifier, NavigableMap&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; map,
       final SegmentedKeyValueStorage parent) {
-<span class="fc" id="L65">    super(map);</span>
-<span class="fc" id="L66">    this.parent = parent;</span>
-<span class="fc" id="L67">  }</span>
+<span class="fc" id="L73">    super(map);</span>
+<span class="fc" id="L74">    this.parent = parent;</span>
+<span class="fc" id="L75">  }</span>
 
   @Override
   public boolean containsKey(final SegmentIdentifier segmentId, final byte[] key)
       throws StorageException {
-<span class="fc" id="L72">    return get(segmentId, key).isPresent();</span>
+<span class="fc" id="L80">    return get(segmentId, key).isPresent();</span>
   }
 
   @Override
   public Optional&lt;byte[]&gt; get(final SegmentIdentifier segmentId, final byte[] key)
       throws StorageException {
-<span class="fc" id="L78">    throwIfClosed();</span>
+<span class="fc" id="L86">    throwIfClosed();</span>
 
-<span class="fc" id="L80">    final Lock lock = rwLock.readLock();</span>
-<span class="fc" id="L81">    lock.lock();</span>
+<span class="fc" id="L88">    final Lock lock = rwLock.readLock();</span>
+<span class="fc" id="L89">    lock.lock();</span>
     try {
-<span class="fc" id="L83">      Bytes wrapKey = Bytes.wrap(key);</span>
-<span class="fc" id="L84">      final Optional&lt;byte[]&gt; foundKey =</span>
-<span class="fc" id="L85">          hashValueStore.computeIfAbsent(segmentId, __ -&gt; new HashMap&lt;&gt;()).get(wrapKey);</span>
-<span class="fc bfc" id="L86" title="All 2 branches covered.">      if (foundKey == null) {</span>
-<span class="fc" id="L87">        return parent.get(segmentId, key);</span>
+<span class="fc" id="L91">      Bytes wrapKey = Bytes.wrap(key);</span>
+<span class="fc" id="L92">      final Optional&lt;byte[]&gt; foundKey =</span>
+<span class="fc" id="L93">          hashValueStore.computeIfAbsent(segmentId, __ -&gt; newSegmentMap()).get(wrapKey);</span>
+<span class="fc bfc" id="L94" title="All 2 branches covered.">      if (foundKey == null) {</span>
+<span class="fc" id="L95">        return parent.get(segmentId, key);</span>
       } else {
-<span class="fc" id="L89">        return foundKey;</span>
+<span class="fc" id="L97">        return foundKey;</span>
       }
     } finally {
-<span class="fc" id="L92">      lock.unlock();</span>
+<span class="fc" id="L100">      lock.unlock();</span>
     }
   }
 
   @Override
   public Optional&lt;NearestKeyValue&gt; getNearestTo(
       final SegmentIdentifier segmentIdentifier, final Bytes key) throws StorageException {
-<span class="fc" id="L99">    Optional&lt;NearestKeyValue&gt; ourNearest = super.getNearestTo(segmentIdentifier, key);</span>
-<span class="fc" id="L100">    Optional&lt;NearestKeyValue&gt; parentNearest = parent.getNearestTo(segmentIdentifier, key);</span>
+<span class="fc" id="L107">    Optional&lt;NearestKeyValue&gt; ourNearest = super.getNearestTo(segmentIdentifier, key);</span>
+<span class="fc" id="L108">    Optional&lt;NearestKeyValue&gt; parentNearest = parent.getNearestTo(segmentIdentifier, key);</span>
 
-<span class="pc bpc" id="L102" title="1 of 4 branches missed.">    if (ourNearest.isPresent() &amp;&amp; parentNearest.isPresent()) {</span>
+<span class="pc bpc" id="L110" title="1 of 4 branches missed.">    if (ourNearest.isPresent() &amp;&amp; parentNearest.isPresent()) {</span>
       // Both are present, return the one closer to the key
-<span class="nc" id="L104">      int ourDistance = ourNearest.get().key().commonPrefixLength(key);</span>
-<span class="nc" id="L105">      int parentDistance = parentNearest.get().key().commonPrefixLength(key);</span>
-<span class="nc bnc" id="L106" title="All 2 branches missed.">      return (ourDistance &lt;= parentDistance) ? ourNearest : parentNearest;</span>
-<span class="fc bfc" id="L107" title="All 2 branches covered.">    } else if (ourNearest.isPresent()) {</span>
+<span class="nc" id="L112">      int ourDistance = ourNearest.get().key().commonPrefixLength(key);</span>
+<span class="nc" id="L113">      int parentDistance = parentNearest.get().key().commonPrefixLength(key);</span>
+<span class="nc bnc" id="L114" title="All 2 branches missed.">      return (ourDistance &lt;= parentDistance) ? ourNearest : parentNearest;</span>
+<span class="fc bfc" id="L115" title="All 2 branches covered.">    } else if (ourNearest.isPresent()) {</span>
       // Only ourNearest is present
-<span class="fc" id="L109">      return ourNearest;</span>
+<span class="fc" id="L117">      return ourNearest;</span>
     } else {
       // return parentNearest, which may be an empty Optional
-<span class="fc" id="L112">      return parentNearest;</span>
+<span class="fc" id="L120">      return parentNearest;</span>
     }
   }
 
   @Override
   public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; stream(final SegmentIdentifier segmentId) {
-<span class="fc" id="L118">    throwIfClosed();</span>
+<span class="fc" id="L126">    throwIfClosed();</span>
+<span class="fc" id="L127">    var ourLayerState = hashValueStore.computeIfAbsent(segmentId, s -&gt; newSegmentMap());</span>
 
-<span class="fc" id="L120">    final Lock lock = rwLock.readLock();</span>
-<span class="fc" id="L121">    lock.lock();</span>
-    try {
-      // copy of our in memory store to use for streaming and filtering:
-<span class="fc" id="L124">      var ourLayerState =</span>
-<span class="fc" id="L125">          Optional.ofNullable(hashValueStore.get(segmentId))</span>
-<span class="fc" id="L126">              .map(HashMap::new)</span>
-<span class="fc" id="L127">              .orElse(new HashMap&lt;&gt;());</span>
+    // otherwise, interleave the sorted streams:
+<span class="fc" id="L130">    final PeekingIterator&lt;Map.Entry&lt;Bytes, Optional&lt;byte[]&gt;&gt;&gt; ourIterator =</span>
+        new PeekingIterator&lt;&gt;(
+<span class="fc" id="L132">            ourLayerState.entrySet().stream()</span>
+<span class="fc" id="L133">                .filter(entry -&gt; entry.getValue().isPresent())</span>
+<span class="fc" id="L134">                .iterator());</span>
 
-<span class="fc" id="L129">      return Streams.concat(</span>
-<span class="fc" id="L130">          ourLayerState.entrySet().stream()</span>
-<span class="fc" id="L131">              .filter(entry -&gt; entry.getValue().isPresent())</span>
-<span class="fc" id="L132">              .map(</span>
-                  bytesEntry -&gt;
-<span class="fc" id="L134">                      Pair.of(bytesEntry.getKey().toArrayUnsafe(), bytesEntry.getValue().get()))</span>
-          // since we are layered, concat a parent stream filtered by our map entries:
-          ,
-<span class="fc bfc" id="L137" title="All 2 branches covered.">          parent.stream(segmentId).filter(e -&gt; !ourLayerState.containsKey(Bytes.of(e.getLeft()))));</span>
-    } finally {
-<span class="fc" id="L139">      lock.unlock();</span>
-    }
+<span class="fc" id="L136">    final PeekingIterator&lt;Pair&lt;byte[], byte[]&gt;&gt; parentIterator =</span>
+<span class="fc" id="L137">        new PeekingIterator&lt;&gt;(parent.stream(segmentId).iterator());</span>
+
+<span class="fc" id="L139">    return StreamSupport.stream(</span>
+<span class="fc" id="L140">        Spliterators.spliteratorUnknownSize(</span>
+<span class="fc" id="L141">            new Iterator&lt;&gt;() {</span>
+              @Override
+              public boolean hasNext() {
+<span class="fc bfc" id="L144" title="All 4 branches covered.">                return ourIterator.hasNext() || parentIterator.hasNext();</span>
+              }
+
+              private Pair&lt;byte[], byte[]&gt; mapEntryToPair(
+                  final Map.Entry&lt;Bytes, Optional&lt;byte[]&gt;&gt; entry) {
+<span class="fc" id="L149">                return Optional.of(entry)</span>
+<span class="fc" id="L150">                    .map(</span>
+                        e -&gt;
+<span class="fc" id="L152">                            Pair.of(</span>
+<span class="fc" id="L153">                                e.getKey().toArrayUnsafe(),</span>
+<span class="pc" id="L154">                                e.getValue().orElseGet(() -&gt; new byte[0])))</span>
+<span class="fc" id="L155">                    .get();</span>
+              }
+
+              @Override
+              public Pair&lt;byte[], byte[]&gt; next() {
+<span class="fc" id="L160">                var ourPeek = ourIterator.peek();</span>
+<span class="fc" id="L161">                var parentPeek = parentIterator.peek();</span>
+
+<span class="fc bfc" id="L163" title="All 4 branches covered.">                if (ourPeek == null || parentPeek == null) {</span>
+<span class="fc bfc" id="L164" title="All 2 branches covered.">                  return ourPeek == null</span>
+<span class="fc" id="L165">                      ? parentIterator.next()</span>
+<span class="fc" id="L166">                      : mapEntryToPair(ourIterator.next());</span>
+                }
+
+                // otherwise compare:
+<span class="fc" id="L170">                int comparison = ourPeek.getKey().compareTo(Bytes.wrap(parentPeek.getKey()));</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">                if (comparison &lt; 0) {</span>
+<span class="fc" id="L172">                  return mapEntryToPair(ourIterator.next());</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">                } else if (comparison == 0) {</span>
+                  // skip dupe key from parent, return ours:
+<span class="fc" id="L175">                  parentIterator.next();</span>
+<span class="fc" id="L176">                  return mapEntryToPair(ourIterator.next());</span>
+                } else {
+<span class="fc" id="L178">                  return parentIterator.next();</span>
+                }
+              }
+            },
+            ORDERED | SORTED | DISTINCT),
+        false);
   }
 
   @Override
   public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
       final SegmentIdentifier segmentId, final byte[] startKey) {
-<span class="nc" id="L146">    final Bytes startKeyBytes = Bytes.wrap(startKey);</span>
-<span class="nc bnc" id="L147" title="All 2 branches missed.">    return stream(segmentId).filter(e -&gt; startKeyBytes.compareTo(Bytes.wrap(e.getKey())) &lt;= 0);</span>
+<span class="nc" id="L189">    final Bytes startKeyBytes = Bytes.wrap(startKey);</span>
+<span class="nc bnc" id="L190" title="All 2 branches missed.">    return stream(segmentId).filter(e -&gt; startKeyBytes.compareTo(Bytes.wrap(e.getKey())) &lt;= 0);</span>
   }
 
   @Override
   public Stream&lt;Pair&lt;byte[], byte[]&gt;&gt; streamFromKey(
       final SegmentIdentifier segmentId, final byte[] startKey, final byte[] endKey) {
-<span class="fc" id="L153">    final Bytes startKeyBytes = Bytes.wrap(startKey);</span>
-<span class="fc" id="L154">    final Bytes endKeyBytes = Bytes.wrap(endKey);</span>
-<span class="fc" id="L155">    return stream(segmentId)</span>
-<span class="fc bfc" id="L156" title="All 2 branches covered.">        .filter(e -&gt; startKeyBytes.compareTo(Bytes.wrap(e.getKey())) &lt;= 0)</span>
-<span class="fc bfc" id="L157" title="All 2 branches covered.">        .filter(e -&gt; endKeyBytes.compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
+<span class="fc" id="L196">    final Bytes startKeyBytes = Bytes.wrap(startKey);</span>
+<span class="fc" id="L197">    final Bytes endKeyBytes = Bytes.wrap(endKey);</span>
+<span class="fc" id="L198">    return stream(segmentId)</span>
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        .filter(e -&gt; startKeyBytes.compareTo(Bytes.wrap(e.getKey())) &lt;= 0)</span>
+<span class="fc bfc" id="L200" title="All 2 branches covered.">        .filter(e -&gt; endKeyBytes.compareTo(Bytes.wrap(e.getKey())) &gt;= 0);</span>
   }
 
   @Override
   public Stream&lt;byte[]&gt; streamKeys(final SegmentIdentifier segmentId) {
-<span class="nc" id="L162">    throwIfClosed();</span>
+<span class="nc" id="L205">    throwIfClosed();</span>
 
-<span class="nc" id="L164">    final Lock lock = rwLock.readLock();</span>
-<span class="nc" id="L165">    lock.lock();</span>
+<span class="nc" id="L207">    final Lock lock = rwLock.readLock();</span>
+<span class="nc" id="L208">    lock.lock();</span>
     try {
       // copy of our in memory store to use for streaming and filtering:
-<span class="nc" id="L168">      var ourLayerState =</span>
-<span class="nc" id="L169">          Optional.ofNullable(hashValueStore.get(segmentId))</span>
-<span class="nc" id="L170">              .map(HashMap::new)</span>
-<span class="nc" id="L171">              .orElse(new HashMap&lt;&gt;());</span>
+<span class="nc" id="L211">      var ourLayerState =</span>
+<span class="nc" id="L212">          Optional.ofNullable(hashValueStore.get(segmentId))</span>
+<span class="nc" id="L213">              .map(HashMap::new)</span>
+<span class="nc" id="L214">              .orElse(new HashMap&lt;&gt;());</span>
 
-<span class="nc" id="L173">      return Streams.concat(</span>
-<span class="nc" id="L174">          ourLayerState.entrySet().stream()</span>
-<span class="nc" id="L175">              .filter(entry -&gt; entry.getValue().isPresent())</span>
-<span class="nc" id="L176">              .map(bytesEntry -&gt; bytesEntry.getKey().toArrayUnsafe())</span>
+<span class="nc" id="L216">      return Streams.concat(</span>
+<span class="nc" id="L217">          ourLayerState.entrySet().stream()</span>
+<span class="nc" id="L218">              .filter(entry -&gt; entry.getValue().isPresent())</span>
+<span class="nc" id="L219">              .map(bytesEntry -&gt; bytesEntry.getKey().toArrayUnsafe())</span>
           // since we are layered, concat a parent stream filtered by our map entries:
           ,
-<span class="nc bnc" id="L179" title="All 2 branches missed.">          parent.streamKeys(segmentId).filter(e -&gt; !ourLayerState.containsKey(Bytes.of(e))));</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">          parent.streamKeys(segmentId).filter(e -&gt; !ourLayerState.containsKey(Bytes.of(e))));</span>
 
     } finally {
-<span class="nc" id="L182">      lock.unlock();</span>
+<span class="nc" id="L225">      lock.unlock();</span>
     }
   }
 
   @Override
   public boolean tryDelete(final SegmentIdentifier segmentId, final byte[] key) {
-<span class="nc" id="L188">    hashValueStore</span>
-<span class="nc" id="L189">        .computeIfAbsent(segmentId, __ -&gt; new HashMap&lt;&gt;())</span>
-<span class="nc" id="L190">        .put(Bytes.wrap(key), Optional.empty());</span>
-<span class="nc" id="L191">    return true;</span>
+<span class="nc" id="L231">    hashValueStore</span>
+<span class="nc" id="L232">        .computeIfAbsent(segmentId, __ -&gt; newSegmentMap())</span>
+<span class="nc" id="L233">        .put(Bytes.wrap(key), Optional.empty());</span>
+<span class="nc" id="L234">    return true;</span>
   }
 
   @Override
   public SegmentedKeyValueStorageTransaction startTransaction() {
-<span class="fc" id="L196">    throwIfClosed();</span>
+<span class="fc" id="L239">    throwIfClosed();</span>
 
-<span class="fc" id="L198">    return new SegmentedKeyValueStorageTransactionValidatorDecorator(</span>
-<span class="fc" id="L199">        new SegmentedInMemoryTransaction() {</span>
+<span class="fc" id="L241">    return new SegmentedKeyValueStorageTransactionValidatorDecorator(</span>
+<span class="fc" id="L242">        new SegmentedInMemoryTransaction() {</span>
           @Override
           public void commit() throws StorageException {
-<span class="fc" id="L202">            final Lock lock = rwLock.writeLock();</span>
-<span class="fc" id="L203">            lock.lock();</span>
+<span class="fc" id="L245">            final Lock lock = rwLock.writeLock();</span>
+<span class="fc" id="L246">            lock.lock();</span>
             try {
-<span class="fc" id="L205">              updatedValues.entrySet().stream()</span>
-<span class="fc" id="L206">                  .forEach(</span>
+<span class="fc" id="L248">              updatedValues.entrySet().stream()</span>
+<span class="fc" id="L249">                  .forEach(</span>
                       entry -&gt;
                           hashValueStore
-<span class="fc" id="L209">                              .computeIfAbsent(entry.getKey(), __ -&gt; new HashMap&lt;&gt;())</span>
-<span class="fc" id="L210">                              .putAll(entry.getValue()));</span>
+<span class="fc" id="L252">                              .computeIfAbsent(entry.getKey(), __ -&gt; newSegmentMap())</span>
+<span class="fc" id="L253">                              .putAll(entry.getValue()));</span>
 
               // put empty rather than remove in order to not ask parent in case of deletion
-<span class="fc" id="L213">              removedKeys.entrySet().stream()</span>
-<span class="fc" id="L214">                  .forEach(</span>
+<span class="fc" id="L256">              removedKeys.entrySet().stream()</span>
+<span class="fc" id="L257">                  .forEach(</span>
                       segmentEntry -&gt;
                           hashValueStore
-<span class="pc" id="L217">                              .computeIfAbsent(segmentEntry.getKey(), __ -&gt; new HashMap&lt;&gt;())</span>
-<span class="fc" id="L218">                              .putAll(</span>
-<span class="fc" id="L219">                                  segmentEntry.getValue().stream()</span>
-<span class="fc" id="L220">                                      .collect(</span>
-<span class="fc" id="L221">                                          Collectors.toMap(key -&gt; key, __ -&gt; Optional.empty()))));</span>
+<span class="pc" id="L260">                              .computeIfAbsent(segmentEntry.getKey(), __ -&gt; newSegmentMap())</span>
+<span class="fc" id="L261">                              .putAll(</span>
+<span class="fc" id="L262">                                  segmentEntry.getValue().stream()</span>
+<span class="fc" id="L263">                                      .collect(</span>
+<span class="fc" id="L264">                                          Collectors.toMap(key -&gt; key, __ -&gt; Optional.empty()))));</span>
 
-<span class="fc" id="L223">              updatedValues.clear();</span>
-<span class="fc" id="L224">              removedKeys.clear();</span>
+<span class="fc" id="L266">              updatedValues.clear();</span>
+<span class="fc" id="L267">              removedKeys.clear();</span>
             } finally {
-<span class="fc" id="L226">              lock.unlock();</span>
+<span class="fc" id="L269">              lock.unlock();</span>
             }
-<span class="fc" id="L228">          }</span>
+<span class="fc" id="L271">          }</span>
         },
         this::isClosed);
   }
 
   @Override
   public boolean isClosed() {
-<span class="fc" id="L235">    return parent.isClosed();</span>
+<span class="fc" id="L278">    return parent.isClosed();</span>
   }
 
   @Override
   public SnappedKeyValueStorage clone() {
-<span class="nc" id="L240">    return new LayeredKeyValueStorage(hashValueStore, parent);</span>
+<span class="nc" id="L283">    return new LayeredKeyValueStorage(hashValueStore, parent);</span>
   }
 
   private void throwIfClosed() {
-<span class="pc bpc" id="L244" title="1 of 2 branches missed.">    if (parent.isClosed()) {</span>
-<span class="nc" id="L245">      LOG.error(&quot;Attempting to use a closed RocksDBKeyValueStorage&quot;);</span>
-<span class="nc" id="L246">      throw new StorageException(&quot;Storage has been closed&quot;);</span>
+<span class="pc bpc" id="L287" title="1 of 2 branches missed.">    if (parent.isClosed()) {</span>
+<span class="nc" id="L288">      LOG.error(&quot;Attempting to use a closed RocksDBKeyValueStorage&quot;);</span>
+<span class="nc" id="L289">      throw new StorageException(&quot;Storage has been closed&quot;);</span>
     }
-<span class="fc" id="L248">  }</span>
+<span class="fc" id="L291">  }</span>
+
+  private static class PeekingIterator&lt;E&gt; implements Iterator&lt;E&gt; {
+    private final Iterator&lt;E&gt; iterator;
+    private E next;
+
+<span class="fc" id="L297">    public PeekingIterator(final Iterator&lt;E&gt; iterator) {</span>
+<span class="fc" id="L298">      this.iterator = iterator;</span>
+<span class="fc bfc" id="L299" title="All 2 branches covered.">      this.next = iterator.hasNext() ? iterator.next() : null;</span>
+<span class="fc" id="L300">    }</span>
+
+    public E peek() {
+<span class="fc" id="L303">      return next;</span>
+    }
+
+    @Override
+    public boolean hasNext() {
+<span class="fc bfc" id="L308" title="All 2 branches covered.">      return next != null;</span>
+    }
+
+    @Override
+    public E next() {
+<span class="fc" id="L313">      E oldNext = next;</span>
+<span class="fc bfc" id="L314" title="All 2 branches covered.">      next = iterator.hasNext() ? iterator.next() : null;</span>
+<span class="fc" id="L315">      return oldNext;</span>
+    }
+  }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

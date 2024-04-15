@@ -36,6 +36,7 @@ import org.hyperledger.besu.ethereum.core.MutableWorldState;
 import org.hyperledger.besu.ethereum.core.ProcessableBlockHeader;
 import org.hyperledger.besu.ethereum.core.SealableBlockHeader;
 import org.hyperledger.besu.ethereum.core.Transaction;
+import org.hyperledger.besu.ethereum.core.ValidatorExit;
 import org.hyperledger.besu.ethereum.core.Withdrawal;
 import org.hyperledger.besu.ethereum.core.encoding.DepositDecoder;
 import org.hyperledger.besu.ethereum.eth.manager.EthScheduler;
@@ -49,6 +50,7 @@ import org.hyperledger.besu.ethereum.mainnet.ParentBeaconBlockRootHelper;
 import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
 import org.hyperledger.besu.ethereum.mainnet.ProtocolSpec;
 import org.hyperledger.besu.ethereum.mainnet.ScheduleBasedBlockHeaderFunctions;
+import org.hyperledger.besu.ethereum.mainnet.ValidatorExitsValidator;
 import org.hyperledger.besu.ethereum.mainnet.WithdrawalsProcessor;
 import org.hyperledger.besu.ethereum.mainnet.feemarket.BaseFeeMarket;
 import org.hyperledger.besu.ethereum.mainnet.feemarket.ExcessBlobGasCalculator;
@@ -80,7 +82,7 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
     Bytes get(final BlockHeader parent);
   }
 
-<span class="fc" id="L83">  private static final Logger LOG = LoggerFactory.getLogger(AbstractBlockCreator.class);</span>
+<span class="fc" id="L85">  private static final Logger LOG = LoggerFactory.getLogger(AbstractBlockCreator.class);</span>
 
   private final MiningBeneficiaryCalculator miningBeneficiaryCalculator;
   private final ExtraDataCalculator extraDataCalculator;
@@ -92,7 +94,7 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
   protected final BlockHeader parentHeader;
   private final Optional&lt;Address&gt; depositContractAddress;
   private final EthScheduler ethScheduler;
-<span class="fc" id="L95">  private final AtomicBoolean isCancelled = new AtomicBoolean(false);</span>
+<span class="fc" id="L97">  private final AtomicBoolean isCancelled = new AtomicBoolean(false);</span>
 
   protected AbstractBlockCreator(
       final MiningParameters miningParameters,
@@ -103,18 +105,18 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final ProtocolSchedule protocolSchedule,
       final BlockHeader parentHeader,
       final Optional&lt;Address&gt; depositContractAddress,
-<span class="fc" id="L106">      final EthScheduler ethScheduler) {</span>
-<span class="fc" id="L107">    this.miningParameters = miningParameters;</span>
-<span class="fc" id="L108">    this.miningBeneficiaryCalculator = miningBeneficiaryCalculator;</span>
-<span class="fc" id="L109">    this.extraDataCalculator = extraDataCalculator;</span>
-<span class="fc" id="L110">    this.transactionPool = transactionPool;</span>
-<span class="fc" id="L111">    this.protocolContext = protocolContext;</span>
-<span class="fc" id="L112">    this.protocolSchedule = protocolSchedule;</span>
-<span class="fc" id="L113">    this.parentHeader = parentHeader;</span>
-<span class="fc" id="L114">    this.depositContractAddress = depositContractAddress;</span>
-<span class="fc" id="L115">    this.ethScheduler = ethScheduler;</span>
-<span class="fc" id="L116">    blockHeaderFunctions = ScheduleBasedBlockHeaderFunctions.create(protocolSchedule);</span>
-<span class="fc" id="L117">  }</span>
+<span class="fc" id="L108">      final EthScheduler ethScheduler) {</span>
+<span class="fc" id="L109">    this.miningParameters = miningParameters;</span>
+<span class="fc" id="L110">    this.miningBeneficiaryCalculator = miningBeneficiaryCalculator;</span>
+<span class="fc" id="L111">    this.extraDataCalculator = extraDataCalculator;</span>
+<span class="fc" id="L112">    this.transactionPool = transactionPool;</span>
+<span class="fc" id="L113">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L114">    this.protocolSchedule = protocolSchedule;</span>
+<span class="fc" id="L115">    this.parentHeader = parentHeader;</span>
+<span class="fc" id="L116">    this.depositContractAddress = depositContractAddress;</span>
+<span class="fc" id="L117">    this.ethScheduler = ethScheduler;</span>
+<span class="fc" id="L118">    blockHeaderFunctions = ScheduleBasedBlockHeaderFunctions.create(protocolSchedule);</span>
+<span class="fc" id="L119">  }</span>
 
   /**
    * Create block will create a new block at the head of the blockchain specified in the
@@ -135,13 +137,13 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
    */
   @Override
   public BlockCreationResult createBlock(final long timestamp) {
-<span class="fc" id="L138">    return createBlock(Optional.empty(), Optional.empty(), timestamp);</span>
+<span class="fc" id="L140">    return createBlock(Optional.empty(), Optional.empty(), timestamp);</span>
   }
 
   @Override
   public BlockCreationResult createBlock(
       final List&lt;Transaction&gt; transactions, final List&lt;BlockHeader&gt; ommers, final long timestamp) {
-<span class="fc" id="L144">    return createBlock(Optional.of(transactions), Optional.of(ommers), timestamp);</span>
+<span class="fc" id="L146">    return createBlock(Optional.of(transactions), Optional.of(ommers), timestamp);</span>
   }
 
   @Override
@@ -149,12 +151,32 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final Optional&lt;List&lt;Transaction&gt;&gt; maybeTransactions,
       final Optional&lt;List&lt;BlockHeader&gt;&gt; maybeOmmers,
       final long timestamp) {
-<span class="fc" id="L152">    return createBlock(</span>
+<span class="fc" id="L154">    return createBlock(</span>
         maybeTransactions,
         maybeOmmers,
-<span class="fc" id="L155">        Optional.empty(),</span>
-<span class="fc" id="L156">        Optional.empty(),</span>
 <span class="fc" id="L157">        Optional.empty(),</span>
+<span class="fc" id="L158">        Optional.empty(),</span>
+<span class="fc" id="L159">        Optional.empty(),</span>
+        timestamp,
+        true);
+  }
+
+  @Override
+  public BlockCreationResult createEmptyWithdrawalsBlock(final long timestamp) {
+<span class="nc" id="L166">    throw new UnsupportedOperationException(&quot;Only used by BFT block creators&quot;);</span>
+  }
+
+  public BlockCreationResult createBlock(
+      final Optional&lt;List&lt;Transaction&gt;&gt; maybeTransactions,
+      final Optional&lt;List&lt;BlockHeader&gt;&gt; maybeOmmers,
+      final Optional&lt;List&lt;Withdrawal&gt;&gt; maybeWithdrawals,
+      final long timestamp) {
+<span class="fc" id="L174">    return createBlock(</span>
+        maybeTransactions,
+        maybeOmmers,
+        maybeWithdrawals,
+<span class="fc" id="L178">        Optional.empty(),</span>
+<span class="fc" id="L179">        Optional.empty(),</span>
         timestamp,
         true);
   }
@@ -168,161 +190,178 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final long timestamp,
       boolean rewardCoinbase) {
 
-<span class="fc" id="L171">    try (final MutableWorldState disposableWorldState = duplicateWorldStateAtParent()) {</span>
-<span class="fc" id="L172">      final ProtocolSpec newProtocolSpec =</span>
-<span class="fc" id="L173">          protocolSchedule.getForNextBlockHeader(parentHeader, timestamp);</span>
+<span class="fc" id="L193">    final var timings = new BlockCreationTiming();</span>
 
-<span class="fc" id="L175">      final ProcessableBlockHeader processableBlockHeader =</span>
-<span class="fc" id="L176">          createPendingBlockHeader(</span>
+<span class="fc" id="L195">    try (final MutableWorldState disposableWorldState = duplicateWorldStateAtParent()) {</span>
+<span class="fc" id="L196">      timings.register(&quot;duplicateWorldState&quot;);</span>
+<span class="fc" id="L197">      final ProtocolSpec newProtocolSpec =</span>
+<span class="fc" id="L198">          protocolSchedule.getForNextBlockHeader(parentHeader, timestamp);</span>
+
+<span class="fc" id="L200">      final ProcessableBlockHeader processableBlockHeader =</span>
+<span class="fc" id="L201">          createPendingBlockHeader(</span>
               timestamp, maybePrevRandao, maybeParentBeaconBlockRoot, newProtocolSpec);
-<span class="fc" id="L178">      final Address miningBeneficiary =</span>
-<span class="fc" id="L179">          miningBeneficiaryCalculator.getMiningBeneficiary(processableBlockHeader.getNumber());</span>
+<span class="fc" id="L203">      final Address miningBeneficiary =</span>
+<span class="fc" id="L204">          miningBeneficiaryCalculator.getMiningBeneficiary(processableBlockHeader.getNumber());</span>
 
-<span class="fc" id="L181">      throwIfStopped();</span>
+<span class="fc" id="L206">      throwIfStopped();</span>
 
-<span class="fc" id="L183">      final List&lt;BlockHeader&gt; ommers = maybeOmmers.orElse(selectOmmers());</span>
+<span class="fc" id="L208">      final List&lt;BlockHeader&gt; ommers = maybeOmmers.orElse(selectOmmers());</span>
 
-<span class="fc" id="L185">      maybeParentBeaconBlockRoot.ifPresent(</span>
+<span class="fc" id="L210">      maybeParentBeaconBlockRoot.ifPresent(</span>
           bytes32 -&gt;
-<span class="nc" id="L187">              ParentBeaconBlockRootHelper.storeParentBeaconBlockRoot(</span>
-<span class="nc" id="L188">                  disposableWorldState.updater(), timestamp, bytes32));</span>
+<span class="nc" id="L212">              ParentBeaconBlockRootHelper.storeParentBeaconBlockRoot(</span>
+<span class="nc" id="L213">                  disposableWorldState.updater(), timestamp, bytes32));</span>
 
-<span class="fc" id="L190">      throwIfStopped();</span>
+<span class="fc" id="L215">      throwIfStopped();</span>
 
-<span class="fc" id="L192">      final PluginTransactionSelector pluginTransactionSelector =</span>
-<span class="fc" id="L193">          miningParameters.getTransactionSelectionService().createPluginTransactionSelector();</span>
+<span class="fc" id="L217">      final PluginTransactionSelector pluginTransactionSelector =</span>
+<span class="fc" id="L218">          miningParameters.getTransactionSelectionService().createPluginTransactionSelector();</span>
 
-<span class="fc" id="L195">      final BlockAwareOperationTracer operationTracer =</span>
-<span class="fc" id="L196">          pluginTransactionSelector.getOperationTracer();</span>
+<span class="fc" id="L220">      final BlockAwareOperationTracer operationTracer =</span>
+<span class="fc" id="L221">          pluginTransactionSelector.getOperationTracer();</span>
 
-<span class="fc" id="L198">      operationTracer.traceStartBlock(processableBlockHeader);</span>
-
-<span class="fc" id="L200">      final TransactionSelectionResults transactionResults =</span>
-<span class="fc" id="L201">          selectTransactions(</span>
+<span class="fc" id="L223">      operationTracer.traceStartBlock(processableBlockHeader);</span>
+<span class="fc" id="L224">      timings.register(&quot;preTxsSelection&quot;);</span>
+<span class="fc" id="L225">      final TransactionSelectionResults transactionResults =</span>
+<span class="fc" id="L226">          selectTransactions(</span>
               processableBlockHeader,
               disposableWorldState,
               maybeTransactions,
               miningBeneficiary,
               newProtocolSpec,
               pluginTransactionSelector);
+<span class="fc" id="L233">      transactionResults.logSelectionStats();</span>
+<span class="fc" id="L234">      timings.register(&quot;txsSelection&quot;);</span>
+<span class="fc" id="L235">      throwIfStopped();</span>
 
-<span class="fc" id="L209">      transactionResults.logSelectionStats();</span>
-
-<span class="fc" id="L211">      throwIfStopped();</span>
-
-<span class="fc" id="L213">      final Optional&lt;WithdrawalsProcessor&gt; maybeWithdrawalsProcessor =</span>
-<span class="fc" id="L214">          newProtocolSpec.getWithdrawalsProcessor();</span>
-<span class="fc" id="L215">      final boolean withdrawalsCanBeProcessed =</span>
-<span class="fc bfc" id="L216" title="All 4 branches covered.">          maybeWithdrawalsProcessor.isPresent() &amp;&amp; maybeWithdrawals.isPresent();</span>
-<span class="fc bfc" id="L217" title="All 2 branches covered.">      if (withdrawalsCanBeProcessed) {</span>
-<span class="fc" id="L218">        maybeWithdrawalsProcessor</span>
-<span class="fc" id="L219">            .get()</span>
-<span class="fc" id="L220">            .processWithdrawals(maybeWithdrawals.get(), disposableWorldState.updater());</span>
-      }
-
-<span class="fc" id="L223">      throwIfStopped();</span>
-
-<span class="fc" id="L225">      final DepositsValidator depositsValidator = newProtocolSpec.getDepositsValidator();</span>
-<span class="fc" id="L226">      Optional&lt;List&lt;Deposit&gt;&gt; maybeDeposits = Optional.empty();</span>
-<span class="fc bfc" id="L227" title="All 2 branches covered.">      if (depositsValidator instanceof DepositsValidator.AllowedDeposits</span>
-<span class="fc bfc" id="L228" title="All 2 branches covered.">          &amp;&amp; depositContractAddress.isPresent()) {</span>
-<span class="fc" id="L229">        maybeDeposits = Optional.of(findDepositsFromReceipts(transactionResults));</span>
-      }
-
-<span class="fc" id="L232">      throwIfStopped();</span>
-
-<span class="fc bfc" id="L234" title="All 2 branches covered.">      if (rewardCoinbase</span>
-<span class="pc bpc" id="L235" title="1 of 2 branches missed.">          &amp;&amp; !rewardBeneficiary(</span>
-              disposableWorldState,
-              processableBlockHeader,
-              ommers,
-              miningBeneficiary,
-<span class="fc" id="L240">              newProtocolSpec.getBlockReward(),</span>
-<span class="fc" id="L241">              newProtocolSpec.isSkipZeroBlockRewards(),</span>
-              newProtocolSpec)) {
-<span class="nc" id="L243">        LOG.trace(&quot;Failed to apply mining reward, exiting.&quot;);</span>
-<span class="nc" id="L244">        throw new RuntimeException(&quot;Failed to apply mining reward.&quot;);</span>
+<span class="fc" id="L237">      final Optional&lt;WithdrawalsProcessor&gt; maybeWithdrawalsProcessor =</span>
+<span class="fc" id="L238">          newProtocolSpec.getWithdrawalsProcessor();</span>
+<span class="fc" id="L239">      final boolean withdrawalsCanBeProcessed =</span>
+<span class="fc bfc" id="L240" title="All 4 branches covered.">          maybeWithdrawalsProcessor.isPresent() &amp;&amp; maybeWithdrawals.isPresent();</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">      if (withdrawalsCanBeProcessed) {</span>
+<span class="fc" id="L242">        maybeWithdrawalsProcessor</span>
+<span class="fc" id="L243">            .get()</span>
+<span class="fc" id="L244">            .processWithdrawals(maybeWithdrawals.get(), disposableWorldState.updater());</span>
       }
 
 <span class="fc" id="L247">      throwIfStopped();</span>
 
-<span class="fc" id="L249">      final GasUsage usage = computeExcessBlobGas(transactionResults, newProtocolSpec);</span>
-
-<span class="fc" id="L251">      throwIfStopped();</span>
-
-      BlockHeaderBuilder builder =
-<span class="fc" id="L254">          BlockHeaderBuilder.create()</span>
-<span class="fc" id="L255">              .populateFrom(processableBlockHeader)</span>
-<span class="fc" id="L256">              .ommersHash(BodyValidation.ommersHash(ommers))</span>
-<span class="fc" id="L257">              .stateRoot(disposableWorldState.rootHash())</span>
-<span class="fc" id="L258">              .transactionsRoot(</span>
-<span class="fc" id="L259">                  BodyValidation.transactionsRoot(transactionResults.getSelectedTransactions()))</span>
-<span class="fc" id="L260">              .receiptsRoot(BodyValidation.receiptsRoot(transactionResults.getReceipts()))</span>
-<span class="fc" id="L261">              .logsBloom(BodyValidation.logsBloom(transactionResults.getReceipts()))</span>
-<span class="fc" id="L262">              .gasUsed(transactionResults.getCumulativeGasUsed())</span>
-<span class="fc" id="L263">              .extraData(extraDataCalculator.get(parentHeader))</span>
-<span class="fc" id="L264">              .withdrawalsRoot(</span>
-<span class="fc bfc" id="L265" title="All 2 branches covered.">                  withdrawalsCanBeProcessed</span>
-<span class="fc" id="L266">                      ? BodyValidation.withdrawalsRoot(maybeWithdrawals.get())</span>
-<span class="fc" id="L267">                      : null)</span>
-<span class="fc" id="L268">              .depositsRoot(maybeDeposits.map(BodyValidation::depositsRoot).orElse(null));</span>
-<span class="pc bpc" id="L269" title="1 of 2 branches missed.">      if (usage != null) {</span>
-<span class="nc" id="L270">        builder.blobGasUsed(usage.used.toLong()).excessBlobGas(usage.excessBlobGas);</span>
+<span class="fc" id="L249">      final DepositsValidator depositsValidator = newProtocolSpec.getDepositsValidator();</span>
+<span class="fc" id="L250">      Optional&lt;List&lt;Deposit&gt;&gt; maybeDeposits = Optional.empty();</span>
+<span class="fc bfc" id="L251" title="All 2 branches covered.">      if (depositsValidator instanceof DepositsValidator.AllowedDeposits</span>
+<span class="fc bfc" id="L252" title="All 2 branches covered.">          &amp;&amp; depositContractAddress.isPresent()) {</span>
+<span class="fc" id="L253">        maybeDeposits = Optional.of(findDepositsFromReceipts(transactionResults));</span>
       }
 
-<span class="fc" id="L273">      final SealableBlockHeader sealableBlockHeader = builder.buildSealableBlockHeader();</span>
+<span class="fc" id="L256">      throwIfStopped();</span>
 
-<span class="fc" id="L275">      final BlockHeader blockHeader = createFinalBlockHeader(sealableBlockHeader);</span>
+      // TODO implement logic to retrieve validator exits from precompile
+      // https://github.com/hyperledger/besu/issues/6800
+<span class="fc" id="L260">      final ValidatorExitsValidator exitsValidator = newProtocolSpec.getExitsValidator();</span>
+<span class="fc" id="L261">      Optional&lt;List&lt;ValidatorExit&gt;&gt; maybeExits = Optional.empty();</span>
+<span class="pc bpc" id="L262" title="1 of 2 branches missed.">      if (exitsValidator instanceof ValidatorExitsValidator.AllowedExits) {</span>
+<span class="nc" id="L263">        maybeExits = Optional.of(List.of());</span>
+      }
+
+<span class="fc" id="L266">      throwIfStopped();</span>
+
+<span class="fc bfc" id="L268" title="All 2 branches covered.">      if (rewardCoinbase</span>
+<span class="pc bpc" id="L269" title="1 of 2 branches missed.">          &amp;&amp; !rewardBeneficiary(</span>
+              disposableWorldState,
+              processableBlockHeader,
+              ommers,
+              miningBeneficiary,
+<span class="fc" id="L274">              newProtocolSpec.getBlockReward(),</span>
+<span class="fc" id="L275">              newProtocolSpec.isSkipZeroBlockRewards(),</span>
+              newProtocolSpec)) {
+<span class="nc" id="L277">        LOG.trace(&quot;Failed to apply mining reward, exiting.&quot;);</span>
+<span class="nc" id="L278">        throw new RuntimeException(&quot;Failed to apply mining reward.&quot;);</span>
+      }
+
+<span class="fc" id="L281">      throwIfStopped();</span>
+
+<span class="fc" id="L283">      final GasUsage usage = computeExcessBlobGas(transactionResults, newProtocolSpec);</span>
+
+<span class="fc" id="L285">      throwIfStopped();</span>
+
+      BlockHeaderBuilder builder =
+<span class="fc" id="L288">          BlockHeaderBuilder.create()</span>
+<span class="fc" id="L289">              .populateFrom(processableBlockHeader)</span>
+<span class="fc" id="L290">              .ommersHash(BodyValidation.ommersHash(ommers))</span>
+<span class="fc" id="L291">              .stateRoot(disposableWorldState.rootHash())</span>
+<span class="fc" id="L292">              .transactionsRoot(</span>
+<span class="fc" id="L293">                  BodyValidation.transactionsRoot(transactionResults.getSelectedTransactions()))</span>
+<span class="fc" id="L294">              .receiptsRoot(BodyValidation.receiptsRoot(transactionResults.getReceipts()))</span>
+<span class="fc" id="L295">              .logsBloom(BodyValidation.logsBloom(transactionResults.getReceipts()))</span>
+<span class="fc" id="L296">              .gasUsed(transactionResults.getCumulativeGasUsed())</span>
+<span class="fc" id="L297">              .extraData(extraDataCalculator.get(parentHeader))</span>
+<span class="fc" id="L298">              .withdrawalsRoot(</span>
+<span class="fc bfc" id="L299" title="All 2 branches covered.">                  withdrawalsCanBeProcessed</span>
+<span class="fc" id="L300">                      ? BodyValidation.withdrawalsRoot(maybeWithdrawals.get())</span>
+<span class="fc" id="L301">                      : null)</span>
+<span class="fc" id="L302">              .depositsRoot(maybeDeposits.map(BodyValidation::depositsRoot).orElse(null))</span>
+<span class="fc" id="L303">              .exitsRoot(maybeExits.map(BodyValidation::exitsRoot).orElse(null));</span>
+<span class="pc bpc" id="L304" title="1 of 2 branches missed.">      if (usage != null) {</span>
+<span class="nc" id="L305">        builder.blobGasUsed(usage.used.toLong()).excessBlobGas(usage.excessBlobGas);</span>
+      }
+
+<span class="fc" id="L308">      final SealableBlockHeader sealableBlockHeader = builder.buildSealableBlockHeader();</span>
+
+<span class="fc" id="L310">      final BlockHeader blockHeader = createFinalBlockHeader(sealableBlockHeader);</span>
 
       final Optional&lt;List&lt;Withdrawal&gt;&gt; withdrawals =
-<span class="fc bfc" id="L278" title="All 2 branches covered.">          withdrawalsCanBeProcessed ? maybeWithdrawals : Optional.empty();</span>
-<span class="fc" id="L279">      final BlockBody blockBody =</span>
+<span class="fc bfc" id="L313" title="All 2 branches covered.">          withdrawalsCanBeProcessed ? maybeWithdrawals : Optional.empty();</span>
+<span class="fc" id="L314">      final BlockBody blockBody =</span>
           new BlockBody(
-<span class="fc" id="L281">              transactionResults.getSelectedTransactions(), ommers, withdrawals, maybeDeposits);</span>
-<span class="fc" id="L282">      final Block block = new Block(blockHeader, blockBody);</span>
+<span class="fc" id="L316">              transactionResults.getSelectedTransactions(),</span>
+              ommers,
+              withdrawals,
+              maybeDeposits,
+              maybeExits);
+<span class="fc" id="L321">      final Block block = new Block(blockHeader, blockBody);</span>
 
-<span class="fc" id="L284">      operationTracer.traceEndBlock(blockHeader, blockBody);</span>
-
-<span class="fc" id="L286">      return new BlockCreationResult(block, transactionResults);</span>
-<span class="nc" id="L287">    } catch (final SecurityModuleException ex) {</span>
-<span class="nc" id="L288">      throw new IllegalStateException(&quot;Failed to create block signature&quot;, ex);</span>
-<span class="nc" id="L289">    } catch (final CancellationException | StorageException ex) {</span>
-<span class="nc" id="L290">      throw ex;</span>
-<span class="nc" id="L291">    } catch (final Exception ex) {</span>
-<span class="nc" id="L292">      throw new IllegalStateException(</span>
+<span class="fc" id="L323">      operationTracer.traceEndBlock(blockHeader, blockBody);</span>
+<span class="fc" id="L324">      timings.register(&quot;blockAssembled&quot;);</span>
+<span class="fc" id="L325">      return new BlockCreationResult(block, transactionResults, timings);</span>
+<span class="nc" id="L326">    } catch (final SecurityModuleException ex) {</span>
+<span class="nc" id="L327">      throw new IllegalStateException(&quot;Failed to create block signature&quot;, ex);</span>
+<span class="fc" id="L328">    } catch (final CancellationException | StorageException ex) {</span>
+<span class="fc" id="L329">      throw ex;</span>
+<span class="nc" id="L330">    } catch (final Exception ex) {</span>
+<span class="nc" id="L331">      throw new IllegalStateException(</span>
           &quot;Block creation failed unexpectedly. Will restart on next block added to chain.&quot;, ex);
     }
   }
 
   @VisibleForTesting
   List&lt;Deposit&gt; findDepositsFromReceipts(final TransactionSelectionResults transactionResults) {
-<span class="fc" id="L299">    return transactionResults.getReceipts().stream()</span>
-<span class="fc" id="L300">        .flatMap(receipt -&gt; receipt.getLogsList().stream())</span>
-<span class="fc" id="L301">        .filter(log -&gt; depositContractAddress.get().equals(log.getLogger()))</span>
-<span class="fc" id="L302">        .map(DepositDecoder::decodeFromLog)</span>
-<span class="fc" id="L303">        .toList();</span>
+<span class="fc" id="L338">    return transactionResults.getReceipts().stream()</span>
+<span class="fc" id="L339">        .flatMap(receipt -&gt; receipt.getLogsList().stream())</span>
+<span class="fc" id="L340">        .filter(log -&gt; depositContractAddress.get().equals(log.getLogger()))</span>
+<span class="fc" id="L341">        .map(DepositDecoder::decodeFromLog)</span>
+<span class="fc" id="L342">        .toList();</span>
   }
 
-<span class="nc" id="L306">  record GasUsage(BlobGas excessBlobGas, BlobGas used) {}</span>
+<span class="nc" id="L345">  record GasUsage(BlobGas excessBlobGas, BlobGas used) {}</span>
 
   private GasUsage computeExcessBlobGas(
       final TransactionSelectionResults transactionResults, final ProtocolSpec newProtocolSpec) {
 
-<span class="pc bpc" id="L311" title="1 of 2 branches missed.">    if (newProtocolSpec.getFeeMarket().implementsDataFee()) {</span>
-<span class="nc" id="L312">      final var gasCalculator = newProtocolSpec.getGasCalculator();</span>
-<span class="nc" id="L313">      final int newBlobsCount =</span>
-<span class="nc" id="L314">          transactionResults.getTransactionsByType(TransactionType.BLOB).stream()</span>
-<span class="nc" id="L315">              .map(tx -&gt; tx.getVersionedHashes().orElseThrow())</span>
-<span class="nc" id="L316">              .mapToInt(List::size)</span>
-<span class="nc" id="L317">              .sum();</span>
+<span class="pc bpc" id="L350" title="1 of 2 branches missed.">    if (newProtocolSpec.getFeeMarket().implementsDataFee()) {</span>
+<span class="nc" id="L351">      final var gasCalculator = newProtocolSpec.getGasCalculator();</span>
+<span class="nc" id="L352">      final int newBlobsCount =</span>
+<span class="nc" id="L353">          transactionResults.getTransactionsByType(TransactionType.BLOB).stream()</span>
+<span class="nc" id="L354">              .map(tx -&gt; tx.getVersionedHashes().orElseThrow())</span>
+<span class="nc" id="L355">              .mapToInt(List::size)</span>
+<span class="nc" id="L356">              .sum();</span>
       // casting parent excess blob gas to long since for the moment it should be well below that
       // limit
-<span class="nc" id="L320">      BlobGas excessBlobGas =</span>
-<span class="nc" id="L321">          ExcessBlobGasCalculator.calculateExcessBlobGasForParent(newProtocolSpec, parentHeader);</span>
-<span class="nc" id="L322">      BlobGas used = BlobGas.of(gasCalculator.blobGasCost(newBlobsCount));</span>
-<span class="nc" id="L323">      return new GasUsage(excessBlobGas, used);</span>
+<span class="nc" id="L359">      BlobGas excessBlobGas =</span>
+<span class="nc" id="L360">          ExcessBlobGasCalculator.calculateExcessBlobGasForParent(newProtocolSpec, parentHeader);</span>
+<span class="nc" id="L361">      BlobGas used = BlobGas.of(gasCalculator.blobGasCost(newBlobsCount));</span>
+<span class="nc" id="L362">      return new GasUsage(excessBlobGas, used);</span>
     }
-<span class="fc" id="L325">    return null;</span>
+<span class="fc" id="L364">    return null;</span>
   }
 
   private TransactionSelectionResults selectTransactions(
@@ -333,59 +372,59 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final ProtocolSpec protocolSpec,
       final PluginTransactionSelector pluginTransactionSelector)
       throws RuntimeException {
-<span class="fc" id="L336">    final MainnetTransactionProcessor transactionProcessor = protocolSpec.getTransactionProcessor();</span>
+<span class="fc" id="L375">    final MainnetTransactionProcessor transactionProcessor = protocolSpec.getTransactionProcessor();</span>
 
-<span class="fc" id="L338">    final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory =</span>
-<span class="fc" id="L339">        protocolSpec.getTransactionReceiptFactory();</span>
+<span class="fc" id="L377">    final AbstractBlockProcessor.TransactionReceiptFactory transactionReceiptFactory =</span>
+<span class="fc" id="L378">        protocolSpec.getTransactionReceiptFactory();</span>
 
-<span class="fc" id="L341">    Wei blobGasPrice =</span>
+<span class="fc" id="L380">    Wei blobGasPrice =</span>
         protocolSpec
-<span class="fc" id="L343">            .getFeeMarket()</span>
-<span class="fc" id="L344">            .blobGasPricePerGas(calculateExcessBlobGasForParent(protocolSpec, parentHeader));</span>
+<span class="fc" id="L382">            .getFeeMarket()</span>
+<span class="fc" id="L383">            .blobGasPricePerGas(calculateExcessBlobGasForParent(protocolSpec, parentHeader));</span>
 
-<span class="fc" id="L346">    final BlockTransactionSelector selector =</span>
+<span class="fc" id="L385">    final BlockTransactionSelector selector =</span>
         new BlockTransactionSelector(
             miningParameters,
             transactionProcessor,
-<span class="fc" id="L350">            protocolContext.getBlockchain(),</span>
+<span class="fc" id="L389">            protocolContext.getBlockchain(),</span>
             disposableWorldState,
             transactionPool,
             processableBlockHeader,
             transactionReceiptFactory,
-<span class="fc" id="L355">            isCancelled::get,</span>
+<span class="fc" id="L394">            isCancelled::get,</span>
             miningBeneficiary,
             blobGasPrice,
-<span class="fc" id="L358">            protocolSpec.getFeeMarket(),</span>
-<span class="fc" id="L359">            protocolSpec.getGasCalculator(),</span>
-<span class="fc" id="L360">            protocolSpec.getGasLimitCalculator(),</span>
+<span class="fc" id="L397">            protocolSpec.getFeeMarket(),</span>
+<span class="fc" id="L398">            protocolSpec.getGasCalculator(),</span>
+<span class="fc" id="L399">            protocolSpec.getGasLimitCalculator(),</span>
             pluginTransactionSelector,
             ethScheduler);
 
-<span class="fc bfc" id="L364" title="All 2 branches covered.">    if (transactions.isPresent()) {</span>
-<span class="fc" id="L365">      return selector.evaluateTransactions(transactions.get());</span>
+<span class="fc bfc" id="L403" title="All 2 branches covered.">    if (transactions.isPresent()) {</span>
+<span class="fc" id="L404">      return selector.evaluateTransactions(transactions.get());</span>
     } else {
-<span class="fc" id="L367">      return selector.buildTransactionListForBlock();</span>
+<span class="fc" id="L406">      return selector.buildTransactionListForBlock();</span>
     }
   }
 
   private MutableWorldState duplicateWorldStateAtParent() {
-<span class="fc" id="L372">    final Hash parentStateRoot = parentHeader.getStateRoot();</span>
-<span class="fc" id="L373">    return protocolContext</span>
-<span class="fc" id="L374">        .getWorldStateArchive()</span>
-<span class="fc" id="L375">        .getMutable(parentHeader, false)</span>
-<span class="fc" id="L376">        .orElseThrow(</span>
+<span class="fc" id="L411">    final Hash parentStateRoot = parentHeader.getStateRoot();</span>
+<span class="fc" id="L412">    return protocolContext</span>
+<span class="fc" id="L413">        .getWorldStateArchive()</span>
+<span class="fc" id="L414">        .getMutable(parentHeader, false)</span>
+<span class="fc" id="L415">        .orElseThrow(</span>
             () -&gt; {
-<span class="nc" id="L378">              LOG.info(&quot;Unable to create block because world state is not available&quot;);</span>
-<span class="nc" id="L379">              return new CancellationException(</span>
+<span class="nc" id="L417">              LOG.info(&quot;Unable to create block because world state is not available&quot;);</span>
+<span class="nc" id="L418">              return new CancellationException(</span>
                   &quot;World state not available for block &quot;
-<span class="nc" id="L381">                      + parentHeader.getNumber()</span>
+<span class="nc" id="L420">                      + parentHeader.getNumber()</span>
                       + &quot; with state root &quot;
                       + parentStateRoot);
             });
   }
 
   private List&lt;BlockHeader&gt; selectOmmers() {
-<span class="fc" id="L388">    return Lists.newArrayList();</span>
+<span class="fc" id="L427">    return Lists.newArrayList();</span>
   }
 
   private ProcessableBlockHeader createPendingBlockHeader(
@@ -393,62 +432,62 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final Optional&lt;Bytes32&gt; maybePrevRandao,
       final Optional&lt;Bytes32&gt; maybeParentBeaconBlockRoot,
       final ProtocolSpec protocolSpec) {
-<span class="fc" id="L396">    final long newBlockNumber = parentHeader.getNumber() + 1;</span>
-<span class="fc" id="L397">    long gasLimit =</span>
+<span class="fc" id="L435">    final long newBlockNumber = parentHeader.getNumber() + 1;</span>
+<span class="fc" id="L436">    long gasLimit =</span>
         protocolSpec
-<span class="fc" id="L399">            .getGasLimitCalculator()</span>
-<span class="fc" id="L400">            .nextGasLimit(</span>
-<span class="fc" id="L401">                parentHeader.getGasLimit(),</span>
-<span class="fc" id="L402">                miningParameters.getTargetGasLimit().orElse(parentHeader.getGasLimit()),</span>
+<span class="fc" id="L438">            .getGasLimitCalculator()</span>
+<span class="fc" id="L439">            .nextGasLimit(</span>
+<span class="fc" id="L440">                parentHeader.getGasLimit(),</span>
+<span class="fc" id="L441">                miningParameters.getTargetGasLimit().orElse(parentHeader.getGasLimit()),</span>
                 newBlockNumber);
 
-<span class="fc" id="L405">    final DifficultyCalculator difficultyCalculator = protocolSpec.getDifficultyCalculator();</span>
-<span class="fc" id="L406">    final BigInteger difficulty =</span>
-<span class="fc" id="L407">        difficultyCalculator.nextDifficulty(timestamp, parentHeader, protocolContext);</span>
+<span class="fc" id="L444">    final DifficultyCalculator difficultyCalculator = protocolSpec.getDifficultyCalculator();</span>
+<span class="fc" id="L445">    final BigInteger difficulty =</span>
+<span class="fc" id="L446">        difficultyCalculator.nextDifficulty(timestamp, parentHeader, protocolContext);</span>
 
-<span class="fc" id="L409">    final Wei baseFee =</span>
-<span class="fc" id="L410">        Optional.of(protocolSpec.getFeeMarket())</span>
-<span class="fc" id="L411">            .filter(FeeMarket::implementsBaseFee)</span>
-<span class="fc" id="L412">            .map(BaseFeeMarket.class::cast)</span>
-<span class="fc" id="L413">            .map(</span>
+<span class="fc" id="L448">    final Wei baseFee =</span>
+<span class="fc" id="L449">        Optional.of(protocolSpec.getFeeMarket())</span>
+<span class="fc" id="L450">            .filter(FeeMarket::implementsBaseFee)</span>
+<span class="fc" id="L451">            .map(BaseFeeMarket.class::cast)</span>
+<span class="fc" id="L452">            .map(</span>
                 feeMarket -&gt;
-<span class="fc" id="L415">                    feeMarket.computeBaseFee(</span>
+<span class="fc" id="L454">                    feeMarket.computeBaseFee(</span>
                         newBlockNumber,
-<span class="fc" id="L417">                        parentHeader.getBaseFee().orElse(Wei.ZERO),</span>
-<span class="fc" id="L418">                        parentHeader.getGasUsed(),</span>
-<span class="fc" id="L419">                        feeMarket.targetGasUsed(parentHeader)))</span>
-<span class="fc" id="L420">            .orElse(null);</span>
+<span class="fc" id="L456">                        parentHeader.getBaseFee().orElse(Wei.ZERO),</span>
+<span class="fc" id="L457">                        parentHeader.getGasUsed(),</span>
+<span class="fc" id="L458">                        feeMarket.targetGasUsed(parentHeader)))</span>
+<span class="fc" id="L459">            .orElse(null);</span>
 
-<span class="fc" id="L422">    final Bytes32 prevRandao = maybePrevRandao.orElse(null);</span>
-<span class="fc" id="L423">    final Bytes32 parentBeaconBlockRoot = maybeParentBeaconBlockRoot.orElse(null);</span>
-<span class="fc" id="L424">    return BlockHeaderBuilder.create()</span>
-<span class="fc" id="L425">        .parentHash(parentHeader.getHash())</span>
-<span class="fc" id="L426">        .coinbase(miningParameters.getCoinbase().orElseThrow())</span>
-<span class="fc" id="L427">        .difficulty(Difficulty.of(difficulty))</span>
-<span class="fc" id="L428">        .number(newBlockNumber)</span>
-<span class="fc" id="L429">        .gasLimit(gasLimit)</span>
-<span class="fc" id="L430">        .timestamp(timestamp)</span>
-<span class="fc" id="L431">        .baseFee(baseFee)</span>
-<span class="fc" id="L432">        .prevRandao(prevRandao)</span>
-<span class="fc" id="L433">        .parentBeaconBlockRoot(parentBeaconBlockRoot)</span>
-<span class="fc" id="L434">        .buildProcessableBlockHeader();</span>
+<span class="fc" id="L461">    final Bytes32 prevRandao = maybePrevRandao.orElse(null);</span>
+<span class="fc" id="L462">    final Bytes32 parentBeaconBlockRoot = maybeParentBeaconBlockRoot.orElse(null);</span>
+<span class="fc" id="L463">    return BlockHeaderBuilder.create()</span>
+<span class="fc" id="L464">        .parentHash(parentHeader.getHash())</span>
+<span class="fc" id="L465">        .coinbase(miningParameters.getCoinbase().orElseThrow())</span>
+<span class="fc" id="L466">        .difficulty(Difficulty.of(difficulty))</span>
+<span class="fc" id="L467">        .number(newBlockNumber)</span>
+<span class="fc" id="L468">        .gasLimit(gasLimit)</span>
+<span class="fc" id="L469">        .timestamp(timestamp)</span>
+<span class="fc" id="L470">        .baseFee(baseFee)</span>
+<span class="fc" id="L471">        .prevRandao(prevRandao)</span>
+<span class="fc" id="L472">        .parentBeaconBlockRoot(parentBeaconBlockRoot)</span>
+<span class="fc" id="L473">        .buildProcessableBlockHeader();</span>
   }
 
   @Override
   public void cancel() {
-<span class="fc" id="L439">    isCancelled.set(true);</span>
-<span class="fc" id="L440">  }</span>
+<span class="fc" id="L478">    isCancelled.set(true);</span>
+<span class="fc" id="L479">  }</span>
 
   @Override
   public boolean isCancelled() {
-<span class="nc" id="L444">    return isCancelled.get();</span>
+<span class="nc" id="L483">    return isCancelled.get();</span>
   }
 
   private void throwIfStopped() throws CancellationException {
-<span class="pc bpc" id="L448" title="1 of 2 branches missed.">    if (isCancelled.get()) {</span>
-<span class="nc" id="L449">      throw new CancellationException();</span>
+<span class="fc bfc" id="L487" title="All 2 branches covered.">    if (isCancelled.get()) {</span>
+<span class="fc" id="L488">      throw new CancellationException();</span>
     }
-<span class="fc" id="L451">  }</span>
+<span class="fc" id="L490">  }</span>
 
   /* Copied from BlockProcessor (with modifications). */
   boolean rewardBeneficiary(
@@ -461,40 +500,40 @@ public abstract class AbstractBlockCreator implements AsyncBlockCreator {
       final ProtocolSpec protocolSpec) {
 
     // TODO(tmm): Added to make this work, should come from blockProcessor.
-<span class="fc" id="L464">    final int MAX_GENERATION = 6;</span>
-<span class="fc bfc" id="L465" title="All 4 branches covered.">    if (skipZeroBlockRewards &amp;&amp; blockReward.isZero()) {</span>
-<span class="fc" id="L466">      return true;</span>
+<span class="fc" id="L503">    final int MAX_GENERATION = 6;</span>
+<span class="fc bfc" id="L504" title="All 4 branches covered.">    if (skipZeroBlockRewards &amp;&amp; blockReward.isZero()) {</span>
+<span class="fc" id="L505">      return true;</span>
     }
 
-<span class="fc" id="L469">    final Wei coinbaseReward =</span>
+<span class="fc" id="L508">    final Wei coinbaseReward =</span>
         protocolSpec
-<span class="fc" id="L471">            .getBlockProcessor()</span>
-<span class="fc" id="L472">            .getCoinbaseReward(blockReward, header.getNumber(), ommers.size());</span>
-<span class="fc" id="L473">    final WorldUpdater updater = worldState.updater();</span>
-<span class="fc" id="L474">    final MutableAccount beneficiary = updater.getOrCreate(miningBeneficiary);</span>
+<span class="fc" id="L510">            .getBlockProcessor()</span>
+<span class="fc" id="L511">            .getCoinbaseReward(blockReward, header.getNumber(), ommers.size());</span>
+<span class="fc" id="L512">    final WorldUpdater updater = worldState.updater();</span>
+<span class="fc" id="L513">    final MutableAccount beneficiary = updater.getOrCreate(miningBeneficiary);</span>
 
-<span class="fc" id="L476">    beneficiary.incrementBalance(coinbaseReward);</span>
-<span class="pc bpc" id="L477" title="1 of 2 branches missed.">    for (final BlockHeader ommerHeader : ommers) {</span>
-<span class="nc bnc" id="L478" title="All 2 branches missed.">      if (ommerHeader.getNumber() - header.getNumber() &gt; MAX_GENERATION) {</span>
-<span class="nc" id="L479">        LOG.trace(</span>
+<span class="fc" id="L515">    beneficiary.incrementBalance(coinbaseReward);</span>
+<span class="pc bpc" id="L516" title="1 of 2 branches missed.">    for (final BlockHeader ommerHeader : ommers) {</span>
+<span class="nc bnc" id="L517" title="All 2 branches missed.">      if (ommerHeader.getNumber() - header.getNumber() &gt; MAX_GENERATION) {</span>
+<span class="nc" id="L518">        LOG.trace(</span>
             &quot;Block processing error: ommer block number {} more than {} generations current block number {}&quot;,
-<span class="nc" id="L481">            ommerHeader.getNumber(),</span>
-<span class="nc" id="L482">            MAX_GENERATION,</span>
-<span class="nc" id="L483">            header.getNumber());</span>
-<span class="nc" id="L484">        return false;</span>
+<span class="nc" id="L520">            ommerHeader.getNumber(),</span>
+<span class="nc" id="L521">            MAX_GENERATION,</span>
+<span class="nc" id="L522">            header.getNumber());</span>
+<span class="nc" id="L523">        return false;</span>
       }
 
-<span class="nc" id="L487">      final MutableAccount ommerCoinbase = updater.getOrCreate(ommerHeader.getCoinbase());</span>
-<span class="nc" id="L488">      final Wei ommerReward =</span>
+<span class="nc" id="L526">      final MutableAccount ommerCoinbase = updater.getOrCreate(ommerHeader.getCoinbase());</span>
+<span class="nc" id="L527">      final Wei ommerReward =</span>
           protocolSpec
-<span class="nc" id="L490">              .getBlockProcessor()</span>
-<span class="nc" id="L491">              .getOmmerReward(blockReward, header.getNumber(), ommerHeader.getNumber());</span>
-<span class="nc" id="L492">      ommerCoinbase.incrementBalance(ommerReward);</span>
-<span class="nc" id="L493">    }</span>
+<span class="nc" id="L529">              .getBlockProcessor()</span>
+<span class="nc" id="L530">              .getOmmerReward(blockReward, header.getNumber(), ommerHeader.getNumber());</span>
+<span class="nc" id="L531">      ommerCoinbase.incrementBalance(ommerReward);</span>
+<span class="nc" id="L532">    }</span>
 
-<span class="fc" id="L495">    updater.commit();</span>
+<span class="fc" id="L534">    updater.commit();</span>
 
-<span class="fc" id="L497">    return true;</span>
+<span class="fc" id="L536">    return true;</span>
   }
 
   protected abstract BlockHeader createFinalBlockHeader(

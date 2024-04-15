@@ -1,0 +1,450 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiWorldState.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.bonsai.worldview</a> &gt; <span class="el_source">BonsaiWorldState.java</span></div><h1>BonsaiWorldState.java</h1><pre class="source lang-java linenums">/*
+ * Copyright ConsenSys AG.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.bonsai.worldview;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_BRANCH_STORAGE;
+import static org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldView.encodeTrieValue;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.NodeLoader;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.BonsaiAccount;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.BonsaiWorldStateProvider;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.cache.BonsaiCachedMerkleTrieLoader;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateLayerStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedValue;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.cache.DiffBasedCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.DiffBasedWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.preload.StorageConsumingMap;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.plugin.services.storage.SegmentIdentifier;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
+import javax.annotation.Nonnull;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.rlp.RLP;
+import org.apache.tuweni.units.bigints.UInt256;
+
+public class BonsaiWorldState extends DiffBasedWorldState {
+
+  protected final BonsaiCachedMerkleTrieLoader bonsaiCachedMerkleTrieLoader;
+
+  public BonsaiWorldState(
+      final BonsaiWorldStateProvider archive,
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L69">    this(</span>
+        worldStateKeyValueStorage,
+<span class="fc" id="L71">        archive.getCachedMerkleTrieLoader(),</span>
+<span class="fc" id="L72">        archive.getCachedWorldStorageManager(),</span>
+<span class="fc" id="L73">        archive.getTrieLogManager(),</span>
+        evmConfiguration);
+<span class="fc" id="L75">  }</span>
+
+  public BonsaiWorldState(
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final BonsaiCachedMerkleTrieLoader bonsaiCachedMerkleTrieLoader,
+      final DiffBasedCachedWorldStorageManager cachedWorldStorageManager,
+      final TrieLogManager trieLogManager,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L83">    super(worldStateKeyValueStorage, cachedWorldStorageManager, trieLogManager);</span>
+<span class="fc" id="L84">    this.bonsaiCachedMerkleTrieLoader = bonsaiCachedMerkleTrieLoader;</span>
+<span class="fc" id="L85">    this.setAccumulator(</span>
+        new BonsaiWorldStateUpdateAccumulator(
+            this,
+            (addr, value) -&gt;
+<span class="fc" id="L89">                bonsaiCachedMerkleTrieLoader.preLoadAccount(</span>
+                    worldStateKeyValueStorage, worldStateRootHash, addr),
+            (addr, value) -&gt;
+<span class="fc" id="L92">                bonsaiCachedMerkleTrieLoader.preLoadStorageSlot(</span>
+<span class="fc" id="L93">                    getWorldStateStorage(), addr, value),</span>
+            evmConfiguration));
+<span class="fc" id="L95">  }</span>
+
+  @Override
+  public BonsaiWorldStateKeyValueStorage getWorldStateStorage() {
+<span class="fc" id="L99">    return (BonsaiWorldStateKeyValueStorage) worldStateKeyValueStorage;</span>
+  }
+
+  @Override
+  protected Hash calculateRootHash(
+      final Optional&lt;DiffBasedWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final DiffBasedWorldStateUpdateAccumulator&lt;?&gt; worldStateUpdater) {
+<span class="fc" id="L106">    return internalCalculateRootHash(</span>
+<span class="fc" id="L107">        maybeStateUpdater.map(BonsaiWorldStateKeyValueStorage.Updater.class::cast),</span>
+        (BonsaiWorldStateUpdateAccumulator) worldStateUpdater);
+  }
+
+  private Hash internalCalculateRootHash(
+      final Optional&lt;BonsaiWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final BonsaiWorldStateUpdateAccumulator worldStateUpdater) {
+
+<span class="fc" id="L115">    clearStorage(maybeStateUpdater, worldStateUpdater);</span>
+
+    // This must be done before updating the accounts so
+    // that we can get the storage state hash
+    Stream&lt;Map.Entry&lt;Address, StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt;&gt;&gt;
+<span class="fc" id="L120">        storageStream = worldStateUpdater.getStorageToUpdate().entrySet().stream();</span>
+<span class="fc bfc" id="L121" title="All 2 branches covered.">    if (maybeStateUpdater.isEmpty()) {</span>
+<span class="fc" id="L122">      storageStream =</span>
+          storageStream
+<span class="fc" id="L124">              .parallel(); // if we are not updating the state updater we can use parallel stream</span>
+    }
+<span class="fc" id="L126">    storageStream.forEach(</span>
+        addressMapEntry -&gt;
+<span class="fc" id="L128">            updateAccountStorageState(maybeStateUpdater, worldStateUpdater, addressMapEntry));</span>
+
+    // Third update the code.  This has the side effect of ensuring a code hash is calculated.
+<span class="fc" id="L131">    updateCode(maybeStateUpdater, worldStateUpdater);</span>
+
+    // next walk the account trie
+<span class="fc" id="L134">    final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; accountTrie =</span>
+<span class="fc" id="L135">        createTrie(</span>
+            (location, hash) -&gt;
+<span class="fc" id="L137">                bonsaiCachedMerkleTrieLoader.getAccountStateTrieNode(</span>
+<span class="fc" id="L138">                    getWorldStateStorage(), location, hash),</span>
+            worldStateRootHash);
+
+    // for manicured tries and composting, collect branches here (not implemented)
+<span class="fc" id="L142">    updateTheAccounts(maybeStateUpdater, worldStateUpdater, accountTrie);</span>
+
+    // TODO write to a cache and then generate a layer update from that and the
+    // DB tx updates.  Right now it is just DB updates.
+<span class="fc" id="L146">    maybeStateUpdater.ifPresent(</span>
+        bonsaiUpdater -&gt;
+<span class="fc" id="L148">            accountTrie.commit(</span>
+                (location, hash, value) -&gt;
+<span class="fc" id="L150">                    writeTrieNode(</span>
+                        TRIE_BRANCH_STORAGE,
+<span class="fc" id="L152">                        bonsaiUpdater.getWorldStateTransaction(),</span>
+                        location,
+                        value)));
+<span class="fc" id="L155">    final Bytes32 rootHash = accountTrie.getRootHash();</span>
+<span class="fc" id="L156">    return Hash.wrap(rootHash);</span>
+  }
+
+  private void updateTheAccounts(
+      final Optional&lt;BonsaiWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final BonsaiWorldStateUpdateAccumulator worldStateUpdater,
+      final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; accountTrie) {
+    for (final Map.Entry&lt;Address, DiffBasedValue&lt;BonsaiAccount&gt;&gt; accountUpdate :
+<span class="fc bfc" id="L164" title="All 2 branches covered.">        worldStateUpdater.getAccountsToUpdate().entrySet()) {</span>
+<span class="fc" id="L165">      final Bytes accountKey = accountUpdate.getKey();</span>
+<span class="fc" id="L166">      final DiffBasedValue&lt;BonsaiAccount&gt; bonsaiValue = accountUpdate.getValue();</span>
+<span class="fc" id="L167">      final BonsaiAccount updatedAccount = bonsaiValue.getUpdated();</span>
+      try {
+<span class="fc bfc" id="L169" title="All 2 branches covered.">        if (updatedAccount == null) {</span>
+<span class="fc" id="L170">          final Hash addressHash = hashAndSavePreImage(accountKey);</span>
+<span class="fc" id="L171">          accountTrie.remove(addressHash);</span>
+<span class="fc" id="L172">          maybeStateUpdater.ifPresent(</span>
+<span class="fc" id="L173">              bonsaiUpdater -&gt; bonsaiUpdater.removeAccountInfoState(addressHash));</span>
+<span class="fc" id="L174">        } else {</span>
+<span class="fc" id="L175">          final Hash addressHash = updatedAccount.getAddressHash();</span>
+<span class="fc" id="L176">          final Bytes accountValue = updatedAccount.serializeAccount();</span>
+<span class="fc" id="L177">          maybeStateUpdater.ifPresent(</span>
+              bonsaiUpdater -&gt;
+<span class="fc" id="L179">                  bonsaiUpdater.putAccountInfoState(hashAndSavePreImage(accountKey), accountValue));</span>
+<span class="fc" id="L180">          accountTrie.put(addressHash, accountValue);</span>
+        }
+<span class="nc" id="L182">      } catch (MerkleTrieException e) {</span>
+        // need to throw to trigger the heal
+<span class="nc" id="L184">        throw new MerkleTrieException(</span>
+<span class="nc" id="L185">            e.getMessage(), Optional.of(Address.wrap(accountKey)), e.getHash(), e.getLocation());</span>
+<span class="fc" id="L186">      }</span>
+<span class="fc" id="L187">    }</span>
+<span class="fc" id="L188">  }</span>
+
+  @VisibleForTesting
+  protected void updateCode(
+      final Optional&lt;BonsaiWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final BonsaiWorldStateUpdateAccumulator worldStateUpdater) {
+<span class="fc" id="L194">    maybeStateUpdater.ifPresent(</span>
+        bonsaiUpdater -&gt; {
+          for (final Map.Entry&lt;Address, DiffBasedValue&lt;Bytes&gt;&gt; codeUpdate :
+<span class="fc bfc" id="L197" title="All 2 branches covered.">              worldStateUpdater.getCodeToUpdate().entrySet()) {</span>
+<span class="fc" id="L198">            final Bytes updatedCode = codeUpdate.getValue().getUpdated();</span>
+<span class="fc" id="L199">            final Hash accountHash = codeUpdate.getKey().addressHash();</span>
+<span class="fc" id="L200">            final Bytes priorCode = codeUpdate.getValue().getPrior();</span>
+
+            // code hasn't changed then do nothing
+<span class="fc bfc" id="L203" title="All 2 branches covered.">            if (Objects.equals(priorCode, updatedCode)</span>
+<span class="fc bfc" id="L204" title="All 4 branches covered.">                || (codeIsEmpty(priorCode) &amp;&amp; codeIsEmpty(updatedCode))) {</span>
+<span class="fc" id="L205">              continue;</span>
+            }
+
+<span class="fc bfc" id="L208" title="All 2 branches covered.">            if (codeIsEmpty(updatedCode)) {</span>
+<span class="fc" id="L209">              final Hash priorCodeHash = Hash.hash(priorCode);</span>
+<span class="fc" id="L210">              bonsaiUpdater.removeCode(accountHash, priorCodeHash);</span>
+<span class="fc" id="L211">            } else {</span>
+<span class="fc" id="L212">              final Hash codeHash = Hash.hash(codeUpdate.getValue().getUpdated());</span>
+<span class="fc" id="L213">              bonsaiUpdater.putCode(accountHash, codeHash, updatedCode);</span>
+            }
+<span class="fc" id="L215">          }</span>
+<span class="fc" id="L216">        });</span>
+<span class="fc" id="L217">  }</span>
+
+  private boolean codeIsEmpty(final Bytes value) {
+<span class="fc bfc" id="L220" title="All 4 branches covered.">    return value == null || value.isEmpty();</span>
+  }
+
+  private void updateAccountStorageState(
+      final Optional&lt;BonsaiWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final BonsaiWorldStateUpdateAccumulator worldStateUpdater,
+      final Map.Entry&lt;Address, StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt;&gt;
+          storageAccountUpdate) {
+<span class="fc" id="L228">    final Address updatedAddress = storageAccountUpdate.getKey();</span>
+<span class="fc" id="L229">    final Hash updatedAddressHash = updatedAddress.addressHash();</span>
+<span class="pc bpc" id="L230" title="1 of 2 branches missed.">    if (worldStateUpdater.getAccountsToUpdate().containsKey(updatedAddress)) {</span>
+<span class="fc" id="L231">      final DiffBasedValue&lt;BonsaiAccount&gt; accountValue =</span>
+<span class="fc" id="L232">          worldStateUpdater.getAccountsToUpdate().get(updatedAddress);</span>
+<span class="fc" id="L233">      final BonsaiAccount accountOriginal = accountValue.getPrior();</span>
+      final Hash storageRoot =
+<span class="fc bfc" id="L235" title="All 2 branches covered.">          (accountOriginal == null</span>
+<span class="pc bpc" id="L236" title="1 of 2 branches missed.">                  || worldStateUpdater.getStorageToClear().contains(updatedAddress))</span>
+<span class="fc" id="L237">              ? Hash.EMPTY_TRIE_HASH</span>
+<span class="fc" id="L238">              : accountOriginal.getStorageRoot();</span>
+<span class="fc" id="L239">      final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+<span class="fc" id="L240">          createTrie(</span>
+              (location, key) -&gt;
+<span class="fc" id="L242">                  bonsaiCachedMerkleTrieLoader.getAccountStorageTrieNode(</span>
+<span class="fc" id="L243">                      getWorldStateStorage(), updatedAddressHash, location, key),</span>
+              storageRoot);
+
+      // for manicured tries and composting, collect branches here (not implemented)
+      for (final Map.Entry&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; storageUpdate :
+<span class="fc bfc" id="L248" title="All 2 branches covered.">          storageAccountUpdate.getValue().entrySet()) {</span>
+<span class="fc" id="L249">        final Hash slotHash = storageUpdate.getKey().getSlotHash();</span>
+<span class="fc" id="L250">        final UInt256 updatedStorage = storageUpdate.getValue().getUpdated();</span>
+        try {
+<span class="fc bfc" id="L252" title="All 4 branches covered.">          if (updatedStorage == null || updatedStorage.equals(UInt256.ZERO)) {</span>
+<span class="fc" id="L253">            maybeStateUpdater.ifPresent(</span>
+                bonsaiUpdater -&gt;
+<span class="fc" id="L255">                    bonsaiUpdater.removeStorageValueBySlotHash(updatedAddressHash, slotHash));</span>
+<span class="fc" id="L256">            storageTrie.remove(slotHash);</span>
+          } else {
+<span class="fc" id="L258">            maybeStateUpdater.ifPresent(</span>
+                bonsaiUpdater -&gt;
+<span class="fc" id="L260">                    bonsaiUpdater.putStorageValueBySlotHash(</span>
+                        updatedAddressHash, slotHash, updatedStorage));
+<span class="fc" id="L262">            storageTrie.put(slotHash, encodeTrieValue(updatedStorage));</span>
+          }
+<span class="nc" id="L264">        } catch (MerkleTrieException e) {</span>
+          // need to throw to trigger the heal
+<span class="nc" id="L266">          throw new MerkleTrieException(</span>
+<span class="nc" id="L267">              e.getMessage(),</span>
+<span class="nc" id="L268">              Optional.of(Address.wrap(updatedAddress)),</span>
+<span class="nc" id="L269">              e.getHash(),</span>
+<span class="nc" id="L270">              e.getLocation());</span>
+<span class="fc" id="L271">        }</span>
+<span class="fc" id="L272">      }</span>
+
+<span class="fc" id="L274">      final BonsaiAccount accountUpdated = accountValue.getUpdated();</span>
+<span class="pc bpc" id="L275" title="1 of 2 branches missed.">      if (accountUpdated != null) {</span>
+<span class="fc" id="L276">        maybeStateUpdater.ifPresent(</span>
+            bonsaiUpdater -&gt;
+<span class="fc" id="L278">                storageTrie.commit(</span>
+                    (location, key, value) -&gt;
+<span class="fc" id="L280">                        writeStorageTrieNode(</span>
+                            bonsaiUpdater, updatedAddressHash, location, key, value)));
+<span class="fc" id="L282">        final Hash newStorageRoot = Hash.wrap(storageTrie.getRootHash());</span>
+<span class="fc" id="L283">        accountUpdated.setStorageRoot(newStorageRoot);</span>
+      }
+    }
+    // for manicured tries and composting, trim and compost here
+<span class="fc" id="L287">  }</span>
+
+  private void clearStorage(
+      final Optional&lt;BonsaiWorldStateKeyValueStorage.Updater&gt; maybeStateUpdater,
+      final BonsaiWorldStateUpdateAccumulator worldStateUpdater) {
+<span class="fc bfc" id="L292" title="All 2 branches covered.">    for (final Address address : worldStateUpdater.getStorageToClear()) {</span>
+      // because we are clearing persisted values we need the account root as persisted
+<span class="fc" id="L294">      final BonsaiAccount oldAccount =</span>
+<span class="fc" id="L295">          getWorldStateStorage()</span>
+<span class="fc" id="L296">              .getAccount(address.addressHash())</span>
+<span class="fc" id="L297">              .map(bytes -&gt; BonsaiAccount.fromRLP(BonsaiWorldState.this, address, bytes, true))</span>
+<span class="fc" id="L298">              .orElse(null);</span>
+<span class="fc bfc" id="L299" title="All 2 branches covered.">      if (oldAccount == null) {</span>
+        // This is when an account is both created and deleted within the scope of the same
+        // block.  A not-uncommon DeFi bot pattern.
+<span class="fc" id="L302">        continue;</span>
+      }
+<span class="fc" id="L304">      final Hash addressHash = address.addressHash();</span>
+<span class="fc" id="L305">      final MerkleTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+<span class="fc" id="L306">          createTrie(</span>
+<span class="nc" id="L307">              (location, key) -&gt; getStorageTrieNode(addressHash, location, key),</span>
+<span class="fc" id="L308">              oldAccount.getStorageRoot());</span>
+      try {
+<span class="fc" id="L310">        final StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; storageToDelete =</span>
+<span class="fc" id="L311">            worldStateUpdater.getStorageToUpdate().get(address);</span>
+<span class="fc" id="L312">        Map&lt;Bytes32, Bytes&gt; entriesToDelete = storageTrie.entriesFrom(Bytes32.ZERO, 256);</span>
+<span class="pc bpc" id="L313" title="1 of 2 branches missed.">        while (!entriesToDelete.isEmpty()) {</span>
+<span class="nc" id="L314">          entriesToDelete.forEach(</span>
+              (k, v) -&gt; {
+<span class="nc" id="L316">                final StorageSlotKey storageSlotKey =</span>
+<span class="nc" id="L317">                    new StorageSlotKey(Hash.wrap(k), Optional.empty());</span>
+<span class="nc" id="L318">                final UInt256 slotValue = UInt256.fromBytes(Bytes32.leftPad(RLP.decodeValue(v)));</span>
+<span class="nc" id="L319">                maybeStateUpdater.ifPresent(</span>
+                    bonsaiUpdater -&gt;
+<span class="nc" id="L321">                        bonsaiUpdater.removeStorageValueBySlotHash(</span>
+<span class="nc" id="L322">                            address.addressHash(), storageSlotKey.getSlotHash()));</span>
+<span class="nc" id="L323">                storageToDelete</span>
+<span class="nc" id="L324">                    .computeIfAbsent(</span>
+<span class="nc" id="L325">                        storageSlotKey, key -&gt; new DiffBasedValue&lt;&gt;(slotValue, null, true))</span>
+<span class="nc" id="L326">                    .setPrior(slotValue);</span>
+<span class="nc" id="L327">              });</span>
+<span class="nc" id="L328">          entriesToDelete.keySet().forEach(storageTrie::remove);</span>
+<span class="nc bnc" id="L329" title="All 2 branches missed.">          if (entriesToDelete.size() == 256) {</span>
+<span class="nc" id="L330">            entriesToDelete = storageTrie.entriesFrom(Bytes32.ZERO, 256);</span>
+          } else {
+            break;
+          }
+        }
+<span class="nc" id="L335">      } catch (MerkleTrieException e) {</span>
+        // need to throw to trigger the heal
+<span class="nc" id="L337">        throw new MerkleTrieException(</span>
+<span class="nc" id="L338">            e.getMessage(), Optional.of(Address.wrap(address)), e.getHash(), e.getLocation());</span>
+<span class="fc" id="L339">      }</span>
+<span class="fc" id="L340">    }</span>
+<span class="fc" id="L341">  }</span>
+
+  @Override
+  public Hash frontierRootHash() {
+<span class="fc" id="L345">    return calculateRootHash(</span>
+<span class="fc" id="L346">        Optional.of(</span>
+            new BonsaiWorldStateKeyValueStorage.Updater(
+<span class="fc" id="L348">                noOpSegmentedTx, noOpTx, worldStateKeyValueStorage.getFlatDbStrategy())),</span>
+<span class="fc" id="L349">        accumulator.copy());</span>
+  }
+
+  @Override
+  public MutableWorldState freeze() {
+<span class="fc" id="L354">    this.isFrozen = true;</span>
+<span class="fc" id="L355">    this.worldStateKeyValueStorage = new BonsaiWorldStateLayerStorage(getWorldStateStorage());</span>
+<span class="fc" id="L356">    return this;</span>
+  }
+
+  @Override
+  public Account get(final Address address) {
+<span class="fc" id="L361">    return getWorldStateStorage()</span>
+<span class="fc" id="L362">        .getAccount(address.addressHash())</span>
+<span class="fc" id="L363">        .map(bytes -&gt; BonsaiAccount.fromRLP(accumulator, address, bytes, true))</span>
+<span class="fc" id="L364">        .orElse(null);</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getCode(@Nonnull final Address address, final Hash codeHash) {
+<span class="fc" id="L369">    return getWorldStateStorage().getCode(codeHash, address.addressHash());</span>
+  }
+
+  protected Optional&lt;Bytes&gt; getAccountStateTrieNode(final Bytes location, final Bytes32 nodeHash) {
+<span class="nc" id="L373">    return getWorldStateStorage().getAccountStateTrieNode(location, nodeHash);</span>
+  }
+
+  private void writeTrieNode(
+      final SegmentIdentifier segmentId,
+      final SegmentedKeyValueStorageTransaction tx,
+      final Bytes location,
+      final Bytes value) {
+<span class="fc" id="L381">    tx.put(segmentId, location.toArrayUnsafe(), value.toArrayUnsafe());</span>
+<span class="fc" id="L382">  }</span>
+
+  protected Optional&lt;Bytes&gt; getStorageTrieNode(
+      final Hash accountHash, final Bytes location, final Bytes32 nodeHash) {
+<span class="nc" id="L386">    return getWorldStateStorage().getAccountStorageTrieNode(accountHash, location, nodeHash);</span>
+  }
+
+  private void writeStorageTrieNode(
+      final BonsaiWorldStateKeyValueStorage.Updater stateUpdater,
+      final Hash accountHash,
+      final Bytes location,
+      final Bytes32 nodeHash,
+      final Bytes value) {
+<span class="fc" id="L395">    stateUpdater.putAccountStorageTrieNode(accountHash, location, nodeHash, value);</span>
+<span class="fc" id="L396">  }</span>
+
+  @Override
+  public UInt256 getStorageValue(final Address address, final UInt256 storageKey) {
+<span class="nc" id="L400">    return getStorageValueByStorageSlotKey(address, new StorageSlotKey(storageKey))</span>
+<span class="nc" id="L401">        .orElse(UInt256.ZERO);</span>
+  }
+
+  @Override
+  public Optional&lt;UInt256&gt; getStorageValueByStorageSlotKey(
+      final Address address, final StorageSlotKey storageSlotKey) {
+<span class="fc" id="L407">    return getWorldStateStorage()</span>
+<span class="fc" id="L408">        .getStorageValueByStorageSlotKey(address.addressHash(), storageSlotKey)</span>
+<span class="fc" id="L409">        .map(UInt256::fromBytes);</span>
+  }
+
+  public Optional&lt;UInt256&gt; getStorageValueByStorageSlotKey(
+      final Supplier&lt;Optional&lt;Hash&gt;&gt; storageRootSupplier,
+      final Address address,
+      final StorageSlotKey storageSlotKey) {
+<span class="nc" id="L416">    return getWorldStateStorage()</span>
+<span class="nc" id="L417">        .getStorageValueByStorageSlotKey(storageRootSupplier, address.addressHash(), storageSlotKey)</span>
+<span class="nc" id="L418">        .map(UInt256::fromBytes);</span>
+  }
+
+  @Override
+  public UInt256 getPriorStorageValue(final Address address, final UInt256 storageKey) {
+<span class="nc" id="L423">    return getStorageValue(address, storageKey);</span>
+  }
+
+  @Override
+  public Map&lt;Bytes32, Bytes&gt; getAllAccountStorage(final Address address, final Hash rootHash) {
+<span class="fc" id="L428">    final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+<span class="fc" id="L429">        createTrie(</span>
+<span class="nc" id="L430">            (location, key) -&gt; getStorageTrieNode(address.addressHash(), location, key), rootHash);</span>
+<span class="fc" id="L431">    return storageTrie.entriesFrom(Bytes32.ZERO, Integer.MAX_VALUE);</span>
+  }
+
+  private StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; createTrie(
+      final NodeLoader nodeLoader, final Bytes32 rootHash) {
+<span class="fc" id="L436">    return new StoredMerklePatriciaTrie&lt;&gt;(</span>
+<span class="fc" id="L437">        nodeLoader, rootHash, Function.identity(), Function.identity());</span>
+  }
+
+  protected Hash hashAndSavePreImage(final Bytes value) {
+    // by default do not save has preImages
+<span class="fc" id="L442">    return Hash.hash(value);</span>
+  }
+
+  @Override
+  protected Hash getEmptyTrieHash() {
+<span class="fc" id="L447">    return Hash.EMPTY_TRIE_HASH;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

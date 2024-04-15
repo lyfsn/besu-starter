@@ -14,12 +14,13 @@
  */
 package org.hyperledger.besu.ethereum.eth.manager.snap;
 
+import org.hyperledger.besu.ethereum.ProtocolContext;
 import org.hyperledger.besu.ethereum.eth.SnapProtocol;
 import org.hyperledger.besu.ethereum.eth.manager.EthMessage;
 import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
 import org.hyperledger.besu.ethereum.eth.manager.EthPeer;
 import org.hyperledger.besu.ethereum.eth.manager.EthPeers;
-import org.hyperledger.besu.ethereum.eth.peervalidation.PeerValidator;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
 import org.hyperledger.besu.ethereum.p2p.network.ProtocolManager;
 import org.hyperledger.besu.ethereum.p2p.peers.Peer;
 import org.hyperledger.besu.ethereum.p2p.rlpx.connections.PeerConnection;
@@ -29,7 +30,7 @@ import org.hyperledger.besu.ethereum.p2p.rlpx.wire.Message;
 import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
 import org.hyperledger.besu.ethereum.p2p.rlpx.wire.messages.DisconnectMessage.DisconnectReason;
 import org.hyperledger.besu.ethereum.rlp.RLPException;
-import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
 
 import java.math.BigInteger;
 import java.util.Comparator;
@@ -42,45 +43,46 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class SnapProtocolManager implements ProtocolManager {
-<span class="fc" id="L45">  private static final Logger LOG = LoggerFactory.getLogger(SnapProtocolManager.class);</span>
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(SnapProtocolManager.class);</span>
 
   private final List&lt;Capability&gt; supportedCapabilities;
   private final EthPeers ethPeers;
   private final EthMessages snapMessages;
 
   public SnapProtocolManager(
-      final List&lt;PeerValidator&gt; peerValidators,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+      final SnapSyncConfiguration snapConfig,
       final EthPeers ethPeers,
       final EthMessages snapMessages,
-<span class="fc" id="L55">      final WorldStateArchive worldStateArchive) {</span>
-<span class="fc" id="L56">    this.ethPeers = ethPeers;</span>
-<span class="fc" id="L57">    this.snapMessages = snapMessages;</span>
-<span class="fc" id="L58">    this.supportedCapabilities = calculateCapabilities();</span>
-<span class="fc" id="L59">    new SnapServer(snapMessages, worldStateArchive);</span>
-<span class="fc" id="L60">  }</span>
+<span class="fc" id="L57">      final ProtocolContext protocolContext) {</span>
+<span class="fc" id="L58">    this.ethPeers = ethPeers;</span>
+<span class="fc" id="L59">    this.snapMessages = snapMessages;</span>
+<span class="fc" id="L60">    this.supportedCapabilities = calculateCapabilities();</span>
+<span class="fc" id="L61">    new SnapServer(snapConfig, snapMessages, worldStateStorageCoordinator, protocolContext);</span>
+<span class="fc" id="L62">  }</span>
 
   private List&lt;Capability&gt; calculateCapabilities() {
-<span class="fc" id="L63">    final ImmutableList.Builder&lt;Capability&gt; capabilities = ImmutableList.builder();</span>
-<span class="fc" id="L64">    capabilities.add(SnapProtocol.SNAP1);</span>
+<span class="fc" id="L65">    final ImmutableList.Builder&lt;Capability&gt; capabilities = ImmutableList.builder();</span>
+<span class="fc" id="L66">    capabilities.add(SnapProtocol.SNAP1);</span>
 
-<span class="fc" id="L66">    return capabilities.build();</span>
+<span class="fc" id="L68">    return capabilities.build();</span>
   }
 
   @Override
   public String getSupportedProtocol() {
-<span class="nc" id="L71">    return SnapProtocol.NAME;</span>
+<span class="nc" id="L73">    return SnapProtocol.NAME;</span>
   }
 
   @Override
   public List&lt;Capability&gt; getSupportedCapabilities() {
-<span class="fc" id="L76">    return supportedCapabilities;</span>
+<span class="fc" id="L78">    return supportedCapabilities;</span>
   }
 
   @Override
-<span class="fc" id="L80">  public void stop() {}</span>
+<span class="fc" id="L82">  public void stop() {}</span>
 
   @Override
-<span class="fc" id="L83">  public void awaitStop() throws InterruptedException {}</span>
+<span class="fc" id="L85">  public void awaitStop() throws InterruptedException {}</span>
 
   /**
    * This function is called by the P2P framework when an &quot;SNAP message has been received.
@@ -90,71 +92,74 @@ public class SnapProtocolManager implements ProtocolManager {
    */
   @Override
   public void processMessage(final Capability cap, final Message message) {
-<span class="nc" id="L93">    final MessageData messageData = AbstractSnapMessageData.create(message);</span>
-<span class="nc" id="L94">    final int code = messageData.getCode();</span>
-<span class="nc" id="L95">    LOG.trace(&quot;Process snap message {}, {}&quot;, cap, code);</span>
-<span class="nc" id="L96">    final EthPeer ethPeer = ethPeers.peer(message.getConnection());</span>
-<span class="nc bnc" id="L97" title="All 2 branches missed.">    if (ethPeer == null) {</span>
-<span class="nc" id="L98">      LOG.debug(</span>
-<span class="nc" id="L99">          &quot;Ignoring message received from unknown peer connection: &quot; + message.getConnection());</span>
-<span class="nc" id="L100">      return;</span>
+<span class="nc" id="L95">    final MessageData messageData = AbstractSnapMessageData.create(message);</span>
+<span class="nc" id="L96">    final int code = messageData.getCode();</span>
+<span class="nc" id="L97">    LOG.trace(&quot;Process snap message {}, {}&quot;, cap, code);</span>
+<span class="nc" id="L98">    final EthPeer ethPeer = ethPeers.peer(message.getConnection());</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">    if (ethPeer == null) {</span>
+<span class="nc" id="L100">      LOG.debug(</span>
+<span class="nc" id="L101">          &quot;Ignoring message received from unknown peer connection: &quot; + message.getConnection());</span>
+<span class="nc" id="L102">      return;</span>
     }
-<span class="nc" id="L102">    final EthMessage ethMessage = new EthMessage(ethPeer, messageData);</span>
-<span class="nc bnc" id="L103" title="All 2 branches missed.">    if (!ethPeer.validateReceivedMessage(ethMessage, getSupportedProtocol())) {</span>
-<span class="nc" id="L104">      LOG.debug(&quot;Unsolicited message received from, disconnecting: {}&quot;, ethPeer);</span>
-<span class="nc" id="L105">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
-<span class="nc" id="L106">      return;</span>
+<span class="nc" id="L104">    final EthMessage ethMessage = new EthMessage(ethPeer, messageData);</span>
+<span class="nc bnc" id="L105" title="All 2 branches missed.">    if (!ethPeer.validateReceivedMessage(ethMessage, getSupportedProtocol())) {</span>
+<span class="nc" id="L106">      LOG.debug(</span>
+          &quot;Unsolicited message {} received from, disconnecting: {}&quot;,
+<span class="nc" id="L108">          ethMessage.getData().getCode(),</span>
+          ethPeer);
+<span class="nc" id="L110">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL_UNSOLICITED_MESSAGE_RECEIVED);</span>
+<span class="nc" id="L111">      return;</span>
     }
 
     // This will handle responses
-<span class="nc" id="L110">    ethPeers.dispatchMessage(ethPeer, ethMessage, getSupportedProtocol());</span>
+<span class="nc" id="L115">    ethPeers.dispatchMessage(ethPeer, ethMessage, getSupportedProtocol());</span>
 
     // This will handle requests
-<span class="nc" id="L113">    Optional&lt;MessageData&gt; maybeResponseData = Optional.empty();</span>
+<span class="nc" id="L118">    Optional&lt;MessageData&gt; maybeResponseData = Optional.empty();</span>
     try {
-<span class="nc" id="L115">      final Map.Entry&lt;BigInteger, MessageData&gt; requestIdAndEthMessage =</span>
-<span class="nc" id="L116">          ethMessage.getData().unwrapMessageData();</span>
-<span class="nc" id="L117">      maybeResponseData =</span>
+<span class="nc" id="L120">      final Map.Entry&lt;BigInteger, MessageData&gt; requestIdAndEthMessage =</span>
+<span class="nc" id="L121">          ethMessage.getData().unwrapMessageData();</span>
+<span class="nc" id="L122">      maybeResponseData =</span>
           snapMessages
-<span class="nc" id="L119">              .dispatch(new EthMessage(ethPeer, requestIdAndEthMessage.getValue()))</span>
-<span class="nc" id="L120">              .map(responseData -&gt; responseData.wrapMessageData(requestIdAndEthMessage.getKey()));</span>
-<span class="nc" id="L121">    } catch (final RLPException e) {</span>
-<span class="nc" id="L122">      LOG.debug(</span>
-<span class="nc" id="L123">          &quot;Received malformed message {} , disconnecting: {}&quot;, messageData.getData(), ethPeer, e);</span>
-<span class="nc" id="L124">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL);</span>
-<span class="nc" id="L125">    }</span>
-<span class="nc" id="L126">    maybeResponseData.ifPresent(</span>
+<span class="nc" id="L124">              .dispatch(new EthMessage(ethPeer, requestIdAndEthMessage.getValue()))</span>
+<span class="nc" id="L125">              .map(responseData -&gt; responseData.wrapMessageData(requestIdAndEthMessage.getKey()));</span>
+<span class="nc" id="L126">    } catch (final RLPException e) {</span>
+<span class="nc" id="L127">      LOG.debug(</span>
+<span class="nc" id="L128">          &quot;Received malformed message {} , disconnecting: {}&quot;, messageData.getData(), ethPeer, e);</span>
+<span class="nc" id="L129">      ethPeer.disconnect(DisconnectReason.BREACH_OF_PROTOCOL_MALFORMED_MESSAGE_RECEIVED);</span>
+<span class="nc" id="L130">    }</span>
+<span class="nc" id="L131">    maybeResponseData.ifPresent(</span>
         responseData -&gt; {
           try {
-<span class="nc" id="L129">            ethPeer.send(responseData, getSupportedProtocol());</span>
-<span class="nc" id="L130">          } catch (final PeerConnection.PeerNotConnected error) {</span>
+<span class="nc" id="L134">            ethPeer.send(responseData, getSupportedProtocol());</span>
+<span class="nc" id="L135">          } catch (final PeerConnection.PeerNotConnected error) {</span>
             // Peer disconnected before we could respond - nothing to do
-<span class="nc" id="L132">            LOG.trace(</span>
-<span class="nc" id="L133">                &quot;Peer disconnected before we could respond - nothing to do &quot; + error.getMessage());</span>
-<span class="nc" id="L134">          }</span>
-<span class="nc" id="L135">        });</span>
-<span class="nc" id="L136">  }</span>
+<span class="nc" id="L137">            LOG.trace(</span>
+<span class="nc" id="L138">                &quot;Peer disconnected before we could respond - nothing to do &quot; + error.getMessage());</span>
+<span class="nc" id="L139">          }</span>
+<span class="nc" id="L140">        });</span>
+<span class="nc" id="L141">  }</span>
 
   @Override
-<span class="fc" id="L139">  public void handleNewConnection(final PeerConnection connection) {}</span>
+<span class="fc" id="L144">  public void handleNewConnection(final PeerConnection connection) {}</span>
 
   @Override
   public boolean shouldConnect(final Peer peer, final boolean incoming) {
-<span class="fc" id="L143">    return false; // EthManager is taking care of this for now</span>
+<span class="nc" id="L148">    return false; // EthManager is taking care of this for now</span>
   }
 
   @Override
   public void handleDisconnect(
       final PeerConnection connection,
       final DisconnectReason reason,
-<span class="fc" id="L150">      final boolean initiatedByPeer) {}</span>
+<span class="fc" id="L155">      final boolean initiatedByPeer) {}</span>
 
   @Override
   public int getHighestProtocolVersion() {
-<span class="nc" id="L154">    return getSupportedCapabilities().stream()</span>
-<span class="nc" id="L155">        .max(Comparator.comparing(Capability::getVersion))</span>
-<span class="nc" id="L156">        .map(Capability::getVersion)</span>
-<span class="nc" id="L157">        .orElse(0);</span>
+<span class="nc" id="L159">    return getSupportedCapabilities().stream()</span>
+<span class="nc" id="L160">        .max(Comparator.comparing(Capability::getVersion))</span>
+<span class="nc" id="L161">        .map(Capability::getVersion)</span>
+<span class="nc" id="L162">        .orElse(0);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

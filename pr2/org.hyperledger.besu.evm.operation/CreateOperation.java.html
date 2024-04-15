@@ -14,10 +14,20 @@
  */
 package org.hyperledger.besu.evm.operation;
 
+import static org.hyperledger.besu.evm.internal.Words.clampedAdd;
+import static org.hyperledger.besu.evm.internal.Words.clampedToInt;
+import static org.hyperledger.besu.evm.internal.Words.clampedToLong;
+
 import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.EVM;
 import org.hyperledger.besu.evm.account.Account;
 import org.hyperledger.besu.evm.frame.MessageFrame;
 import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
 
 /** The Create operation. */
 public class CreateOperation extends AbstractCreateOperation {
@@ -29,22 +39,38 @@ public class CreateOperation extends AbstractCreateOperation {
    * @param maxInitcodeSize Maximum init code size
    */
   public CreateOperation(final GasCalculator gasCalculator, final int maxInitcodeSize) {
-<span class="fc" id="L32">    super(0xF0, &quot;CREATE&quot;, 3, 1, gasCalculator, maxInitcodeSize);</span>
-<span class="fc" id="L33">  }</span>
+<span class="fc" id="L42">    super(0xF0, &quot;CREATE&quot;, 3, 1, gasCalculator, maxInitcodeSize);</span>
+<span class="fc" id="L43">  }</span>
 
   @Override
-  public long cost(final MessageFrame frame) {
-<span class="fc" id="L37">    return gasCalculator().createOperationGasCost(frame);</span>
+  public long cost(final MessageFrame frame, final Supplier&lt;Code&gt; unused) {
+<span class="fc" id="L47">    final int inputOffset = clampedToInt(frame.getStackItem(1));</span>
+<span class="fc" id="L48">    final int inputSize = clampedToInt(frame.getStackItem(2));</span>
+<span class="fc" id="L49">    return clampedAdd(</span>
+<span class="fc" id="L50">        clampedAdd(</span>
+<span class="fc" id="L51">            gasCalculator().txCreateCost(),</span>
+<span class="fc" id="L52">            gasCalculator().memoryExpansionGasCost(frame, inputOffset, inputSize)),</span>
+<span class="fc" id="L53">        gasCalculator().initcodeCost(inputSize));</span>
   }
 
   @Override
-  protected Address targetContractAddress(final MessageFrame frame) {
-<span class="fc" id="L42">    final Account sender = frame.getWorldUpdater().get(frame.getRecipientAddress());</span>
+  protected Address targetContractAddress(final MessageFrame frame, final Code initcode) {
+<span class="fc" id="L58">    final Account sender = frame.getWorldUpdater().get(frame.getRecipientAddress());</span>
     // Decrement nonce by 1 to normalize the effect of transaction execution
-<span class="fc" id="L44">    final Address address =</span>
-<span class="fc" id="L45">        Address.contractAddress(frame.getRecipientAddress(), sender.getNonce() - 1L);</span>
-<span class="fc" id="L46">    frame.warmUpAddress(address);</span>
-<span class="fc" id="L47">    return address;</span>
+<span class="fc" id="L60">    final Address address =</span>
+<span class="fc" id="L61">        Address.contractAddress(frame.getRecipientAddress(), sender.getNonce() - 1L);</span>
+<span class="fc" id="L62">    frame.warmUpAddress(address);</span>
+<span class="fc" id="L63">    return address;</span>
+  }
+
+  @Override
+  protected Code getInitCode(final MessageFrame frame, final EVM evm) {
+<span class="fc" id="L68">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L69">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc" id="L70">    final Bytes inputData = frame.readMemory(inputOffset, inputSize);</span>
+    // Never cache CREATEx initcode. The amount of reuse is very low, and caching mostly
+    // addresses disk loading delay, and we already have the code.
+<span class="fc" id="L73">    return evm.getCodeUncached(inputData);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

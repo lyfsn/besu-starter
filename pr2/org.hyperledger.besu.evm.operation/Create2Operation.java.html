@@ -15,11 +15,17 @@
 package org.hyperledger.besu.evm.operation;
 
 import static org.hyperledger.besu.crypto.Hash.keccak256;
+import static org.hyperledger.besu.evm.internal.Words.clampedAdd;
+import static org.hyperledger.besu.evm.internal.Words.clampedToInt;
 import static org.hyperledger.besu.evm.internal.Words.clampedToLong;
 
 import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.evm.Code;
+import org.hyperledger.besu.evm.EVM;
 import org.hyperledger.besu.evm.frame.MessageFrame;
 import org.hyperledger.besu.evm.gascalculator.GasCalculator;
+
+import java.util.function.Supplier;
 
 import org.apache.tuweni.bytes.Bytes;
 import org.apache.tuweni.bytes.Bytes32;
@@ -27,7 +33,7 @@ import org.apache.tuweni.bytes.Bytes32;
 /** The Create2 operation. */
 public class Create2Operation extends AbstractCreateOperation {
 
-<span class="fc" id="L30">  private static final Bytes PREFIX = Bytes.fromHexString(&quot;0xFF&quot;);</span>
+<span class="fc" id="L36">  private static final Bytes PREFIX = Bytes.fromHexString(&quot;0xFF&quot;);</span>
 
   /**
    * Instantiates a new Create2 operation.
@@ -36,25 +42,39 @@ public class Create2Operation extends AbstractCreateOperation {
    * @param maxInitcodeSize Maximum init code size
    */
   public Create2Operation(final GasCalculator gasCalculator, final int maxInitcodeSize) {
-<span class="fc" id="L39">    super(0xF5, &quot;CREATE2&quot;, 4, 1, gasCalculator, maxInitcodeSize);</span>
-<span class="fc" id="L40">  }</span>
+<span class="fc" id="L45">    super(0xF5, &quot;CREATE2&quot;, 4, 1, gasCalculator, maxInitcodeSize);</span>
+<span class="fc" id="L46">  }</span>
 
   @Override
-  public Address targetContractAddress(final MessageFrame frame) {
-<span class="fc" id="L44">    final Address sender = frame.getRecipientAddress();</span>
-<span class="fc" id="L45">    final long offset = clampedToLong(frame.getStackItem(1));</span>
-<span class="fc" id="L46">    final long length = clampedToLong(frame.getStackItem(2));</span>
-<span class="fc" id="L47">    final Bytes32 salt = Bytes32.leftPad(frame.getStackItem(3));</span>
-<span class="fc" id="L48">    final Bytes initCode = frame.readMutableMemory(offset, length);</span>
-<span class="fc" id="L49">    final Bytes32 hash = keccak256(Bytes.concatenate(PREFIX, sender, salt, keccak256(initCode)));</span>
-<span class="fc" id="L50">    final Address address = Address.extract(hash);</span>
-<span class="fc" id="L51">    frame.warmUpAddress(address);</span>
-<span class="fc" id="L52">    return address;</span>
+  public long cost(final MessageFrame frame, final Supplier&lt;Code&gt; unused) {
+<span class="fc" id="L50">    final int inputOffset = clampedToInt(frame.getStackItem(1));</span>
+<span class="fc" id="L51">    final int inputSize = clampedToInt(frame.getStackItem(2));</span>
+<span class="fc" id="L52">    return clampedAdd(</span>
+<span class="fc" id="L53">        clampedAdd(</span>
+<span class="fc" id="L54">            gasCalculator().txCreateCost(),</span>
+<span class="fc" id="L55">            gasCalculator().memoryExpansionGasCost(frame, inputOffset, inputSize)),</span>
+<span class="fc" id="L56">        clampedAdd(</span>
+<span class="fc" id="L57">            gasCalculator().createKeccakCost(inputSize), gasCalculator().initcodeCost(inputSize)));</span>
   }
 
   @Override
-  public long cost(final MessageFrame frame) {
-<span class="fc" id="L57">    return gasCalculator().create2OperationGasCost(frame);</span>
+  public Address targetContractAddress(final MessageFrame frame, final Code initcode) {
+<span class="fc" id="L62">    final Address sender = frame.getRecipientAddress();</span>
+<span class="fc" id="L63">    final Bytes32 salt = Bytes32.leftPad(frame.getStackItem(3));</span>
+<span class="fc" id="L64">    final Bytes32 hash = keccak256(Bytes.concatenate(PREFIX, sender, salt, initcode.getCodeHash()));</span>
+<span class="fc" id="L65">    final Address address = Address.extract(hash);</span>
+<span class="fc" id="L66">    frame.warmUpAddress(address);</span>
+<span class="fc" id="L67">    return address;</span>
+  }
+
+  @Override
+  protected Code getInitCode(final MessageFrame frame, final EVM evm) {
+<span class="fc" id="L72">    final long inputOffset = clampedToLong(frame.getStackItem(1));</span>
+<span class="fc" id="L73">    final long inputSize = clampedToLong(frame.getStackItem(2));</span>
+<span class="fc" id="L74">    final Bytes inputData = frame.readMemory(inputOffset, inputSize);</span>
+    // Never cache CREATEx initcode. The amount of reuse is very low, and caching mostly
+    // addresses disk loading delay, and we already have the code.
+<span class="fc" id="L77">    return evm.getCodeUncached(inputData);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

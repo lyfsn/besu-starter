@@ -1,0 +1,816 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DiffBasedWorldStateUpdateAccumulator.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator</a> &gt; <span class="el_source">DiffBasedWorldStateUpdateAccumulator.java</span></div><h1>DiffBasedWorldStateUpdateAccumulator.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator;
+
+import org.hyperledger.besu.datatypes.AccountValue;
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.datatypes.Wei;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedAccount;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedValue;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldView;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.preload.AccountConsumingMap;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.preload.Consumer;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.preload.StorageConsumingMap;
+import org.hyperledger.besu.evm.account.Account;
+import org.hyperledger.besu.evm.account.MutableAccount;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.evm.worldstate.AbstractWorldUpdater;
+import org.hyperledger.besu.evm.worldstate.UpdateTrackingAccount;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLogAccumulator;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@SuppressWarnings(&quot;unchecked&quot;)
+public abstract class DiffBasedWorldStateUpdateAccumulator&lt;ACCOUNT extends DiffBasedAccount&gt;
+    extends AbstractWorldUpdater&lt;DiffBasedWorldView, ACCOUNT&gt;
+    implements DiffBasedWorldView, TrieLogAccumulator {
+<span class="fc" id="L63">  private static final Logger LOG =</span>
+<span class="fc" id="L64">      LoggerFactory.getLogger(DiffBasedWorldStateUpdateAccumulator.class);</span>
+  protected final Consumer&lt;DiffBasedValue&lt;ACCOUNT&gt;&gt; accountPreloader;
+  protected final Consumer&lt;StorageSlotKey&gt; storagePreloader;
+
+  private final AccountConsumingMap&lt;DiffBasedValue&lt;ACCOUNT&gt;&gt; accountsToUpdate;
+<span class="fc" id="L69">  private final Map&lt;Address, DiffBasedValue&lt;Bytes&gt;&gt; codeToUpdate = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L70">  private final Set&lt;Address&gt; storageToClear = Collections.synchronizedSet(new HashSet&lt;&gt;());</span>
+  protected final EvmConfiguration evmConfiguration;
+
+  // storage sub mapped by _hashed_ key.  This is because in self_destruct calls we need to
+  // enumerate the old storage and delete it.  Those are trie stored by hashed key by spec and the
+  // alternative was to keep a giant pre-image cache of the entire trie.
+<span class="fc" id="L76">  private final Map&lt;Address, StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt;&gt;</span>
+      storageToUpdate = new ConcurrentHashMap&lt;&gt;();
+
+<span class="fc" id="L79">  private final Map&lt;UInt256, Hash&gt; storageKeyHashLookup = new ConcurrentHashMap&lt;&gt;();</span>
+  protected boolean isAccumulatorStateChanged;
+
+  public DiffBasedWorldStateUpdateAccumulator(
+      final DiffBasedWorldView world,
+      final Consumer&lt;DiffBasedValue&lt;ACCOUNT&gt;&gt; accountPreloader,
+      final Consumer&lt;StorageSlotKey&gt; storagePreloader,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L87">    super(world, evmConfiguration);</span>
+<span class="fc" id="L88">    this.accountsToUpdate = new AccountConsumingMap&lt;&gt;(new ConcurrentHashMap&lt;&gt;(), accountPreloader);</span>
+<span class="fc" id="L89">    this.accountPreloader = accountPreloader;</span>
+<span class="fc" id="L90">    this.storagePreloader = storagePreloader;</span>
+<span class="fc" id="L91">    this.isAccumulatorStateChanged = false;</span>
+<span class="fc" id="L92">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L93">  }</span>
+
+  protected void cloneFromUpdater(final DiffBasedWorldStateUpdateAccumulator&lt;ACCOUNT&gt; source) {
+<span class="fc" id="L96">    accountsToUpdate.putAll(source.getAccountsToUpdate());</span>
+<span class="fc" id="L97">    codeToUpdate.putAll(source.codeToUpdate);</span>
+<span class="fc" id="L98">    storageToClear.addAll(source.storageToClear);</span>
+<span class="fc" id="L99">    storageToUpdate.putAll(source.storageToUpdate);</span>
+<span class="fc" id="L100">    updatedAccounts.putAll(source.updatedAccounts);</span>
+<span class="fc" id="L101">    deletedAccounts.addAll(source.deletedAccounts);</span>
+<span class="fc" id="L102">    this.isAccumulatorStateChanged = true;</span>
+<span class="fc" id="L103">  }</span>
+
+  protected Consumer&lt;DiffBasedValue&lt;ACCOUNT&gt;&gt; getAccountPreloader() {
+<span class="fc" id="L106">    return accountPreloader;</span>
+  }
+
+  protected Consumer&lt;StorageSlotKey&gt; getStoragePreloader() {
+<span class="fc" id="L110">    return storagePreloader;</span>
+  }
+
+  protected EvmConfiguration getEvmConfiguration() {
+<span class="fc" id="L114">    return evmConfiguration;</span>
+  }
+
+  @Override
+  public Account get(final Address address) {
+<span class="fc" id="L119">    return super.get(address);</span>
+  }
+
+  @Override
+  protected UpdateTrackingAccount&lt;ACCOUNT&gt; track(final UpdateTrackingAccount&lt;ACCOUNT&gt; account) {
+<span class="fc" id="L124">    return super.track(account);</span>
+  }
+
+  @Override
+  public MutableAccount getAccount(final Address address) {
+<span class="fc" id="L129">    return super.getAccount(address);</span>
+  }
+
+  @Override
+  public MutableAccount createAccount(final Address address, final long nonce, final Wei balance) {
+<span class="fc" id="L134">    DiffBasedValue&lt;ACCOUNT&gt; diffBasedValue = accountsToUpdate.get(address);</span>
+
+<span class="fc bfc" id="L136" title="All 2 branches covered.">    if (diffBasedValue == null) {</span>
+<span class="fc" id="L137">      diffBasedValue = new DiffBasedValue&lt;&gt;(null, null);</span>
+<span class="fc" id="L138">      accountsToUpdate.put(address, diffBasedValue);</span>
+<span class="fc bfc" id="L139" title="All 2 branches covered.">    } else if (diffBasedValue.getUpdated() != null) {</span>
+<span class="pc bpc" id="L140" title="1 of 2 branches missed.">      if (diffBasedValue.getUpdated().isEmpty()) {</span>
+<span class="fc" id="L141">        return track(new UpdateTrackingAccount&lt;&gt;(diffBasedValue.getUpdated()));</span>
+      } else {
+<span class="nc" id="L143">        throw new IllegalStateException(&quot;Cannot create an account when one already exists&quot;);</span>
+      }
+    }
+
+<span class="fc" id="L147">    final ACCOUNT newAccount =</span>
+<span class="fc" id="L148">        createAccount(</span>
+            this,
+            address,
+<span class="fc" id="L151">            hashAndSaveAccountPreImage(address),</span>
+            nonce,
+            balance,
+            Hash.EMPTY_TRIE_HASH,
+            Hash.EMPTY,
+            true);
+<span class="fc" id="L157">    diffBasedValue.setUpdated(newAccount);</span>
+<span class="fc" id="L158">    return track(new UpdateTrackingAccount&lt;&gt;(newAccount));</span>
+  }
+
+  @Override
+  public Map&lt;Address, DiffBasedValue&lt;ACCOUNT&gt;&gt; getAccountsToUpdate() {
+<span class="fc" id="L163">    return accountsToUpdate;</span>
+  }
+
+  @Override
+  public Map&lt;Address, DiffBasedValue&lt;Bytes&gt;&gt; getCodeToUpdate() {
+<span class="fc" id="L168">    return codeToUpdate;</span>
+  }
+
+  public Set&lt;Address&gt; getStorageToClear() {
+<span class="fc" id="L172">    return storageToClear;</span>
+  }
+
+  @Override
+  public Map&lt;Address, StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt;&gt;
+      getStorageToUpdate() {
+<span class="fc" id="L178">    return storageToUpdate;</span>
+  }
+
+  @Override
+  protected ACCOUNT getForMutation(final Address address) {
+<span class="fc" id="L183">    return loadAccount(address, DiffBasedValue::getUpdated);</span>
+  }
+
+  protected ACCOUNT loadAccount(
+      final Address address, final Function&lt;DiffBasedValue&lt;ACCOUNT&gt;, ACCOUNT&gt; accountFunction) {
+    try {
+<span class="fc" id="L189">      final DiffBasedValue&lt;ACCOUNT&gt; diffBasedValue = accountsToUpdate.get(address);</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">      if (diffBasedValue == null) {</span>
+        final Account account;
+<span class="pc bpc" id="L192" title="1 of 2 branches missed.">        if (wrappedWorldView() instanceof DiffBasedWorldStateUpdateAccumulator) {</span>
+<span class="nc" id="L193">          final DiffBasedWorldStateUpdateAccumulator&lt;ACCOUNT&gt; worldStateUpdateAccumulator =</span>
+<span class="nc" id="L194">              (DiffBasedWorldStateUpdateAccumulator&lt;ACCOUNT&gt;) wrappedWorldView();</span>
+<span class="nc" id="L195">          account = worldStateUpdateAccumulator.loadAccount(address, accountFunction);</span>
+<span class="nc" id="L196">        } else {</span>
+<span class="fc" id="L197">          account = wrappedWorldView().get(address);</span>
+        }
+<span class="fc bfc" id="L199" title="All 2 branches covered.">        if (account instanceof DiffBasedAccount diffBasedAccount) {</span>
+<span class="fc" id="L200">          ACCOUNT mutableAccount = copyAccount((ACCOUNT) diffBasedAccount, this, true);</span>
+<span class="fc" id="L201">          accountsToUpdate.put(</span>
+              address, new DiffBasedValue&lt;&gt;((ACCOUNT) diffBasedAccount, mutableAccount));
+<span class="fc" id="L203">          return mutableAccount;</span>
+        } else {
+          // add the empty read in accountsToUpdate
+<span class="fc" id="L206">          accountsToUpdate.put(address, new DiffBasedValue&lt;&gt;(null, null));</span>
+<span class="fc" id="L207">          return null;</span>
+        }
+      } else {
+<span class="fc" id="L210">        return accountFunction.apply(diffBasedValue);</span>
+      }
+<span class="nc" id="L212">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L214">      throw new MerkleTrieException(</span>
+<span class="nc" id="L215">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  @Override
+  public Collection&lt;? extends Account&gt; getTouchedAccounts() {
+<span class="fc" id="L221">    return getUpdatedAccounts();</span>
+  }
+
+  @Override
+  public Collection&lt;Address&gt; getDeletedAccountAddresses() {
+<span class="nc" id="L226">    return getDeletedAccounts();</span>
+  }
+
+  @Override
+  public void revert() {
+<span class="nc" id="L231">    super.reset();</span>
+<span class="nc" id="L232">  }</span>
+
+  @Override
+  public void commit() {
+<span class="fc" id="L236">    this.isAccumulatorStateChanged = true;</span>
+<span class="fc bfc" id="L237" title="All 2 branches covered.">    for (final Address deletedAddress : getDeletedAccounts()) {</span>
+<span class="fc" id="L238">      final DiffBasedValue&lt;ACCOUNT&gt; accountValue =</span>
+<span class="fc" id="L239">          accountsToUpdate.computeIfAbsent(</span>
+              deletedAddress,
+<span class="nc" id="L241">              __ -&gt; loadAccountFromParent(deletedAddress, new DiffBasedValue&lt;&gt;(null, null, true)));</span>
+<span class="fc" id="L242">      storageToClear.add(deletedAddress);</span>
+<span class="fc" id="L243">      final DiffBasedValue&lt;Bytes&gt; codeValue = codeToUpdate.get(deletedAddress);</span>
+<span class="fc bfc" id="L244" title="All 2 branches covered.">      if (codeValue != null) {</span>
+<span class="fc" id="L245">        codeValue.setUpdated(null).setCleared();</span>
+      } else {
+<span class="fc" id="L247">        wrappedWorldView()</span>
+<span class="fc" id="L248">            .getCode(</span>
+                deletedAddress,
+<span class="fc" id="L250">                Optional.ofNullable(accountValue)</span>
+<span class="fc" id="L251">                    .map(DiffBasedValue::getPrior)</span>
+<span class="fc" id="L252">                    .map(DiffBasedAccount::getCodeHash)</span>
+<span class="fc" id="L253">                    .orElse(Hash.EMPTY))</span>
+<span class="fc" id="L254">            .ifPresent(</span>
+                deletedCode -&gt;
+<span class="fc" id="L256">                    codeToUpdate.put(</span>
+                        deletedAddress, new DiffBasedValue&lt;&gt;(deletedCode, null, true)));
+      }
+
+      // mark all updated storage as to be cleared
+<span class="fc" id="L261">      final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; deletedStorageUpdates =</span>
+<span class="fc" id="L262">          storageToUpdate.computeIfAbsent(</span>
+              deletedAddress,
+              k -&gt;
+<span class="fc" id="L265">                  new StorageConsumingMap&lt;&gt;(</span>
+                      deletedAddress, new ConcurrentHashMap&lt;&gt;(), storagePreloader));
+<span class="fc" id="L267">      final Iterator&lt;Map.Entry&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt;&gt; iter =</span>
+<span class="fc" id="L268">          deletedStorageUpdates.entrySet().iterator();</span>
+<span class="fc bfc" id="L269" title="All 2 branches covered.">      while (iter.hasNext()) {</span>
+<span class="fc" id="L270">        final Map.Entry&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; updateEntry = iter.next();</span>
+<span class="fc" id="L271">        final DiffBasedValue&lt;UInt256&gt; updatedSlot = updateEntry.getValue();</span>
+<span class="pc bpc" id="L272" title="3 of 4 branches missed.">        if (updatedSlot.getPrior() == null || updatedSlot.getPrior().isZero()) {</span>
+<span class="fc" id="L273">          iter.remove();</span>
+        } else {
+<span class="nc" id="L275">          updatedSlot.setUpdated(null).setCleared();</span>
+        }
+<span class="fc" id="L277">      }</span>
+
+<span class="fc" id="L279">      final ACCOUNT originalValue = accountValue.getPrior();</span>
+<span class="fc bfc" id="L280" title="All 2 branches covered.">      if (originalValue != null) {</span>
+        // Enumerate and delete addresses not updated
+<span class="fc" id="L282">        wrappedWorldView()</span>
+<span class="fc" id="L283">            .getAllAccountStorage(deletedAddress, originalValue.getStorageRoot())</span>
+<span class="fc" id="L284">            .forEach(</span>
+                (keyHash, entryValue) -&gt; {
+<span class="nc" id="L286">                  final StorageSlotKey storageSlotKey =</span>
+<span class="nc" id="L287">                      new StorageSlotKey(Hash.wrap(keyHash), Optional.empty());</span>
+<span class="nc bnc" id="L288" title="All 2 branches missed.">                  if (!deletedStorageUpdates.containsKey(storageSlotKey)) {</span>
+<span class="nc" id="L289">                    final UInt256 value = UInt256.fromBytes(RLP.decodeOne(entryValue));</span>
+<span class="nc" id="L290">                    deletedStorageUpdates.put(</span>
+                        storageSlotKey, new DiffBasedValue&lt;&gt;(value, null, true));
+                  }
+<span class="nc" id="L293">                });</span>
+      }
+<span class="pc bpc" id="L295" title="1 of 2 branches missed.">      if (deletedStorageUpdates.isEmpty()) {</span>
+<span class="fc" id="L296">        storageToUpdate.remove(deletedAddress);</span>
+      }
+<span class="fc" id="L298">      accountValue.setUpdated(null);</span>
+<span class="fc" id="L299">    }</span>
+
+<span class="fc" id="L301">    getUpdatedAccounts().parallelStream()</span>
+<span class="fc" id="L302">        .forEach(</span>
+            tracked -&gt; {
+<span class="fc" id="L304">              final Address updatedAddress = tracked.getAddress();</span>
+              final ACCOUNT updatedAccount;
+<span class="fc" id="L306">              final DiffBasedValue&lt;ACCOUNT&gt; updatedAccountValue =</span>
+<span class="fc" id="L307">                  accountsToUpdate.get(updatedAddress);</span>
+
+<span class="fc" id="L309">              final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; pendingStorageUpdates =</span>
+<span class="fc" id="L310">                  storageToUpdate.computeIfAbsent(</span>
+                      updatedAddress,
+                      k -&gt;
+<span class="fc" id="L313">                          new StorageConsumingMap&lt;&gt;(</span>
+                              updatedAddress, new ConcurrentHashMap&lt;&gt;(), storagePreloader));
+
+<span class="fc bfc" id="L316" title="All 2 branches covered.">              if (tracked.getStorageWasCleared()) {</span>
+<span class="fc" id="L317">                storageToClear.add(updatedAddress);</span>
+<span class="fc" id="L318">                pendingStorageUpdates.clear();</span>
+              }
+
+<span class="fc bfc" id="L321" title="All 2 branches covered.">              if (tracked.getWrappedAccount() == null) {</span>
+<span class="fc" id="L322">                updatedAccount = createAccount(this, tracked);</span>
+<span class="fc" id="L323">                tracked.setWrappedAccount(updatedAccount);</span>
+<span class="pc bpc" id="L324" title="1 of 2 branches missed.">                if (updatedAccountValue == null) {</span>
+<span class="nc" id="L325">                  accountsToUpdate.put(updatedAddress, new DiffBasedValue&lt;&gt;(null, updatedAccount));</span>
+<span class="nc" id="L326">                  codeToUpdate.put(</span>
+<span class="nc" id="L327">                      updatedAddress, new DiffBasedValue&lt;&gt;(null, updatedAccount.getCode()));</span>
+                } else {
+<span class="fc" id="L329">                  updatedAccountValue.setUpdated(updatedAccount);</span>
+                }
+              } else {
+<span class="fc" id="L332">                updatedAccount = tracked.getWrappedAccount();</span>
+<span class="fc" id="L333">                updatedAccount.setBalance(tracked.getBalance());</span>
+<span class="fc" id="L334">                updatedAccount.setNonce(tracked.getNonce());</span>
+<span class="fc bfc" id="L335" title="All 2 branches covered.">                if (tracked.codeWasUpdated()) {</span>
+<span class="fc" id="L336">                  updatedAccount.setCode(tracked.getCode());</span>
+                }
+<span class="pc bpc" id="L338" title="1 of 2 branches missed.">                if (tracked.getStorageWasCleared()) {</span>
+<span class="nc" id="L339">                  updatedAccount.clearStorage();</span>
+                }
+<span class="fc" id="L341">                tracked.getUpdatedStorage().forEach(updatedAccount::setStorageValue);</span>
+              }
+
+<span class="fc bfc" id="L344" title="All 2 branches covered.">              if (tracked.codeWasUpdated()) {</span>
+<span class="fc" id="L345">                final DiffBasedValue&lt;Bytes&gt; pendingCode =</span>
+<span class="fc" id="L346">                    codeToUpdate.computeIfAbsent(</span>
+                        updatedAddress,
+                        addr -&gt;
+<span class="fc" id="L349">                            new DiffBasedValue&lt;&gt;(</span>
+<span class="fc" id="L350">                                wrappedWorldView()</span>
+<span class="fc" id="L351">                                    .getCode(</span>
+                                        addr,
+<span class="fc" id="L353">                                        Optional.ofNullable(updatedAccountValue)</span>
+<span class="fc" id="L354">                                            .map(DiffBasedValue::getPrior)</span>
+<span class="fc" id="L355">                                            .map(DiffBasedAccount::getCodeHash)</span>
+<span class="fc" id="L356">                                            .orElse(Hash.EMPTY))</span>
+<span class="fc" id="L357">                                    .orElse(null),</span>
+                                null));
+<span class="fc" id="L359">                pendingCode.setUpdated(updatedAccount.getCode());</span>
+              }
+
+              // This is especially to avoid unnecessary computation for withdrawals and
+              // self-destruct beneficiaries
+<span class="fc bfc" id="L364" title="All 2 branches covered.">              if (updatedAccount.getUpdatedStorage().isEmpty()) {</span>
+<span class="fc" id="L365">                return;</span>
+              }
+
+<span class="fc" id="L368">              final TreeSet&lt;Map.Entry&lt;UInt256, UInt256&gt;&gt; entries =</span>
+<span class="fc" id="L369">                  new TreeSet&lt;&gt;(Map.Entry.comparingByKey());</span>
+<span class="fc" id="L370">              entries.addAll(updatedAccount.getUpdatedStorage().entrySet());</span>
+
+              // parallel stream here may cause database corruption
+<span class="fc" id="L373">              entries.forEach(</span>
+                  storageUpdate -&gt; {
+<span class="fc" id="L375">                    final UInt256 keyUInt = storageUpdate.getKey();</span>
+<span class="fc" id="L376">                    final StorageSlotKey slotKey =</span>
+<span class="fc" id="L377">                        new StorageSlotKey(hashAndSaveSlotPreImage(keyUInt), Optional.of(keyUInt));</span>
+<span class="fc" id="L378">                    final UInt256 value = storageUpdate.getValue();</span>
+<span class="fc" id="L379">                    final DiffBasedValue&lt;UInt256&gt; pendingValue = pendingStorageUpdates.get(slotKey);</span>
+<span class="fc bfc" id="L380" title="All 2 branches covered.">                    if (pendingValue == null) {</span>
+<span class="fc" id="L381">                      pendingStorageUpdates.put(</span>
+                          slotKey,
+                          new DiffBasedValue&lt;&gt;(
+<span class="fc" id="L384">                              updatedAccount.getOriginalStorageValue(keyUInt), value));</span>
+                    } else {
+<span class="fc" id="L386">                      pendingValue.setUpdated(value);</span>
+                    }
+<span class="fc" id="L388">                  });</span>
+
+<span class="fc" id="L390">              updatedAccount.getUpdatedStorage().clear();</span>
+
+<span class="pc bpc" id="L392" title="1 of 2 branches missed.">              if (pendingStorageUpdates.isEmpty()) {</span>
+<span class="nc" id="L393">                storageToUpdate.remove(updatedAddress);</span>
+              }
+
+<span class="pc bpc" id="L396" title="1 of 2 branches missed.">              if (tracked.getStorageWasCleared()) {</span>
+<span class="nc" id="L397">                tracked.setStorageWasCleared(false); // storage already cleared for this transaction</span>
+              }
+<span class="fc" id="L399">            });</span>
+<span class="fc" id="L400">  }</span>
+
+  @Override
+  public Optional&lt;Bytes&gt; getCode(final Address address, final Hash codeHash) {
+<span class="fc" id="L404">    final DiffBasedValue&lt;Bytes&gt; localCode = codeToUpdate.get(address);</span>
+<span class="pc bpc" id="L405" title="1 of 2 branches missed.">    if (localCode == null) {</span>
+<span class="fc" id="L406">      final Optional&lt;Bytes&gt; code = wrappedWorldView().getCode(address, codeHash);</span>
+<span class="pc bpc" id="L407" title="3 of 4 branches missed.">      if (code.isEmpty() &amp;&amp; !codeHash.equals(Hash.EMPTY)) {</span>
+<span class="nc" id="L408">        throw new MerkleTrieException(</span>
+<span class="nc" id="L409">            &quot;invalid account code&quot;, Optional.of(address), codeHash, Bytes.EMPTY);</span>
+      }
+<span class="fc" id="L411">      return code;</span>
+    } else {
+<span class="nc" id="L413">      return Optional.ofNullable(localCode.getUpdated());</span>
+    }
+  }
+
+  @Override
+  public UInt256 getStorageValue(final Address address, final UInt256 slotKey) {
+<span class="fc" id="L419">    StorageSlotKey storageSlotKey =</span>
+<span class="fc" id="L420">        new StorageSlotKey(hashAndSaveSlotPreImage(slotKey), Optional.of(slotKey));</span>
+<span class="fc" id="L421">    return getStorageValueByStorageSlotKey(address, storageSlotKey).orElse(UInt256.ZERO);</span>
+  }
+
+  @Override
+  public Optional&lt;UInt256&gt; getStorageValueByStorageSlotKey(
+      final Address address, final StorageSlotKey storageSlotKey) {
+<span class="fc" id="L427">    final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; localAccountStorage =</span>
+<span class="fc" id="L428">        storageToUpdate.get(address);</span>
+<span class="fc bfc" id="L429" title="All 2 branches covered.">    if (localAccountStorage != null) {</span>
+<span class="fc" id="L430">      final DiffBasedValue&lt;UInt256&gt; value = localAccountStorage.get(storageSlotKey);</span>
+<span class="fc bfc" id="L431" title="All 2 branches covered.">      if (value != null) {</span>
+<span class="fc" id="L432">        return Optional.ofNullable(value.getUpdated());</span>
+      }
+    }
+    try {
+      final Optional&lt;UInt256&gt; valueUInt =
+<span class="pc bpc" id="L437" title="1 of 2 branches missed.">          (wrappedWorldView() instanceof DiffBasedWorldState worldState)</span>
+<span class="fc" id="L438">              ? worldState.getStorageValueByStorageSlotKey(address, storageSlotKey)</span>
+<span class="pc" id="L439">              : wrappedWorldView().getStorageValueByStorageSlotKey(address, storageSlotKey);</span>
+<span class="fc" id="L440">      storageToUpdate</span>
+<span class="fc" id="L441">          .computeIfAbsent(</span>
+              address,
+              key -&gt;
+<span class="fc" id="L444">                  new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader))</span>
+<span class="fc" id="L445">          .put(</span>
+<span class="fc" id="L446">              storageSlotKey, new DiffBasedValue&lt;&gt;(valueUInt.orElse(null), valueUInt.orElse(null)));</span>
+<span class="fc" id="L447">      return valueUInt;</span>
+<span class="nc" id="L448">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L450">      throw new MerkleTrieException(</span>
+<span class="nc" id="L451">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  @Override
+  public UInt256 getPriorStorageValue(final Address address, final UInt256 storageKey) {
+    // TODO maybe log the read into the trie layer?
+<span class="fc" id="L458">    StorageSlotKey storageSlotKey =</span>
+<span class="fc" id="L459">        new StorageSlotKey(hashAndSaveSlotPreImage(storageKey), Optional.of(storageKey));</span>
+<span class="fc" id="L460">    final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; localAccountStorage =</span>
+<span class="fc" id="L461">        storageToUpdate.get(address);</span>
+<span class="pc bpc" id="L462" title="1 of 2 branches missed.">    if (localAccountStorage != null) {</span>
+<span class="fc" id="L463">      final DiffBasedValue&lt;UInt256&gt; value = localAccountStorage.get(storageSlotKey);</span>
+<span class="fc bfc" id="L464" title="All 2 branches covered.">      if (value != null) {</span>
+<span class="pc bpc" id="L465" title="1 of 2 branches missed.">        if (value.isLastStepCleared()) {</span>
+<span class="nc" id="L466">          return UInt256.ZERO;</span>
+        }
+<span class="fc" id="L468">        final UInt256 updated = value.getUpdated();</span>
+<span class="fc bfc" id="L469" title="All 2 branches covered.">        if (updated != null) {</span>
+<span class="fc" id="L470">          return updated;</span>
+        }
+<span class="fc" id="L472">        final UInt256 original = value.getPrior();</span>
+<span class="pc bpc" id="L473" title="1 of 2 branches missed.">        if (original != null) {</span>
+<span class="nc" id="L474">          return original;</span>
+        }
+      }
+    }
+<span class="fc bfc" id="L478" title="All 2 branches covered.">    if (storageToClear.contains(address)) {</span>
+<span class="fc" id="L479">      return UInt256.ZERO;</span>
+    }
+<span class="fc" id="L481">    return getStorageValue(address, storageKey);</span>
+  }
+
+  @Override
+  public Map&lt;Bytes32, Bytes&gt; getAllAccountStorage(final Address address, final Hash rootHash) {
+<span class="nc" id="L486">    final Map&lt;Bytes32, Bytes&gt; results = wrappedWorldView().getAllAccountStorage(address, rootHash);</span>
+<span class="nc" id="L487">    final StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; diffBasedValueStorage =</span>
+<span class="nc" id="L488">        storageToUpdate.get(address);</span>
+<span class="nc bnc" id="L489" title="All 2 branches missed.">    if (diffBasedValueStorage != null) {</span>
+      // hash the key to match the implied storage interface of hashed slotKey
+<span class="nc" id="L491">      diffBasedValueStorage.forEach(</span>
+<span class="nc" id="L492">          (key, value) -&gt; results.put(key.getSlotHash(), value.getUpdated()));</span>
+    }
+<span class="nc" id="L494">    return results;</span>
+  }
+
+  @Override
+  public boolean isPersisted() {
+<span class="nc" id="L499">    return true;</span>
+  }
+
+  @Override
+  public DiffBasedWorldStateKeyValueStorage getWorldStateStorage() {
+<span class="nc" id="L504">    return wrappedWorldView().getWorldStateStorage();</span>
+  }
+
+  public void rollForward(final TrieLog layer) {
+<span class="fc" id="L508">    layer</span>
+<span class="fc" id="L509">        .getAccountChanges()</span>
+<span class="fc" id="L510">        .forEach(</span>
+            (address, change) -&gt;
+<span class="fc" id="L512">                rollAccountChange(address, change.getPrior(), change.getUpdated()));</span>
+<span class="fc" id="L513">    layer</span>
+<span class="fc" id="L514">        .getCodeChanges()</span>
+<span class="fc" id="L515">        .forEach(</span>
+<span class="fc" id="L516">            (address, change) -&gt; rollCodeChange(address, change.getPrior(), change.getUpdated()));</span>
+<span class="fc" id="L517">    layer</span>
+<span class="fc" id="L518">        .getStorageChanges()</span>
+<span class="fc" id="L519">        .forEach(</span>
+            (address, storage) -&gt;
+<span class="fc" id="L521">                storage.forEach(</span>
+                    (storageSlotKey, value) -&gt;
+<span class="fc" id="L523">                        rollStorageChange(</span>
+<span class="fc" id="L524">                            address, storageSlotKey, value.getPrior(), value.getUpdated())));</span>
+<span class="fc" id="L525">  }</span>
+
+  public void rollBack(final TrieLog layer) {
+<span class="fc" id="L528">    layer</span>
+<span class="fc" id="L529">        .getAccountChanges()</span>
+<span class="fc" id="L530">        .forEach(</span>
+            (address, change) -&gt;
+<span class="fc" id="L532">                rollAccountChange(address, change.getUpdated(), change.getPrior()));</span>
+<span class="fc" id="L533">    layer</span>
+<span class="fc" id="L534">        .getCodeChanges()</span>
+<span class="fc" id="L535">        .forEach(</span>
+<span class="fc" id="L536">            (address, change) -&gt; rollCodeChange(address, change.getUpdated(), change.getPrior()));</span>
+<span class="fc" id="L537">    layer</span>
+<span class="fc" id="L538">        .getStorageChanges()</span>
+<span class="fc" id="L539">        .forEach(</span>
+            (address, storage) -&gt;
+<span class="fc" id="L541">                storage.forEach(</span>
+                    (storageSlotKey, value) -&gt;
+<span class="fc" id="L543">                        rollStorageChange(</span>
+<span class="fc" id="L544">                            address, storageSlotKey, value.getUpdated(), value.getPrior())));</span>
+<span class="fc" id="L545">  }</span>
+
+  private void rollAccountChange(
+      final Address address,
+      final AccountValue expectedValue,
+      final AccountValue replacementValue) {
+<span class="pc bpc" id="L551" title="1 of 2 branches missed.">    if (Objects.equals(expectedValue, replacementValue)) {</span>
+      // non-change, a cached read.
+<span class="nc" id="L553">      return;</span>
+    }
+<span class="fc" id="L555">    DiffBasedValue&lt;ACCOUNT&gt; accountValue = accountsToUpdate.get(address);</span>
+<span class="pc bpc" id="L556" title="1 of 2 branches missed.">    if (accountValue == null) {</span>
+<span class="fc" id="L557">      accountValue = loadAccountFromParent(address, accountValue);</span>
+    }
+<span class="fc bfc" id="L559" title="All 2 branches covered.">    if (accountValue == null) {</span>
+<span class="pc bpc" id="L560" title="2 of 4 branches missed.">      if (expectedValue == null &amp;&amp; replacementValue != null) {</span>
+<span class="fc" id="L561">        accountsToUpdate.put(</span>
+            address,
+<span class="fc" id="L563">            new DiffBasedValue&lt;&gt;(null, createAccount(this, address, replacementValue, true)));</span>
+      } else {
+<span class="nc" id="L565">        throw new IllegalStateException(</span>
+<span class="nc" id="L566">            String.format(</span>
+                &quot;Expected to update account, but the account does not exist. Address=%s&quot;, address));
+      }
+    } else {
+<span class="pc bpc" id="L570" title="1 of 2 branches missed.">      if (expectedValue == null) {</span>
+<span class="nc bnc" id="L571" title="All 2 branches missed.">        if (accountValue.getUpdated() != null) {</span>
+<span class="nc" id="L572">          throw new IllegalStateException(</span>
+<span class="nc" id="L573">              String.format(</span>
+                  &quot;Expected to create account, but the account exists.  Address=%s&quot;, address));
+        }
+      } else {
+<span class="fc" id="L577">        assertCloseEnoughForDiffing(</span>
+<span class="fc" id="L578">            accountValue.getUpdated(),</span>
+            expectedValue,
+            &quot;Address=&quot; + address + &quot; Prior Value in Rolling Change&quot;);
+      }
+<span class="fc bfc" id="L582" title="All 2 branches covered.">      if (replacementValue == null) {</span>
+<span class="pc bpc" id="L583" title="1 of 2 branches missed.">        if (accountValue.getPrior() == null) {</span>
+          // TODO: should we remove from the parent accumulated change also?  only if it is a
+          // private copy
+<span class="nc" id="L586">          accountsToUpdate.remove(address);</span>
+        } else {
+<span class="fc" id="L588">          accountValue.setUpdated(null);</span>
+        }
+      } else {
+<span class="fc" id="L591">        accountValue.setUpdated(createAccount(wrappedWorldView(), address, replacementValue, true));</span>
+      }
+    }
+<span class="fc" id="L594">  }</span>
+
+  private DiffBasedValue&lt;ACCOUNT&gt; loadAccountFromParent(
+      final Address address, final DiffBasedValue&lt;ACCOUNT&gt; defaultValue) {
+    try {
+<span class="fc" id="L599">      final Account parentAccount = wrappedWorldView().get(address);</span>
+<span class="fc bfc" id="L600" title="All 2 branches covered.">      if (parentAccount instanceof DiffBasedAccount account) {</span>
+<span class="fc" id="L601">        final DiffBasedValue&lt;ACCOUNT&gt; loadedAccountValue =</span>
+<span class="fc" id="L602">            new DiffBasedValue&lt;&gt;(copyAccount((ACCOUNT) account), ((ACCOUNT) account));</span>
+<span class="fc" id="L603">        accountsToUpdate.put(address, loadedAccountValue);</span>
+<span class="fc" id="L604">        return loadedAccountValue;</span>
+      } else {
+<span class="fc" id="L606">        return defaultValue;</span>
+      }
+<span class="nc" id="L608">    } catch (MerkleTrieException e) {</span>
+      // need to throw to trigger the heal
+<span class="nc" id="L610">      throw new MerkleTrieException(</span>
+<span class="nc" id="L611">          e.getMessage(), Optional.of(address), e.getHash(), e.getLocation());</span>
+    }
+  }
+
+  private void rollCodeChange(
+      final Address address, final Bytes expectedCode, final Bytes replacementCode) {
+<span class="fc bfc" id="L617" title="All 2 branches covered.">    if (Objects.equals(expectedCode, replacementCode)) {</span>
+      // non-change, a cached read.
+<span class="fc" id="L619">      return;</span>
+    }
+<span class="fc" id="L621">    DiffBasedValue&lt;Bytes&gt; codeValue = codeToUpdate.get(address);</span>
+<span class="pc bpc" id="L622" title="1 of 2 branches missed.">    if (codeValue == null) {</span>
+<span class="fc" id="L623">      final Bytes storedCode =</span>
+<span class="fc" id="L624">          wrappedWorldView()</span>
+<span class="fc" id="L625">              .getCode(</span>
+<span class="fc" id="L626">                  address, Optional.ofNullable(expectedCode).map(Hash::hash).orElse(Hash.EMPTY))</span>
+<span class="fc" id="L627">              .orElse(Bytes.EMPTY);</span>
+<span class="pc bpc" id="L628" title="1 of 2 branches missed.">      if (!storedCode.isEmpty()) {</span>
+<span class="nc" id="L629">        codeValue = new DiffBasedValue&lt;&gt;(storedCode, storedCode);</span>
+<span class="nc" id="L630">        codeToUpdate.put(address, codeValue);</span>
+      }
+    }
+
+<span class="pc bpc" id="L634" title="1 of 2 branches missed.">    if (codeValue == null) {</span>
+<span class="pc bpc" id="L635" title="4 of 6 branches missed.">      if ((expectedCode == null || expectedCode.isEmpty()) &amp;&amp; replacementCode != null) {</span>
+<span class="fc" id="L636">        codeToUpdate.put(address, new DiffBasedValue&lt;&gt;(null, replacementCode));</span>
+      } else {
+<span class="nc" id="L638">        throw new IllegalStateException(</span>
+<span class="nc" id="L639">            String.format(</span>
+                &quot;Expected to update code, but the code does not exist.  Address=%s&quot;, address));
+      }
+    } else {
+<span class="nc" id="L643">      final Bytes existingCode = codeValue.getUpdated();</span>
+<span class="nc bnc" id="L644" title="All 6 branches missed.">      if ((expectedCode == null || expectedCode.isEmpty())</span>
+          &amp;&amp; existingCode != null
+<span class="nc bnc" id="L646" title="All 2 branches missed.">          &amp;&amp; !existingCode.isEmpty()) {</span>
+<span class="nc" id="L647">        LOG.warn(&quot;At Address={}, expected to create code, but code exists. Overwriting.&quot;, address);</span>
+<span class="nc bnc" id="L648" title="All 2 branches missed.">      } else if (!Objects.equals(expectedCode, existingCode)) {</span>
+<span class="nc" id="L649">        throw new IllegalStateException(</span>
+<span class="nc" id="L650">            String.format(</span>
+                &quot;Old value of code does not match expected value.  Address=%s ExpectedHash=%s ActualHash=%s&quot;,
+                address,
+<span class="nc bnc" id="L653" title="All 2 branches missed.">                expectedCode == null ? &quot;null&quot; : Hash.hash(expectedCode),</span>
+<span class="nc" id="L654">                Hash.hash(codeValue.getUpdated())));</span>
+      }
+<span class="nc bnc" id="L656" title="All 4 branches missed.">      if (replacementCode == null &amp;&amp; codeValue.getPrior() == null) {</span>
+<span class="nc" id="L657">        codeToUpdate.remove(address);</span>
+      } else {
+<span class="nc" id="L659">        codeValue.setUpdated(replacementCode);</span>
+      }
+    }
+<span class="fc" id="L662">  }</span>
+
+  private Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; maybeCreateStorageMap(
+      final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; storageMap, final Address address) {
+<span class="pc bpc" id="L666" title="1 of 2 branches missed.">    if (storageMap == null) {</span>
+<span class="fc" id="L667">      final StorageConsumingMap&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; newMap =</span>
+          new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader);
+<span class="fc" id="L669">      storageToUpdate.put(address, newMap);</span>
+<span class="fc" id="L670">      return newMap;</span>
+    } else {
+<span class="nc" id="L672">      return storageMap;</span>
+    }
+  }
+
+  private void rollStorageChange(
+      final Address address,
+      final StorageSlotKey storageSlotKey,
+      final UInt256 expectedValue,
+      final UInt256 replacementValue) {
+<span class="pc bpc" id="L681" title="1 of 2 branches missed.">    if (Objects.equals(expectedValue, replacementValue)) {</span>
+      // non-change, a cached read.
+<span class="nc" id="L683">      return;</span>
+    }
+<span class="pc bpc" id="L685" title="5 of 6 branches missed.">    if (replacementValue == null &amp;&amp; expectedValue != null &amp;&amp; expectedValue.isZero()) {</span>
+      // corner case on deletes, non-change
+<span class="nc" id="L687">      return;</span>
+    }
+<span class="fc" id="L689">    final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; storageMap = storageToUpdate.get(address);</span>
+<span class="pc bpc" id="L690" title="1 of 2 branches missed.">    DiffBasedValue&lt;UInt256&gt; slotValue = storageMap == null ? null : storageMap.get(storageSlotKey);</span>
+<span class="pc bpc" id="L691" title="1 of 2 branches missed.">    if (slotValue == null) {</span>
+<span class="fc" id="L692">      final Optional&lt;UInt256&gt; storageValue =</span>
+<span class="fc" id="L693">          wrappedWorldView().getStorageValueByStorageSlotKey(address, storageSlotKey);</span>
+<span class="fc bfc" id="L694" title="All 2 branches covered.">      if (storageValue.isPresent()) {</span>
+<span class="fc" id="L695">        slotValue = new DiffBasedValue&lt;&gt;(storageValue.get(), storageValue.get());</span>
+<span class="fc" id="L696">        storageToUpdate</span>
+<span class="fc" id="L697">            .computeIfAbsent(</span>
+                address,
+                k -&gt;
+<span class="fc" id="L700">                    new StorageConsumingMap&lt;&gt;(address, new ConcurrentHashMap&lt;&gt;(), storagePreloader))</span>
+<span class="fc" id="L701">            .put(storageSlotKey, slotValue);</span>
+      }
+    }
+<span class="fc bfc" id="L704" title="All 2 branches covered.">    if (slotValue == null) {</span>
+<span class="pc bpc" id="L705" title="4 of 6 branches missed.">      if ((expectedValue == null || expectedValue.isZero()) &amp;&amp; replacementValue != null) {</span>
+<span class="fc" id="L706">        maybeCreateStorageMap(storageMap, address)</span>
+<span class="fc" id="L707">            .put(storageSlotKey, new DiffBasedValue&lt;&gt;(null, replacementValue));</span>
+      } else {
+<span class="nc" id="L709">        throw new IllegalStateException(</span>
+<span class="nc" id="L710">            String.format(</span>
+                &quot;Expected to update storage value, but the slot does not exist. Account=%s SlotKey=%s&quot;,
+                address, storageSlotKey));
+      }
+    } else {
+<span class="fc" id="L715">      final UInt256 existingSlotValue = slotValue.getUpdated();</span>
+<span class="pc bpc" id="L716" title="4 of 6 branches missed.">      if ((expectedValue == null || expectedValue.isZero())</span>
+          &amp;&amp; existingSlotValue != null
+<span class="nc bnc" id="L718" title="All 2 branches missed.">          &amp;&amp; !existingSlotValue.isZero()) {</span>
+<span class="nc" id="L719">        throw new IllegalStateException(</span>
+<span class="nc" id="L720">            String.format(</span>
+                &quot;Expected to create slot, but the slot exists. Account=%s SlotKey=%s expectedValue=%s existingValue=%s&quot;,
+                address, storageSlotKey, expectedValue, existingSlotValue));
+      }
+<span class="pc bpc" id="L724" title="1 of 2 branches missed.">      if (!isSlotEquals(expectedValue, existingSlotValue)) {</span>
+<span class="nc" id="L725">        throw new IllegalStateException(</span>
+<span class="nc" id="L726">            String.format(</span>
+                &quot;Old value of slot does not match expected value. Account=%s SlotKey=%s Expected=%s Actual=%s&quot;,
+                address,
+                storageSlotKey,
+<span class="nc bnc" id="L730" title="All 2 branches missed.">                expectedValue == null ? &quot;null&quot; : expectedValue.toShortHexString(),</span>
+<span class="nc bnc" id="L731" title="All 2 branches missed.">                existingSlotValue == null ? &quot;null&quot; : existingSlotValue.toShortHexString()));</span>
+      }
+<span class="pc bpc" id="L733" title="3 of 4 branches missed.">      if (replacementValue == null &amp;&amp; slotValue.getPrior() == null) {</span>
+<span class="nc" id="L734">        final Map&lt;StorageSlotKey, DiffBasedValue&lt;UInt256&gt;&gt; thisStorageUpdate =</span>
+<span class="nc" id="L735">            maybeCreateStorageMap(storageMap, address);</span>
+<span class="nc" id="L736">        thisStorageUpdate.remove(storageSlotKey);</span>
+<span class="nc bnc" id="L737" title="All 2 branches missed.">        if (thisStorageUpdate.isEmpty()) {</span>
+<span class="nc" id="L738">          storageToUpdate.remove(address);</span>
+        }
+<span class="nc" id="L740">      } else {</span>
+<span class="fc" id="L741">        slotValue.setUpdated(replacementValue);</span>
+      }
+    }
+<span class="fc" id="L744">  }</span>
+
+  private boolean isSlotEquals(final UInt256 expectedValue, final UInt256 existingSlotValue) {
+<span class="pc bpc" id="L747" title="1 of 2 branches missed.">    final UInt256 sanitizedExpectedValue = (expectedValue == null) ? UInt256.ZERO : expectedValue;</span>
+    final UInt256 sanitizedExistingSlotValue =
+<span class="pc bpc" id="L749" title="1 of 2 branches missed.">        (existingSlotValue == null) ? UInt256.ZERO : existingSlotValue;</span>
+<span class="fc" id="L750">    return Objects.equals(sanitizedExpectedValue, sanitizedExistingSlotValue);</span>
+  }
+
+  public boolean isAccumulatorStateChanged() {
+<span class="fc" id="L754">    return isAccumulatorStateChanged;</span>
+  }
+
+  public void resetAccumulatorStateChanged() {
+<span class="fc" id="L758">    isAccumulatorStateChanged = false;</span>
+<span class="fc" id="L759">  }</span>
+
+  @Override
+  public void reset() {
+<span class="fc" id="L763">    storageToClear.clear();</span>
+<span class="fc" id="L764">    storageToUpdate.clear();</span>
+<span class="fc" id="L765">    codeToUpdate.clear();</span>
+<span class="fc" id="L766">    accountsToUpdate.clear();</span>
+<span class="fc" id="L767">    resetAccumulatorStateChanged();</span>
+<span class="fc" id="L768">    updatedAccounts.clear();</span>
+<span class="fc" id="L769">    deletedAccounts.clear();</span>
+<span class="fc" id="L770">    storageKeyHashLookup.clear();</span>
+<span class="fc" id="L771">  }</span>
+
+  protected Hash hashAndSaveAccountPreImage(final Address address) {
+    // no need to save account preimage by default
+<span class="fc" id="L775">    return Hash.hash(address);</span>
+  }
+
+  protected Hash hashAndSaveSlotPreImage(final UInt256 slotKey) {
+<span class="fc" id="L779">    Hash hash = storageKeyHashLookup.get(slotKey);</span>
+<span class="fc bfc" id="L780" title="All 2 branches covered.">    if (hash == null) {</span>
+<span class="fc" id="L781">      hash = Hash.hash(slotKey);</span>
+<span class="fc" id="L782">      storageKeyHashLookup.put(slotKey, hash);</span>
+    }
+<span class="fc" id="L784">    return hash;</span>
+  }
+
+  public abstract DiffBasedWorldStateUpdateAccumulator&lt;ACCOUNT&gt; copy();
+
+  protected abstract ACCOUNT copyAccount(final ACCOUNT account);
+
+  protected abstract ACCOUNT copyAccount(
+      final ACCOUNT toCopy, final DiffBasedWorldView context, final boolean mutable);
+
+  protected abstract ACCOUNT createAccount(
+      final DiffBasedWorldView context,
+      final Address address,
+      final AccountValue stateTrieAccount,
+      final boolean mutable);
+
+  protected abstract ACCOUNT createAccount(
+      final DiffBasedWorldView context,
+      final Address address,
+      final Hash addressHash,
+      final long nonce,
+      final Wei balance,
+      final Hash storageRoot,
+      final Hash codeHash,
+      final boolean mutable);
+
+  protected abstract ACCOUNT createAccount(
+      final DiffBasedWorldView context, final UpdateTrackingAccount&lt;ACCOUNT&gt; tracked);
+
+  protected abstract void assertCloseEnoughForDiffing(
+      final ACCOUNT source, final AccountValue account, final String context);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

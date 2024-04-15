@@ -34,11 +34,11 @@ import org.hyperledger.besu.ethereum.eth.sync.state.PendingBlocksManager;
 import org.hyperledger.besu.ethereum.eth.sync.state.SyncState;
 import org.hyperledger.besu.ethereum.mainnet.ProtocolSchedule;
 import org.hyperledger.besu.ethereum.storage.StorageProvider;
-import org.hyperledger.besu.ethereum.trie.bonsai.BonsaiWorldStateProvider;
-import org.hyperledger.besu.ethereum.trie.forest.pruner.Pruner;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.BonsaiWorldStateProvider;
 import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
 import org.hyperledger.besu.metrics.BesuMetricCategory;
 import org.hyperledger.besu.plugin.data.SyncStatus;
+import org.hyperledger.besu.plugin.services.BesuEvents;
 import org.hyperledger.besu.plugin.services.BesuEvents.SyncStatusListener;
 import org.hyperledger.besu.plugin.services.MetricsSystem;
 import org.hyperledger.besu.util.log.FramedLogMessage;
@@ -62,9 +62,8 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
 
 <span class="fc" id="L63">  private static final Logger LOG = LoggerFactory.getLogger(DefaultSynchronizer.class);</span>
 
-  private final Optional&lt;Pruner&gt; maybePruner;
   private final SyncState syncState;
-<span class="fc" id="L67">  private final AtomicBoolean running = new AtomicBoolean(false);</span>
+<span class="fc" id="L66">  private final AtomicBoolean running = new AtomicBoolean(false);</span>
   private final Optional&lt;BlockPropagationManager&gt; blockPropagationManager;
   private final Supplier&lt;Optional&lt;FastSyncDownloader&lt;?&gt;&gt;&gt; fastSyncFactory;
   private Optional&lt;FastSyncDownloader&lt;?&gt;&gt; fastSyncDownloader;
@@ -79,7 +78,6 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
       final ProtocolContext protocolContext,
       final WorldStateStorageCoordinator worldStateStorageCoordinator,
       final BlockBroadcaster blockBroadcaster,
-      final Optional&lt;Pruner&gt; maybePruner,
       final EthContext ethContext,
       final SyncState syncState,
       final Path dataDirectory,
@@ -87,24 +85,23 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
       final Clock clock,
       final MetricsSystem metricsSystem,
       final SyncTerminationCondition terminationCondition,
-<span class="fc" id="L90">      final PivotBlockSelector pivotBlockSelector) {</span>
-<span class="fc" id="L91">    this.maybePruner = maybePruner;</span>
-<span class="fc" id="L92">    this.syncState = syncState;</span>
-<span class="fc" id="L93">    this.pivotBlockSelector = pivotBlockSelector;</span>
-<span class="fc" id="L94">    this.protocolContext = protocolContext;</span>
-<span class="fc" id="L95">    this.terminationCondition = terminationCondition;</span>
+<span class="fc" id="L88">      final PivotBlockSelector pivotBlockSelector) {</span>
+<span class="fc" id="L89">    this.syncState = syncState;</span>
+<span class="fc" id="L90">    this.pivotBlockSelector = pivotBlockSelector;</span>
+<span class="fc" id="L91">    this.protocolContext = protocolContext;</span>
+<span class="fc" id="L92">    this.terminationCondition = terminationCondition;</span>
 
-<span class="fc" id="L97">    ChainHeadTracker.trackChainHeadForPeers(</span>
+<span class="fc" id="L94">    ChainHeadTracker.trackChainHeadForPeers(</span>
         ethContext,
         protocolSchedule,
-<span class="fc" id="L100">        protocolContext.getBlockchain(),</span>
+<span class="fc" id="L97">        protocolContext.getBlockchain(),</span>
         this::calculateTrailingPeerRequirements,
         metricsSystem);
 
-<span class="fc" id="L104">    this.blockPropagationManager =</span>
-<span class="pc bpc" id="L105" title="1 of 2 branches missed.">        terminationCondition.shouldStopDownload()</span>
-<span class="nc" id="L106">            ? Optional.empty()</span>
-<span class="fc" id="L107">            : Optional.of(</span>
+<span class="fc" id="L101">    this.blockPropagationManager =</span>
+<span class="pc bpc" id="L102" title="1 of 2 branches missed.">        terminationCondition.shouldStopDownload()</span>
+<span class="nc" id="L103">            ? Optional.empty()</span>
+<span class="fc" id="L104">            : Optional.of(</span>
                 new BlockPropagationManager(
                     syncConfig,
                     protocolSchedule,
@@ -115,10 +112,10 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
                     metricsSystem,
                     blockBroadcaster));
 
-<span class="fc" id="L118">    this.fullSyncDownloader =</span>
-<span class="pc bpc" id="L119" title="1 of 2 branches missed.">        terminationCondition.shouldStopDownload()</span>
-<span class="nc" id="L120">            ? Optional.empty()</span>
-<span class="fc" id="L121">            : Optional.of(</span>
+<span class="fc" id="L115">    this.fullSyncDownloader =</span>
+<span class="pc bpc" id="L116" title="1 of 2 branches missed.">        terminationCondition.shouldStopDownload()</span>
+<span class="nc" id="L117">            ? Optional.empty()</span>
+<span class="fc" id="L118">            : Optional.of(</span>
                 new FullSyncDownloader(
                     syncConfig,
                     protocolSchedule,
@@ -128,10 +125,10 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
                     metricsSystem,
                     terminationCondition));
 
-<span class="fc bfc" id="L131" title="All 2 branches covered.">    if (SyncMode.FAST.equals(syncConfig.getSyncMode())) {</span>
-<span class="fc" id="L132">      this.fastSyncFactory =</span>
+<span class="fc bfc" id="L128" title="All 2 branches covered.">    if (SyncMode.FAST.equals(syncConfig.getSyncMode())) {</span>
+<span class="fc" id="L129">      this.fastSyncFactory =</span>
           () -&gt;
-<span class="fc" id="L134">              FastDownloaderFactory.create(</span>
+<span class="fc" id="L131">              FastDownloaderFactory.create(</span>
                   pivotBlockSelector,
                   syncConfig,
                   dataDirectory,
@@ -142,10 +139,10 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
                   worldStateStorageCoordinator,
                   syncState,
                   clock);
-<span class="pc bpc" id="L145" title="1 of 2 branches missed.">    } else if (SyncMode.isCheckpointSync(syncConfig.getSyncMode())) {</span>
-<span class="nc" id="L146">      this.fastSyncFactory =</span>
+<span class="pc bpc" id="L142" title="1 of 2 branches missed.">    } else if (SyncMode.isCheckpointSync(syncConfig.getSyncMode())) {</span>
+<span class="nc" id="L143">      this.fastSyncFactory =</span>
           () -&gt;
-<span class="nc" id="L148">              CheckpointDownloaderFactory.createCheckpointDownloader(</span>
+<span class="nc" id="L145">              CheckpointDownloaderFactory.createCheckpointDownloader(</span>
                   new SnapSyncStatePersistenceManager(storageProvider),
                   pivotBlockSelector,
                   syncConfig,
@@ -158,9 +155,9 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
                   syncState,
                   clock);
     } else {
-<span class="fc" id="L161">      this.fastSyncFactory =</span>
+<span class="fc" id="L158">      this.fastSyncFactory =</span>
           () -&gt;
-<span class="fc" id="L163">              SnapDownloaderFactory.createSnapDownloader(</span>
+<span class="fc" id="L160">              SnapDownloaderFactory.createSnapDownloader(</span>
                   new SnapSyncStatePersistenceManager(storageProvider),
                   pivotBlockSelector,
                   syncConfig,
@@ -175,217 +172,218 @@ public class DefaultSynchronizer implements Synchronizer, UnverifiedForkchoiceLi
     }
 
     // create a non-resync fast sync downloader:
-<span class="fc" id="L178">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
+<span class="fc" id="L175">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
 
-<span class="fc" id="L180">    metricsSystem.createLongGauge(</span>
+<span class="fc" id="L177">    metricsSystem.createLongGauge(</span>
         BesuMetricCategory.ETHEREUM,
         &quot;best_known_block_number&quot;,
         &quot;The estimated highest block available&quot;,
-<span class="fc" id="L184">        syncState::bestChainHeight);</span>
-<span class="fc" id="L185">    metricsSystem.createIntegerGauge(</span>
+<span class="fc" id="L181">        syncState::bestChainHeight);</span>
+<span class="fc" id="L182">    metricsSystem.createIntegerGauge(</span>
         BesuMetricCategory.SYNCHRONIZER,
         &quot;in_sync&quot;,
         &quot;Whether or not the local node has caught up to the best known peer&quot;,
-<span class="nc bnc" id="L189" title="All 2 branches missed.">        () -&gt; getSyncStatus().isPresent() ? 0 : 1);</span>
-<span class="fc" id="L190">  }</span>
+<span class="nc bnc" id="L186" title="All 2 branches missed.">        () -&gt; getSyncStatus().isPresent() ? 0 : 1);</span>
+<span class="fc" id="L187">  }</span>
 
   private TrailingPeerRequirements calculateTrailingPeerRequirements() {
-<span class="fc" id="L193">    return fastSyncDownloader</span>
-<span class="fc" id="L194">        .flatMap(FastSyncDownloader::calculateTrailingPeerRequirements)</span>
-<span class="fc" id="L195">        .orElse(</span>
+<span class="fc" id="L190">    return fastSyncDownloader</span>
+<span class="fc" id="L191">        .flatMap(FastSyncDownloader::calculateTrailingPeerRequirements)</span>
+<span class="fc" id="L192">        .orElse(</span>
             fullSyncDownloader
-<span class="fc" id="L197">                .map(FullSyncDownloader::calculateTrailingPeerRequirements)</span>
-<span class="fc" id="L198">                .orElse(TrailingPeerRequirements.UNRESTRICTED));</span>
+<span class="fc" id="L194">                .map(FullSyncDownloader::calculateTrailingPeerRequirements)</span>
+<span class="fc" id="L195">                .orElse(TrailingPeerRequirements.UNRESTRICTED));</span>
   }
 
   @Override
   public CompletableFuture&lt;Void&gt; start() {
-<span class="pc bpc" id="L203" title="1 of 2 branches missed.">    if (running.compareAndSet(false, true)) {</span>
-<span class="fc" id="L204">      LOG.info(&quot;Starting synchronizer.&quot;);</span>
-<span class="fc" id="L205">      blockPropagationManager.ifPresent(</span>
+<span class="pc bpc" id="L200" title="1 of 2 branches missed.">    if (running.compareAndSet(false, true)) {</span>
+<span class="fc" id="L201">      LOG.info(&quot;Starting synchronizer.&quot;);</span>
+<span class="fc" id="L202">      blockPropagationManager.ifPresent(</span>
           manager -&gt; {
-<span class="pc bpc" id="L207" title="1 of 2 branches missed.">            if (!manager.isRunning()) {</span>
-<span class="fc" id="L208">              manager.start();</span>
+<span class="pc bpc" id="L204" title="1 of 2 branches missed.">            if (!manager.isRunning()) {</span>
+<span class="fc" id="L205">              manager.start();</span>
             }
-<span class="fc" id="L210">          });</span>
+<span class="fc" id="L207">          });</span>
 
       CompletableFuture&lt;Void&gt; future;
-<span class="fc bfc" id="L213" title="All 2 branches covered.">      if (fastSyncDownloader.isPresent()) {</span>
-<span class="fc" id="L214">        future = fastSyncDownloader.get().start().thenCompose(this::handleSyncResult);</span>
+<span class="fc bfc" id="L210" title="All 2 branches covered.">      if (fastSyncDownloader.isPresent()) {</span>
+<span class="fc" id="L211">        future = fastSyncDownloader.get().start().thenCompose(this::handleSyncResult);</span>
       } else {
-<span class="fc" id="L216">        syncState.markInitialSyncPhaseAsDone();</span>
-<span class="fc" id="L217">        future = startFullSync();</span>
+<span class="fc" id="L213">        syncState.markInitialSyncPhaseAsDone();</span>
+<span class="fc" id="L214">        future = startFullSync();</span>
       }
-<span class="fc" id="L219">      return future.thenApply(this::finalizeSync);</span>
+<span class="fc" id="L216">      return future.thenApply(this::finalizeSync);</span>
     } else {
-<span class="nc" id="L221">      throw new IllegalStateException(&quot;Attempt to start an already started synchronizer.&quot;);</span>
+<span class="nc" id="L218">      throw new IllegalStateException(&quot;Attempt to start an already started synchronizer.&quot;);</span>
     }
   }
 
   @Override
   public void stop() {
-<span class="pc bpc" id="L227" title="1 of 2 branches missed.">    if (running.compareAndSet(true, false)) {</span>
-<span class="fc" id="L228">      LOG.info(&quot;Stopping synchronizer&quot;);</span>
-<span class="fc" id="L229">      fastSyncDownloader.ifPresent(FastSyncDownloader::stop);</span>
-<span class="fc" id="L230">      fullSyncDownloader.ifPresent(FullSyncDownloader::stop);</span>
-<span class="fc" id="L231">      maybePruner.ifPresent(Pruner::stop);</span>
-<span class="fc" id="L232">      blockPropagationManager.ifPresent(</span>
+<span class="pc bpc" id="L224" title="1 of 2 branches missed.">    if (running.compareAndSet(true, false)) {</span>
+<span class="fc" id="L225">      LOG.info(&quot;Stopping synchronizer&quot;);</span>
+<span class="fc" id="L226">      fastSyncDownloader.ifPresent(FastSyncDownloader::stop);</span>
+<span class="fc" id="L227">      fullSyncDownloader.ifPresent(FullSyncDownloader::stop);</span>
+<span class="fc" id="L228">      blockPropagationManager.ifPresent(</span>
           manager -&gt; {
-<span class="pc bpc" id="L234" title="1 of 2 branches missed.">            if (manager.isRunning()) {</span>
-<span class="fc" id="L235">              manager.stop();</span>
+<span class="pc bpc" id="L230" title="1 of 2 branches missed.">            if (manager.isRunning()) {</span>
+<span class="fc" id="L231">              manager.stop();</span>
             }
-<span class="fc" id="L237">          });</span>
+<span class="fc" id="L233">          });</span>
     }
-<span class="fc" id="L239">  }</span>
+<span class="fc" id="L235">  }</span>
 
   @Override
-  public void awaitStop() throws InterruptedException {
-<span class="pc bpc" id="L243" title="1 of 2 branches missed.">    if (maybePruner.isPresent()) {</span>
-<span class="nc" id="L244">      maybePruner.get().awaitStop();</span>
-    }
-<span class="fc" id="L246">  }</span>
+<span class="fc" id="L238">  public void awaitStop() {}</span>
 
   private CompletableFuture&lt;Void&gt; handleSyncResult(final FastSyncState result) {
-<span class="pc bpc" id="L249" title="1 of 2 branches missed.">    if (!running.get()) {</span>
+<span class="pc bpc" id="L241" title="1 of 2 branches missed.">    if (!running.get()) {</span>
       // We've been shutdown which will have triggered the fast sync future to complete
-<span class="nc" id="L251">      return CompletableFuture.completedFuture(null);</span>
+<span class="nc" id="L243">      return CompletableFuture.completedFuture(null);</span>
     }
-<span class="fc" id="L253">    fastSyncDownloader.ifPresent(FastSyncDownloader::deleteFastSyncState);</span>
-<span class="fc" id="L254">    result</span>
-<span class="fc" id="L255">        .getPivotBlockHeader()</span>
-<span class="fc" id="L256">        .ifPresent(</span>
-<span class="fc" id="L257">            blockHeader -&gt; protocolContext.getWorldStateArchive().resetArchiveStateTo(blockHeader));</span>
-<span class="fc" id="L258">    LOG.info(</span>
+<span class="fc" id="L245">    fastSyncDownloader.ifPresent(FastSyncDownloader::deleteFastSyncState);</span>
+<span class="fc" id="L246">    result</span>
+<span class="fc" id="L247">        .getPivotBlockHeader()</span>
+<span class="fc" id="L248">        .ifPresent(</span>
+<span class="fc" id="L249">            blockHeader -&gt; protocolContext.getWorldStateArchive().resetArchiveStateTo(blockHeader));</span>
+<span class="fc" id="L250">    LOG.info(</span>
         &quot;Sync completed successfully with pivot block {}&quot;,
-<span class="fc" id="L260">        result.getPivotBlockNumber().getAsLong());</span>
-<span class="fc" id="L261">    pivotBlockSelector.close();</span>
-<span class="fc" id="L262">    syncState.markInitialSyncPhaseAsDone();</span>
+<span class="fc" id="L252">        result.getPivotBlockNumber().getAsLong());</span>
+<span class="fc" id="L253">    pivotBlockSelector.close();</span>
+<span class="fc" id="L254">    syncState.markInitialSyncPhaseAsDone();</span>
 
-<span class="pc bpc" id="L264" title="1 of 2 branches missed.">    if (terminationCondition.shouldContinueDownload()) {</span>
-<span class="fc" id="L265">      return startFullSync();</span>
+<span class="pc bpc" id="L256" title="1 of 2 branches missed.">    if (terminationCondition.shouldContinueDownload()) {</span>
+<span class="fc" id="L257">      return startFullSync();</span>
     } else {
-<span class="nc" id="L267">      syncState.setReachedTerminalDifficulty(true);</span>
-<span class="nc" id="L268">      return CompletableFuture.completedFuture(null);</span>
+<span class="nc" id="L259">      syncState.setReachedTerminalDifficulty(true);</span>
+<span class="nc" id="L260">      return CompletableFuture.completedFuture(null);</span>
     }
   }
 
   private CompletableFuture&lt;Void&gt; startFullSync() {
-<span class="fc" id="L273">    maybePruner.ifPresent(Pruner::start);</span>
-<span class="fc" id="L274">    return fullSyncDownloader</span>
-<span class="fc" id="L275">        .map(FullSyncDownloader::start)</span>
-<span class="fc" id="L276">        .orElse(CompletableFuture.completedFuture(null))</span>
-<span class="fc" id="L277">        .thenRun(</span>
+<span class="fc" id="L265">    return fullSyncDownloader</span>
+<span class="fc" id="L266">        .map(FullSyncDownloader::start)</span>
+<span class="fc" id="L267">        .orElse(CompletableFuture.completedFuture(null))</span>
+<span class="fc" id="L268">        .thenRun(</span>
             () -&gt; {
-<span class="nc bnc" id="L279" title="All 2 branches missed.">              if (terminationCondition.shouldStopDownload()) {</span>
-<span class="nc" id="L280">                syncState.setReachedTerminalDifficulty(true);</span>
+<span class="nc bnc" id="L270" title="All 2 branches missed.">              if (terminationCondition.shouldStopDownload()) {</span>
+<span class="nc" id="L271">                syncState.setReachedTerminalDifficulty(true);</span>
               }
-<span class="nc" id="L282">            });</span>
+<span class="nc" id="L273">            });</span>
   }
 
   @Override
   public Optional&lt;SyncStatus&gt; getSyncStatus() {
-<span class="pc bpc" id="L287" title="1 of 2 branches missed.">    if (!running.get()) {</span>
-<span class="nc" id="L288">      return Optional.empty();</span>
+<span class="pc bpc" id="L278" title="1 of 2 branches missed.">    if (!running.get()) {</span>
+<span class="nc" id="L279">      return Optional.empty();</span>
     }
-<span class="fc" id="L290">    return syncState.syncStatus();</span>
+<span class="fc" id="L281">    return syncState.syncStatus();</span>
   }
 
   @Override
   public boolean resyncWorldState() {
     // if sync is running currently, stop it and delete the fast sync state
-<span class="nc bnc" id="L296" title="All 4 branches missed.">    if (fastSyncDownloader.isPresent() &amp;&amp; running.get()) {</span>
-<span class="nc" id="L297">      stop();</span>
-<span class="nc" id="L298">      fastSyncDownloader.get().deleteFastSyncState();</span>
+<span class="nc bnc" id="L287" title="All 4 branches missed.">    if (fastSyncDownloader.isPresent() &amp;&amp; running.get()) {</span>
+<span class="nc" id="L288">      stop();</span>
+<span class="nc" id="L289">      fastSyncDownloader.get().deleteFastSyncState();</span>
     }
     // recreate fast sync with resync and start
-<span class="nc" id="L301">    this.syncState.markInitialSyncRestart();</span>
-<span class="nc" id="L302">    this.syncState.markResyncNeeded();</span>
-<span class="nc" id="L303">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
-<span class="nc" id="L304">    start();</span>
-<span class="nc" id="L305">    return true;</span>
+<span class="nc" id="L292">    this.syncState.markInitialSyncRestart();</span>
+<span class="nc" id="L293">    this.syncState.markResyncNeeded();</span>
+<span class="nc" id="L294">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
+<span class="nc" id="L295">    start();</span>
+<span class="nc" id="L296">    return true;</span>
   }
 
   @Override
   public boolean healWorldState(
       final Optional&lt;Address&gt; maybeAccountToRepair, final Bytes location) {
     // recreate fast sync with resync and start
-<span class="nc bnc" id="L312" title="All 4 branches missed.">    if (fastSyncDownloader.isPresent() &amp;&amp; running.get()) {</span>
-<span class="nc" id="L313">      stop();</span>
-<span class="nc" id="L314">      fastSyncDownloader.get().deleteFastSyncState();</span>
+<span class="nc bnc" id="L303" title="All 4 branches missed.">    if (fastSyncDownloader.isPresent() &amp;&amp; running.get()) {</span>
+<span class="nc" id="L304">      stop();</span>
+<span class="nc" id="L305">      fastSyncDownloader.get().deleteFastSyncState();</span>
     }
 
-<span class="nc" id="L317">    LOG.atDebug()</span>
-<span class="nc" id="L318">        .setMessage(&quot;heal stacktrace: \n{}&quot;)</span>
-<span class="nc" id="L319">        .addArgument(</span>
+<span class="nc" id="L308">    LOG.atDebug()</span>
+<span class="nc" id="L309">        .setMessage(&quot;heal stacktrace: \n{}&quot;)</span>
+<span class="nc" id="L310">        .addArgument(</span>
             () -&gt; {
-<span class="nc" id="L321">              var sw = new StringWriter();</span>
-<span class="nc" id="L322">              new Exception().printStackTrace(new PrintWriter(sw, true));</span>
-<span class="nc" id="L323">              return sw.toString();</span>
+<span class="nc" id="L312">              var sw = new StringWriter();</span>
+<span class="nc" id="L313">              new Exception().printStackTrace(new PrintWriter(sw, true));</span>
+<span class="nc" id="L314">              return sw.toString();</span>
             })
-<span class="nc" id="L325">        .log();</span>
+<span class="nc" id="L316">        .log();</span>
 
-<span class="nc" id="L327">    final List&lt;String&gt; lines = new ArrayList&lt;&gt;();</span>
-<span class="nc" id="L328">    lines.add(&quot;Besu has identified a problem with its worldstate database.&quot;);</span>
-<span class="nc" id="L329">    lines.add(&quot;Your node will fetch the correct data from peers to repair the problem.&quot;);</span>
-<span class="nc" id="L330">    lines.add(&quot;Starting the sync pipeline...&quot;);</span>
-<span class="nc" id="L331">    LOG.atInfo().setMessage(FramedLogMessage.generate(lines)).log();</span>
+<span class="nc" id="L318">    final List&lt;String&gt; lines = new ArrayList&lt;&gt;();</span>
+<span class="nc" id="L319">    lines.add(&quot;Besu has identified a problem with its worldstate database.&quot;);</span>
+<span class="nc" id="L320">    lines.add(&quot;Your node will fetch the correct data from peers to repair the problem.&quot;);</span>
+<span class="nc" id="L321">    lines.add(&quot;Starting the sync pipeline...&quot;);</span>
+<span class="nc" id="L322">    LOG.atInfo().setMessage(FramedLogMessage.generate(lines)).log();</span>
 
-<span class="nc" id="L333">    this.syncState.markInitialSyncRestart();</span>
-<span class="nc" id="L334">    this.syncState.markResyncNeeded();</span>
-<span class="nc" id="L335">    maybeAccountToRepair.ifPresent(</span>
+<span class="nc" id="L324">    this.syncState.markInitialSyncRestart();</span>
+<span class="nc" id="L325">    this.syncState.markResyncNeeded();</span>
+<span class="nc" id="L326">    maybeAccountToRepair.ifPresent(</span>
         address -&gt; {
-<span class="nc bnc" id="L337" title="All 2 branches missed.">          if (this.protocolContext.getWorldStateArchive() instanceof BonsaiWorldStateProvider) {</span>
-<span class="nc" id="L338">            ((BonsaiWorldStateProvider) this.protocolContext.getWorldStateArchive())</span>
-<span class="nc" id="L339">                .prepareStateHealing(</span>
-<span class="nc" id="L340">                    org.hyperledger.besu.datatypes.Address.wrap(address), location);</span>
+<span class="nc bnc" id="L328" title="All 2 branches missed.">          if (this.protocolContext.getWorldStateArchive() instanceof BonsaiWorldStateProvider) {</span>
+<span class="nc" id="L329">            ((BonsaiWorldStateProvider) this.protocolContext.getWorldStateArchive())</span>
+<span class="nc" id="L330">                .prepareStateHealing(</span>
+<span class="nc" id="L331">                    org.hyperledger.besu.datatypes.Address.wrap(address), location);</span>
           }
-<span class="nc" id="L342">          this.syncState.markAccountToRepair(maybeAccountToRepair);</span>
-<span class="nc" id="L343">        });</span>
-<span class="nc" id="L344">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
-<span class="nc" id="L345">    start();</span>
-<span class="nc" id="L346">    return true;</span>
+<span class="nc" id="L333">          this.syncState.markAccountToRepair(maybeAccountToRepair);</span>
+<span class="nc" id="L334">        });</span>
+<span class="nc" id="L335">    this.fastSyncDownloader = this.fastSyncFactory.get();</span>
+<span class="nc" id="L336">    start();</span>
+<span class="nc" id="L337">    return true;</span>
   }
 
   @Override
   public long subscribeSyncStatus(final SyncStatusListener listener) {
-<span class="fc" id="L351">    checkNotNull(listener);</span>
-<span class="fc" id="L352">    return syncState.subscribeSyncStatus(listener);</span>
+<span class="fc" id="L342">    checkNotNull(listener);</span>
+<span class="fc" id="L343">    return syncState.subscribeSyncStatus(listener);</span>
   }
 
   @Override
   public boolean unsubscribeSyncStatus(final long subscriberId) {
-<span class="nc" id="L357">    return syncState.unsubscribeSyncStatus(subscriberId);</span>
+<span class="nc" id="L348">    return syncState.unsubscribeSyncStatus(subscriberId);</span>
   }
 
   @Override
   public long subscribeInSync(final InSyncListener listener) {
-<span class="nc" id="L362">    return syncState.subscribeInSync(listener);</span>
+<span class="nc" id="L353">    return syncState.subscribeInSync(listener);</span>
   }
 
   @Override
   public long subscribeInSync(final InSyncListener listener, final long syncTolerance) {
-<span class="nc" id="L367">    return syncState.subscribeInSync(listener, syncTolerance);</span>
+<span class="nc" id="L358">    return syncState.subscribeInSync(listener, syncTolerance);</span>
   }
 
   @Override
   public boolean unsubscribeInSync(final long listenerId) {
-<span class="nc" id="L372">    return syncState.unsubscribeSyncStatus(listenerId);</span>
+<span class="nc" id="L363">    return syncState.unsubscribeSyncStatus(listenerId);</span>
+  }
+
+  public long subscribeInitialSync(final BesuEvents.InitialSyncCompletionListener listener) {
+<span class="fc" id="L367">    return syncState.subscribeCompletionReached(listener);</span>
+  }
+
+  public boolean unsubscribeInitialSync(final long listenerId) {
+<span class="nc" id="L371">    return syncState.unsubscribeInitialConditionReached(listenerId);</span>
   }
 
   private Void finalizeSync(final Void unused) {
-<span class="nc" id="L376">    LOG.info(&quot;Stopping block propagation.&quot;);</span>
-<span class="nc" id="L377">    blockPropagationManager.ifPresent(BlockPropagationManager::stop);</span>
-<span class="nc" id="L378">    LOG.info(&quot;Stopping the pruner.&quot;);</span>
-<span class="nc" id="L379">    maybePruner.ifPresent(Pruner::stop);</span>
-<span class="nc" id="L380">    running.set(false);</span>
-<span class="nc" id="L381">    return null;</span>
+<span class="nc" id="L375">    LOG.info(&quot;Stopping block propagation.&quot;);</span>
+<span class="nc" id="L376">    blockPropagationManager.ifPresent(BlockPropagationManager::stop);</span>
+<span class="nc" id="L377">    LOG.info(&quot;Stopping the pruner.&quot;);</span>
+<span class="nc" id="L378">    running.set(false);</span>
+<span class="nc" id="L379">    return null;</span>
   }
 
   @Override
   public void onNewUnverifiedForkchoice(final ForkchoiceEvent event) {
-<span class="nc bnc" id="L386" title="All 2 branches missed.">    if (this.blockPropagationManager.isPresent()) {</span>
-<span class="nc" id="L387">      this.blockPropagationManager.get().onNewUnverifiedForkchoice(event);</span>
+<span class="nc bnc" id="L384" title="All 2 branches missed.">    if (this.blockPropagationManager.isPresent()) {</span>
+<span class="nc" id="L385">      this.blockPropagationManager.get().onNewUnverifiedForkchoice(event);</span>
     }
-<span class="nc" id="L389">  }</span>
+<span class="nc" id="L387">  }</span>
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

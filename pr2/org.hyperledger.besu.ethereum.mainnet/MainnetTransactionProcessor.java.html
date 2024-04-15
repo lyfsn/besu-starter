@@ -400,7 +400,7 @@ public class MainnetTransactionProcessor {
 <span class="fc" id="L400">                .address(contractAddress)</span>
 <span class="fc" id="L401">                .contract(contractAddress)</span>
 <span class="fc" id="L402">                .inputData(Bytes.EMPTY)</span>
-<span class="fc" id="L403">                .code(contractCreationProcessor.getCodeFromEVM(null, initCodeBytes))</span>
+<span class="fc" id="L403">                .code(contractCreationProcessor.getCodeFromEVMUncached(initCodeBytes))</span>
 <span class="fc" id="L404">                .build();</span>
 <span class="fc" id="L405">      } else {</span>
         @SuppressWarnings(&quot;OptionalGetWithoutIsPresent&quot;) // isContractCall tests isPresent
@@ -513,57 +513,69 @@ public class MainnetTransactionProcessor {
 <span class="fc" id="L513">            initialFrame.getOutputData(),</span>
             validationResult);
       } else {
-<span class="fc" id="L516">        return TransactionProcessingResult.failed(</span>
-<span class="fc" id="L517">            gasUsedByTransaction, refundedGas, validationResult, initialFrame.getRevertReason());</span>
+<span class="fc bfc" id="L516" title="All 2 branches covered.">        if (initialFrame.getExceptionalHaltReason().isPresent()) {</span>
+<span class="fc" id="L517">          LOG.debug(</span>
+              &quot;Transaction {} processing halted: {}&quot;,
+<span class="fc" id="L519">              transaction.getHash(),</span>
+<span class="fc" id="L520">              initialFrame.getExceptionalHaltReason().get());</span>
+        }
+<span class="fc bfc" id="L522" title="All 2 branches covered.">        if (initialFrame.getRevertReason().isPresent()) {</span>
+<span class="fc" id="L523">          LOG.debug(</span>
+              &quot;Transaction {} reverted: {}&quot;,
+<span class="fc" id="L525">              transaction.getHash(),</span>
+<span class="fc" id="L526">              initialFrame.getRevertReason().get());</span>
+        }
+<span class="fc" id="L528">        return TransactionProcessingResult.failed(</span>
+<span class="fc" id="L529">            gasUsedByTransaction, refundedGas, validationResult, initialFrame.getRevertReason());</span>
       }
-<span class="fc" id="L519">    } catch (final MerkleTrieException re) {</span>
-<span class="fc" id="L520">      operationTracer.traceEndTransaction(</span>
-<span class="fc" id="L521">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
+<span class="fc" id="L531">    } catch (final MerkleTrieException re) {</span>
+<span class="fc" id="L532">      operationTracer.traceEndTransaction(</span>
+<span class="fc" id="L533">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
 
       // need to throw to trigger the heal
-<span class="fc" id="L524">      throw re;</span>
-<span class="fc" id="L525">    } catch (final RuntimeException re) {</span>
-<span class="fc" id="L526">      operationTracer.traceEndTransaction(</span>
-<span class="fc" id="L527">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
+<span class="fc" id="L536">      throw re;</span>
+<span class="fc" id="L537">    } catch (final RuntimeException re) {</span>
+<span class="fc" id="L538">      operationTracer.traceEndTransaction(</span>
+<span class="fc" id="L539">          worldState.updater(), transaction, false, Bytes.EMPTY, List.of(), 0, 0L);</span>
 
-<span class="fc" id="L529">      LOG.error(&quot;Critical Exception Processing Transaction&quot;, re);</span>
-<span class="fc" id="L530">      return TransactionProcessingResult.invalid(</span>
-<span class="fc" id="L531">          ValidationResult.invalid(</span>
+<span class="fc" id="L541">      LOG.error(&quot;Critical Exception Processing Transaction&quot;, re);</span>
+<span class="fc" id="L542">      return TransactionProcessingResult.invalid(</span>
+<span class="fc" id="L543">          ValidationResult.invalid(</span>
               TransactionInvalidReason.INTERNAL_ERROR,
-<span class="fc" id="L533">              &quot;Internal Error in Besu - &quot; + re + &quot;\n&quot; + printableStackTraceFromThrowable(re)));</span>
+<span class="fc" id="L545">              &quot;Internal Error in Besu - &quot; + re + &quot;\n&quot; + printableStackTraceFromThrowable(re)));</span>
     }
   }
 
   public void process(final MessageFrame frame, final OperationTracer operationTracer) {
-<span class="fc" id="L538">    final AbstractMessageProcessor executor = getMessageProcessor(frame.getType());</span>
+<span class="fc" id="L550">    final AbstractMessageProcessor executor = getMessageProcessor(frame.getType());</span>
 
-<span class="fc" id="L540">    executor.process(frame, operationTracer);</span>
-<span class="fc" id="L541">  }</span>
+<span class="fc" id="L552">    executor.process(frame, operationTracer);</span>
+<span class="fc" id="L553">  }</span>
 
   private AbstractMessageProcessor getMessageProcessor(final MessageFrame.Type type) {
-<span class="pc bpc" id="L544" title="1 of 3 branches missed.">    return switch (type) {</span>
-<span class="fc" id="L545">      case MESSAGE_CALL -&gt; messageCallProcessor;</span>
-<span class="fc" id="L546">      case CONTRACT_CREATION -&gt; contractCreationProcessor;</span>
+<span class="pc bpc" id="L556" title="1 of 3 branches missed.">    return switch (type) {</span>
+<span class="fc" id="L557">      case MESSAGE_CALL -&gt; messageCallProcessor;</span>
+<span class="fc" id="L558">      case CONTRACT_CREATION -&gt; contractCreationProcessor;</span>
     };
   }
 
   protected long refunded(
       final Transaction transaction, final long gasRemaining, final long gasRefund) {
     // Integer truncation takes care of the floor calculation needed after the divide.
-<span class="fc" id="L553">    final long maxRefundAllowance =</span>
-<span class="fc" id="L554">        (transaction.getGasLimit() - gasRemaining) / gasCalculator.getMaxRefundQuotient();</span>
-<span class="fc" id="L555">    final long refundAllowance = Math.min(maxRefundAllowance, gasRefund);</span>
-<span class="fc" id="L556">    return gasRemaining + refundAllowance;</span>
+<span class="fc" id="L565">    final long maxRefundAllowance =</span>
+<span class="fc" id="L566">        (transaction.getGasLimit() - gasRemaining) / gasCalculator.getMaxRefundQuotient();</span>
+<span class="fc" id="L567">    final long refundAllowance = Math.min(maxRefundAllowance, gasRefund);</span>
+<span class="fc" id="L568">    return gasRemaining + refundAllowance;</span>
   }
 
   private String printableStackTraceFromThrowable(final RuntimeException re) {
-<span class="fc" id="L560">    final StringBuilder builder = new StringBuilder();</span>
+<span class="fc" id="L572">    final StringBuilder builder = new StringBuilder();</span>
 
-<span class="fc bfc" id="L562" title="All 2 branches covered.">    for (final StackTraceElement stackTraceElement : re.getStackTrace()) {</span>
-<span class="fc" id="L563">      builder.append(&quot;\tat &quot;).append(stackTraceElement.toString()).append(&quot;\n&quot;);</span>
+<span class="fc bfc" id="L574" title="All 2 branches covered.">    for (final StackTraceElement stackTraceElement : re.getStackTrace()) {</span>
+<span class="fc" id="L575">      builder.append(&quot;\tat &quot;).append(stackTraceElement.toString()).append(&quot;\n&quot;);</span>
     }
 
-<span class="fc" id="L566">    return builder.toString();</span>
+<span class="fc" id="L578">    return builder.toString();</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

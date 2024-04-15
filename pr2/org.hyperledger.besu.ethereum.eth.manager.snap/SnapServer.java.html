@@ -14,67 +14,636 @@
  */
 package org.hyperledger.besu.ethereum.eth.manager.snap;
 
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.ProtocolContext;
 import org.hyperledger.besu.ethereum.eth.manager.EthMessages;
 import org.hyperledger.besu.ethereum.eth.messages.snap.AccountRangeMessage;
 import org.hyperledger.besu.ethereum.eth.messages.snap.ByteCodesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetAccountRangeMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetByteCodesMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetStorageRangeMessage;
+import org.hyperledger.besu.ethereum.eth.messages.snap.GetTrieNodesMessage;
 import org.hyperledger.besu.ethereum.eth.messages.snap.SnapV1;
 import org.hyperledger.besu.ethereum.eth.messages.snap.StorageRangeMessage;
 import org.hyperledger.besu.ethereum.eth.messages.snap.TrieNodesMessage;
+import org.hyperledger.besu.ethereum.eth.sync.DefaultSynchronizer;
+import org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncConfiguration;
 import org.hyperledger.besu.ethereum.p2p.rlpx.wire.MessageData;
-import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.rlp.BytesValueRLPOutput;
+import org.hyperledger.besu.ethereum.trie.CompactEncoding;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.BonsaiWorldStateProvider;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.plugin.services.BesuEvents;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
+import com.google.common.annotations.VisibleForTesting;
+import kotlin.Pair;
 import kotlin.collections.ArrayDeque;
+import org.apache.commons.lang3.time.StopWatch;
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@SuppressWarnings(&quot;unused&quot;)
-class SnapServer {
+/** See https://github.com/ethereum/devp2p/blob/master/caps/snap.md */
+class SnapServer implements BesuEvents.InitialSyncCompletionListener {
+<span class="fc" id="L67">  private static final Logger LOGGER = LoggerFactory.getLogger(SnapServer.class);</span>
+  private static final int PRIME_STATE_ROOT_CACHE_LIMIT = 128;
+  private static final int MAX_ENTRIES_PER_REQUEST = 100000;
+  private static final int MAX_RESPONSE_SIZE = 2 * 1024 * 1024;
+  private static final int MAX_CODE_LOOKUPS_PER_REQUEST = 1024;
+  private static final int MAX_TRIE_LOOKUPS_PER_REQUEST = 1024;
+<span class="fc" id="L73">  private static final AccountRangeMessage EMPTY_ACCOUNT_RANGE =</span>
+<span class="fc" id="L74">      AccountRangeMessage.create(new HashMap&lt;&gt;(), new ArrayDeque&lt;&gt;());</span>
+<span class="fc" id="L75">  private static final StorageRangeMessage EMPTY_STORAGE_RANGE =</span>
+<span class="fc" id="L76">      StorageRangeMessage.create(new ArrayDeque&lt;&gt;(), Collections.emptyList());</span>
+<span class="fc" id="L77">  private static final TrieNodesMessage EMPTY_TRIE_NODES_MESSAGE =</span>
+<span class="fc" id="L78">      TrieNodesMessage.create(new ArrayList&lt;&gt;());</span>
+<span class="fc" id="L79">  private static final ByteCodesMessage EMPTY_BYTE_CODES_MESSAGE =</span>
+<span class="fc" id="L80">      ByteCodesMessage.create(new ArrayDeque&lt;&gt;());</span>
 
+<span class="fc" id="L82">  static final Hash HASH_LAST = Hash.wrap(Bytes32.leftPad(Bytes.fromHexString(&quot;FF&quot;), (byte) 0xFF));</span>
+
+<span class="fc" id="L84">  private final AtomicBoolean isStarted = new AtomicBoolean(false);</span>
+<span class="fc" id="L85">  private final AtomicLong listenerId = new AtomicLong();</span>
   private final EthMessages snapMessages;
-  private final WorldStateArchive worldStateArchive;
 
-<span class="fc" id="L36">  SnapServer(final EthMessages snapMessages, final WorldStateArchive worldStateArchive) {</span>
-<span class="fc" id="L37">    this.snapMessages = snapMessages;</span>
-<span class="fc" id="L38">    this.worldStateArchive = worldStateArchive;</span>
-<span class="fc" id="L39">    this.registerResponseConstructors();</span>
-<span class="fc" id="L40">  }</span>
+  private final WorldStateStorageCoordinator worldStateStorageCoordinator;
+  private final Optional&lt;ProtocolContext&gt; protocolContext;
+
+  // whether snap server is enabled
+  private final boolean snapServerEnabled;
+
+  // provide worldstate storage by root hash
+<span class="fc" id="L95">  private Function&lt;Hash, Optional&lt;BonsaiWorldStateKeyValueStorage&gt;&gt; worldStateStorageProvider =</span>
+<span class="nc" id="L96">      __ -&gt; Optional.empty();</span>
+
+  SnapServer(
+      final SnapSyncConfiguration snapConfig,
+      final EthMessages snapMessages,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+<span class="fc" id="L102">      final ProtocolContext protocolContext) {</span>
+<span class="fc" id="L103">    this.snapServerEnabled =</span>
+<span class="fc" id="L104">        Optional.ofNullable(snapConfig)</span>
+<span class="fc" id="L105">            .map(SnapSyncConfiguration::isSnapServerEnabled)</span>
+<span class="fc" id="L106">            .orElse(false);</span>
+<span class="fc" id="L107">    this.snapMessages = snapMessages;</span>
+<span class="fc" id="L108">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L109">    this.protocolContext = Optional.of(protocolContext);</span>
+<span class="fc" id="L110">    registerResponseConstructors();</span>
+
+    // subscribe to initial sync completed events to start/stop snap server:
+<span class="fc" id="L113">    this.protocolContext</span>
+<span class="fc" id="L114">        .flatMap(ProtocolContext::getSynchronizer)</span>
+<span class="fc" id="L115">        .filter(z -&gt; z instanceof DefaultSynchronizer)</span>
+<span class="fc" id="L116">        .map(DefaultSynchronizer.class::cast)</span>
+<span class="fc" id="L117">        .ifPresentOrElse(</span>
+<span class="fc" id="L118">            z -&gt; this.listenerId.set(z.subscribeInitialSync(this)),</span>
+<span class="nc" id="L119">            () -&gt; LOGGER.warn(&quot;SnapServer created without reference to sync status&quot;));</span>
+<span class="fc" id="L120">  }</span>
+
+  /**
+   * Create a snap server without registering a listener for worldstate initial sync events or
+   * priming worldstates by root hash. Used by unit tests.
+   */
+  @VisibleForTesting
+  SnapServer(
+      final EthMessages snapMessages,
+      final WorldStateStorageCoordinator worldStateStorageCoordinator,
+<span class="fc" id="L130">      final Function&lt;Hash, Optional&lt;BonsaiWorldStateKeyValueStorage&gt;&gt; worldStateStorageProvider) {</span>
+<span class="fc" id="L131">    this.snapServerEnabled = true;</span>
+<span class="fc" id="L132">    this.snapMessages = snapMessages;</span>
+<span class="fc" id="L133">    this.worldStateStorageCoordinator = worldStateStorageCoordinator;</span>
+<span class="fc" id="L134">    this.worldStateStorageProvider = worldStateStorageProvider;</span>
+<span class="fc" id="L135">    this.protocolContext = Optional.empty();</span>
+<span class="fc" id="L136">  }</span>
+
+  @Override
+  public void onInitialSyncCompleted() {
+<span class="fc" id="L140">    start();</span>
+<span class="fc" id="L141">  }</span>
+
+  @Override
+  public void onInitialSyncRestart() {
+<span class="nc" id="L145">    stop();</span>
+<span class="nc" id="L146">  }</span>
+
+  public synchronized SnapServer start() {
+<span class="fc bfc" id="L149" title="All 4 branches covered.">    if (!isStarted.get() &amp;&amp; snapServerEnabled) {</span>
+      // if we are bonsai and full flat, we can provide a worldstate storage:
+<span class="fc" id="L151">      var worldStateKeyValueStorage = worldStateStorageCoordinator.worldStateKeyValueStorage();</span>
+<span class="pc bpc" id="L152" title="1 of 2 branches missed.">      if (worldStateKeyValueStorage.getDataStorageFormat().equals(DataStorageFormat.BONSAI)</span>
+<span class="pc bpc" id="L153" title="1 of 2 branches missed.">          &amp;&amp; worldStateStorageCoordinator.isMatchingFlatMode(FlatDbMode.FULL)) {</span>
+<span class="fc" id="L154">        LOGGER.debug(&quot;Starting SnapServer with Bonsai full flat db&quot;);</span>
+<span class="fc" id="L155">        var bonsaiArchive =</span>
+            protocolContext
+<span class="fc" id="L157">                .map(ProtocolContext::getWorldStateArchive)</span>
+<span class="fc" id="L158">                .map(BonsaiWorldStateProvider.class::cast);</span>
+<span class="fc" id="L159">        var cachedStorageManagerOpt =</span>
+<span class="pc" id="L160">            bonsaiArchive.map(archive -&gt; archive.getCachedWorldStorageManager());</span>
+
+<span class="pc bpc" id="L162" title="1 of 2 branches missed.">        if (cachedStorageManagerOpt.isPresent()) {</span>
+<span class="nc" id="L163">          var cachedStorageManager = cachedStorageManagerOpt.get();</span>
+<span class="nc" id="L164">          this.worldStateStorageProvider =</span>
+              rootHash -&gt;
+<span class="nc" id="L166">                  cachedStorageManager</span>
+<span class="nc" id="L167">                      .getStorageByRootHash(rootHash)</span>
+<span class="nc" id="L168">                      .map(BonsaiWorldStateKeyValueStorage.class::cast);</span>
+
+          // when we start we need to build the cache of latest 128 worldstates
+          // trielogs-to-root-hash:
+<span class="nc" id="L172">          var blockchain = protocolContext.map(ProtocolContext::getBlockchain).orElse(null);</span>
+
+          // at startup, prime the latest worldstates by roothash:
+<span class="nc" id="L175">          cachedStorageManager.primeRootToBlockHashCache(blockchain, PRIME_STATE_ROOT_CACHE_LIMIT);</span>
+
+<span class="nc" id="L177">          var flatDbStrategy =</span>
+              ((BonsaiWorldStateKeyValueStorage)
+<span class="nc" id="L179">                      worldStateStorageCoordinator.worldStateKeyValueStorage())</span>
+<span class="nc" id="L180">                  .getFlatDbStrategy();</span>
+<span class="nc bnc" id="L181" title="All 2 branches missed.">          if (!flatDbStrategy.isCodeByCodeHash()) {</span>
+<span class="nc" id="L182">            LOGGER.warn(&quot;SnapServer requires code stored by codehash, but it is not enabled&quot;);</span>
+          }
+<span class="nc" id="L184">        } else {</span>
+<span class="fc" id="L185">          LOGGER.warn(</span>
+              &quot;SnapServer started without cached storage manager, this should only happen in tests&quot;);
+        }
+<span class="fc" id="L188">        isStarted.set(true);</span>
+      }
+    }
+<span class="fc" id="L191">    return this;</span>
+  }
+
+  public synchronized SnapServer stop() {
+<span class="fc" id="L195">    isStarted.set(false);</span>
+<span class="fc" id="L196">    return this;</span>
+  }
 
   private void registerResponseConstructors() {
-<span class="fc" id="L43">    snapMessages.registerResponseConstructor(</span>
-        SnapV1.GET_ACCOUNT_RANGE,
-<span class="nc" id="L45">        messageData -&gt; constructGetAccountRangeResponse(worldStateArchive, messageData));</span>
-<span class="fc" id="L46">    snapMessages.registerResponseConstructor(</span>
-        SnapV1.GET_STORAGE_RANGE,
-<span class="nc" id="L48">        messageData -&gt; constructGetStorageRangeResponse(worldStateArchive, messageData));</span>
-<span class="fc" id="L49">    snapMessages.registerResponseConstructor(</span>
-        SnapV1.GET_BYTECODES,
-<span class="nc" id="L51">        messageData -&gt; constructGetBytecodesResponse(worldStateArchive, messageData));</span>
-<span class="fc" id="L52">    snapMessages.registerResponseConstructor(</span>
-        SnapV1.GET_TRIE_NODES,
-<span class="nc" id="L54">        messageData -&gt; constructGetTrieNodesResponse(worldStateArchive, messageData));</span>
-<span class="fc" id="L55">  }</span>
+<span class="fc" id="L200">    snapMessages.registerResponseConstructor(</span>
+<span class="nc" id="L201">        SnapV1.GET_ACCOUNT_RANGE, messageData -&gt; constructGetAccountRangeResponse(messageData));</span>
+<span class="fc" id="L202">    snapMessages.registerResponseConstructor(</span>
+<span class="nc" id="L203">        SnapV1.GET_STORAGE_RANGE, messageData -&gt; constructGetStorageRangeResponse(messageData));</span>
+<span class="fc" id="L204">    snapMessages.registerResponseConstructor(</span>
+<span class="nc" id="L205">        SnapV1.GET_BYTECODES, messageData -&gt; constructGetBytecodesResponse(messageData));</span>
+<span class="fc" id="L206">    snapMessages.registerResponseConstructor(</span>
+<span class="nc" id="L207">        SnapV1.GET_TRIE_NODES, messageData -&gt; constructGetTrieNodesResponse(messageData));</span>
+<span class="fc" id="L208">  }</span>
 
-  private MessageData constructGetAccountRangeResponse(
-      final WorldStateArchive worldStateArchive, final MessageData message) {
-    // TODO implement
-<span class="nc" id="L60">    return AccountRangeMessage.create(new HashMap&lt;&gt;(), new ArrayDeque&lt;&gt;());</span>
+  MessageData constructGetAccountRangeResponse(final MessageData message) {
+<span class="fc bfc" id="L211" title="All 2 branches covered.">    if (!isStarted.get()) {</span>
+<span class="fc" id="L212">      return EMPTY_ACCOUNT_RANGE;</span>
+    }
+<span class="fc" id="L214">    StopWatch stopWatch = StopWatch.createStarted();</span>
+
+<span class="fc" id="L216">    final GetAccountRangeMessage getAccountRangeMessage = GetAccountRangeMessage.readFrom(message);</span>
+<span class="fc" id="L217">    final GetAccountRangeMessage.Range range = getAccountRangeMessage.range(true);</span>
+<span class="fc" id="L218">    final int maxResponseBytes = Math.min(range.responseBytes().intValue(), MAX_RESPONSE_SIZE);</span>
+
+<span class="fc" id="L220">    LOGGER</span>
+<span class="fc" id="L221">        .atTrace()</span>
+<span class="fc" id="L222">        .setMessage(&quot;Received getAccountRangeMessage for {} from {} to {}&quot;)</span>
+<span class="pc" id="L223">        .addArgument(() -&gt; asLogHash(range.worldStateRootHash()))</span>
+<span class="pc" id="L224">        .addArgument(() -&gt; asLogHash(range.startKeyHash()))</span>
+<span class="pc" id="L225">        .addArgument(() -&gt; asLogHash(range.endKeyHash()))</span>
+<span class="fc" id="L226">        .log();</span>
+    try {
+<span class="fc" id="L228">      return worldStateStorageProvider</span>
+<span class="fc" id="L229">          .apply(range.worldStateRootHash())</span>
+<span class="fc" id="L230">          .map(</span>
+              storage -&gt; {
+<span class="fc" id="L232">                LOGGER.trace(&quot;obtained worldstate in {}&quot;, stopWatch);</span>
+<span class="fc" id="L233">                StatefulPredicate shouldContinuePredicate =</span>
+                    new StatefulPredicate(
+                        &quot;account&quot;,
+                        stopWatch,
+                        maxResponseBytes,
+                        (pair) -&gt; {
+<span class="fc" id="L239">                          var rlpOutput = new BytesValueRLPOutput();</span>
+<span class="fc" id="L240">                          rlpOutput.startList();</span>
+<span class="fc" id="L241">                          rlpOutput.writeBytes(pair.getFirst());</span>
+<span class="fc" id="L242">                          rlpOutput.writeRLPBytes(pair.getSecond());</span>
+<span class="fc" id="L243">                          rlpOutput.endList();</span>
+<span class="fc" id="L244">                          return rlpOutput.encodedSize();</span>
+                        });
+
+<span class="fc" id="L247">                NavigableMap&lt;Bytes32, Bytes&gt; accounts =</span>
+<span class="fc" id="L248">                    storage.streamFlatAccounts(</span>
+<span class="fc" id="L249">                        range.startKeyHash(), range.endKeyHash(), shouldContinuePredicate);</span>
+
+<span class="pc bpc" id="L251" title="1 of 4 branches missed.">                if (accounts.isEmpty() &amp;&amp; shouldContinuePredicate.shouldContinue.get()) {</span>
+                  // fetch next account after range, if it exists
+<span class="fc" id="L253">                  LOGGER.debug(</span>
+                      &quot;found no accounts in range, taking first value starting from {}&quot;,
+<span class="fc" id="L255">                      asLogHash(range.endKeyHash()));</span>
+<span class="fc" id="L256">                  accounts = storage.streamFlatAccounts(range.endKeyHash(), UInt256.MAX_VALUE, 1L);</span>
+                }
+
+<span class="fc" id="L259">                final var worldStateProof =</span>
+                    new WorldStateProofProvider(new WorldStateStorageCoordinator(storage));
+<span class="fc" id="L261">                final List&lt;Bytes&gt; proof =</span>
+<span class="fc" id="L262">                    worldStateProof.getAccountProofRelatedNodes(</span>
+<span class="fc" id="L263">                        range.worldStateRootHash(), Hash.wrap(range.startKeyHash()));</span>
+
+<span class="fc bfc" id="L265" title="All 2 branches covered.">                if (!accounts.isEmpty()) {</span>
+<span class="fc" id="L266">                  proof.addAll(</span>
+<span class="fc" id="L267">                      worldStateProof.getAccountProofRelatedNodes(</span>
+<span class="fc" id="L268">                          range.worldStateRootHash(), Hash.wrap(accounts.lastKey())));</span>
+                }
+<span class="fc" id="L270">                var resp = AccountRangeMessage.create(accounts, proof);</span>
+<span class="fc bfc" id="L271" title="All 2 branches covered.">                if (accounts.isEmpty()) {</span>
+<span class="fc" id="L272">                  LOGGER.debug(</span>
+                      &quot;returned empty account range message for {} to  {}, proof count {}&quot;,
+<span class="fc" id="L274">                      asLogHash(range.startKeyHash()),</span>
+<span class="fc" id="L275">                      asLogHash(range.endKeyHash()),</span>
+<span class="fc" id="L276">                      proof.size());</span>
+                }
+<span class="fc" id="L278">                LOGGER.debug(</span>
+                    &quot;returned in {} account range {} to {} with {} accounts and {} proofs, resp size {} of max {}&quot;,
+                    stopWatch,
+<span class="fc" id="L281">                    asLogHash(range.startKeyHash()),</span>
+<span class="fc" id="L282">                    asLogHash(range.endKeyHash()),</span>
+<span class="fc" id="L283">                    accounts.size(),</span>
+<span class="fc" id="L284">                    proof.size(),</span>
+<span class="fc" id="L285">                    resp.getSize(),</span>
+<span class="fc" id="L286">                    maxResponseBytes);</span>
+<span class="fc" id="L287">                return resp;</span>
+              })
+<span class="fc" id="L289">          .orElseGet(</span>
+              () -&gt; {
+<span class="nc" id="L291">                LOGGER.debug(&quot;returned empty account range due to worldstate not present&quot;);</span>
+<span class="nc" id="L292">                return EMPTY_ACCOUNT_RANGE;</span>
+              });
+<span class="nc" id="L294">    } catch (Exception ex) {</span>
+<span class="nc" id="L295">      LOGGER.error(&quot;Unexpected exception serving account range request&quot;, ex);</span>
+    }
+<span class="nc" id="L297">    return EMPTY_ACCOUNT_RANGE;</span>
   }
 
-  private MessageData constructGetStorageRangeResponse(
-      final WorldStateArchive worldStateArchive, final MessageData message) {
-    // TODO implement
-<span class="nc" id="L66">    return StorageRangeMessage.create(new ArrayDeque&lt;&gt;(), new ArrayDeque&lt;&gt;());</span>
+  MessageData constructGetStorageRangeResponse(final MessageData message) {
+<span class="fc bfc" id="L301" title="All 2 branches covered.">    if (!isStarted.get()) {</span>
+<span class="fc" id="L302">      return EMPTY_STORAGE_RANGE;</span>
+    }
+<span class="fc" id="L304">    StopWatch stopWatch = StopWatch.createStarted();</span>
+
+<span class="fc" id="L306">    final GetStorageRangeMessage getStorageRangeMessage = GetStorageRangeMessage.readFrom(message);</span>
+<span class="fc" id="L307">    final GetStorageRangeMessage.StorageRange range = getStorageRangeMessage.range(true);</span>
+<span class="fc" id="L308">    final int maxResponseBytes = Math.min(range.responseBytes().intValue(), MAX_RESPONSE_SIZE);</span>
+
+<span class="fc" id="L310">    LOGGER</span>
+<span class="fc" id="L311">        .atTrace()</span>
+<span class="fc" id="L312">        .setMessage(&quot;Receive get storage range message size {} from {} to {} for {}&quot;)</span>
+<span class="fc" id="L313">        .addArgument(message::getSize)</span>
+<span class="pc" id="L314">        .addArgument(() -&gt; asLogHash(range.startKeyHash()))</span>
+<span class="fc" id="L315">        .addArgument(</span>
+<span class="nc" id="L316">            () -&gt; Optional.ofNullable(range.endKeyHash()).map(SnapServer::asLogHash).orElse(&quot;''&quot;))</span>
+<span class="fc" id="L317">        .addArgument(</span>
+            () -&gt;
+<span class="nc" id="L319">                range.hashes().stream()</span>
+<span class="nc" id="L320">                    .map(SnapServer::asLogHash)</span>
+<span class="nc" id="L321">                    .collect(Collectors.joining(&quot;,&quot;, &quot;[&quot;, &quot;]&quot;)))</span>
+<span class="fc" id="L322">        .log();</span>
+    try {
+<span class="fc" id="L324">      return worldStateStorageProvider</span>
+<span class="fc" id="L325">          .apply(range.worldStateRootHash())</span>
+<span class="fc" id="L326">          .map(</span>
+              storage -&gt; {
+<span class="fc" id="L328">                LOGGER.trace(&quot;obtained worldstate in {}&quot;, stopWatch);</span>
+                // reusable predicate to limit by rec count and bytes:
+<span class="fc" id="L330">                var statefulPredicate =</span>
+                    new StatefulPredicate(
+                        &quot;storage&quot;,
+                        stopWatch,
+                        maxResponseBytes,
+                        (pair) -&gt; {
+<span class="fc" id="L336">                          var slotRlpOutput = new BytesValueRLPOutput();</span>
+<span class="fc" id="L337">                          slotRlpOutput.startList();</span>
+<span class="fc" id="L338">                          slotRlpOutput.writeBytes(pair.getFirst());</span>
+<span class="fc" id="L339">                          slotRlpOutput.writeBytes(pair.getSecond());</span>
+<span class="fc" id="L340">                          slotRlpOutput.endList();</span>
+<span class="fc" id="L341">                          return slotRlpOutput.encodedSize();</span>
+                        });
+
+                // only honor start and end hash if request is for a single account's storage:
+                Bytes32 startKeyBytes, endKeyBytes;
+<span class="fc" id="L346">                boolean isPartialRange = false;</span>
+<span class="fc bfc" id="L347" title="All 2 branches covered.">                if (range.hashes().size() &gt; 1) {</span>
+<span class="fc" id="L348">                  startKeyBytes = Bytes32.ZERO;</span>
+<span class="fc" id="L349">                  endKeyBytes = HASH_LAST;</span>
+                } else {
+<span class="fc" id="L351">                  startKeyBytes = range.startKeyHash();</span>
+<span class="fc" id="L352">                  endKeyBytes = range.endKeyHash();</span>
+<span class="fc" id="L353">                  isPartialRange =</span>
+<span class="fc bfc" id="L354" title="All 4 branches covered.">                      !(startKeyBytes.equals(Hash.ZERO) &amp;&amp; endKeyBytes.equals(HASH_LAST));</span>
+                }
+
+<span class="fc" id="L357">                ArrayDeque&lt;NavigableMap&lt;Bytes32, Bytes&gt;&gt; collectedStorages = new ArrayDeque&lt;&gt;();</span>
+<span class="fc" id="L358">                List&lt;Bytes&gt; proofNodes = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L359">                final var worldStateProof =</span>
+                    new WorldStateProofProvider(new WorldStateStorageCoordinator(storage));
+
+<span class="fc bfc" id="L362" title="All 2 branches covered.">                for (var forAccountHash : range.hashes()) {</span>
+<span class="fc" id="L363">                  var accountStorages =</span>
+<span class="fc" id="L364">                      storage.streamFlatStorages(</span>
+<span class="fc" id="L365">                          Hash.wrap(forAccountHash), startKeyBytes, endKeyBytes, statefulPredicate);</span>
+
+                  //// address partial range queries that return empty
+<span class="pc bpc" id="L368" title="1 of 4 branches missed.">                  if (accountStorages.isEmpty() &amp;&amp; isPartialRange) {</span>
+                    // fetch next slot after range, if it exists
+<span class="fc" id="L370">                    LOGGER.debug(</span>
+                        &quot;found no slots in range, taking first value starting from {}&quot;,
+<span class="fc" id="L372">                        asLogHash(range.endKeyHash()));</span>
+<span class="fc" id="L373">                    accountStorages =</span>
+<span class="fc" id="L374">                        storage.streamFlatStorages(</span>
+<span class="fc" id="L375">                            Hash.wrap(forAccountHash), range.endKeyHash(), UInt256.MAX_VALUE, 1L);</span>
+                  }
+
+                  // don't send empty storage ranges
+<span class="fc bfc" id="L379" title="All 2 branches covered.">                  if (!accountStorages.isEmpty()) {</span>
+<span class="fc" id="L380">                    collectedStorages.add(accountStorages);</span>
+                  }
+
+                  // if a partial storage range was requested, or we interrupted storage due to
+                  // request limits, send proofs:
+<span class="fc bfc" id="L385" title="All 4 branches covered.">                  if (isPartialRange || !statefulPredicate.shouldGetMore()) {</span>
+                    // send a proof for the left side range origin
+<span class="fc" id="L387">                    proofNodes.addAll(</span>
+<span class="fc" id="L388">                        worldStateProof.getStorageProofRelatedNodes(</span>
+<span class="fc" id="L389">                            getAccountStorageRoot(forAccountHash, storage),</span>
+                            forAccountHash,
+<span class="fc" id="L391">                            Hash.wrap(startKeyBytes)));</span>
+<span class="fc bfc" id="L392" title="All 2 branches covered.">                    if (!accountStorages.isEmpty()) {</span>
+                      // send a proof for the last key on the right
+<span class="fc" id="L394">                      proofNodes.addAll(</span>
+<span class="fc" id="L395">                          worldStateProof.getStorageProofRelatedNodes(</span>
+<span class="fc" id="L396">                              getAccountStorageRoot(forAccountHash, storage),</span>
+                              forAccountHash,
+<span class="fc" id="L398">                              Hash.wrap(accountStorages.lastKey())));</span>
+                    }
+                  }
+
+<span class="fc bfc" id="L402" title="All 2 branches covered.">                  if (!statefulPredicate.shouldGetMore()) {</span>
+<span class="fc" id="L403">                    break;</span>
+                  }
+<span class="fc" id="L405">                }</span>
+
+<span class="fc" id="L407">                var resp = StorageRangeMessage.create(collectedStorages, proofNodes);</span>
+<span class="fc" id="L408">                LOGGER.debug(</span>
+                    &quot;returned in {} storage {} to {} range {} to {} with {} storages and {} proofs, resp size {} of max {}&quot;,
+                    stopWatch,
+<span class="fc" id="L411">                    asLogHash(range.hashes().first()),</span>
+<span class="fc" id="L412">                    asLogHash(range.hashes().last()),</span>
+<span class="fc" id="L413">                    asLogHash(range.startKeyHash()),</span>
+<span class="fc" id="L414">                    asLogHash(range.endKeyHash()),</span>
+<span class="fc" id="L415">                    collectedStorages.size(),</span>
+<span class="fc" id="L416">                    proofNodes.size(),</span>
+<span class="fc" id="L417">                    resp.getSize(),</span>
+<span class="fc" id="L418">                    maxResponseBytes);</span>
+<span class="fc" id="L419">                return resp;</span>
+              })
+<span class="fc" id="L421">          .orElseGet(</span>
+              () -&gt; {
+<span class="nc" id="L423">                LOGGER.debug(&quot;returned empty storage range due to missing worldstate&quot;);</span>
+<span class="nc" id="L424">                return EMPTY_STORAGE_RANGE;</span>
+              });
+<span class="nc" id="L426">    } catch (Exception ex) {</span>
+<span class="nc" id="L427">      LOGGER.error(&quot;Unexpected exception serving storage range request&quot;, ex);</span>
+<span class="nc" id="L428">      return EMPTY_STORAGE_RANGE;</span>
+    }
   }
 
-  private MessageData constructGetBytecodesResponse(
-      final WorldStateArchive worldStateArchive, final MessageData message) {
-    // TODO implement
-<span class="nc" id="L72">    return ByteCodesMessage.create(new ArrayDeque&lt;&gt;());</span>
+  MessageData constructGetBytecodesResponse(final MessageData message) {
+<span class="fc bfc" id="L433" title="All 2 branches covered.">    if (!isStarted.get()) {</span>
+<span class="fc" id="L434">      return EMPTY_BYTE_CODES_MESSAGE;</span>
+    }
+<span class="fc" id="L436">    StopWatch stopWatch = StopWatch.createStarted();</span>
+
+<span class="fc" id="L438">    final GetByteCodesMessage getByteCodesMessage = GetByteCodesMessage.readFrom(message);</span>
+<span class="fc" id="L439">    final GetByteCodesMessage.CodeHashes codeHashes = getByteCodesMessage.codeHashes(true);</span>
+<span class="fc" id="L440">    final int maxResponseBytes = Math.min(codeHashes.responseBytes().intValue(), MAX_RESPONSE_SIZE);</span>
+<span class="fc" id="L441">    LOGGER</span>
+<span class="fc" id="L442">        .atTrace()</span>
+<span class="fc" id="L443">        .setMessage(&quot;Received get bytecodes message for {} hashes&quot;)</span>
+<span class="fc" id="L444">        .addArgument(codeHashes.hashes()::size)</span>
+<span class="fc" id="L445">        .log();</span>
+
+    try {
+<span class="fc" id="L448">      List&lt;Bytes&gt; codeBytes = new ArrayDeque&lt;&gt;();</span>
+      var codeHashList =
+<span class="pc bpc" id="L450" title="1 of 2 branches missed.">          (codeHashes.hashes().size() &lt; MAX_CODE_LOOKUPS_PER_REQUEST)</span>
+<span class="fc" id="L451">              ? codeHashes.hashes()</span>
+<span class="pc" id="L452">              : codeHashes.hashes().subList(0, MAX_CODE_LOOKUPS_PER_REQUEST);</span>
+<span class="fc bfc" id="L453" title="All 2 branches covered.">      for (Bytes32 codeHash : codeHashList) {</span>
+<span class="pc bpc" id="L454" title="1 of 2 branches missed.">        if (Hash.EMPTY.equals(codeHash)) {</span>
+<span class="nc" id="L455">          codeBytes.add(Bytes.EMPTY);</span>
+        } else {
+<span class="fc" id="L457">          Optional&lt;Bytes&gt; optCode = worldStateStorageCoordinator.getCode(Hash.wrap(codeHash), null);</span>
+<span class="pc bpc" id="L458" title="1 of 2 branches missed.">          if (optCode.isPresent()) {</span>
+<span class="fc bfc" id="L459" title="All 2 branches covered.">            if (sumListBytes(codeBytes) + optCode.get().size() &gt; maxResponseBytes</span>
+<span class="pc bpc" id="L460" title="1 of 2 branches missed.">                || stopWatch.getTime() &gt; StatefulPredicate.MAX_MILLIS_PER_REQUEST) {</span>
+<span class="nc" id="L461">              break;</span>
+            }
+<span class="fc" id="L463">            codeBytes.add(optCode.get());</span>
+          }
+        }
+<span class="fc" id="L466">      }</span>
+<span class="fc" id="L467">      var resp = ByteCodesMessage.create(codeBytes);</span>
+<span class="fc" id="L468">      LOGGER.debug(</span>
+          &quot;returned in {} code bytes message with {} entries, resp size {} of max {}&quot;,
+          stopWatch,
+<span class="fc" id="L471">          codeBytes.size(),</span>
+<span class="fc" id="L472">          resp.getSize(),</span>
+<span class="fc" id="L473">          maxResponseBytes);</span>
+<span class="fc" id="L474">      return resp;</span>
+<span class="nc" id="L475">    } catch (Exception ex) {</span>
+<span class="nc" id="L476">      LOGGER.error(&quot;Unexpected exception serving bytecodes request&quot;, ex);</span>
+<span class="nc" id="L477">      return EMPTY_BYTE_CODES_MESSAGE;</span>
+    }
   }
 
-  private MessageData constructGetTrieNodesResponse(
-      final WorldStateArchive worldStateArchive, final MessageData message) {
-<span class="nc" id="L77">    return TrieNodesMessage.create(new ArrayDeque&lt;&gt;());</span>
+  MessageData constructGetTrieNodesResponse(final MessageData message) {
+<span class="fc bfc" id="L482" title="All 2 branches covered.">    if (!isStarted.get()) {</span>
+<span class="fc" id="L483">      return EMPTY_TRIE_NODES_MESSAGE;</span>
+    }
+<span class="fc" id="L485">    StopWatch stopWatch = StopWatch.createStarted();</span>
+
+<span class="fc" id="L487">    final GetTrieNodesMessage getTrieNodesMessage = GetTrieNodesMessage.readFrom(message);</span>
+<span class="fc" id="L488">    final GetTrieNodesMessage.TrieNodesPaths triePaths = getTrieNodesMessage.paths(true);</span>
+<span class="fc" id="L489">    final int maxResponseBytes = Math.min(triePaths.responseBytes().intValue(), MAX_RESPONSE_SIZE);</span>
+<span class="fc" id="L490">    LOGGER</span>
+<span class="fc" id="L491">        .atTrace()</span>
+<span class="fc" id="L492">        .setMessage(&quot;Received get trie nodes message of size {}&quot;)</span>
+<span class="pc" id="L493">        .addArgument(() -&gt; triePaths.paths().size())</span>
+<span class="fc" id="L494">        .log();</span>
+
+    try {
+<span class="fc" id="L497">      return worldStateStorageProvider</span>
+<span class="fc" id="L498">          .apply(triePaths.worldStateRootHash())</span>
+<span class="fc" id="L499">          .map(</span>
+              storage -&gt; {
+<span class="fc" id="L501">                LOGGER.trace(&quot;obtained worldstate in {}&quot;, stopWatch);</span>
+<span class="fc" id="L502">                ArrayList&lt;Bytes&gt; trieNodes = new ArrayList&lt;&gt;();</span>
+                var triePathList =
+<span class="pc bpc" id="L504" title="1 of 2 branches missed.">                    triePaths.paths().size() &lt; MAX_TRIE_LOOKUPS_PER_REQUEST</span>
+<span class="fc" id="L505">                        ? triePaths.paths()</span>
+<span class="pc" id="L506">                        : triePaths.paths().subList(0, MAX_TRIE_LOOKUPS_PER_REQUEST);</span>
+<span class="fc bfc" id="L507" title="All 2 branches covered.">                for (var triePath : triePathList) {</span>
+                  // first element in paths is account
+<span class="fc bfc" id="L509" title="All 2 branches covered.">                  if (triePath.size() == 1) {</span>
+                    // if there is only one path, presume it should be compact encoded account path
+<span class="fc" id="L511">                    var optStorage =</span>
+<span class="fc" id="L512">                        storage.getTrieNodeUnsafe(CompactEncoding.decode(triePath.get(0)));</span>
+<span class="pc bpc" id="L513" title="1 of 2 branches missed.">                    if (optStorage.isPresent()) {</span>
+<span class="fc bfc" id="L514" title="All 2 branches covered.">                      if (sumListBytes(trieNodes) + optStorage.get().size() &gt; maxResponseBytes</span>
+<span class="pc bpc" id="L515" title="1 of 2 branches missed.">                          || stopWatch.getTime() &gt; StatefulPredicate.MAX_MILLIS_PER_REQUEST) {</span>
+<span class="nc" id="L516">                        break;</span>
+                      }
+<span class="fc" id="L518">                      trieNodes.add(optStorage.get());</span>
+                    }
+
+<span class="fc" id="L521">                  } else {</span>
+                    // otherwise the first element should be account hash, and subsequent paths
+                    // are compact encoded account storage paths
+
+<span class="fc" id="L525">                    final Bytes accountPrefix = triePath.get(0);</span>
+
+<span class="fc" id="L527">                    List&lt;Bytes&gt; storagePaths = triePath.subList(1, triePath.size());</span>
+<span class="fc bfc" id="L528" title="All 2 branches covered.">                    for (var path : storagePaths) {</span>
+<span class="fc" id="L529">                      var optStorage =</span>
+<span class="fc" id="L530">                          storage.getTrieNodeUnsafe(</span>
+<span class="fc" id="L531">                              Bytes.concatenate(accountPrefix, CompactEncoding.decode(path)));</span>
+<span class="fc bfc" id="L532" title="All 2 branches covered.">                      if (optStorage.isPresent()) {</span>
+<span class="fc bfc" id="L533" title="All 2 branches covered.">                        if (sumListBytes(trieNodes) + optStorage.get().size() &gt; maxResponseBytes) {</span>
+<span class="fc" id="L534">                          break;</span>
+                        }
+<span class="fc" id="L536">                        trieNodes.add(optStorage.get());</span>
+                      }
+<span class="fc" id="L538">                    }</span>
+                  }
+<span class="fc" id="L540">                }</span>
+<span class="fc" id="L541">                var resp = TrieNodesMessage.create(trieNodes);</span>
+<span class="fc" id="L542">                LOGGER.debug(</span>
+                    &quot;returned in {} trie nodes message with {} entries, resp size {} of max {}&quot;,
+                    stopWatch,
+<span class="fc" id="L545">                    trieNodes.size(),</span>
+<span class="fc" id="L546">                    resp.getCode(),</span>
+<span class="fc" id="L547">                    maxResponseBytes);</span>
+<span class="fc" id="L548">                return resp;</span>
+              })
+<span class="fc" id="L550">          .orElseGet(</span>
+              () -&gt; {
+<span class="nc" id="L552">                LOGGER.debug(&quot;returned empty trie nodes message due to missing worldstate&quot;);</span>
+<span class="nc" id="L553">                return EMPTY_TRIE_NODES_MESSAGE;</span>
+              });
+<span class="nc" id="L555">    } catch (Exception ex) {</span>
+<span class="nc" id="L556">      LOGGER.error(&quot;Unexpected exception serving trienodes request&quot;, ex);</span>
+<span class="nc" id="L557">      return EMPTY_TRIE_NODES_MESSAGE;</span>
+    }
+  }
+
+  static class StatefulPredicate implements Predicate&lt;Pair&lt;Bytes32, Bytes&gt;&gt; {
+    // default to a max of 4 seconds per request
+    static final long MAX_MILLIS_PER_REQUEST = 4000;
+
+<span class="fc" id="L565">    final AtomicInteger byteLimit = new AtomicInteger(0);</span>
+<span class="fc" id="L566">    final AtomicInteger recordLimit = new AtomicInteger(0);</span>
+<span class="fc" id="L567">    final AtomicBoolean shouldContinue = new AtomicBoolean(true);</span>
+    final Function&lt;Pair&lt;Bytes32, Bytes&gt;, Integer&gt; encodingSizeAccumulator;
+    final StopWatch stopWatch;
+    final int maxResponseBytes;
+    // TODO: remove this hack,  10% is a fudge factor to account for the proof node size
+    final int maxResponseBytesFudgeFactor;
+    final String forWhat;
+
+    StatefulPredicate(
+        final String forWhat,
+        final StopWatch stopWatch,
+        final int maxResponseBytes,
+<span class="fc" id="L579">        final Function&lt;Pair&lt;Bytes32, Bytes&gt;, Integer&gt; encodingSizeAccumulator) {</span>
+<span class="fc" id="L580">      this.stopWatch = stopWatch;</span>
+<span class="fc" id="L581">      this.maxResponseBytes = maxResponseBytes;</span>
+<span class="fc" id="L582">      this.maxResponseBytesFudgeFactor = maxResponseBytes * 9 / 10;</span>
+<span class="fc" id="L583">      this.forWhat = forWhat;</span>
+<span class="fc" id="L584">      this.encodingSizeAccumulator = encodingSizeAccumulator;</span>
+<span class="fc" id="L585">    }</span>
+
+    public boolean shouldGetMore() {
+<span class="fc" id="L588">      return shouldContinue.get();</span>
+    }
+
+    @Override
+    public boolean test(final Pair&lt;Bytes32, Bytes&gt; pair) {
+<span class="fc" id="L593">      LOGGER</span>
+<span class="fc" id="L594">          .atTrace()</span>
+<span class="fc" id="L595">          .setMessage(&quot;{} pre-accumulate limits, bytes: {} , stream count: {}&quot;)</span>
+<span class="pc" id="L596">          .addArgument(() -&gt; forWhat)</span>
+<span class="fc" id="L597">          .addArgument(byteLimit::get)</span>
+<span class="fc" id="L598">          .addArgument(recordLimit::get)</span>
+<span class="fc" id="L599">          .log();</span>
+<span class="pc bpc" id="L600" title="1 of 2 branches missed.">      if (stopWatch.getTime() &gt; MAX_MILLIS_PER_REQUEST) {</span>
+<span class="nc" id="L601">        shouldContinue.set(false);</span>
+<span class="nc" id="L602">        LOGGER.warn(</span>
+            &quot;{} took too long, stopped at {} ms with {} records and {} bytes&quot;,
+            forWhat,
+<span class="nc" id="L605">            stopWatch.formatTime(),</span>
+<span class="nc" id="L606">            recordLimit.get(),</span>
+<span class="nc" id="L607">            byteLimit.get());</span>
+<span class="nc" id="L608">        return false;</span>
+      }
+
+<span class="pc bpc" id="L611" title="1 of 2 branches missed.">      var underRecordLimit = recordLimit.addAndGet(1) &lt;= MAX_ENTRIES_PER_REQUEST;</span>
+<span class="fc" id="L612">      var underByteLimit =</span>
+<span class="fc bfc" id="L613" title="All 2 branches covered.">          byteLimit.accumulateAndGet(0, (cur, __) -&gt; cur + encodingSizeAccumulator.apply(pair))</span>
+              &lt; maxResponseBytesFudgeFactor;
+<span class="pc bpc" id="L615" title="1 of 4 branches missed.">      if (underRecordLimit &amp;&amp; underByteLimit) {</span>
+<span class="fc" id="L616">        return true;</span>
+      } else {
+<span class="fc" id="L618">        shouldContinue.set(false);</span>
+<span class="fc" id="L619">        LOGGER</span>
+<span class="fc" id="L620">            .atDebug()</span>
+<span class="fc" id="L621">            .setMessage(&quot;{} post-accumulate limits, bytes: {} , stream count: {}&quot;)</span>
+<span class="pc" id="L622">            .addArgument(() -&gt; forWhat)</span>
+<span class="fc" id="L623">            .addArgument(byteLimit::get)</span>
+<span class="fc" id="L624">            .addArgument(recordLimit::get)</span>
+<span class="fc" id="L625">            .log();</span>
+<span class="fc" id="L626">        return false;</span>
+      }
+    }
+  }
+
+  Hash getAccountStorageRoot(
+      final Bytes32 accountHash, final BonsaiWorldStateKeyValueStorage storage) {
+<span class="fc" id="L633">    return storage</span>
+<span class="fc" id="L634">        .getTrieNodeUnsafe(Bytes.concatenate(accountHash, Bytes.EMPTY))</span>
+<span class="fc" id="L635">        .map(Hash::hash)</span>
+<span class="fc" id="L636">        .orElse(Hash.EMPTY_TRIE_HASH);</span>
+  }
+
+  private static int sumListBytes(final List&lt;Bytes&gt; listOfBytes) {
+    // TODO: remove hack, 10% is a fudge factor to account for the overhead of rlp encoding
+<span class="fc" id="L641">    return listOfBytes.stream().map(Bytes::size).reduce((a, b) -&gt; a + b).orElse(0) * 11 / 10;</span>
+  }
+
+  private static String asLogHash(final Bytes32 hash) {
+<span class="fc" id="L645">    var str = hash.toHexString();</span>
+<span class="fc" id="L646">    return str.substring(0, 4) + &quot;..&quot; + str.substring(59, 63);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

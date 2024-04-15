@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DiffBasedWorldStateProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common</a> &gt; <span class="el_source">DiffBasedWorldStateProvider.java</span></div><h1>DiffBasedWorldStateProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.common;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.core.MutableWorldState;
+import org.hyperledger.besu.ethereum.proof.WorldStateProof;
+import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
+import org.hyperledger.besu.ethereum.trie.MerkleTrieException;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.cache.DiffBasedCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.accumulator.DiffBasedWorldStateUpdateAccumulator;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateArchive;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
+import org.hyperledger.besu.evm.worldstate.WorldState;
+import org.hyperledger.besu.plugin.BesuContext;
+import org.hyperledger.besu.plugin.services.trielogs.TrieLog;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.units.bigints.UInt256;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class DiffBasedWorldStateProvider implements WorldStateArchive {
+
+<span class="fc" id="L50">  private static final Logger LOG = LoggerFactory.getLogger(DiffBasedWorldStateProvider.class);</span>
+
+  protected final Blockchain blockchain;
+
+  protected final TrieLogManager trieLogManager;
+  protected DiffBasedCachedWorldStorageManager cachedWorldStorageManager;
+  protected DiffBasedWorldState persistedState;
+
+  protected final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage;
+
+  public DiffBasedWorldStateProvider(
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+      final Optional&lt;Long&gt; maxLayersToLoad,
+<span class="fc" id="L64">      final BesuContext pluginContext) {</span>
+
+<span class="fc" id="L66">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+    // TODO: de-dup constructors
+<span class="fc" id="L68">    this.trieLogManager =</span>
+        new TrieLogManager(
+            blockchain,
+            worldStateKeyValueStorage,
+<span class="fc" id="L72">            maxLayersToLoad.orElse(DiffBasedCachedWorldStorageManager.RETAINED_LAYERS),</span>
+            pluginContext);
+<span class="fc" id="L74">    this.blockchain = blockchain;</span>
+<span class="fc" id="L75">  }</span>
+
+  public DiffBasedWorldStateProvider(
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+<span class="fc" id="L80">      final TrieLogManager trieLogManager) {</span>
+
+<span class="fc" id="L82">    this.worldStateKeyValueStorage = worldStateKeyValueStorage;</span>
+    // TODO: de-dup constructors
+<span class="fc" id="L84">    this.trieLogManager = trieLogManager;</span>
+<span class="fc" id="L85">    this.blockchain = blockchain;</span>
+<span class="fc" id="L86">  }</span>
+
+  protected void provideCachedWorldStorageManager(
+      final DiffBasedCachedWorldStorageManager cachedWorldStorageManager) {
+<span class="fc" id="L90">    this.cachedWorldStorageManager = cachedWorldStorageManager;</span>
+<span class="fc" id="L91">  }</span>
+
+  protected void loadPersistedState(final DiffBasedWorldState persistedState) {
+<span class="fc" id="L94">    this.persistedState = persistedState;</span>
+<span class="fc" id="L95">    blockchain</span>
+<span class="fc" id="L96">        .getBlockHeader(persistedState.getWorldStateBlockHash())</span>
+<span class="fc" id="L97">        .ifPresent(</span>
+            blockHeader -&gt;
+<span class="nc" id="L99">                this.cachedWorldStorageManager.addCachedLayer(</span>
+<span class="nc" id="L100">                    blockHeader, persistedState.getWorldStateRootHash(), persistedState));</span>
+<span class="fc" id="L101">  }</span>
+
+  @Override
+  public Optional&lt;WorldState&gt; get(final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L105">    return cachedWorldStorageManager</span>
+<span class="fc" id="L106">        .getWorldState(blockHash)</span>
+<span class="fc" id="L107">        .or(</span>
+            () -&gt; {
+<span class="nc bnc" id="L109" title="All 2 branches missed.">              if (blockHash.equals(persistedState.blockHash())) {</span>
+<span class="nc" id="L110">                return Optional.of(persistedState);</span>
+              } else {
+<span class="nc" id="L112">                return Optional.empty();</span>
+              }
+            })
+<span class="fc" id="L115">        .map(WorldState.class::cast);</span>
+  }
+
+  @Override
+  public boolean isWorldStateAvailable(final Hash rootHash, final Hash blockHash) {
+<span class="pc bpc" id="L120" title="1 of 2 branches missed.">    return cachedWorldStorageManager.contains(blockHash)</span>
+<span class="nc bnc" id="L121" title="All 2 branches missed.">        || persistedState.blockHash().equals(blockHash)</span>
+<span class="pc bnc" id="L122" title="All 2 branches missed.">        || worldStateKeyValueStorage.isWorldStateAvailable(rootHash, blockHash);</span>
+  }
+
+  @Override
+  public Optional&lt;MutableWorldState&gt; getMutable(
+      final BlockHeader blockHeader, final boolean shouldPersistState) {
+<span class="fc bfc" id="L128" title="All 2 branches covered.">    if (shouldPersistState) {</span>
+<span class="fc" id="L129">      return getMutable(blockHeader.getStateRoot(), blockHeader.getHash());</span>
+    } else {
+<span class="fc" id="L131">      final BlockHeader chainHeadBlockHeader = blockchain.getChainHeadHeader();</span>
+<span class="fc" id="L132">      if (chainHeadBlockHeader.getNumber() - blockHeader.getNumber()</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">          &gt;= trieLogManager.getMaxLayersToLoad()) {</span>
+<span class="fc" id="L134">        LOG.warn(</span>
+            &quot;Exceeded the limit of historical blocks that can be loaded ({}). If you need to make older historical queries, configure your `--bonsai-historical-block-limit`.&quot;,
+<span class="fc" id="L136">            trieLogManager.getMaxLayersToLoad());</span>
+<span class="fc" id="L137">        return Optional.empty();</span>
+      }
+<span class="fc" id="L139">      return cachedWorldStorageManager</span>
+<span class="fc" id="L140">          .getWorldState(blockHeader.getHash())</span>
+<span class="fc" id="L141">          .or(() -&gt; cachedWorldStorageManager.getNearestWorldState(blockHeader))</span>
+<span class="fc" id="L142">          .or(() -&gt; cachedWorldStorageManager.getHeadWorldState(blockchain::getBlockHeader))</span>
+<span class="fc" id="L143">          .flatMap(worldState -&gt; rollMutableStateToBlockHash(worldState, blockHeader.getHash()))</span>
+<span class="fc" id="L144">          .map(MutableWorldState::freeze);</span>
+    }
+  }
+
+  @Override
+  public synchronized Optional&lt;MutableWorldState&gt; getMutable(
+      final Hash rootHash, final Hash blockHash) {
+<span class="fc" id="L151">    return rollMutableStateToBlockHash(persistedState, blockHash);</span>
+  }
+
+  Optional&lt;MutableWorldState&gt; rollMutableStateToBlockHash(
+      final DiffBasedWorldState mutableState, final Hash blockHash) {
+<span class="fc bfc" id="L156" title="All 2 branches covered.">    if (blockHash.equals(mutableState.blockHash())) {</span>
+<span class="fc" id="L157">      return Optional.of(mutableState);</span>
+    } else {
+      try {
+
+<span class="fc" id="L161">        final Optional&lt;BlockHeader&gt; maybePersistedHeader =</span>
+<span class="fc" id="L162">            blockchain.getBlockHeader(mutableState.blockHash()).map(BlockHeader.class::cast);</span>
+
+<span class="fc" id="L164">        final List&lt;TrieLog&gt; rollBacks = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L165">        final List&lt;TrieLog&gt; rollForwards = new ArrayList&lt;&gt;();</span>
+<span class="fc bfc" id="L166" title="All 2 branches covered.">        if (maybePersistedHeader.isEmpty()) {</span>
+<span class="fc" id="L167">          trieLogManager.getTrieLogLayer(mutableState.blockHash()).ifPresent(rollBacks::add);</span>
+        } else {
+<span class="fc" id="L169">          BlockHeader targetHeader = blockchain.getBlockHeader(blockHash).get();</span>
+<span class="fc" id="L170">          BlockHeader persistedHeader = maybePersistedHeader.get();</span>
+          // roll back from persisted to even with target
+<span class="fc" id="L172">          Hash persistedBlockHash = persistedHeader.getBlockHash();</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">          while (persistedHeader.getNumber() &gt; targetHeader.getNumber()) {</span>
+<span class="fc" id="L174">            LOG.debug(&quot;Rollback {}&quot;, persistedBlockHash);</span>
+<span class="fc" id="L175">            rollBacks.add(trieLogManager.getTrieLogLayer(persistedBlockHash).get());</span>
+<span class="fc" id="L176">            persistedHeader = blockchain.getBlockHeader(persistedHeader.getParentHash()).get();</span>
+<span class="fc" id="L177">            persistedBlockHash = persistedHeader.getBlockHash();</span>
+          }
+          // roll forward to target
+<span class="fc" id="L180">          Hash targetBlockHash = targetHeader.getBlockHash();</span>
+<span class="pc bpc" id="L181" title="1 of 2 branches missed.">          while (persistedHeader.getNumber() &lt; targetHeader.getNumber()) {</span>
+<span class="nc" id="L182">            LOG.debug(&quot;Rollforward {}&quot;, targetBlockHash);</span>
+<span class="nc" id="L183">            rollForwards.add(trieLogManager.getTrieLogLayer(targetBlockHash).get());</span>
+<span class="nc" id="L184">            targetHeader = blockchain.getBlockHeader(targetHeader.getParentHash()).get();</span>
+<span class="nc" id="L185">            targetBlockHash = targetHeader.getBlockHash();</span>
+          }
+
+          // roll back in tandem until we hit a shared state
+<span class="fc bfc" id="L189" title="All 2 branches covered.">          while (!persistedBlockHash.equals(targetBlockHash)) {</span>
+<span class="fc" id="L190">            LOG.debug(&quot;Paired Rollback {}&quot;, persistedBlockHash);</span>
+<span class="fc" id="L191">            LOG.debug(&quot;Paired Rollforward {}&quot;, targetBlockHash);</span>
+<span class="fc" id="L192">            rollForwards.add(trieLogManager.getTrieLogLayer(targetBlockHash).get());</span>
+<span class="fc" id="L193">            targetHeader = blockchain.getBlockHeader(targetHeader.getParentHash()).get();</span>
+
+<span class="fc" id="L195">            rollBacks.add(trieLogManager.getTrieLogLayer(persistedBlockHash).get());</span>
+<span class="fc" id="L196">            persistedHeader = blockchain.getBlockHeader(persistedHeader.getParentHash()).get();</span>
+
+<span class="fc" id="L198">            targetBlockHash = targetHeader.getBlockHash();</span>
+<span class="fc" id="L199">            persistedBlockHash = persistedHeader.getBlockHash();</span>
+          }
+        }
+
+        // attempt the state rolling
+<span class="fc" id="L204">        final DiffBasedWorldStateUpdateAccumulator&lt;?&gt; diffBasedUpdater =</span>
+<span class="fc" id="L205">            (DiffBasedWorldStateUpdateAccumulator&lt;?&gt;) mutableState.updater();</span>
+        try {
+<span class="fc bfc" id="L207" title="All 2 branches covered.">          for (final TrieLog rollBack : rollBacks) {</span>
+<span class="fc" id="L208">            LOG.debug(&quot;Attempting Rollback of {}&quot;, rollBack.getBlockHash());</span>
+<span class="fc" id="L209">            diffBasedUpdater.rollBack(rollBack);</span>
+<span class="fc" id="L210">          }</span>
+<span class="fc bfc" id="L211" title="All 2 branches covered.">          for (int i = rollForwards.size() - 1; i &gt;= 0; i--) {</span>
+<span class="fc" id="L212">            final var forward = rollForwards.get(i);</span>
+<span class="fc" id="L213">            LOG.debug(&quot;Attempting Rollforward of {}&quot;, rollForwards.get(i).getBlockHash());</span>
+<span class="fc" id="L214">            diffBasedUpdater.rollForward(forward);</span>
+          }
+<span class="fc" id="L216">          diffBasedUpdater.commit();</span>
+
+<span class="fc" id="L218">          mutableState.persist(blockchain.getBlockHeader(blockHash).get());</span>
+
+<span class="fc" id="L220">          LOG.debug(</span>
+              &quot;Archive rolling finished, {} now at {}&quot;,
+<span class="fc" id="L222">              mutableState.getWorldStateStorage().getClass().getSimpleName(),</span>
+              blockHash);
+<span class="fc" id="L224">          return Optional.of(mutableState);</span>
+<span class="nc" id="L225">        } catch (final MerkleTrieException re) {</span>
+          // need to throw to trigger the heal
+<span class="nc" id="L227">          throw re;</span>
+<span class="nc" id="L228">        } catch (final Exception e) {</span>
+          // if we fail we must clean up the updater
+<span class="nc" id="L230">          diffBasedUpdater.reset();</span>
+<span class="nc" id="L231">          LOG.debug(</span>
+              &quot;State rolling failed on &quot;
+<span class="nc" id="L233">                  + mutableState.getWorldStateStorage().getClass().getSimpleName()</span>
+                  + &quot; for block hash &quot;
+                  + blockHash,
+              e);
+
+<span class="nc" id="L238">          return Optional.empty();</span>
+        }
+<span class="nc" id="L240">      } catch (final RuntimeException re) {</span>
+<span class="nc" id="L241">        LOG.info(&quot;Archive rolling failed for block hash &quot; + blockHash, re);</span>
+<span class="nc bnc" id="L242" title="All 2 branches missed.">        if (re instanceof MerkleTrieException) {</span>
+          // need to throw to trigger the heal
+<span class="nc" id="L244">          throw re;</span>
+        }
+<span class="nc" id="L246">        throw new MerkleTrieException(</span>
+<span class="nc" id="L247">            &quot;invalid&quot;, Optional.of(Address.ZERO), Hash.EMPTY, Bytes.EMPTY);</span>
+      }
+    }
+  }
+
+  @Override
+  public MutableWorldState getMutable() {
+<span class="fc" id="L254">    return persistedState;</span>
+  }
+
+  public TrieLogManager getTrieLogManager() {
+<span class="fc" id="L258">    return trieLogManager;</span>
+  }
+
+  public DiffBasedCachedWorldStorageManager getCachedWorldStorageManager() {
+<span class="fc" id="L262">    return cachedWorldStorageManager;</span>
+  }
+
+  @Override
+  public void resetArchiveStateTo(final BlockHeader blockHeader) {
+<span class="nc" id="L267">    persistedState.resetWorldStateTo(blockHeader);</span>
+<span class="nc" id="L268">    this.cachedWorldStorageManager.reset();</span>
+<span class="nc" id="L269">    this.cachedWorldStorageManager.addCachedLayer(</span>
+<span class="nc" id="L270">        blockHeader, persistedState.getWorldStateRootHash(), persistedState);</span>
+<span class="nc" id="L271">  }</span>
+
+  @Override
+  public &lt;U&gt; Optional&lt;U&gt; getAccountProof(
+      final BlockHeader blockHeader,
+      final Address accountAddress,
+      final List&lt;UInt256&gt; accountStorageKeys,
+      final Function&lt;Optional&lt;WorldStateProof&gt;, ? extends Optional&lt;U&gt;&gt; mapper) {
+<span class="fc" id="L279">    try (DiffBasedWorldState ws =</span>
+<span class="fc" id="L280">        (DiffBasedWorldState) getMutable(blockHeader, false).orElse(null)) {</span>
+<span class="pc bpc" id="L281" title="1 of 2 branches missed.">      if (ws != null) {</span>
+<span class="fc" id="L282">        final WorldStateProofProvider worldStateProofProvider =</span>
+            new WorldStateProofProvider(
+<span class="fc" id="L284">                new WorldStateStorageCoordinator(ws.getWorldStateStorage()));</span>
+<span class="fc" id="L285">        return mapper.apply(</span>
+<span class="fc" id="L286">            worldStateProofProvider.getAccountProof(</span>
+<span class="fc" id="L287">                ws.getWorldStateRootHash(), accountAddress, accountStorageKeys));</span>
+      }
+<span class="pc bpc" id="L289" title="1 of 2 branches missed.">    } catch (Exception ex) {</span>
+<span class="nc" id="L290">      LOG.error(&quot;failed proof query for &quot; + blockHeader.getBlockHash().toShortHexString(), ex);</span>
+<span class="nc" id="L291">    }</span>
+<span class="nc" id="L292">    return Optional.empty();</span>
+  }
+
+  @Override
+  public Optional&lt;Bytes&gt; getNodeData(final Hash hash) {
+<span class="nc" id="L297">    return Optional.empty();</span>
+  }
+
+  @Override
+  public void close() {
+    try {
+<span class="nc" id="L303">      worldStateKeyValueStorage.close();</span>
+<span class="nc" id="L304">    } catch (Exception e) {</span>
+      // no op
+<span class="nc" id="L306">    }</span>
+<span class="nc" id="L307">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

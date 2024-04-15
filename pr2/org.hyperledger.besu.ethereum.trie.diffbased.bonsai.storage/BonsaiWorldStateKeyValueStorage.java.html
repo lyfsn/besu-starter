@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiWorldStateKeyValueStorage.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage</a> &gt; <span class="el_source">BonsaiWorldStateKeyValueStorage.java</span></div><h1>BonsaiWorldStateKeyValueStorage.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage;
+
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_INFO_STATE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.ACCOUNT_STORAGE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.CODE_STORAGE;
+import static org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier.TRIE_BRANCH_STORAGE;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.datatypes.StorageSlotKey;
+import org.hyperledger.besu.ethereum.storage.StorageProvider;
+import org.hyperledger.besu.ethereum.storage.keyvalue.KeyValueSegmentIdentifier;
+import org.hyperledger.besu.ethereum.trie.MerkleTrie;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat.FlatDbStrategy;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.flat.FlatDbStrategyProvider;
+import org.hyperledger.besu.ethereum.worldstate.DataStorageConfiguration;
+import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
+import org.hyperledger.besu.evm.account.AccountStorageEntry;
+import org.hyperledger.besu.plugin.services.MetricsSystem;
+import org.hyperledger.besu.plugin.services.storage.DataStorageFormat;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.KeyValueStorageTransaction;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorage;
+import org.hyperledger.besu.plugin.services.storage.SegmentedKeyValueStorageTransaction;
+
+import java.util.List;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.function.Supplier;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+
+public class BonsaiWorldStateKeyValueStorage extends DiffBasedWorldStateKeyValueStorage
+    implements WorldStateKeyValueStorage {
+  protected final FlatDbStrategyProvider flatDbStrategyProvider;
+
+  public BonsaiWorldStateKeyValueStorage(
+      final StorageProvider provider,
+      final MetricsSystem metricsSystem,
+      final DataStorageConfiguration dataStorageConfiguration) {
+<span class="fc" id="L58">    super(</span>
+<span class="fc" id="L59">        provider.getStorageBySegmentIdentifiers(</span>
+<span class="fc" id="L60">            List.of(</span>
+                ACCOUNT_INFO_STATE, CODE_STORAGE, ACCOUNT_STORAGE_STORAGE, TRIE_BRANCH_STORAGE)),
+<span class="fc" id="L62">        provider.getStorageBySegmentIdentifier(KeyValueSegmentIdentifier.TRIE_LOG_STORAGE));</span>
+<span class="fc" id="L63">    this.flatDbStrategyProvider =</span>
+        new FlatDbStrategyProvider(metricsSystem, dataStorageConfiguration);
+<span class="fc" id="L65">    flatDbStrategyProvider.loadFlatDbStrategy(composedWorldStateStorage);</span>
+<span class="fc" id="L66">  }</span>
+
+  public BonsaiWorldStateKeyValueStorage(
+      final FlatDbStrategyProvider flatDbStrategyProvider,
+      final SegmentedKeyValueStorage composedWorldStateStorage,
+      final KeyValueStorage trieLogStorage) {
+<span class="fc" id="L72">    super(composedWorldStateStorage, trieLogStorage);</span>
+<span class="fc" id="L73">    this.flatDbStrategyProvider = flatDbStrategyProvider;</span>
+<span class="fc" id="L74">  }</span>
+
+  @Override
+  public DataStorageFormat getDataStorageFormat() {
+<span class="fc" id="L78">    return DataStorageFormat.BONSAI;</span>
+  }
+
+  @Override
+  public FlatDbMode getFlatDbMode() {
+<span class="fc" id="L83">    return flatDbStrategyProvider.getFlatDbMode();</span>
+  }
+
+  public Optional&lt;Bytes&gt; getCode(final Hash codeHash, final Hash accountHash) {
+<span class="fc bfc" id="L87" title="All 2 branches covered.">    if (codeHash.equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L88">      return Optional.of(Bytes.EMPTY);</span>
+    } else {
+<span class="fc" id="L90">      return flatDbStrategyProvider</span>
+<span class="fc" id="L91">          .getFlatDbStrategy(composedWorldStateStorage)</span>
+<span class="fc" id="L92">          .getFlatCode(codeHash, accountHash, composedWorldStateStorage);</span>
+    }
+  }
+
+  public Optional&lt;Bytes&gt; getAccount(final Hash accountHash) {
+<span class="fc" id="L97">    return flatDbStrategyProvider</span>
+<span class="fc" id="L98">        .getFlatDbStrategy(composedWorldStateStorage)</span>
+<span class="fc" id="L99">        .getFlatAccount(</span>
+            this::getWorldStateRootHash,
+            this::getAccountStateTrieNode,
+            accountHash,
+            composedWorldStateStorage);
+  }
+
+  public Optional&lt;Bytes&gt; getAccountStateTrieNode(final Bytes location, final Bytes32 nodeHash) {
+<span class="fc bfc" id="L107" title="All 2 branches covered.">    if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+<span class="fc" id="L108">      return Optional.of(MerkleTrie.EMPTY_TRIE_NODE);</span>
+    } else {
+<span class="fc" id="L110">      return composedWorldStateStorage</span>
+<span class="fc" id="L111">          .get(TRIE_BRANCH_STORAGE, location.toArrayUnsafe())</span>
+<span class="fc" id="L112">          .map(Bytes::wrap)</span>
+<span class="fc" id="L113">          .filter(b -&gt; Hash.hash(b).equals(nodeHash));</span>
+    }
+  }
+
+  public Optional&lt;Bytes&gt; getAccountStorageTrieNode(
+      final Hash accountHash, final Bytes location, final Bytes32 nodeHash) {
+<span class="fc bfc" id="L119" title="All 2 branches covered.">    if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+<span class="fc" id="L120">      return Optional.of(MerkleTrie.EMPTY_TRIE_NODE);</span>
+    } else {
+<span class="fc" id="L122">      return composedWorldStateStorage</span>
+<span class="fc" id="L123">          .get(TRIE_BRANCH_STORAGE, Bytes.concatenate(accountHash, location).toArrayUnsafe())</span>
+<span class="fc" id="L124">          .map(Bytes::wrap)</span>
+<span class="fc" id="L125">          .filter(b -&gt; Hash.hash(b).equals(nodeHash));</span>
+    }
+  }
+
+  public Optional&lt;Bytes&gt; getTrieNodeUnsafe(final Bytes key) {
+<span class="fc" id="L130">    return composedWorldStateStorage.get(TRIE_BRANCH_STORAGE, key.toArrayUnsafe()).map(Bytes::wrap);</span>
+  }
+
+  public Optional&lt;Bytes&gt; getStorageValueByStorageSlotKey(
+      final Hash accountHash, final StorageSlotKey storageSlotKey) {
+<span class="fc" id="L135">    return getStorageValueByStorageSlotKey(</span>
+        () -&gt;
+<span class="fc" id="L137">            getAccount(accountHash)</span>
+<span class="fc" id="L138">                .map(</span>
+                    b -&gt;
+<span class="fc" id="L140">                        StateTrieAccountValue.readFrom(</span>
+<span class="fc" id="L141">                                org.hyperledger.besu.ethereum.rlp.RLP.input(b))</span>
+<span class="fc" id="L142">                            .getStorageRoot()),</span>
+        accountHash,
+        storageSlotKey);
+  }
+
+  public Optional&lt;Bytes&gt; getStorageValueByStorageSlotKey(
+      final Supplier&lt;Optional&lt;Hash&gt;&gt; storageRootSupplier,
+      final Hash accountHash,
+      final StorageSlotKey storageSlotKey) {
+<span class="fc" id="L151">    return flatDbStrategyProvider</span>
+<span class="fc" id="L152">        .getFlatDbStrategy(composedWorldStateStorage)</span>
+<span class="fc" id="L153">        .getFlatStorageValueByStorageSlotKey(</span>
+            this::getWorldStateRootHash,
+            storageRootSupplier,
+<span class="fc" id="L156">            (location, hash) -&gt; getAccountStorageTrieNode(accountHash, location, hash),</span>
+            accountHash,
+            storageSlotKey,
+            composedWorldStateStorage);
+  }
+
+  public NavigableMap&lt;Bytes32, AccountStorageEntry&gt; storageEntriesFrom(
+      final Hash addressHash, final Bytes32 startKeyHash, final int limit) {
+<span class="nc" id="L164">    throw new RuntimeException(&quot;Bonsai Tries does not currently support enumerating storage&quot;);</span>
+  }
+
+  public void upgradeToFullFlatDbMode() {
+<span class="fc" id="L168">    flatDbStrategyProvider.upgradeToFullFlatDbMode(composedWorldStateStorage);</span>
+<span class="fc" id="L169">  }</span>
+
+  public void downgradeToPartialFlatDbMode() {
+<span class="fc" id="L172">    flatDbStrategyProvider.downgradeToPartialFlatDbMode(composedWorldStateStorage);</span>
+<span class="fc" id="L173">  }</span>
+
+  @Override
+  public void clear() {
+<span class="fc" id="L177">    super.clear();</span>
+<span class="fc" id="L178">    flatDbStrategyProvider.loadFlatDbStrategy(</span>
+        composedWorldStateStorage); // force reload of flat db reader strategy
+<span class="fc" id="L180">  }</span>
+
+  @Override
+  public FlatDbStrategy getFlatDbStrategy() {
+<span class="fc" id="L184">    return flatDbStrategyProvider.getFlatDbStrategy(composedWorldStateStorage);</span>
+  }
+
+  @Override
+  public Updater updater() {
+<span class="fc" id="L189">    return new Updater(</span>
+<span class="fc" id="L190">        composedWorldStateStorage.startTransaction(),</span>
+<span class="fc" id="L191">        trieLogStorage.startTransaction(),</span>
+<span class="fc" id="L192">        flatDbStrategyProvider.getFlatDbStrategy(composedWorldStateStorage));</span>
+  }
+
+  public static class Updater implements DiffBasedWorldStateKeyValueStorage.Updater {
+
+    private final SegmentedKeyValueStorageTransaction composedWorldStateTransaction;
+    private final KeyValueStorageTransaction trieLogStorageTransaction;
+    private final FlatDbStrategy flatDbStrategy;
+
+    public Updater(
+        final SegmentedKeyValueStorageTransaction composedWorldStateTransaction,
+        final KeyValueStorageTransaction trieLogStorageTransaction,
+<span class="fc" id="L204">        final FlatDbStrategy flatDbStrategy) {</span>
+
+<span class="fc" id="L206">      this.composedWorldStateTransaction = composedWorldStateTransaction;</span>
+<span class="fc" id="L207">      this.trieLogStorageTransaction = trieLogStorageTransaction;</span>
+<span class="fc" id="L208">      this.flatDbStrategy = flatDbStrategy;</span>
+<span class="fc" id="L209">    }</span>
+
+    public Updater removeCode(final Hash accountHash, final Hash codeHash) {
+<span class="fc" id="L212">      flatDbStrategy.removeFlatCode(composedWorldStateTransaction, accountHash, codeHash);</span>
+<span class="fc" id="L213">      return this;</span>
+    }
+
+    public Updater putCode(final Hash accountHash, final Bytes code) {
+      // Skip the hash calculation for empty code
+<span class="fc bfc" id="L218" title="All 2 branches covered.">      final Hash codeHash = code.size() == 0 ? Hash.EMPTY : Hash.hash(code);</span>
+<span class="fc" id="L219">      return putCode(accountHash, codeHash, code);</span>
+    }
+
+    public Updater putCode(final Hash accountHash, final Hash codeHash, final Bytes code) {
+<span class="fc bfc" id="L223" title="All 2 branches covered.">      if (code.isEmpty()) {</span>
+        // Don't save empty values
+<span class="fc" id="L225">        return this;</span>
+      }
+<span class="fc" id="L227">      flatDbStrategy.putFlatCode(composedWorldStateTransaction, accountHash, codeHash, code);</span>
+<span class="fc" id="L228">      return this;</span>
+    }
+
+    public Updater removeAccountInfoState(final Hash accountHash) {
+<span class="fc" id="L232">      flatDbStrategy.removeFlatAccount(composedWorldStateTransaction, accountHash);</span>
+<span class="fc" id="L233">      return this;</span>
+    }
+
+    public Updater putAccountInfoState(final Hash accountHash, final Bytes accountValue) {
+<span class="pc bpc" id="L237" title="1 of 2 branches missed.">      if (accountValue.isEmpty()) {</span>
+        // Don't save empty values
+<span class="nc" id="L239">        return this;</span>
+      }
+<span class="fc" id="L241">      flatDbStrategy.putFlatAccount(composedWorldStateTransaction, accountHash, accountValue);</span>
+<span class="fc" id="L242">      return this;</span>
+    }
+
+    @Override
+    public Updater saveWorldState(final Bytes blockHash, final Bytes32 nodeHash, final Bytes node) {
+<span class="fc" id="L247">      composedWorldStateTransaction.put(</span>
+<span class="fc" id="L248">          TRIE_BRANCH_STORAGE, Bytes.EMPTY.toArrayUnsafe(), node.toArrayUnsafe());</span>
+<span class="fc" id="L249">      composedWorldStateTransaction.put(</span>
+<span class="fc" id="L250">          TRIE_BRANCH_STORAGE, WORLD_ROOT_HASH_KEY, nodeHash.toArrayUnsafe());</span>
+<span class="fc" id="L251">      composedWorldStateTransaction.put(</span>
+<span class="fc" id="L252">          TRIE_BRANCH_STORAGE, WORLD_BLOCK_HASH_KEY, blockHash.toArrayUnsafe());</span>
+<span class="fc" id="L253">      return this;</span>
+    }
+
+    public Updater putAccountStateTrieNode(
+        final Bytes location, final Bytes32 nodeHash, final Bytes node) {
+<span class="fc bfc" id="L258" title="All 2 branches covered.">      if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+        // Don't save empty nodes
+<span class="fc" id="L260">        return this;</span>
+      }
+<span class="fc" id="L262">      composedWorldStateTransaction.put(</span>
+<span class="fc" id="L263">          TRIE_BRANCH_STORAGE, location.toArrayUnsafe(), node.toArrayUnsafe());</span>
+<span class="fc" id="L264">      return this;</span>
+    }
+
+    public Updater removeAccountStateTrieNode(final Bytes location) {
+<span class="nc" id="L268">      composedWorldStateTransaction.remove(TRIE_BRANCH_STORAGE, location.toArrayUnsafe());</span>
+<span class="nc" id="L269">      return this;</span>
+    }
+
+    public synchronized Updater putAccountStorageTrieNode(
+        final Hash accountHash, final Bytes location, final Bytes32 nodeHash, final Bytes node) {
+<span class="fc bfc" id="L274" title="All 2 branches covered.">      if (nodeHash.equals(MerkleTrie.EMPTY_TRIE_NODE_HASH)) {</span>
+        // Don't save empty nodes
+<span class="fc" id="L276">        return this;</span>
+      }
+<span class="fc" id="L278">      composedWorldStateTransaction.put(</span>
+          TRIE_BRANCH_STORAGE,
+<span class="fc" id="L280">          Bytes.concatenate(accountHash, location).toArrayUnsafe(),</span>
+<span class="fc" id="L281">          node.toArrayUnsafe());</span>
+<span class="fc" id="L282">      return this;</span>
+    }
+
+    public synchronized Updater putStorageValueBySlotHash(
+        final Hash accountHash, final Hash slotHash, final Bytes storage) {
+<span class="fc" id="L287">      flatDbStrategy.putFlatAccountStorageValueByStorageSlotHash(</span>
+          composedWorldStateTransaction, accountHash, slotHash, storage);
+<span class="fc" id="L289">      return this;</span>
+    }
+
+    public synchronized void removeStorageValueBySlotHash(
+        final Hash accountHash, final Hash slotHash) {
+<span class="fc" id="L294">      flatDbStrategy.removeFlatAccountStorageValueByStorageSlotHash(</span>
+          composedWorldStateTransaction, accountHash, slotHash);
+<span class="fc" id="L296">    }</span>
+
+    @Override
+    public SegmentedKeyValueStorageTransaction getWorldStateTransaction() {
+<span class="fc" id="L300">      return composedWorldStateTransaction;</span>
+    }
+
+    @Override
+    public KeyValueStorageTransaction getTrieLogStorageTransaction() {
+<span class="fc" id="L305">      return trieLogStorageTransaction;</span>
+    }
+
+    @Override
+    public void commit() {
+      // write the log ahead, then the worldstate
+<span class="fc" id="L311">      trieLogStorageTransaction.commit();</span>
+<span class="fc" id="L312">      composedWorldStateTransaction.commit();</span>
+<span class="fc" id="L313">    }</span>
+
+    @Override
+    public void rollback() {
+<span class="nc" id="L317">      composedWorldStateTransaction.rollback();</span>
+<span class="nc" id="L318">      trieLogStorageTransaction.rollback();</span>
+<span class="nc" id="L319">    }</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

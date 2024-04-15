@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>BonsaiWorldStateProvider.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.bonsai</a> &gt; <span class="el_source">BonsaiWorldStateProvider.java</span></div><h1>BonsaiWorldStateProvider.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+package org.hyperledger.besu.ethereum.trie.diffbased.bonsai;
+
+import org.hyperledger.besu.datatypes.Address;
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.rlp.RLP;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.cache.BonsaiCachedMerkleTrieLoader;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.cache.BonsaiCachedWorldStorageManager;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedWorldStateProvider;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.trielog.TrieLogManager;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+import org.hyperledger.besu.plugin.BesuContext;
+
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.tuweni.bytes.Bytes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BonsaiWorldStateProvider extends DiffBasedWorldStateProvider {
+
+<span class="fc" id="L46">  private static final Logger LOG = LoggerFactory.getLogger(BonsaiWorldStateProvider.class);</span>
+  private final BonsaiCachedMerkleTrieLoader bonsaiCachedMerkleTrieLoader;
+
+  public BonsaiWorldStateProvider(
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+      final Optional&lt;Long&gt; maxLayersToLoad,
+      final BonsaiCachedMerkleTrieLoader bonsaiCachedMerkleTrieLoader,
+      final BesuContext pluginContext,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L56">    super(worldStateKeyValueStorage, blockchain, maxLayersToLoad, pluginContext);</span>
+<span class="fc" id="L57">    this.bonsaiCachedMerkleTrieLoader = bonsaiCachedMerkleTrieLoader;</span>
+<span class="fc" id="L58">    provideCachedWorldStorageManager(</span>
+        new BonsaiCachedWorldStorageManager(this, worldStateKeyValueStorage));
+<span class="fc" id="L60">    loadPersistedState(new BonsaiWorldState(this, worldStateKeyValueStorage, evmConfiguration));</span>
+<span class="fc" id="L61">  }</span>
+
+  @VisibleForTesting
+  BonsaiWorldStateProvider(
+      final BonsaiCachedWorldStorageManager bonsaiCachedWorldStorageManager,
+      final TrieLogManager trieLogManager,
+      final BonsaiWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Blockchain blockchain,
+      final BonsaiCachedMerkleTrieLoader bonsaiCachedMerkleTrieLoader,
+      final EvmConfiguration evmConfiguration) {
+<span class="fc" id="L71">    super(worldStateKeyValueStorage, blockchain, trieLogManager);</span>
+<span class="fc" id="L72">    this.bonsaiCachedMerkleTrieLoader = bonsaiCachedMerkleTrieLoader;</span>
+<span class="fc" id="L73">    provideCachedWorldStorageManager(bonsaiCachedWorldStorageManager);</span>
+<span class="fc" id="L74">    loadPersistedState(new BonsaiWorldState(this, worldStateKeyValueStorage, evmConfiguration));</span>
+<span class="fc" id="L75">  }</span>
+
+  public BonsaiCachedMerkleTrieLoader getCachedMerkleTrieLoader() {
+<span class="fc" id="L78">    return bonsaiCachedMerkleTrieLoader;</span>
+  }
+
+  private BonsaiWorldStateKeyValueStorage getWorldStateKeyValueStorage() {
+<span class="nc" id="L82">    return (BonsaiWorldStateKeyValueStorage) worldStateKeyValueStorage;</span>
+  }
+
+  /**
+   * Prepares the state healing process for a given address and location. It prepares the state
+   * healing, including retrieving data from storage, identifying invalid slots or nodes, removing
+   * account and slot from the state trie, and committing the changes. Finally, it downgrades the
+   * world state storage to partial flat database mode.
+   */
+  public void prepareStateHealing(final Address address, final Bytes location) {
+<span class="nc" id="L92">    final Set&lt;Bytes&gt; keysToDelete = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L93">    final BonsaiWorldStateKeyValueStorage.Updater updater =</span>
+<span class="nc" id="L94">        getWorldStateKeyValueStorage().updater();</span>
+<span class="nc" id="L95">    final Hash accountHash = address.addressHash();</span>
+<span class="nc" id="L96">    final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; accountTrie =</span>
+        new StoredMerklePatriciaTrie&lt;&gt;(
+            (l, h) -&gt; {
+<span class="nc" id="L99">              final Optional&lt;Bytes&gt; node =</span>
+<span class="nc" id="L100">                  getWorldStateKeyValueStorage().getAccountStateTrieNode(l, h);</span>
+<span class="nc bnc" id="L101" title="All 2 branches missed.">              if (node.isPresent()) {</span>
+<span class="nc" id="L102">                keysToDelete.add(l);</span>
+              }
+<span class="nc" id="L104">              return node;</span>
+            },
+<span class="nc" id="L106">            persistedState.getWorldStateRootHash(),</span>
+<span class="nc" id="L107">            Function.identity(),</span>
+<span class="nc" id="L108">            Function.identity());</span>
+    try {
+<span class="nc" id="L110">      accountTrie</span>
+<span class="nc" id="L111">          .get(accountHash)</span>
+<span class="nc" id="L112">          .map(RLP::input)</span>
+<span class="nc" id="L113">          .map(StateTrieAccountValue::readFrom)</span>
+<span class="nc" id="L114">          .ifPresent(</span>
+              account -&gt; {
+<span class="nc" id="L116">                final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+                    new StoredMerklePatriciaTrie&lt;&gt;(
+                        (l, h) -&gt; {
+<span class="nc" id="L119">                          Optional&lt;Bytes&gt; node =</span>
+<span class="nc" id="L120">                              getWorldStateKeyValueStorage()</span>
+<span class="nc" id="L121">                                  .getAccountStorageTrieNode(accountHash, l, h);</span>
+<span class="nc bnc" id="L122" title="All 2 branches missed.">                          if (node.isPresent()) {</span>
+<span class="nc" id="L123">                            keysToDelete.add(Bytes.concatenate(accountHash, l));</span>
+                          }
+<span class="nc" id="L125">                          return node;</span>
+                        },
+<span class="nc" id="L127">                        account.getStorageRoot(),</span>
+<span class="nc" id="L128">                        Function.identity(),</span>
+<span class="nc" id="L129">                        Function.identity());</span>
+                try {
+<span class="nc" id="L131">                  storageTrie.getPath(location);</span>
+<span class="nc" id="L132">                } catch (Exception eA) {</span>
+<span class="nc" id="L133">                  LOG.warn(&quot;Invalid slot found for account {} at location {}&quot;, address, location);</span>
+                  // ignore
+<span class="nc" id="L135">                }</span>
+<span class="nc" id="L136">              });</span>
+<span class="nc" id="L137">    } catch (Exception eA) {</span>
+<span class="nc" id="L138">      LOG.warn(&quot;Invalid node for account {} at location {}&quot;, address, location);</span>
+      // ignore
+<span class="nc" id="L140">    }</span>
+<span class="nc" id="L141">    keysToDelete.forEach(updater::removeAccountStateTrieNode);</span>
+<span class="nc" id="L142">    updater.commit();</span>
+
+<span class="nc" id="L144">    getWorldStateKeyValueStorage().downgradeToPartialFlatDbMode();</span>
+<span class="nc" id="L145">  }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

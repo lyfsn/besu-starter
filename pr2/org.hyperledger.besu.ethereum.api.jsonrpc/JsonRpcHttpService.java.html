@@ -15,7 +15,6 @@
 package org.hyperledger.besu.ethereum.api.jsonrpc;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.Streams.stream;
 import static org.apache.tuweni.net.tls.VertxTrustOptions.allowlistClients;
 
 import org.hyperledger.besu.ethereum.api.handlers.HandlerFactory;
@@ -55,8 +54,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.annotation.Nullable;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.baggage.propagation.W3CBaggagePropagator;
 import io.opentelemetry.api.trace.Span;
@@ -74,12 +71,12 @@ import io.vertx.core.Vertx;
 import io.vertx.core.VertxException;
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.http.HttpConnection;
-import io.vertx.core.http.HttpHeaders;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.PfxOptions;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Route;
@@ -92,32 +89,32 @@ import org.slf4j.LoggerFactory;
 
 public class JsonRpcHttpService {
 
-<span class="fc" id="L95">  private static final Logger LOG = LoggerFactory.getLogger(JsonRpcHttpService.class);</span>
+<span class="fc" id="L92">  private static final Logger LOG = LoggerFactory.getLogger(JsonRpcHttpService.class);</span>
 
   private static final String SPAN_CONTEXT = &quot;span_context&quot;;
-<span class="fc" id="L98">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
+<span class="fc" id="L95">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
   private static final String APPLICATION_JSON = &quot;application/json&quot;;
 
-<span class="fc" id="L101">  private static final TextMapPropagator traceFormats =</span>
-<span class="fc" id="L102">      TextMapPropagator.composite(</span>
-<span class="fc" id="L103">          JaegerPropagator.getInstance(),</span>
-<span class="fc" id="L104">          B3Propagator.injectingSingleHeader(),</span>
-<span class="fc" id="L105">          W3CBaggagePropagator.getInstance());</span>
+<span class="fc" id="L98">  private static final TextMapPropagator traceFormats =</span>
+<span class="fc" id="L99">      TextMapPropagator.composite(</span>
+<span class="fc" id="L100">          JaegerPropagator.getInstance(),</span>
+<span class="fc" id="L101">          B3Propagator.injectingSingleHeader(),</span>
+<span class="fc" id="L102">          W3CBaggagePropagator.getInstance());</span>
 
-<span class="fc" id="L107">  private static final TextMapGetter&lt;HttpServerRequest&gt; requestAttributesGetter =</span>
-<span class="fc" id="L108">      new TextMapGetter&lt;&gt;() {</span>
+<span class="fc" id="L104">  private static final TextMapGetter&lt;HttpServerRequest&gt; requestAttributesGetter =</span>
+<span class="fc" id="L105">      new TextMapGetter&lt;&gt;() {</span>
         @Override
         public Iterable&lt;String&gt; keys(final HttpServerRequest carrier) {
-<span class="fc" id="L111">          return carrier.headers().names();</span>
+<span class="fc" id="L108">          return carrier.headers().names();</span>
         }
 
         @Nullable
         @Override
         public String get(final @Nullable HttpServerRequest carrier, final String key) {
-<span class="pc bpc" id="L117" title="1 of 2 branches missed.">          if (carrier == null) {</span>
-<span class="nc" id="L118">            return null;</span>
+<span class="pc bpc" id="L114" title="1 of 2 branches missed.">          if (carrier == null) {</span>
+<span class="nc" id="L115">            return null;</span>
           }
-<span class="fc" id="L120">          return carrier.headers().get(key);</span>
+<span class="fc" id="L117">          return carrier.headers().get(key);</span>
         }
       };
 
@@ -130,13 +127,14 @@ public class JsonRpcHttpService {
   private TracerProvider tracerProvider;
   private Tracer tracer;
   private final int maxActiveConnections;
-<span class="fc" id="L133">  private final AtomicInteger activeConnectionsCount = new AtomicInteger();</span>
+<span class="fc" id="L130">  private final AtomicInteger activeConnectionsCount = new AtomicInteger();</span>
 
   @VisibleForTesting public final Optional&lt;AuthenticationService&gt; authenticationService;
 
   private HttpServer httpServer;
   private final HealthService livenessService;
   private final HealthService readinessService;
+  private final MetricsSystem metricsSystem;
 
   /**
    * Construct a JsonRpcHttpService handler
@@ -159,17 +157,17 @@ public class JsonRpcHttpService {
       final Map&lt;String, JsonRpcMethod&gt; methods,
       final HealthService livenessService,
       final HealthService readinessService) {
-<span class="fc" id="L162">    this(</span>
+<span class="fc" id="L160">    this(</span>
         vertx,
         dataDir,
         config,
         metricsSystem,
         natService,
         methods,
-<span class="fc" id="L169">        DefaultAuthenticationService.create(vertx, config),</span>
+<span class="fc" id="L167">        DefaultAuthenticationService.create(vertx, config),</span>
         livenessService,
         readinessService);
-<span class="fc" id="L172">  }</span>
+<span class="fc" id="L170">  }</span>
 
   public JsonRpcHttpService(
       final Vertx vertx,
@@ -180,174 +178,176 @@ public class JsonRpcHttpService {
       final Map&lt;String, JsonRpcMethod&gt; methods,
       final Optional&lt;AuthenticationService&gt; authenticationService,
       final HealthService livenessService,
-<span class="fc" id="L183">      final HealthService readinessService) {</span>
-<span class="fc" id="L184">    this.dataDir = dataDir;</span>
-<span class="fc" id="L185">    requestTimer =</span>
-<span class="fc" id="L186">        metricsSystem.createLabelledTimer(</span>
+<span class="fc" id="L181">      final HealthService readinessService) {</span>
+<span class="fc" id="L182">    this.dataDir = dataDir;</span>
+<span class="fc" id="L183">    requestTimer =</span>
+<span class="fc" id="L184">        metricsSystem.createLabelledTimer(</span>
             BesuMetricCategory.RPC,
             &quot;request_time&quot;,
             &quot;Time taken to process a JSON-RPC request&quot;,
             &quot;methodName&quot;);
 
-<span class="fc" id="L192">    metricsSystem.createIntegerGauge(</span>
+<span class="fc" id="L190">    metricsSystem.createIntegerGauge(</span>
         BesuMetricCategory.RPC,
         &quot;active_http_connection_count&quot;,
         &quot;Total no of active rpc http connections&quot;,
-<span class="fc" id="L196">        activeConnectionsCount::intValue);</span>
+<span class="fc" id="L194">        activeConnectionsCount::intValue);</span>
 
-<span class="fc" id="L198">    validateConfig(config);</span>
-<span class="fc" id="L199">    this.config = config;</span>
-<span class="fc" id="L200">    this.vertx = vertx;</span>
-<span class="fc" id="L201">    this.natService = natService;</span>
-<span class="fc" id="L202">    this.rpcMethods = methods;</span>
-<span class="fc" id="L203">    this.authenticationService = authenticationService;</span>
-<span class="fc" id="L204">    this.livenessService = livenessService;</span>
-<span class="fc" id="L205">    this.readinessService = readinessService;</span>
-<span class="fc" id="L206">    this.maxActiveConnections = config.getMaxActiveConnections();</span>
-<span class="pc bpc" id="L207" title="1 of 2 branches missed.">    if (metricsSystem instanceof OpenTelemetrySystem) {</span>
-<span class="nc" id="L208">      this.tracerProvider = ((OpenTelemetrySystem) metricsSystem).getTracerProvider();</span>
+<span class="fc" id="L196">    validateConfig(config);</span>
+<span class="fc" id="L197">    this.config = config;</span>
+<span class="fc" id="L198">    this.vertx = vertx;</span>
+<span class="fc" id="L199">    this.natService = natService;</span>
+<span class="fc" id="L200">    this.rpcMethods = methods;</span>
+<span class="fc" id="L201">    this.authenticationService = authenticationService;</span>
+<span class="fc" id="L202">    this.livenessService = livenessService;</span>
+<span class="fc" id="L203">    this.readinessService = readinessService;</span>
+<span class="fc" id="L204">    this.maxActiveConnections = config.getMaxActiveConnections();</span>
+<span class="pc bpc" id="L205" title="1 of 2 branches missed.">    if (metricsSystem instanceof OpenTelemetrySystem) {</span>
+<span class="nc" id="L206">      this.tracerProvider = ((OpenTelemetrySystem) metricsSystem).getTracerProvider();</span>
     }
-<span class="fc" id="L210">  }</span>
+<span class="fc" id="L208">    this.metricsSystem = metricsSystem;</span>
+<span class="fc" id="L209">  }</span>
 
   private void validateConfig(final JsonRpcConfiguration config) {
-<span class="fc" id="L213">    checkArgument(</span>
-<span class="pc bpc" id="L214" title="1 of 4 branches missed.">        config.getPort() == 0 || NetworkUtility.isValidPort(config.getPort()),</span>
+<span class="fc" id="L212">    checkArgument(</span>
+<span class="pc bpc" id="L213" title="1 of 4 branches missed.">        config.getPort() == 0 || NetworkUtility.isValidPort(config.getPort()),</span>
         &quot;Invalid port configuration.&quot;);
-<span class="pc bpc" id="L216" title="1 of 2 branches missed.">    checkArgument(config.getHost() != null, &quot;Required host is not configured.&quot;);</span>
-<span class="fc" id="L217">    checkArgument(</span>
-<span class="pc bpc" id="L218" title="1 of 2 branches missed.">        config.getMaxActiveConnections() &gt; 0, &quot;Invalid max active connections configuration.&quot;);</span>
-<span class="fc" id="L219">  }</span>
+<span class="pc bpc" id="L215" title="1 of 2 branches missed.">    checkArgument(config.getHost() != null, &quot;Required host is not configured.&quot;);</span>
+<span class="fc" id="L216">    checkArgument(</span>
+<span class="pc bpc" id="L217" title="1 of 2 branches missed.">        config.getMaxActiveConnections() &gt; 0, &quot;Invalid max active connections configuration.&quot;);</span>
+<span class="fc" id="L218">  }</span>
 
   public CompletableFuture&lt;?&gt; start() {
-<span class="fc" id="L222">    LOG.info(&quot;Starting JSON-RPC service on {}:{}&quot;, config.getHost(), config.getPort());</span>
-<span class="fc" id="L223">    LOG.debug(&quot;max number of active connections {}&quot;, maxActiveConnections);</span>
-<span class="pc bpc" id="L224" title="1 of 2 branches missed.">    if (this.tracerProvider != null) {</span>
-<span class="nc" id="L225">      this.tracer = tracerProvider.get(&quot;org.hyperledger.besu.jsonrpc&quot;, &quot;1.0.0&quot;);</span>
+<span class="fc" id="L221">    LOG.info(&quot;Starting JSON-RPC service on {}:{}&quot;, config.getHost(), config.getPort());</span>
+<span class="fc" id="L222">    LOG.debug(&quot;max number of active connections {}&quot;, maxActiveConnections);</span>
+<span class="pc bpc" id="L223" title="1 of 2 branches missed.">    if (this.tracerProvider != null) {</span>
+<span class="nc" id="L224">      this.tracer = tracerProvider.get(&quot;org.hyperledger.besu.jsonrpc&quot;, &quot;1.0.0&quot;);</span>
     } else {
-<span class="fc" id="L227">      this.tracer = OpenTelemetry.noop().getTracer(&quot;org.hyperledger.besu.jsonrpc&quot;, &quot;1.0.0&quot;);</span>
+<span class="fc" id="L226">      this.tracer = OpenTelemetry.noop().getTracer(&quot;org.hyperledger.besu.jsonrpc&quot;, &quot;1.0.0&quot;);</span>
     }
-<span class="fc" id="L229">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L228">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
     try {
 
       // Create the HTTP server and a router object.
-<span class="fc" id="L233">      httpServer = vertx.createHttpServer(getHttpServerOptions());</span>
+<span class="fc" id="L232">      httpServer = vertx.createHttpServer(getHttpServerOptions());</span>
 
-<span class="fc" id="L235">      httpServer.connectionHandler(connectionHandler());</span>
+<span class="fc" id="L234">      httpServer.connectionHandler(connectionHandler());</span>
 
-<span class="fc" id="L237">      httpServer</span>
-<span class="fc" id="L238">          .requestHandler(buildRouter())</span>
-<span class="fc" id="L239">          .listen(</span>
+<span class="fc" id="L236">      httpServer</span>
+<span class="fc" id="L237">          .requestHandler(buildRouter())</span>
+<span class="fc" id="L238">          .listen(</span>
               res -&gt; {
-<span class="fc bfc" id="L241" title="All 2 branches covered.">                if (!res.failed()) {</span>
-<span class="fc" id="L242">                  resultFuture.complete(null);</span>
-<span class="fc" id="L243">                  config.setPort(httpServer.actualPort());</span>
-<span class="fc" id="L244">                  LOG.info(</span>
+<span class="fc bfc" id="L240" title="All 2 branches covered.">                if (!res.failed()) {</span>
+<span class="fc" id="L241">                  resultFuture.complete(null);</span>
+<span class="fc" id="L242">                  config.setPort(httpServer.actualPort());</span>
+<span class="fc" id="L243">                  LOG.info(</span>
                       &quot;JSON-RPC service started and listening on {}:{}{}&quot;,
-<span class="fc" id="L246">                      config.getHost(),</span>
-<span class="fc" id="L247">                      config.getPort(),</span>
-<span class="fc" id="L248">                      tlsLogMessage());</span>
+<span class="fc" id="L245">                      config.getHost(),</span>
+<span class="fc" id="L246">                      config.getPort(),</span>
+<span class="fc" id="L247">                      tlsLogMessage());</span>
 
-<span class="fc" id="L250">                  natService.ifNatEnvironment(</span>
+<span class="fc" id="L249">                  natService.ifNatEnvironment(</span>
                       NatMethod.UPNP,
                       natManager -&gt;
-<span class="nc" id="L253">                          ((UpnpNatManager) natManager)</span>
-<span class="nc" id="L254">                              .requestPortForward(</span>
-<span class="nc" id="L255">                                  config.getPort(), NetworkProtocol.TCP, NatServiceType.JSON_RPC));</span>
+<span class="nc" id="L252">                          ((UpnpNatManager) natManager)</span>
+<span class="nc" id="L253">                              .requestPortForward(</span>
+<span class="nc" id="L254">                                  config.getPort(), NetworkProtocol.TCP, NatServiceType.JSON_RPC));</span>
 
-<span class="fc" id="L257">                  return;</span>
+<span class="fc" id="L256">                  return;</span>
                 }
 
-<span class="fc" id="L260">                httpServer = null;</span>
-<span class="fc" id="L261">                resultFuture.completeExceptionally(getFailureException(res.cause()));</span>
-<span class="fc" id="L262">              });</span>
-<span class="fc" id="L263">    } catch (final JsonRpcServiceException tlsException) {</span>
-<span class="fc" id="L264">      httpServer = null;</span>
-<span class="fc" id="L265">      resultFuture.completeExceptionally(tlsException);</span>
-<span class="nc" id="L266">    } catch (final VertxException listenException) {</span>
-<span class="nc" id="L267">      httpServer = null;</span>
-<span class="nc" id="L268">      resultFuture.completeExceptionally(</span>
+<span class="fc" id="L259">                httpServer = null;</span>
+<span class="fc" id="L260">                resultFuture.completeExceptionally(getFailureException(res.cause()));</span>
+<span class="fc" id="L261">              });</span>
+<span class="fc" id="L262">    } catch (final JsonRpcServiceException tlsException) {</span>
+<span class="fc" id="L263">      httpServer = null;</span>
+<span class="fc" id="L264">      resultFuture.completeExceptionally(tlsException);</span>
+<span class="nc" id="L265">    } catch (final VertxException listenException) {</span>
+<span class="nc" id="L266">      httpServer = null;</span>
+<span class="nc" id="L267">      resultFuture.completeExceptionally(</span>
           new JsonRpcServiceException(
-<span class="nc" id="L270">              String.format(</span>
+<span class="nc" id="L269">              String.format(</span>
                   &quot;Ethereum JSON-RPC listener failed to start: %s&quot;,
-<span class="nc" id="L272">                  ExceptionUtils.rootCause(listenException).getMessage())));</span>
-<span class="fc" id="L273">    }</span>
+<span class="nc" id="L271">                  ExceptionUtils.rootCause(listenException).getMessage())));</span>
+<span class="fc" id="L272">    }</span>
 
-<span class="fc" id="L275">    return resultFuture;</span>
+<span class="fc" id="L274">    return resultFuture;</span>
   }
 
   private Handler&lt;HttpConnection&gt; connectionHandler() {
 
-<span class="fc" id="L280">    return connection -&gt; {</span>
-<span class="fc bfc" id="L281" title="All 2 branches covered.">      if (activeConnectionsCount.get() &gt;= maxActiveConnections) {</span>
+<span class="fc" id="L279">    return connection -&gt; {</span>
+<span class="fc bfc" id="L280" title="All 2 branches covered.">      if (activeConnectionsCount.get() &gt;= maxActiveConnections) {</span>
         // disallow new connections to prevent DoS
-<span class="fc" id="L283">        LOG.warn(</span>
+<span class="fc" id="L282">        LOG.warn(</span>
             &quot;Rejecting new connection from {}. Max {} active connections limit reached.&quot;,
-<span class="fc" id="L285">            connection.remoteAddress(),</span>
-<span class="fc" id="L286">            activeConnectionsCount.getAndIncrement());</span>
-<span class="fc" id="L287">        connection.close();</span>
+<span class="fc" id="L284">            connection.remoteAddress(),</span>
+<span class="fc" id="L285">            activeConnectionsCount.getAndIncrement());</span>
+<span class="fc" id="L286">        connection.close();</span>
       } else {
-<span class="fc" id="L289">        LOG.debug(</span>
+<span class="fc" id="L288">        LOG.debug(</span>
             &quot;Opened connection from {}. Total of active connections: {}/{}&quot;,
-<span class="fc" id="L291">            connection.remoteAddress(),</span>
-<span class="fc" id="L292">            activeConnectionsCount.incrementAndGet(),</span>
-<span class="fc" id="L293">            maxActiveConnections);</span>
+<span class="fc" id="L290">            connection.remoteAddress(),</span>
+<span class="fc" id="L291">            activeConnectionsCount.incrementAndGet(),</span>
+<span class="fc" id="L292">            maxActiveConnections);</span>
       }
-<span class="fc" id="L295">      connection.closeHandler(</span>
+<span class="fc" id="L294">      connection.closeHandler(</span>
           c -&gt;
-<span class="fc" id="L297">              LOG.debug(</span>
+<span class="fc" id="L296">              LOG.debug(</span>
                   &quot;Connection closed from {}. Total of active connections: {}/{}&quot;,
-<span class="fc" id="L299">                  connection.remoteAddress(),</span>
-<span class="fc" id="L300">                  activeConnectionsCount.decrementAndGet(),</span>
-<span class="fc" id="L301">                  maxActiveConnections));</span>
-<span class="fc" id="L302">    };</span>
+<span class="fc" id="L298">                  connection.remoteAddress(),</span>
+<span class="fc" id="L299">                  activeConnectionsCount.decrementAndGet(),</span>
+<span class="fc" id="L300">                  maxActiveConnections));</span>
+<span class="fc" id="L301">    };</span>
   }
 
   private Router buildRouter() {
     // Handle json rpc requests
-<span class="fc" id="L307">    final Router router = Router.router(vertx);</span>
-<span class="fc" id="L308">    router.route().handler(this::createSpan);</span>
+<span class="fc" id="L306">    final Router router = Router.router(vertx);</span>
+<span class="fc" id="L307">    router.route().handler(this::createSpan);</span>
 
     // Verify Host header to avoid rebind attack.
-<span class="fc" id="L311">    router.route().handler(checkAllowlistHostHeader());</span>
-<span class="fc" id="L312">    router.errorHandler(403, new Logging403ErrorHandler());</span>
-<span class="fc" id="L313">    router</span>
-<span class="fc" id="L314">        .route()</span>
-<span class="fc" id="L315">        .handler(</span>
-<span class="fc" id="L316">            CorsHandler.create(buildCorsRegexFromConfig())</span>
-<span class="fc" id="L317">                .allowedHeader(&quot;*&quot;)</span>
-<span class="fc" id="L318">                .allowedHeader(&quot;content-type&quot;));</span>
-<span class="fc" id="L319">    router</span>
-<span class="fc" id="L320">        .route()</span>
-<span class="fc" id="L321">        .handler(</span>
-<span class="fc" id="L322">            BodyHandler.create()</span>
-<span class="fc" id="L323">                .setBodyLimit(config.getMaxRequestContentLength())</span>
-<span class="fc" id="L324">                .setUploadsDirectory(dataDir.resolve(&quot;uploads&quot;).toString())</span>
-<span class="fc" id="L325">                .setDeleteUploadedFilesOnEnd(true));</span>
-<span class="fc" id="L326">    router.route(&quot;/&quot;).method(HttpMethod.GET).handler(this::handleEmptyRequest);</span>
-<span class="fc" id="L327">    router</span>
-<span class="fc" id="L328">        .route(HealthService.LIVENESS_PATH)</span>
-<span class="fc" id="L329">        .method(HttpMethod.GET)</span>
-<span class="fc" id="L330">        .handler(livenessService::handleRequest);</span>
-<span class="fc" id="L331">    router</span>
-<span class="fc" id="L332">        .route(HealthService.READINESS_PATH)</span>
-<span class="fc" id="L333">        .method(HttpMethod.GET)</span>
-<span class="fc" id="L334">        .handler(readinessService::handleRequest);</span>
-<span class="fc" id="L335">    Route mainRoute = router.route(&quot;/&quot;).method(HttpMethod.POST).produces(APPLICATION_JSON);</span>
-<span class="fc bfc" id="L336" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
-<span class="fc" id="L337">      mainRoute.handler(</span>
-<span class="fc" id="L338">          HandlerFactory.authentication(authenticationService.get(), config.getNoAuthRpcApis()));</span>
+<span class="fc" id="L310">    router.route().handler(checkAllowlistHostHeader());</span>
+<span class="fc" id="L311">    router.errorHandler(403, new Logging403ErrorHandler());</span>
+<span class="fc" id="L312">    router</span>
+<span class="fc" id="L313">        .route()</span>
+<span class="fc" id="L314">        .handler(</span>
+<span class="fc" id="L315">            CorsHandler.create(buildCorsRegexFromConfig())</span>
+<span class="fc" id="L316">                .allowedHeader(&quot;*&quot;)</span>
+<span class="fc" id="L317">                .allowedHeader(&quot;content-type&quot;));</span>
+<span class="fc" id="L318">    router</span>
+<span class="fc" id="L319">        .route()</span>
+<span class="fc" id="L320">        .handler(</span>
+<span class="fc" id="L321">            BodyHandler.create()</span>
+<span class="fc" id="L322">                .setBodyLimit(config.getMaxRequestContentLength())</span>
+<span class="fc" id="L323">                .setUploadsDirectory(dataDir.resolve(&quot;uploads&quot;).toString())</span>
+<span class="fc" id="L324">                .setDeleteUploadedFilesOnEnd(true));</span>
+<span class="fc" id="L325">    router.route(&quot;/&quot;).method(HttpMethod.GET).handler(this::handleEmptyRequest);</span>
+<span class="fc" id="L326">    router</span>
+<span class="fc" id="L327">        .route(HealthService.LIVENESS_PATH)</span>
+<span class="fc" id="L328">        .method(HttpMethod.GET)</span>
+<span class="fc" id="L329">        .handler(livenessService::handleRequest);</span>
+<span class="fc" id="L330">    router</span>
+<span class="fc" id="L331">        .route(HealthService.READINESS_PATH)</span>
+<span class="fc" id="L332">        .method(HttpMethod.GET)</span>
+<span class="fc" id="L333">        .handler(readinessService::handleRequest);</span>
+<span class="fc" id="L334">    Route mainRoute = router.route(&quot;/&quot;).method(HttpMethod.POST).produces(APPLICATION_JSON);</span>
+<span class="fc bfc" id="L335" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L336">      mainRoute.handler(</span>
+<span class="fc" id="L337">          HandlerFactory.authentication(authenticationService.get(), config.getNoAuthRpcApis()));</span>
     }
-<span class="fc" id="L340">    mainRoute</span>
-<span class="fc" id="L341">        .handler(HandlerFactory.jsonRpcParser())</span>
-<span class="fc" id="L342">        .handler(</span>
-<span class="fc" id="L343">            HandlerFactory.timeout(new TimeoutOptions(config.getHttpTimeoutSec()), rpcMethods));</span>
-<span class="fc bfc" id="L344" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
-<span class="fc" id="L345">      mainRoute.blockingHandler(</span>
-<span class="fc" id="L346">          HandlerFactory.jsonRpcExecutor(</span>
+<span class="fc" id="L339">    mainRoute</span>
+<span class="fc" id="L340">        .handler(HandlerFactory.jsonRpcParser())</span>
+<span class="fc" id="L341">        .handler(</span>
+<span class="fc" id="L342">            HandlerFactory.timeout(new TimeoutOptions(config.getHttpTimeoutSec()), rpcMethods));</span>
+<span class="fc bfc" id="L343" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L344">      mainRoute.blockingHandler(</span>
+<span class="fc" id="L345">          HandlerFactory.jsonRpcExecutor(</span>
               new JsonRpcExecutor(
                   new AuthenticatedJsonRpcProcessor(
                       new TimedJsonRpcProcessor(
-                          new TracedJsonRpcProcessor(new BaseJsonRpcProcessor()), requestTimer),
+                          new TracedJsonRpcProcessor(new BaseJsonRpcProcessor(), metricsSystem),
+                          requestTimer),
 <span class="fc" id="L351">                      authenticationService.get(),</span>
 <span class="fc" id="L352">                      config.getNoAuthRpcApis()),</span>
                   rpcMethods),
@@ -359,232 +359,221 @@ public class JsonRpcHttpService {
 <span class="fc" id="L359">          HandlerFactory.jsonRpcExecutor(</span>
               new JsonRpcExecutor(
                   new TimedJsonRpcProcessor(
-                      new TracedJsonRpcProcessor(new BaseJsonRpcProcessor()), requestTimer),
+                      new TracedJsonRpcProcessor(new BaseJsonRpcProcessor(), metricsSystem),
+                      requestTimer),
                   rpcMethods),
               tracer,
               config),
           false);
     }
 
-<span class="fc bfc" id="L369" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
-<span class="fc" id="L370">      router</span>
-<span class="fc" id="L371">          .route(&quot;/login&quot;)</span>
-<span class="fc" id="L372">          .method(HttpMethod.POST)</span>
-<span class="fc" id="L373">          .produces(APPLICATION_JSON)</span>
-<span class="fc" id="L374">          .handler(authenticationService.get()::handleLogin);</span>
+<span class="fc bfc" id="L370" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L371">      router</span>
+<span class="fc" id="L372">          .route(&quot;/login&quot;)</span>
+<span class="fc" id="L373">          .method(HttpMethod.POST)</span>
+<span class="fc" id="L374">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L375">          .handler(authenticationService.get()::handleLogin);</span>
     } else {
-<span class="fc" id="L376">      router</span>
-<span class="fc" id="L377">          .route(&quot;/login&quot;)</span>
-<span class="fc" id="L378">          .method(HttpMethod.POST)</span>
-<span class="fc" id="L379">          .produces(APPLICATION_JSON)</span>
-<span class="fc" id="L380">          .handler(DefaultAuthenticationService::handleDisabledLogin);</span>
+<span class="fc" id="L377">      router</span>
+<span class="fc" id="L378">          .route(&quot;/login&quot;)</span>
+<span class="fc" id="L379">          .method(HttpMethod.POST)</span>
+<span class="fc" id="L380">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L381">          .handler(DefaultAuthenticationService::handleDisabledLogin);</span>
     }
-<span class="fc" id="L382">    return router;</span>
+<span class="fc" id="L383">    return router;</span>
   }
 
   private void createSpan(final RoutingContext routingContext) {
-<span class="fc" id="L386">    final SocketAddress address = routingContext.request().connection().remoteAddress();</span>
+<span class="fc" id="L387">    final SocketAddress address = routingContext.request().connection().remoteAddress();</span>
 
-<span class="fc" id="L388">    Context parent =</span>
-<span class="fc" id="L389">        traceFormats.extract(Context.current(), routingContext.request(), requestAttributesGetter);</span>
-<span class="fc" id="L390">    final Span serverSpan =</span>
+<span class="fc" id="L389">    Context parent =</span>
+<span class="fc" id="L390">        traceFormats.extract(Context.current(), routingContext.request(), requestAttributesGetter);</span>
+<span class="fc" id="L391">    final Span serverSpan =</span>
         tracer
-<span class="fc" id="L392">            .spanBuilder(address.host() + &quot;:&quot; + address.port())</span>
-<span class="fc" id="L393">            .setParent(parent)</span>
-<span class="fc" id="L394">            .setSpanKind(SpanKind.SERVER)</span>
-<span class="fc" id="L395">            .startSpan();</span>
-<span class="fc" id="L396">    routingContext.put(SPAN_CONTEXT, Context.current().with(serverSpan));</span>
+<span class="fc" id="L393">            .spanBuilder(address.host() + &quot;:&quot; + address.port())</span>
+<span class="fc" id="L394">            .setParent(parent)</span>
+<span class="fc" id="L395">            .setSpanKind(SpanKind.SERVER)</span>
+<span class="fc" id="L396">            .startSpan();</span>
+<span class="fc" id="L397">    routingContext.put(SPAN_CONTEXT, Context.current().with(serverSpan));</span>
 
-<span class="fc" id="L398">    routingContext.addEndHandler(</span>
+<span class="fc" id="L399">    routingContext.addEndHandler(</span>
         event -&gt; {
-<span class="pc bpc" id="L400" title="1 of 2 branches missed.">          if (event.failed()) {</span>
-<span class="nc" id="L401">            serverSpan.recordException(event.cause());</span>
-<span class="nc" id="L402">            serverSpan.setStatus(StatusCode.ERROR);</span>
+<span class="pc bpc" id="L401" title="1 of 2 branches missed.">          if (event.failed()) {</span>
+<span class="nc" id="L402">            serverSpan.recordException(event.cause());</span>
+<span class="nc" id="L403">            serverSpan.setStatus(StatusCode.ERROR);</span>
           }
-<span class="fc" id="L404">          serverSpan.end();</span>
-<span class="fc" id="L405">        });</span>
-<span class="fc" id="L406">    routingContext.next();</span>
-<span class="fc" id="L407">  }</span>
+<span class="fc" id="L405">          serverSpan.end();</span>
+<span class="fc" id="L406">        });</span>
+<span class="fc" id="L407">    routingContext.next();</span>
+<span class="fc" id="L408">  }</span>
 
   private HttpServerOptions getHttpServerOptions() {
-<span class="fc" id="L410">    final HttpServerOptions httpServerOptions =</span>
+<span class="fc" id="L411">    final HttpServerOptions httpServerOptions =</span>
         new HttpServerOptions()
-<span class="fc" id="L412">            .setHost(config.getHost())</span>
-<span class="fc" id="L413">            .setPort(config.getPort())</span>
-<span class="fc" id="L414">            .setHandle100ContinueAutomatically(true)</span>
-<span class="fc" id="L415">            .setCompressionSupported(true);</span>
+<span class="fc" id="L413">            .setHost(config.getHost())</span>
+<span class="fc" id="L414">            .setPort(config.getPort())</span>
+<span class="fc" id="L415">            .setHandle100ContinueAutomatically(true)</span>
+<span class="fc" id="L416">            .setCompressionSupported(true);</span>
 
-<span class="fc" id="L417">    applyTlsConfig(httpServerOptions);</span>
-<span class="fc" id="L418">    return httpServerOptions;</span>
+<span class="fc" id="L418">    applyTlsConfig(httpServerOptions);</span>
+<span class="fc" id="L419">    return httpServerOptions;</span>
   }
 
   private void applyTlsConfig(final HttpServerOptions httpServerOptions) {
-<span class="fc bfc" id="L422" title="All 2 branches covered.">    if (config.getTlsConfiguration().isEmpty()) {</span>
-<span class="fc" id="L423">      return;</span>
+<span class="fc bfc" id="L423" title="All 2 branches covered.">    if (config.getTlsConfiguration().isEmpty()) {</span>
+<span class="fc" id="L424">      return;</span>
     }
 
-<span class="fc" id="L426">    final TlsConfiguration tlsConfiguration = config.getTlsConfiguration().get();</span>
+<span class="fc" id="L427">    final TlsConfiguration tlsConfiguration = config.getTlsConfiguration().get();</span>
     try {
-<span class="fc" id="L428">      httpServerOptions</span>
-<span class="fc" id="L429">          .setSsl(true)</span>
-<span class="fc" id="L430">          .setPfxKeyCertOptions(</span>
+<span class="fc" id="L429">      httpServerOptions</span>
+<span class="fc" id="L430">          .setSsl(true)</span>
+<span class="fc" id="L431">          .setPfxKeyCertOptions(</span>
               new PfxOptions()
-<span class="fc" id="L432">                  .setPath(tlsConfiguration.getKeyStorePath().toString())</span>
-<span class="fc" id="L433">                  .setPassword(tlsConfiguration.getKeyStorePassword()))</span>
-<span class="fc" id="L434">          .setUseAlpn(true);</span>
+<span class="fc" id="L433">                  .setPath(tlsConfiguration.getKeyStorePath().toString())</span>
+<span class="fc" id="L434">                  .setPassword(tlsConfiguration.getKeyStorePassword()))</span>
+<span class="fc" id="L435">          .setUseAlpn(true);</span>
 
-<span class="fc" id="L436">      tlsConfiguration</span>
-<span class="fc" id="L437">          .getSecureTransportProtocols()</span>
-<span class="fc" id="L438">          .ifPresent(httpServerOptions::setEnabledSecureTransportProtocols);</span>
+<span class="fc" id="L437">      tlsConfiguration</span>
+<span class="fc" id="L438">          .getSecureTransportProtocols()</span>
+<span class="fc" id="L439">          .ifPresent(httpServerOptions::setEnabledSecureTransportProtocols);</span>
 
-<span class="fc" id="L440">      tlsConfiguration</span>
-<span class="fc" id="L441">          .getCipherSuites()</span>
-<span class="fc" id="L442">          .ifPresent(</span>
+<span class="fc" id="L441">      tlsConfiguration</span>
+<span class="fc" id="L442">          .getCipherSuites()</span>
+<span class="fc" id="L443">          .ifPresent(</span>
               cipherSuites -&gt; {
-<span class="nc bnc" id="L444" title="All 2 branches missed.">                for (String cs : cipherSuites) {</span>
-<span class="nc" id="L445">                  httpServerOptions.addEnabledCipherSuite(cs);</span>
-<span class="nc" id="L446">                }</span>
-<span class="nc" id="L447">              });</span>
+<span class="nc bnc" id="L445" title="All 2 branches missed.">                for (String cs : cipherSuites) {</span>
+<span class="nc" id="L446">                  httpServerOptions.addEnabledCipherSuite(cs);</span>
+<span class="nc" id="L447">                }</span>
+<span class="nc" id="L448">              });</span>
 
-<span class="fc" id="L449">      tlsConfiguration</span>
-<span class="fc" id="L450">          .getClientAuthConfiguration()</span>
-<span class="fc" id="L451">          .ifPresent(</span>
+<span class="fc" id="L450">      tlsConfiguration</span>
+<span class="fc" id="L451">          .getClientAuthConfiguration()</span>
+<span class="fc" id="L452">          .ifPresent(</span>
               clientAuthConfiguration -&gt;
-<span class="fc" id="L453">                  applyTlsClientAuth(clientAuthConfiguration, httpServerOptions));</span>
-<span class="fc" id="L454">    } catch (final RuntimeException re) {</span>
-<span class="fc" id="L455">      throw new JsonRpcServiceException(</span>
-<span class="fc" id="L456">          String.format(</span>
+<span class="fc" id="L454">                  applyTlsClientAuth(clientAuthConfiguration, httpServerOptions));</span>
+<span class="fc" id="L455">    } catch (final RuntimeException re) {</span>
+<span class="fc" id="L456">      throw new JsonRpcServiceException(</span>
+<span class="fc" id="L457">          String.format(</span>
               &quot;TLS options failed to initialize for Ethereum JSON-RPC listener: %s&quot;,
-<span class="fc" id="L458">              re.getMessage()));</span>
-<span class="fc" id="L459">    }</span>
-<span class="fc" id="L460">  }</span>
+<span class="fc" id="L459">              re.getMessage()));</span>
+<span class="fc" id="L460">    }</span>
+<span class="fc" id="L461">  }</span>
 
   private void applyTlsClientAuth(
       final TlsClientAuthConfiguration clientAuthConfiguration,
       final HttpServerOptions httpServerOptions) {
-<span class="fc" id="L465">    httpServerOptions.setClientAuth(ClientAuth.REQUIRED);</span>
-<span class="fc" id="L466">    clientAuthConfiguration</span>
-<span class="fc" id="L467">        .getKnownClientsFile()</span>
-<span class="fc" id="L468">        .ifPresent(</span>
+<span class="fc" id="L466">    httpServerOptions.setClientAuth(ClientAuth.REQUIRED);</span>
+<span class="fc" id="L467">    clientAuthConfiguration</span>
+<span class="fc" id="L468">        .getKnownClientsFile()</span>
+<span class="fc" id="L469">        .ifPresent(</span>
             knownClientsFile -&gt;
-<span class="fc" id="L470">                httpServerOptions.setTrustOptions(</span>
-<span class="fc" id="L471">                    allowlistClients(</span>
-<span class="fc" id="L472">                        knownClientsFile, clientAuthConfiguration.isCaClientsEnabled())));</span>
-<span class="fc" id="L473">  }</span>
+<span class="fc" id="L471">                httpServerOptions.setTrustOptions(</span>
+<span class="fc" id="L472">                    allowlistClients(</span>
+<span class="fc" id="L473">                        knownClientsFile, clientAuthConfiguration.isCaClientsEnabled())));</span>
+<span class="fc" id="L474">  }</span>
 
   private String tlsLogMessage() {
-<span class="fc bfc" id="L476" title="All 2 branches covered.">    return config.getTlsConfiguration().isPresent() ? &quot; with TLS enabled.&quot; : &quot;&quot;;</span>
+<span class="fc bfc" id="L477" title="All 2 branches covered.">    return config.getTlsConfiguration().isPresent() ? &quot; with TLS enabled.&quot; : &quot;&quot;;</span>
   }
 
   private Throwable getFailureException(final Throwable listenFailure) {
 
-<span class="fc" id="L481">    JsonRpcServiceException servFail =</span>
+<span class="fc" id="L482">    JsonRpcServiceException servFail =</span>
         new JsonRpcServiceException(
-<span class="fc" id="L483">            String.format(</span>
+<span class="fc" id="L484">            String.format(</span>
                 &quot;Failed to bind Ethereum JSON-RPC listener to %s:%s: %s&quot;,
-<span class="fc" id="L485">                config.getHost(), config.getPort(), listenFailure.getMessage()));</span>
-<span class="fc" id="L486">    servFail.initCause(listenFailure);</span>
+<span class="fc" id="L486">                config.getHost(), config.getPort(), listenFailure.getMessage()));</span>
+<span class="fc" id="L487">    servFail.initCause(listenFailure);</span>
 
-<span class="fc" id="L488">    return servFail;</span>
+<span class="fc" id="L489">    return servFail;</span>
   }
 
   private Handler&lt;RoutingContext&gt; checkAllowlistHostHeader() {
-<span class="fc" id="L492">    return event -&gt; {</span>
-<span class="fc" id="L493">      final Optional&lt;String&gt; hostHeader = getAndValidateHostHeader(event);</span>
-<span class="fc bfc" id="L494" title="All 2 branches covered.">      if (config.getHostsAllowlist().contains(&quot;*&quot;)</span>
-<span class="fc bfc" id="L495" title="All 4 branches covered.">          || (hostHeader.isPresent() &amp;&amp; hostIsInAllowlist(hostHeader.get()))) {</span>
-<span class="fc" id="L496">        event.next();</span>
+<span class="fc" id="L493">    return event -&gt; {</span>
+<span class="fc" id="L494">      final Optional&lt;String&gt; hostHeader = getAndValidateHostHeader(event);</span>
+<span class="fc bfc" id="L495" title="All 2 branches covered.">      if (config.getHostsAllowlist().contains(&quot;*&quot;)</span>
+<span class="fc bfc" id="L496" title="All 4 branches covered.">          || (hostHeader.isPresent() &amp;&amp; hostIsInAllowlist(hostHeader.get()))) {</span>
+<span class="fc" id="L497">        event.next();</span>
       } else {
-<span class="fc" id="L498">        final HttpServerResponse response = event.response();</span>
-<span class="pc bpc" id="L499" title="1 of 2 branches missed.">        if (!response.closed()) {</span>
-<span class="fc" id="L500">          response</span>
-<span class="fc" id="L501">              .setStatusCode(403)</span>
-<span class="fc" id="L502">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
-<span class="fc" id="L503">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
+<span class="fc" id="L499">        final HttpServerResponse response = event.response();</span>
+<span class="pc bpc" id="L500" title="1 of 2 branches missed.">        if (!response.closed()) {</span>
+<span class="fc" id="L501">          response</span>
+<span class="fc" id="L502">              .setStatusCode(403)</span>
+<span class="fc" id="L503">              .putHeader(&quot;Content-Type&quot;, &quot;application/json; charset=utf-8&quot;)</span>
+<span class="fc" id="L504">              .end(&quot;{\&quot;message\&quot;:\&quot;Host not authorized.\&quot;}&quot;);</span>
         }
       }
-<span class="fc" id="L506">    };</span>
+<span class="fc" id="L507">    };</span>
   }
 
   private Optional&lt;String&gt; getAndValidateHostHeader(final RoutingContext event) {
-    String hostname =
-<span class="fc bfc" id="L511" title="All 2 branches covered.">        event.request().getHeader(HttpHeaders.HOST) != null</span>
-<span class="fc" id="L512">            ? event.request().getHeader(HttpHeaders.HOST)</span>
-<span class="fc" id="L513">            : event.request().host();</span>
-<span class="fc" id="L514">    final Iterable&lt;String&gt; splitHostHeader = Splitter.on(':').split(hostname);</span>
-<span class="fc" id="L515">    final long hostPieces = stream(splitHostHeader).count();</span>
-<span class="fc bfc" id="L516" title="All 2 branches covered.">    if (hostPieces &gt; 1) {</span>
-      // If the host contains a colon, verify the host is correctly formed - host [ &quot;:&quot; port ]
-<span class="fc bfc" id="L518" title="All 4 branches covered.">      if (hostPieces &gt; 2 || !Iterables.get(splitHostHeader, 1).matches(&quot;\\d{1,5}+&quot;)) {</span>
-<span class="fc" id="L519">        return Optional.empty();</span>
-      }
-    }
-<span class="fc" id="L522">    return Optional.ofNullable(Iterables.get(splitHostHeader, 0));</span>
+<span class="fc" id="L511">    final HostAndPort hostAndPort = event.request().authority();</span>
+<span class="fc" id="L512">    return Optional.ofNullable(hostAndPort).map(HostAndPort::host);</span>
   }
 
   private boolean hostIsInAllowlist(final String hostHeader) {
-<span class="fc" id="L526">    if (config.getHostsAllowlist().stream()</span>
-<span class="fc bfc" id="L527" title="All 2 branches covered.">        .anyMatch(</span>
-<span class="fc" id="L528">            allowlistEntry -&gt; allowlistEntry.toLowerCase().equals(hostHeader.toLowerCase()))) {</span>
-<span class="fc" id="L529">      return true;</span>
+<span class="fc" id="L516">    if (config.getHostsAllowlist().stream()</span>
+<span class="fc bfc" id="L517" title="All 2 branches covered.">        .anyMatch(allowlistEntry -&gt; allowlistEntry.equalsIgnoreCase(hostHeader))) {</span>
+<span class="fc" id="L518">      return true;</span>
     } else {
-<span class="fc" id="L531">      LOG.trace(&quot;Host not in allowlist: '{}'&quot;, hostHeader);</span>
-<span class="fc" id="L532">      return false;</span>
+<span class="fc" id="L520">      LOG.trace(&quot;Host not in allowlist: '{}'&quot;, hostHeader);</span>
+<span class="fc" id="L521">      return false;</span>
     }
   }
 
   public CompletableFuture&lt;?&gt; stop() {
-<span class="fc bfc" id="L537" title="All 2 branches covered.">    if (httpServer == null) {</span>
-<span class="fc" id="L538">      return CompletableFuture.completedFuture(null);</span>
+<span class="fc bfc" id="L526" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L527">      return CompletableFuture.completedFuture(null);</span>
     }
 
-<span class="fc" id="L541">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
-<span class="fc" id="L542">    httpServer.close(</span>
+<span class="fc" id="L530">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L531">    httpServer.close(</span>
         res -&gt; {
-<span class="pc bpc" id="L544" title="1 of 2 branches missed.">          if (res.failed()) {</span>
-<span class="nc" id="L545">            resultFuture.completeExceptionally(res.cause());</span>
+<span class="pc bpc" id="L533" title="1 of 2 branches missed.">          if (res.failed()) {</span>
+<span class="nc" id="L534">            resultFuture.completeExceptionally(res.cause());</span>
           } else {
-<span class="fc" id="L547">            httpServer = null;</span>
-<span class="fc" id="L548">            resultFuture.complete(null);</span>
+<span class="fc" id="L536">            httpServer = null;</span>
+<span class="fc" id="L537">            resultFuture.complete(null);</span>
           }
-<span class="fc" id="L550">        });</span>
-<span class="fc" id="L551">    return resultFuture;</span>
+<span class="fc" id="L539">        });</span>
+<span class="fc" id="L540">    return resultFuture;</span>
   }
 
   public InetSocketAddress socketAddress() {
-<span class="fc bfc" id="L555" title="All 2 branches covered.">    if (httpServer == null) {</span>
-<span class="fc" id="L556">      return EMPTY_SOCKET_ADDRESS;</span>
+<span class="fc bfc" id="L544" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L545">      return EMPTY_SOCKET_ADDRESS;</span>
     }
-<span class="fc" id="L558">    return new InetSocketAddress(config.getHost(), httpServer.actualPort());</span>
+<span class="fc" id="L547">    return new InetSocketAddress(config.getHost(), httpServer.actualPort());</span>
   }
 
   @VisibleForTesting
   public String url() {
-<span class="fc bfc" id="L563" title="All 2 branches covered.">    if (httpServer == null) {</span>
-<span class="fc" id="L564">      return &quot;&quot;;</span>
+<span class="fc bfc" id="L552" title="All 2 branches covered.">    if (httpServer == null) {</span>
+<span class="fc" id="L553">      return &quot;&quot;;</span>
     }
-<span class="fc" id="L566">    return NetworkUtility.urlForSocketAddress(getScheme(), socketAddress());</span>
+<span class="fc" id="L555">    return NetworkUtility.urlForSocketAddress(getScheme(), socketAddress());</span>
   }
 
   private String getScheme() {
-<span class="fc bfc" id="L570" title="All 2 branches covered.">    return config.getTlsConfiguration().isPresent() ? &quot;https&quot; : &quot;http&quot;;</span>
+<span class="fc bfc" id="L559" title="All 2 branches covered.">    return config.getTlsConfiguration().isPresent() ? &quot;https&quot; : &quot;http&quot;;</span>
   }
 
   // Facilitate remote health-checks in AWS, inter alia.
   private void handleEmptyRequest(final RoutingContext routingContext) {
-<span class="fc" id="L575">    routingContext.response().setStatusCode(201).end();</span>
-<span class="fc" id="L576">  }</span>
+<span class="fc" id="L564">    routingContext.response().setStatusCode(201).end();</span>
+<span class="fc" id="L565">  }</span>
 
   private String buildCorsRegexFromConfig() {
-<span class="fc bfc" id="L579" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().isEmpty()) {</span>
-<span class="fc" id="L580">      return &quot;&quot;;</span>
+<span class="fc bfc" id="L568" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().isEmpty()) {</span>
+<span class="fc" id="L569">      return &quot;&quot;;</span>
     }
-<span class="fc bfc" id="L582" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().contains(&quot;*&quot;)) {</span>
-<span class="fc" id="L583">      return &quot;.*://.*&quot;;</span>
+<span class="fc bfc" id="L571" title="All 2 branches covered.">    if (config.getCorsAllowedDomains().contains(&quot;*&quot;)) {</span>
+<span class="fc" id="L572">      return &quot;.*://.*&quot;;</span>
     } else {
-<span class="fc" id="L585">      final StringJoiner stringJoiner = new StringJoiner(&quot;|&quot;);</span>
-<span class="fc bfc" id="L586" title="All 2 branches covered.">      config.getCorsAllowedDomains().stream().filter(s -&gt; !s.isEmpty()).forEach(stringJoiner::add);</span>
-<span class="fc" id="L587">      return stringJoiner.toString();</span>
+<span class="fc" id="L574">      final StringJoiner stringJoiner = new StringJoiner(&quot;|&quot;);</span>
+<span class="fc bfc" id="L575" title="All 2 branches covered.">      config.getCorsAllowedDomains().stream().filter(s -&gt; !s.isEmpty()).forEach(stringJoiner::add);</span>
+<span class="fc" id="L576">      return stringJoiner.toString();</span>
     }
   }
 }

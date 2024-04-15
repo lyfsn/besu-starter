@@ -14,12 +14,12 @@
  */
 package org.hyperledger.besu.ethereum.eth.sync.snapsync.request;
 
-import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MAX_RANGE;
-import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.MIN_RANGE;
-import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RangeManager.findNewBeginElementInRange;
 import static org.hyperledger.besu.ethereum.eth.sync.snapsync.RequestType.ACCOUNT_RANGE;
 import static org.hyperledger.besu.ethereum.eth.sync.snapsync.SnapSyncMetricsManager.Step.DOWNLOAD;
 import static org.hyperledger.besu.ethereum.eth.sync.snapsync.StackTrie.FlatDatabaseUpdater.noop;
+import static org.hyperledger.besu.ethereum.trie.RangeManager.MAX_RANGE;
+import static org.hyperledger.besu.ethereum.trie.RangeManager.MIN_RANGE;
+import static org.hyperledger.besu.ethereum.trie.RangeManager.findNewBeginElementInRange;
 import static org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator.applyForStrategy;
 
 import org.hyperledger.besu.datatypes.Hash;
@@ -31,7 +31,7 @@ import org.hyperledger.besu.ethereum.proof.WorldStateProofProvider;
 import org.hyperledger.besu.ethereum.rlp.RLP;
 import org.hyperledger.besu.ethereum.rlp.RLPInput;
 import org.hyperledger.besu.ethereum.trie.NodeUpdater;
-import org.hyperledger.besu.ethereum.trie.bonsai.storage.BonsaiWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.storage.BonsaiWorldStateKeyValueStorage;
 import org.hyperledger.besu.ethereum.worldstate.FlatDbMode;
 import org.hyperledger.besu.ethereum.worldstate.StateTrieAccountValue;
 import org.hyperledger.besu.ethereum.worldstate.WorldStateKeyValueStorage;
@@ -40,8 +40,8 @@ import org.hyperledger.besu.ethereum.worldstate.WorldStateStorageCoordinator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Optional;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
@@ -155,22 +155,28 @@ public class AccountRangeDataRequest extends SnapDataRequest {
 
   public void addResponse(
       final WorldStateProofProvider worldStateProofProvider,
-      final TreeMap&lt;Bytes32, Bytes&gt; accounts,
+      final NavigableMap&lt;Bytes32, Bytes&gt; accounts,
       final ArrayDeque&lt;Bytes&gt; proofs) {
 <span class="pc bpc" id="L160" title="3 of 4 branches missed.">    if (!accounts.isEmpty() || !proofs.isEmpty()) {</span>
 <span class="pc bpc" id="L161" title="1 of 2 branches missed.">      if (!worldStateProofProvider.isValidRangeProof(</span>
 <span class="fc" id="L162">          startKeyHash, endKeyHash, getRootHash(), proofs, accounts)) {</span>
-<span class="nc" id="L163">        isProofValid = Optional.of(false);</span>
+        // this happens on repivot and on bad proofs
+<span class="nc" id="L164">        LOG.atTrace()</span>
+<span class="nc" id="L165">            .setMessage(&quot;invalid range proof received for account range {} {}&quot;)</span>
+<span class="nc" id="L166">            .addArgument(accounts.firstKey())</span>
+<span class="nc" id="L167">            .addArgument(accounts.lastKey())</span>
+<span class="nc" id="L168">            .log();</span>
+<span class="nc" id="L169">        isProofValid = Optional.of(false);</span>
       } else {
-<span class="fc" id="L165">        stackTrie.addElement(startKeyHash, proofs, accounts);</span>
-<span class="fc" id="L166">        isProofValid = Optional.of(true);</span>
+<span class="fc" id="L171">        stackTrie.addElement(startKeyHash, proofs, accounts);</span>
+<span class="fc" id="L172">        isProofValid = Optional.of(true);</span>
       }
     }
-<span class="fc" id="L169">  }</span>
+<span class="fc" id="L175">  }</span>
 
   @Override
   public boolean isResponseReceived() {
-<span class="fc" id="L173">    return isProofValid.orElse(false);</span>
+<span class="fc" id="L179">    return isProofValid.orElse(false);</span>
   }
 
   @Override
@@ -178,84 +184,84 @@ public class AccountRangeDataRequest extends SnapDataRequest {
       final SnapWorldDownloadState downloadState,
       final WorldStateStorageCoordinator worldStateStorageCoordinator,
       final SnapSyncProcessState snapSyncState) {
-<span class="fc" id="L181">    final List&lt;SnapDataRequest&gt; childRequests = new ArrayList&lt;&gt;();</span>
+<span class="fc" id="L187">    final List&lt;SnapDataRequest&gt; childRequests = new ArrayList&lt;&gt;();</span>
 
-<span class="fc" id="L183">    final StackTrie.TaskElement taskElement = stackTrie.getElement(startKeyHash);</span>
+<span class="fc" id="L189">    final StackTrie.TaskElement taskElement = stackTrie.getElement(startKeyHash);</span>
     // new request is added if the response does not match all the requested range
-<span class="fc" id="L185">    findNewBeginElementInRange(getRootHash(), taskElement.proofs(), taskElement.keys(), endKeyHash)</span>
-<span class="fc" id="L186">        .ifPresentOrElse(</span>
+<span class="fc" id="L191">    findNewBeginElementInRange(getRootHash(), taskElement.proofs(), taskElement.keys(), endKeyHash)</span>
+<span class="fc" id="L192">        .ifPresentOrElse(</span>
             missingRightElement -&gt; {
-<span class="nc" id="L188">              downloadState</span>
-<span class="nc" id="L189">                  .getMetricsManager()</span>
-<span class="nc" id="L190">                  .notifyRangeProgress(DOWNLOAD, missingRightElement, endKeyHash);</span>
-<span class="nc" id="L191">              childRequests.add(</span>
-<span class="nc" id="L192">                  createAccountRangeDataRequest(getRootHash(), missingRightElement, endKeyHash));</span>
-<span class="nc" id="L193">            },</span>
+<span class="nc" id="L194">              downloadState</span>
+<span class="nc" id="L195">                  .getMetricsManager()</span>
+<span class="nc" id="L196">                  .notifyRangeProgress(DOWNLOAD, missingRightElement, endKeyHash);</span>
+<span class="nc" id="L197">              childRequests.add(</span>
+<span class="nc" id="L198">                  createAccountRangeDataRequest(getRootHash(), missingRightElement, endKeyHash));</span>
+<span class="nc" id="L199">            },</span>
             () -&gt;
-<span class="fc" id="L195">                downloadState</span>
-<span class="fc" id="L196">                    .getMetricsManager()</span>
-<span class="fc" id="L197">                    .notifyRangeProgress(DOWNLOAD, endKeyHash, endKeyHash));</span>
+<span class="fc" id="L201">                downloadState</span>
+<span class="fc" id="L202">                    .getMetricsManager()</span>
+<span class="fc" id="L203">                    .notifyRangeProgress(DOWNLOAD, endKeyHash, endKeyHash));</span>
 
     // find missing storages and code
-<span class="fc bfc" id="L200" title="All 2 branches covered.">    for (Map.Entry&lt;Bytes32, Bytes&gt; account : taskElement.keys().entrySet()) {</span>
-<span class="fc" id="L201">      final StateTrieAccountValue accountValue =</span>
-<span class="fc" id="L202">          StateTrieAccountValue.readFrom(RLP.input(account.getValue()));</span>
-<span class="pc bpc" id="L203" title="1 of 2 branches missed.">      if (!accountValue.getStorageRoot().equals(Hash.EMPTY_TRIE_HASH)) {</span>
-<span class="fc" id="L204">        childRequests.add(</span>
-<span class="fc" id="L205">            createStorageRangeDataRequest(</span>
-<span class="fc" id="L206">                getRootHash(),</span>
-<span class="fc" id="L207">                account.getKey(),</span>
-<span class="fc" id="L208">                accountValue.getStorageRoot(),</span>
-<span class="fc" id="L209">                startStorageRange.orElse(MIN_RANGE),</span>
-<span class="fc" id="L210">                endStorageRange.orElse(MAX_RANGE)));</span>
+<span class="fc bfc" id="L206" title="All 2 branches covered.">    for (Map.Entry&lt;Bytes32, Bytes&gt; account : taskElement.keys().entrySet()) {</span>
+<span class="fc" id="L207">      final StateTrieAccountValue accountValue =</span>
+<span class="fc" id="L208">          StateTrieAccountValue.readFrom(RLP.input(account.getValue()));</span>
+<span class="pc bpc" id="L209" title="1 of 2 branches missed.">      if (!accountValue.getStorageRoot().equals(Hash.EMPTY_TRIE_HASH)) {</span>
+<span class="fc" id="L210">        childRequests.add(</span>
+<span class="fc" id="L211">            createStorageRangeDataRequest(</span>
+<span class="fc" id="L212">                getRootHash(),</span>
+<span class="fc" id="L213">                account.getKey(),</span>
+<span class="fc" id="L214">                accountValue.getStorageRoot(),</span>
+<span class="fc" id="L215">                startStorageRange.orElse(MIN_RANGE),</span>
+<span class="fc" id="L216">                endStorageRange.orElse(MAX_RANGE)));</span>
       }
-<span class="pc bpc" id="L212" title="1 of 2 branches missed.">      if (!accountValue.getCodeHash().equals(Hash.EMPTY)) {</span>
-<span class="fc" id="L213">        childRequests.add(</span>
-<span class="fc" id="L214">            createBytecodeRequest(account.getKey(), getRootHash(), accountValue.getCodeHash()));</span>
+<span class="pc bpc" id="L218" title="1 of 2 branches missed.">      if (!accountValue.getCodeHash().equals(Hash.EMPTY)) {</span>
+<span class="fc" id="L219">        childRequests.add(</span>
+<span class="fc" id="L220">            createBytecodeRequest(account.getKey(), getRootHash(), accountValue.getCodeHash()));</span>
       }
-<span class="fc" id="L216">    }</span>
-<span class="fc" id="L217">    return childRequests.stream();</span>
+<span class="fc" id="L222">    }</span>
+<span class="fc" id="L223">    return childRequests.stream();</span>
   }
 
   public Bytes32 getStartKeyHash() {
-<span class="nc" id="L221">    return startKeyHash;</span>
+<span class="nc" id="L227">    return startKeyHash;</span>
   }
 
   public Bytes32 getEndKeyHash() {
-<span class="nc" id="L225">    return endKeyHash;</span>
+<span class="nc" id="L231">    return endKeyHash;</span>
   }
 
   @VisibleForTesting
-  public TreeMap&lt;Bytes32, Bytes&gt; getAccounts() {
-<span class="fc" id="L230">    return stackTrie.getElement(startKeyHash).keys();</span>
+  public NavigableMap&lt;Bytes32, Bytes&gt; getAccounts() {
+<span class="fc" id="L236">    return stackTrie.getElement(startKeyHash).keys();</span>
   }
 
   @Override
   public void clear() {
-<span class="nc" id="L235">    stackTrie.clear();</span>
-<span class="nc" id="L236">    isProofValid = Optional.of(false);</span>
-<span class="nc" id="L237">  }</span>
+<span class="nc" id="L241">    stackTrie.clear();</span>
+<span class="nc" id="L242">    isProofValid = Optional.of(false);</span>
+<span class="nc" id="L243">  }</span>
 
   public Bytes serialize() {
-<span class="nc" id="L240">    return RLP.encode(</span>
+<span class="nc" id="L246">    return RLP.encode(</span>
         out -&gt; {
-<span class="nc" id="L242">          out.startList();</span>
-<span class="nc" id="L243">          out.writeByte(getRequestType().getValue());</span>
-<span class="nc" id="L244">          out.writeBytes(getRootHash());</span>
-<span class="nc" id="L245">          out.writeBytes(getStartKeyHash());</span>
-<span class="nc" id="L246">          out.writeBytes(getEndKeyHash());</span>
-<span class="nc" id="L247">          out.endList();</span>
-<span class="nc" id="L248">        });</span>
+<span class="nc" id="L248">          out.startList();</span>
+<span class="nc" id="L249">          out.writeByte(getRequestType().getValue());</span>
+<span class="nc" id="L250">          out.writeBytes(getRootHash());</span>
+<span class="nc" id="L251">          out.writeBytes(getStartKeyHash());</span>
+<span class="nc" id="L252">          out.writeBytes(getEndKeyHash());</span>
+<span class="nc" id="L253">          out.endList();</span>
+<span class="nc" id="L254">        });</span>
   }
 
   public static AccountRangeDataRequest deserialize(final RLPInput in) {
-<span class="nc" id="L252">    in.enterList();</span>
-<span class="nc" id="L253">    in.skipNext(); // skip request type</span>
-<span class="nc" id="L254">    final Hash rootHash = Hash.wrap(in.readBytes32());</span>
-<span class="nc" id="L255">    final Bytes32 startKeyHash = in.readBytes32();</span>
-<span class="nc" id="L256">    final Bytes32 endKeyHash = in.readBytes32();</span>
-<span class="nc" id="L257">    in.leaveList();</span>
-<span class="nc" id="L258">    return createAccountRangeDataRequest(rootHash, startKeyHash, endKeyHash);</span>
+<span class="nc" id="L258">    in.enterList();</span>
+<span class="nc" id="L259">    in.skipNext(); // skip request type</span>
+<span class="nc" id="L260">    final Hash rootHash = Hash.wrap(in.readBytes32());</span>
+<span class="nc" id="L261">    final Bytes32 startKeyHash = in.readBytes32();</span>
+<span class="nc" id="L262">    final Bytes32 endKeyHash = in.readBytes32();</span>
+<span class="nc" id="L263">    in.leaveList();</span>
+<span class="nc" id="L264">    return createAccountRangeDataRequest(rootHash, startKeyHash, endKeyHash);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

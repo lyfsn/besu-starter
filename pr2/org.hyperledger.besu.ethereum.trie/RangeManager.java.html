@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>RangeManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie</a> &gt; <span class="el_source">RangeManager.java</span></div><h1>RangeManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.trie.patricia.StoredMerklePatriciaTrie;
+
+import java.math.BigInteger;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.function.Function;
+
+import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.MutableBytes;
+
+/**
+ * This class helps to generate ranges according to several parameters (the start and the end of the
+ * range, its size)
+ */
+public class RangeManager {
+
+<span class="fc" id="L40">  public static final Hash MIN_RANGE = Hash.wrap(Bytes32.ZERO);</span>
+<span class="fc" id="L41">  public static final Hash MAX_RANGE =</span>
+<span class="fc" id="L42">      Hash.fromHexString(&quot;0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff&quot;);</span>
+
+  private RangeManager() {}
+
+  public static int getRangeCount(
+      final Bytes32 min, final Bytes32 max, final NavigableMap&lt;Bytes32, Bytes&gt; items) {
+<span class="pc bpc" id="L48" title="2 of 4 branches missed.">    if (min.equals(MIN_RANGE) &amp;&amp; max.equals(MAX_RANGE)) {</span>
+<span class="fc" id="L49">      return MAX_RANGE</span>
+<span class="fc" id="L50">          .toUnsignedBigInteger()</span>
+<span class="fc" id="L51">          .divide(items.lastKey().toUnsignedBigInteger().subtract(min.toUnsignedBigInteger()))</span>
+<span class="fc" id="L52">          .intValue();</span>
+    }
+<span class="nc" id="L54">    return 1;</span>
+  }
+
+  public static Map&lt;Bytes32, Bytes32&gt; generateAllRanges(final int sizeRange) {
+<span class="fc bfc" id="L58" title="All 2 branches covered.">    if (sizeRange == 1) {</span>
+<span class="fc" id="L59">      return Map.ofEntries(Map.entry(MIN_RANGE, MAX_RANGE));</span>
+    }
+<span class="fc" id="L61">    return generateRanges(</span>
+<span class="fc" id="L62">        MIN_RANGE.toUnsignedBigInteger(), MAX_RANGE.toUnsignedBigInteger(), sizeRange);</span>
+  }
+
+  /**
+   * Generate a range
+   *
+   * @param min start of the range in bytes
+   * @param max the max end of the range in bytes
+   * @param nbRange number of ranges
+   * @return the start and end of the generated range
+   */
+  public static Map&lt;Bytes32, Bytes32&gt; generateRanges(
+      final Bytes32 min, final Bytes32 max, final int nbRange) {
+<span class="fc" id="L75">    return generateRanges(min.toUnsignedBigInteger(), max.toUnsignedBigInteger(), nbRange);</span>
+  }
+
+  /**
+   * Generate a range
+   *
+   * @param min start of the range
+   * @param max the max end of the range
+   * @param nbRange number of ranges
+   * @return the start and end of the generated range
+   */
+  public static Map&lt;Bytes32, Bytes32&gt; generateRanges(
+      final BigInteger min, final BigInteger max, final int nbRange) {
+<span class="fc" id="L88">    final BigInteger rangeSize = max.subtract(min).divide(BigInteger.valueOf(nbRange));</span>
+<span class="fc" id="L89">    final TreeMap&lt;Bytes32, Bytes32&gt; ranges = new TreeMap&lt;&gt;();</span>
+<span class="pc bpc" id="L90" title="1 of 2 branches missed.">    if (min.compareTo(max) &gt; 0) {</span>
+<span class="nc" id="L91">      return ranges;</span>
+    }
+<span class="pc bpc" id="L93" title="1 of 4 branches missed.">    if (min.equals(max) || nbRange == 1) {</span>
+<span class="fc" id="L94">      ranges.put(format(min), format(max));</span>
+<span class="fc" id="L95">      return ranges;</span>
+    }
+<span class="fc" id="L97">    BigInteger currentStart = min;</span>
+<span class="fc" id="L98">    BigInteger currentEnd = min;</span>
+<span class="fc bfc" id="L99" title="All 2 branches covered.">    while (max.subtract(currentEnd).compareTo(rangeSize) &gt; 0) {</span>
+<span class="fc" id="L100">      currentEnd = currentStart.add(rangeSize);</span>
+<span class="fc" id="L101">      ranges.put(format(currentStart), format(currentEnd));</span>
+<span class="fc" id="L102">      currentStart = currentStart.add(rangeSize).add(BigInteger.ONE);</span>
+    }
+<span class="fc bfc" id="L104" title="All 2 branches covered.">    if (max.subtract(currentEnd).compareTo(BigInteger.ZERO) &gt; 0) {</span>
+<span class="fc" id="L105">      currentEnd = currentStart.add(max.subtract(currentEnd)).subtract(BigInteger.ONE);</span>
+<span class="fc" id="L106">      ranges.put(format(currentStart), format(currentEnd));</span>
+    }
+<span class="fc" id="L108">    return ranges;</span>
+  }
+
+  /**
+   * Helps to create a new range according to the last data obtained. This happens when a peer
+   * doesn't return all of the data in a range.
+   *
+   * @param worldstateRootHash the root hash
+   * @param proofs proof received
+   * @param endKeyHash the end of the range initially wanted
+   * @param receivedKeys the last key received
+   * @return begin of the new range
+   */
+  public static Optional&lt;Bytes32&gt; findNewBeginElementInRange(
+      final Bytes32 worldstateRootHash,
+      final List&lt;Bytes&gt; proofs,
+      final NavigableMap&lt;Bytes32, Bytes&gt; receivedKeys,
+      final Bytes32 endKeyHash) {
+<span class="pc bpc" id="L126" title="2 of 4 branches missed.">    if (receivedKeys.isEmpty() || receivedKeys.lastKey().compareTo(endKeyHash) &gt;= 0) {</span>
+<span class="nc" id="L127">      return Optional.empty();</span>
+    } else {
+<span class="fc" id="L129">      final Map&lt;Bytes32, Bytes&gt; proofsEntries = new HashMap&lt;&gt;();</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">      for (Bytes proof : proofs) {</span>
+<span class="fc" id="L131">        proofsEntries.put(Hash.hash(proof), proof);</span>
+<span class="fc" id="L132">      }</span>
+<span class="fc" id="L133">      final StoredMerklePatriciaTrie&lt;Bytes, Bytes&gt; storageTrie =</span>
+          new StoredMerklePatriciaTrie&lt;&gt;(
+              new InnerNodeDiscoveryManager&lt;&gt;(
+<span class="fc" id="L136">                  (location, key) -&gt; Optional.ofNullable(proofsEntries.get(key)),</span>
+<span class="fc" id="L137">                  Function.identity(),</span>
+<span class="fc" id="L138">                  Function.identity(),</span>
+<span class="fc" id="L139">                  receivedKeys.lastKey(),</span>
+                  endKeyHash,
+                  false),
+              worldstateRootHash);
+
+      try {
+<span class="fc" id="L145">        storageTrie.visitAll(bytesNode -&gt; {});</span>
+<span class="fc" id="L146">      } catch (MerkleTrieException e) {</span>
+<span class="fc" id="L147">        return Optional.of(InnerNodeDiscoveryManager.decodePath(e.getLocation()));</span>
+<span class="fc" id="L148">      }</span>
+<span class="fc" id="L149">      return Optional.empty();</span>
+    }
+  }
+
+  private static Bytes32 format(final BigInteger data) {
+<span class="fc" id="L154">    return Bytes32.leftPad(Bytes.of(data.toByteArray()).trimLeadingZeros());</span>
+  }
+
+  /**
+   * Checks if a given location is within a specified range. This method determines whether a given
+   * location (represented as {@link Bytes}) falls within the range defined by a start key path and
+   * an end key path.
+   *
+   * @param location The location to check, represented as {@link Bytes}.
+   * @param startKeyPath The start of the range as path, represented as {@link Bytes}.
+   * @param endKeyPath The end of the range as path, represented as {@link Bytes}.
+   * @return {@code true} if the location is within the range (inclusive); {@code false} otherwise.
+   */
+  public static boolean isInRange(
+      final Bytes location, final Bytes startKeyPath, final Bytes endKeyPath) {
+<span class="fc" id="L169">    final MutableBytes path = MutableBytes.create(Bytes32.SIZE * 2);</span>
+<span class="fc" id="L170">    path.set(0, location);</span>
+<span class="fc bfc" id="L171" title="All 2 branches covered.">    return !location.isEmpty()</span>
+<span class="fc bfc" id="L172" title="All 2 branches covered.">        &amp;&amp; Arrays.compare(path.toArrayUnsafe(), startKeyPath.toArrayUnsafe()) &gt;= 0</span>
+<span class="fc bfc" id="L173" title="All 2 branches covered.">        &amp;&amp; Arrays.compare(path.toArrayUnsafe(), endKeyPath.toArrayUnsafe()) &lt;= 0;</span>
+  }
+
+  /**
+   * Transforms a list of bytes into a path. This method processes a sequence of bytes, expanding
+   * each byte into two separate bytes to form a new path. The resulting path will have twice the
+   * length of the input byte sequence.
+   *
+   * @param bytes The byte sequence to be transformed into a path.
+   * @return A {@link Bytes} object representing the newly formed path.
+   */
+  public static Bytes createPath(final Bytes bytes) {
+<span class="fc" id="L185">    final MutableBytes path = MutableBytes.create(bytes.size() * 2);</span>
+<span class="fc" id="L186">    int j = 0;</span>
+<span class="fc bfc" id="L187" title="All 2 branches covered.">    for (int i = 0; i &lt; bytes.size(); i += 1, j += 2) {</span>
+<span class="fc" id="L188">      final byte b = bytes.get(i);</span>
+<span class="fc" id="L189">      path.set(j, (byte) ((b &gt;&gt;&gt; 4) &amp; 0x0f));</span>
+<span class="fc" id="L190">      path.set(j + 1, (byte) (b &amp; 0x0f));</span>
+    }
+<span class="fc" id="L192">    return path;</span>
+  }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

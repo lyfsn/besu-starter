@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DiffBasedCachedWorldStorageManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">besu</a> &gt; <a href="index.source.html" class="el_package">org.hyperledger.besu.ethereum.trie.diffbased.common.cache</a> &gt; <span class="el_source">DiffBasedCachedWorldStorageManager.java</span></div><h1>DiffBasedCachedWorldStorageManager.java</h1><pre class="source lang-java linenums">/*
+ * Copyright Hyperledger Besu Contributors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.hyperledger.besu.ethereum.trie.diffbased.common.cache;
+
+import org.hyperledger.besu.datatypes.Hash;
+import org.hyperledger.besu.ethereum.chain.Blockchain;
+import org.hyperledger.besu.ethereum.core.BlockHeader;
+import org.hyperledger.besu.ethereum.trie.diffbased.bonsai.worldview.BonsaiWorldState;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.DiffBasedWorldStateProvider;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.StorageSubscriber;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedLayeredWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.storage.DiffBasedWorldStateKeyValueStorage;
+import org.hyperledger.besu.ethereum.trie.diffbased.common.worldview.DiffBasedWorldState;
+import org.hyperledger.besu.evm.internal.EvmConfiguration;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.apache.tuweni.bytes.Bytes32;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class DiffBasedCachedWorldStorageManager implements StorageSubscriber {
+  public static final long RETAINED_LAYERS = 512; // at least 256 + typical rollbacks
+<span class="fc" id="L45">  private static final Logger LOG =</span>
+<span class="fc" id="L46">      LoggerFactory.getLogger(DiffBasedCachedWorldStorageManager.class);</span>
+  private final DiffBasedWorldStateProvider archive;
+  private final EvmConfiguration evmConfiguration;
+<span class="fc" id="L49">  private final Cache&lt;Hash, BlockHeader&gt; stateRootToBlockHeaderCache =</span>
+<span class="fc" id="L50">      Caffeine.newBuilder()</span>
+<span class="fc" id="L51">          .maximumSize(RETAINED_LAYERS)</span>
+<span class="fc" id="L52">          .expireAfterWrite(100, TimeUnit.MINUTES)</span>
+<span class="fc" id="L53">          .build();</span>
+
+  private final DiffBasedWorldStateKeyValueStorage rootWorldStateStorage;
+  private final Map&lt;Bytes32, DiffBasedCachedWorldView&gt; cachedWorldStatesByHash;
+
+  private DiffBasedCachedWorldStorageManager(
+      final DiffBasedWorldStateProvider archive,
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final Map&lt;Bytes32, DiffBasedCachedWorldView&gt; cachedWorldStatesByHash,
+<span class="fc" id="L62">      final EvmConfiguration evmConfiguration) {</span>
+<span class="fc" id="L63">    worldStateKeyValueStorage.subscribe(this);</span>
+<span class="fc" id="L64">    this.rootWorldStateStorage = worldStateKeyValueStorage;</span>
+<span class="fc" id="L65">    this.cachedWorldStatesByHash = cachedWorldStatesByHash;</span>
+<span class="fc" id="L66">    this.archive = archive;</span>
+<span class="fc" id="L67">    this.evmConfiguration = evmConfiguration;</span>
+<span class="fc" id="L68">  }</span>
+
+  public DiffBasedCachedWorldStorageManager(
+      final DiffBasedWorldStateProvider archive,
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage) {
+<span class="fc" id="L73">    this(archive, worldStateKeyValueStorage, new ConcurrentHashMap&lt;&gt;(), EvmConfiguration.DEFAULT);</span>
+<span class="fc" id="L74">  }</span>
+
+  public synchronized void addCachedLayer(
+      final BlockHeader blockHeader,
+      final Hash worldStateRootHash,
+      final DiffBasedWorldState forWorldState) {
+<span class="fc" id="L80">    final Optional&lt;DiffBasedCachedWorldView&gt; cachedDiffBasedWorldView =</span>
+<span class="fc" id="L81">        Optional.ofNullable(this.cachedWorldStatesByHash.get(blockHeader.getBlockHash()));</span>
+<span class="fc bfc" id="L82" title="All 2 branches covered.">    if (cachedDiffBasedWorldView.isPresent()) {</span>
+      // only replace if it is a layered storage
+<span class="pc bpc" id="L84" title="1 of 2 branches missed.">      if (forWorldState.isPersisted()</span>
+<span class="pc bpc" id="L85" title="1 of 2 branches missed.">          &amp;&amp; cachedDiffBasedWorldView.get().getWorldStateStorage()</span>
+              instanceof DiffBasedLayeredWorldStateKeyValueStorage) {
+<span class="nc" id="L87">        LOG.atDebug()</span>
+<span class="nc" id="L88">            .setMessage(&quot;updating layered world state for block {}, state root hash {}&quot;)</span>
+<span class="nc" id="L89">            .addArgument(blockHeader::toLogString)</span>
+<span class="nc" id="L90">            .addArgument(worldStateRootHash::toShortHexString)</span>
+<span class="nc" id="L91">            .log();</span>
+<span class="nc" id="L92">        cachedDiffBasedWorldView</span>
+<span class="nc" id="L93">            .get()</span>
+<span class="nc" id="L94">            .updateWorldStateStorage(</span>
+<span class="nc" id="L95">                createSnapshotKeyValueStorage(forWorldState.getWorldStateStorage()));</span>
+      }
+    } else {
+<span class="fc" id="L98">      LOG.atDebug()</span>
+<span class="fc" id="L99">          .setMessage(&quot;adding layered world state for block {}, state root hash {}&quot;)</span>
+<span class="fc" id="L100">          .addArgument(blockHeader::toLogString)</span>
+<span class="fc" id="L101">          .addArgument(worldStateRootHash::toShortHexString)</span>
+<span class="fc" id="L102">          .log();</span>
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">      if (forWorldState.isPersisted()) {</span>
+<span class="fc" id="L104">        cachedWorldStatesByHash.put(</span>
+<span class="fc" id="L105">            blockHeader.getHash(),</span>
+            new DiffBasedCachedWorldView(
+<span class="fc" id="L107">                blockHeader, createSnapshotKeyValueStorage(forWorldState.getWorldStateStorage())));</span>
+      } else {
+        // otherwise, add the layer to the cache
+<span class="nc" id="L110">        cachedWorldStatesByHash.put(</span>
+<span class="nc" id="L111">            blockHeader.getHash(),</span>
+            new DiffBasedCachedWorldView(
+                blockHeader,
+<span class="nc" id="L114">                ((DiffBasedLayeredWorldStateKeyValueStorage) forWorldState.getWorldStateStorage())</span>
+<span class="nc" id="L115">                    .clone()));</span>
+      }
+      // add stateroot -&gt; blockHeader cache entry
+<span class="fc" id="L118">      stateRootToBlockHeaderCache.put(blockHeader.getStateRoot(), blockHeader);</span>
+    }
+<span class="fc" id="L120">    scrubCachedLayers(blockHeader.getNumber());</span>
+<span class="fc" id="L121">  }</span>
+
+  private synchronized void scrubCachedLayers(final long newMaxHeight) {
+<span class="fc bfc" id="L124" title="All 2 branches covered.">    if (cachedWorldStatesByHash.size() &gt; RETAINED_LAYERS) {</span>
+<span class="fc" id="L125">      final long waterline = newMaxHeight - RETAINED_LAYERS;</span>
+<span class="fc" id="L126">      cachedWorldStatesByHash.values().stream()</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">          .filter(layer -&gt; layer.getBlockNumber() &lt; waterline)</span>
+<span class="fc" id="L128">          .toList()</span>
+<span class="fc" id="L129">          .forEach(</span>
+              layer -&gt; {
+<span class="fc" id="L131">                cachedWorldStatesByHash.remove(layer.getBlockHash());</span>
+<span class="fc" id="L132">                layer.close();</span>
+<span class="fc" id="L133">              });</span>
+    }
+<span class="fc" id="L135">  }</span>
+
+  public Optional&lt;DiffBasedWorldState&gt; getWorldState(final Hash blockHash) {
+<span class="fc bfc" id="L138" title="All 2 branches covered.">    if (cachedWorldStatesByHash.containsKey(blockHash)) {</span>
+      // return a new worldstate using worldstate storage and an isolated copy of the updater
+<span class="fc" id="L140">      return Optional.ofNullable(cachedWorldStatesByHash.get(blockHash))</span>
+<span class="fc" id="L141">          .map(</span>
+              cached -&gt;
+<span class="fc" id="L143">                  createWorldState(</span>
+                      archive,
+<span class="fc" id="L145">                      createLayeredKeyValueStorage(cached.getWorldStateStorage()),</span>
+                      evmConfiguration));
+    }
+<span class="fc" id="L148">    LOG.atDebug()</span>
+<span class="fc" id="L149">        .setMessage(&quot;did not find worldstate in cache for {}&quot;)</span>
+<span class="fc" id="L150">        .addArgument(blockHash.toShortHexString())</span>
+<span class="fc" id="L151">        .log();</span>
+
+<span class="fc" id="L153">    return Optional.empty();</span>
+  }
+
+  public Optional&lt;DiffBasedWorldState&gt; getNearestWorldState(final BlockHeader blockHeader) {
+<span class="fc" id="L157">    LOG.atDebug()</span>
+<span class="fc" id="L158">        .setMessage(&quot;getting nearest worldstate for {}&quot;)</span>
+<span class="fc" id="L159">        .addArgument(blockHeader.toLogString())</span>
+<span class="fc" id="L160">        .log();</span>
+
+<span class="fc" id="L162">    return Optional.ofNullable(</span>
+<span class="fc" id="L163">            cachedWorldStatesByHash.get(blockHeader.getParentHash())) // search parent block</span>
+<span class="fc" id="L164">        .map(DiffBasedCachedWorldView::getWorldStateStorage)</span>
+<span class="fc" id="L165">        .or(</span>
+            () -&gt; {
+              // or else search the nearest state in the cache
+<span class="fc" id="L168">              LOG.atDebug()</span>
+<span class="fc" id="L169">                  .setMessage(&quot;searching cache for nearest worldstate for {}&quot;)</span>
+<span class="fc" id="L170">                  .addArgument(blockHeader.toLogString())</span>
+<span class="fc" id="L171">                  .log();</span>
+
+<span class="fc" id="L173">              final List&lt;DiffBasedCachedWorldView&gt; cachedDiffBasedWorldViews =</span>
+<span class="fc" id="L174">                  new ArrayList&lt;&gt;(cachedWorldStatesByHash.values());</span>
+<span class="fc" id="L175">              return cachedDiffBasedWorldViews.stream()</span>
+<span class="fc" id="L176">                  .sorted(</span>
+<span class="fc" id="L177">                      Comparator.comparingLong(</span>
+<span class="nc" id="L178">                          view -&gt; Math.abs(blockHeader.getNumber() - view.getBlockNumber())))</span>
+<span class="fc" id="L179">                  .map(DiffBasedCachedWorldView::getWorldStateStorage)</span>
+<span class="fc" id="L180">                  .findFirst();</span>
+            })
+<span class="fc" id="L182">        .map(</span>
+            storage -&gt;
+<span class="nc" id="L184">                createWorldState( // wrap the state in a layered worldstate</span>
+<span class="nc" id="L185">                    archive, createLayeredKeyValueStorage(storage), evmConfiguration));</span>
+  }
+
+  public Optional&lt;DiffBasedWorldState&gt; getHeadWorldState(
+      final Function&lt;Hash, Optional&lt;BlockHeader&gt;&gt; hashBlockHeaderFunction) {
+
+<span class="fc" id="L191">    LOG.atDebug().setMessage(&quot;getting head worldstate&quot;).log();</span>
+
+<span class="fc" id="L193">    return rootWorldStateStorage</span>
+<span class="fc" id="L194">        .getWorldStateBlockHash()</span>
+<span class="fc" id="L195">        .flatMap(hashBlockHeaderFunction)</span>
+<span class="fc" id="L196">        .flatMap(</span>
+            blockHeader -&gt; {
+              // add the head to the cache
+<span class="nc" id="L199">              addCachedLayer(</span>
+                  blockHeader,
+<span class="nc" id="L201">                  blockHeader.getStateRoot(),</span>
+<span class="nc" id="L202">                  createWorldState(archive, rootWorldStateStorage, evmConfiguration));</span>
+<span class="nc" id="L203">              return getWorldState(blockHeader.getHash());</span>
+            });
+  }
+
+  public boolean contains(final Hash blockHash) {
+<span class="fc" id="L208">    return cachedWorldStatesByHash.containsKey(blockHash);</span>
+  }
+
+  public void reset() {
+<span class="nc" id="L212">    this.cachedWorldStatesByHash.clear();</span>
+<span class="nc" id="L213">  }</span>
+
+  public void primeRootToBlockHashCache(final Blockchain blockchain, final int numEntries) {
+    // prime the stateroot-to-blockhash cache
+<span class="nc" id="L217">    long head = blockchain.getChainHeadHeader().getNumber();</span>
+<span class="nc bnc" id="L218" title="All 2 branches missed.">    for (long i = head; i &gt; Math.max(0, head - numEntries); i--) {</span>
+<span class="nc" id="L219">      blockchain</span>
+<span class="nc" id="L220">          .getBlockHeader(i)</span>
+<span class="nc" id="L221">          .ifPresent(header -&gt; stateRootToBlockHeaderCache.put(header.getStateRoot(), header));</span>
+    }
+<span class="nc" id="L223">  }</span>
+
+  /**
+   * Returns the worldstate for the supplied root hash. If the worldstate is not already in cache,
+   * this method will attempt to fetch it and add it to the cache. synchronized to prevent
+   * concurrent loads/adds to the cache of the same root hash.
+   *
+   * @param rootHash rootHash to supply worldstate storage for
+   * @return Optional worldstate storage
+   */
+  public synchronized Optional&lt;DiffBasedWorldStateKeyValueStorage&gt; getStorageByRootHash(
+      final Hash rootHash) {
+<span class="nc" id="L235">    return Optional.ofNullable(stateRootToBlockHeaderCache.getIfPresent(rootHash))</span>
+<span class="nc" id="L236">        .flatMap(</span>
+            header -&gt;
+<span class="nc" id="L238">                Optional.ofNullable(cachedWorldStatesByHash.get(header.getHash()))</span>
+<span class="nc" id="L239">                    .map(DiffBasedCachedWorldView::getWorldStateStorage)</span>
+<span class="nc" id="L240">                    .or(</span>
+                        () -&gt; {
+                          // if not cached already, maybe fetch and cache this worldstate
+<span class="nc" id="L243">                          var maybeWorldState =</span>
+<span class="nc" id="L244">                              archive.getMutable(header, false).map(BonsaiWorldState.class::cast);</span>
+<span class="nc" id="L245">                          maybeWorldState.ifPresent(</span>
+<span class="nc" id="L246">                              ws -&gt; addCachedLayer(header, header.getStateRoot(), ws));</span>
+<span class="nc" id="L247">                          return maybeWorldState.map(BonsaiWorldState::getWorldStateStorage);</span>
+                        }));
+  }
+
+  @Override
+  public void onClearStorage() {
+<span class="fc" id="L253">    this.cachedWorldStatesByHash.clear();</span>
+<span class="fc" id="L254">  }</span>
+
+  @Override
+  public void onClearFlatDatabaseStorage() {
+<span class="nc" id="L258">    this.cachedWorldStatesByHash.clear();</span>
+<span class="nc" id="L259">  }</span>
+
+  @Override
+  public void onClearTrieLog() {
+<span class="nc" id="L263">    this.cachedWorldStatesByHash.clear();</span>
+<span class="nc" id="L264">  }</span>
+
+  @Override
+  public void onCloseStorage() {
+<span class="nc" id="L268">    this.cachedWorldStatesByHash.clear();</span>
+<span class="nc" id="L269">  }</span>
+
+  public abstract DiffBasedWorldState createWorldState(
+      final DiffBasedWorldStateProvider archive,
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage,
+      final EvmConfiguration evmConfiguration);
+
+  public abstract DiffBasedWorldStateKeyValueStorage createLayeredKeyValueStorage(
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage);
+
+  public abstract DiffBasedWorldStateKeyValueStorage createSnapshotKeyValueStorage(
+      final DiffBasedWorldStateKeyValueStorage worldStateKeyValueStorage);
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

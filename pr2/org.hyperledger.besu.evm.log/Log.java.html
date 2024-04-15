@@ -26,6 +26,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import org.apache.tuweni.bytes.Bytes;
+import org.apache.tuweni.bytes.Bytes32;
+import org.apache.tuweni.bytes.MutableBytes;
 
 /**
  * A log entry is a tuple of a logger’s address (the address of the contract that added the logs), a
@@ -48,11 +50,11 @@ public class Log {
   public Log(
       @JsonProperty(&quot;logger&quot;) final Address logger,
       @JsonProperty(&quot;data&quot;) final Bytes data,
-<span class="fc" id="L51">      @JsonProperty(&quot;topics&quot;) final List&lt;LogTopic&gt; topics) {</span>
-<span class="fc" id="L52">    this.logger = logger;</span>
-<span class="fc" id="L53">    this.data = data;</span>
-<span class="fc" id="L54">    this.topics = ImmutableList.copyOf(topics);</span>
-<span class="fc" id="L55">  }</span>
+<span class="fc" id="L53">      @JsonProperty(&quot;topics&quot;) final List&lt;LogTopic&gt; topics) {</span>
+<span class="fc" id="L54">    this.logger = logger;</span>
+<span class="fc" id="L55">    this.data = data;</span>
+<span class="fc" id="L56">    this.topics = ImmutableList.copyOf(topics);</span>
+<span class="fc" id="L57">  }</span>
 
   /**
    * Writes the log entry to the provided RLP output.
@@ -60,12 +62,37 @@ public class Log {
    * @param out the output in which to encode the log entry.
    */
   public void writeTo(final RLPOutput out) {
-<span class="fc" id="L63">    out.startList();</span>
-<span class="fc" id="L64">    out.writeBytes(logger);</span>
-<span class="fc" id="L65">    out.writeList(topics, (topic, listOut) -&gt; listOut.writeBytes(topic));</span>
-<span class="fc" id="L66">    out.writeBytes(data);</span>
-<span class="fc" id="L67">    out.endList();</span>
-<span class="fc" id="L68">  }</span>
+<span class="fc" id="L65">    writeTo(out, false);</span>
+<span class="fc" id="L66">  }</span>
+
+  /**
+   * Writes the log entry to the provided RLP output.
+   *
+   * @param out the output in which to encode the log entry.
+   * @param compacted whether to compact the rlp log entry by trimming leading zeros on topics and
+   *     data.
+   */
+  public void writeTo(final RLPOutput out, final boolean compacted) {
+<span class="fc" id="L76">    out.startList();</span>
+<span class="fc" id="L77">    out.writeBytes(logger);</span>
+<span class="fc bfc" id="L78" title="All 2 branches covered.">    if (compacted) {</span>
+<span class="fc" id="L79">      out.writeList(topics, (topic, listOut) -&gt; encodeTrimmedData(listOut, topic));</span>
+<span class="fc" id="L80">      encodeTrimmedData(out, data);</span>
+    } else {
+<span class="fc" id="L82">      out.writeList(topics, (topic, listOut) -&gt; listOut.writeBytes(topic));</span>
+<span class="fc" id="L83">      out.writeBytes(data);</span>
+    }
+<span class="fc" id="L85">    out.endList();</span>
+<span class="fc" id="L86">  }</span>
+
+  private void encodeTrimmedData(final RLPOutput rlpOutput, final Bytes data) {
+<span class="fc" id="L89">    rlpOutput.startList();</span>
+<span class="fc" id="L90">    final Bytes shortData = data.trimLeadingZeros();</span>
+<span class="fc" id="L91">    final int zeroLeadDataSize = data.size() - shortData.size();</span>
+<span class="fc" id="L92">    rlpOutput.writeIntScalar(zeroLeadDataSize);</span>
+<span class="fc" id="L93">    rlpOutput.writeBytes(shortData);</span>
+<span class="fc" id="L94">    rlpOutput.endList();</span>
+<span class="fc" id="L95">  }</span>
 
   /**
    * Reads the log entry from the provided RLP input.
@@ -74,12 +101,43 @@ public class Log {
    * @return the read log entry.
    */
   public static Log readFrom(final RLPInput in) {
-<span class="fc" id="L77">    in.enterList();</span>
-<span class="fc" id="L78">    final Address logger = Address.wrap(in.readBytes());</span>
-<span class="fc" id="L79">    final List&lt;LogTopic&gt; topics = in.readList(listIn -&gt; LogTopic.wrap(listIn.readBytes32()));</span>
-<span class="fc" id="L80">    final Bytes data = in.readBytes();</span>
-<span class="fc" id="L81">    in.leaveList();</span>
-<span class="fc" id="L82">    return new Log(logger, data, topics);</span>
+<span class="fc" id="L104">    return readFrom(in, false);</span>
+  }
+
+  /**
+   * Reads the log entry from the provided RLP input.
+   *
+   * @param in the input from which to decode the log entry.
+   * @param compacted whether to compact the rlp log entry by trimming leading zeros on topics and
+   *     data.
+   * @return the read log entry.
+   */
+  public static Log readFrom(final RLPInput in, final boolean compacted) {
+<span class="fc" id="L116">    in.enterList();</span>
+<span class="fc" id="L117">    final Address logger = Address.wrap(in.readBytes());</span>
+
+    final List&lt;LogTopic&gt; topics;
+    final Bytes data;
+<span class="fc bfc" id="L121" title="All 2 branches covered.">    if (compacted) {</span>
+<span class="fc" id="L122">      topics = in.readList(listIn -&gt; LogTopic.wrap(Bytes32.wrap(readTrimmedData(in))));</span>
+<span class="fc" id="L123">      data = Bytes.wrap(readTrimmedData(in));</span>
+    } else {
+<span class="fc" id="L125">      topics = in.readList(listIn -&gt; LogTopic.wrap(listIn.readBytes32()));</span>
+<span class="fc" id="L126">      data = in.readBytes();</span>
+    }
+
+<span class="fc" id="L129">    in.leaveList();</span>
+<span class="fc" id="L130">    return new Log(logger, data, topics);</span>
+  }
+
+  private static Bytes readTrimmedData(final RLPInput in) {
+<span class="fc" id="L134">    in.enterList();</span>
+<span class="fc" id="L135">    final int zeroLeadDataSize = in.readIntScalar();</span>
+<span class="fc" id="L136">    final Bytes shortData = in.readBytes();</span>
+<span class="fc" id="L137">    final MutableBytes data = MutableBytes.create(zeroLeadDataSize + shortData.size());</span>
+<span class="fc" id="L138">    data.set(zeroLeadDataSize, shortData);</span>
+<span class="fc" id="L139">    in.leaveList();</span>
+<span class="fc" id="L140">    return data;</span>
   }
 
   /**
@@ -89,7 +147,7 @@ public class Log {
    */
   @JsonProperty(&quot;logger&quot;)
   public Address getLogger() {
-<span class="fc" id="L92">    return logger;</span>
+<span class="fc" id="L150">    return logger;</span>
   }
 
   /**
@@ -99,7 +157,7 @@ public class Log {
    */
   @JsonProperty(&quot;data&quot;)
   public Bytes getData() {
-<span class="fc" id="L102">    return data;</span>
+<span class="fc" id="L160">    return data;</span>
   }
 
   /**
@@ -109,28 +167,28 @@ public class Log {
    */
   @JsonProperty(&quot;topics&quot;)
   public List&lt;LogTopic&gt; getTopics() {
-<span class="fc" id="L112">    return topics;</span>
+<span class="fc" id="L170">    return topics;</span>
   }
 
   @Override
   public boolean equals(final Object other) {
-<span class="pc bpc" id="L117" title="1 of 2 branches missed.">    if (!(other instanceof Log that)) return false;</span>
+<span class="pc bpc" id="L175" title="1 of 2 branches missed.">    if (!(other instanceof Log that)) return false;</span>
 
     // Compare data
-<span class="pc bpc" id="L120" title="1 of 2 branches missed.">    return this.data.equals(that.data)</span>
-<span class="pc bpc" id="L121" title="1 of 2 branches missed.">        &amp;&amp; this.logger.equals(that.logger)</span>
-<span class="pc bpc" id="L122" title="1 of 2 branches missed.">        &amp;&amp; this.topics.equals(that.topics);</span>
+<span class="pc bpc" id="L178" title="1 of 2 branches missed.">    return this.data.equals(that.data)</span>
+<span class="pc bpc" id="L179" title="1 of 2 branches missed.">        &amp;&amp; this.logger.equals(that.logger)</span>
+<span class="pc bpc" id="L180" title="1 of 2 branches missed.">        &amp;&amp; this.topics.equals(that.topics);</span>
   }
 
   @Override
   public int hashCode() {
-<span class="fc" id="L127">    return Objects.hash(data, logger, topics);</span>
+<span class="fc" id="L185">    return Objects.hash(data, logger, topics);</span>
   }
 
   @Override
   public String toString() {
-<span class="fc" id="L132">    final String joinedTopics = Joiner.on(&quot;\n&quot;).join(topics);</span>
-<span class="fc" id="L133">    return String.format(&quot;Data: %s\nLogger: %s\nTopics: %s&quot;, data, logger, joinedTopics);</span>
+<span class="nc" id="L190">    final String joinedTopics = Joiner.on(&quot;\n&quot;).join(topics);</span>
+<span class="nc" id="L191">    return String.format(&quot;Data: %s\nLogger: %s\nTopics: %s&quot;, data, logger, joinedTopics);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

@@ -14,7 +14,6 @@
  */
 package org.hyperledger.besu.ethereum.api.jsonrpc.websocket;
 
-import static com.google.common.collect.Streams.stream;
 import static org.hyperledger.besu.ethereum.api.jsonrpc.authentication.AuthenticationUtils.truncToken;
 
 import org.hyperledger.besu.ethereum.api.jsonrpc.authentication.AuthenticationService;
@@ -31,8 +30,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Splitter;
-import com.google.common.collect.Iterables;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
@@ -43,6 +40,7 @@ import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.ServerWebSocket;
+import io.vertx.core.net.HostAndPort;
 import io.vertx.core.net.SocketAddress;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -52,13 +50,13 @@ import org.slf4j.LoggerFactory;
 
 public class WebSocketService {
 
-<span class="fc" id="L55">  private static final Logger LOG = LoggerFactory.getLogger(WebSocketService.class);</span>
+<span class="fc" id="L53">  private static final Logger LOG = LoggerFactory.getLogger(WebSocketService.class);</span>
 
-<span class="fc" id="L57">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
+<span class="fc" id="L55">  private static final InetSocketAddress EMPTY_SOCKET_ADDRESS = new InetSocketAddress(&quot;0.0.0.0&quot;, 0);</span>
   private static final String APPLICATION_JSON = &quot;application/json&quot;;
 
   private final int maxActiveConnections;
-<span class="fc" id="L61">  private final AtomicInteger activeConnectionsCount = new AtomicInteger();</span>
+<span class="fc" id="L59">  private final AtomicInteger activeConnectionsCount = new AtomicInteger();</span>
 
   private final Vertx vertx;
   private final WebSocketConfiguration configuration;
@@ -73,228 +71,230 @@ public class WebSocketService {
       final WebSocketConfiguration configuration,
       final WebSocketMessageHandler websocketMessageHandler,
       final MetricsSystem metricsSystem) {
-<span class="fc" id="L76">    this(</span>
+<span class="fc" id="L74">    this(</span>
         vertx,
         configuration,
         websocketMessageHandler,
-<span class="fc" id="L80">        DefaultAuthenticationService.create(vertx, configuration),</span>
+<span class="fc" id="L78">        DefaultAuthenticationService.create(vertx, configuration),</span>
         metricsSystem);
-<span class="fc" id="L82">  }</span>
+<span class="fc" id="L80">  }</span>
 
   public WebSocketService(
       final Vertx vertx,
       final WebSocketConfiguration configuration,
       final WebSocketMessageHandler websocketMessageHandler,
       final Optional&lt;AuthenticationService&gt; authenticationService,
-<span class="fc" id="L89">      final MetricsSystem metricsSystem) {</span>
-<span class="fc" id="L90">    this.vertx = vertx;</span>
-<span class="fc" id="L91">    this.configuration = configuration;</span>
-<span class="fc" id="L92">    this.websocketMessageHandler = websocketMessageHandler;</span>
-<span class="fc" id="L93">    this.authenticationService = authenticationService;</span>
-<span class="fc" id="L94">    this.maxActiveConnections = configuration.getMaxActiveConnections();</span>
+<span class="fc" id="L87">      final MetricsSystem metricsSystem) {</span>
+<span class="fc" id="L88">    this.vertx = vertx;</span>
+<span class="fc" id="L89">    this.configuration = configuration;</span>
+<span class="fc" id="L90">    this.websocketMessageHandler = websocketMessageHandler;</span>
+<span class="fc" id="L91">    this.authenticationService = authenticationService;</span>
+<span class="fc" id="L92">    this.maxActiveConnections = configuration.getMaxActiveConnections();</span>
 
-<span class="fc" id="L96">    metricsSystem.createIntegerGauge(</span>
+<span class="fc" id="L94">    metricsSystem.createIntegerGauge(</span>
         BesuMetricCategory.RPC,
         &quot;active_ws_connection_count&quot;,
         &quot;Total no of active rpc ws connections&quot;,
-<span class="fc" id="L100">        activeConnectionsCount::intValue);</span>
-<span class="fc" id="L101">  }</span>
+<span class="fc" id="L98">        activeConnectionsCount::intValue);</span>
+<span class="fc" id="L99">  }</span>
 
   public CompletableFuture&lt;?&gt; start() {
-<span class="fc" id="L104">    LOG.info(</span>
-<span class="fc" id="L105">        &quot;Starting Websocket service on {}:{}&quot;, configuration.getHost(), configuration.getPort());</span>
+<span class="fc" id="L102">    LOG.info(</span>
+<span class="fc" id="L103">        &quot;Starting Websocket service on {}:{}&quot;, configuration.getHost(), configuration.getPort());</span>
 
-<span class="fc" id="L107">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
-<span class="fc" id="L108">    httpServer =</span>
+<span class="fc" id="L105">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L106">    httpServer =</span>
         vertx
-<span class="fc" id="L110">            .createHttpServer(</span>
+<span class="fc" id="L108">            .createHttpServer(</span>
                 new HttpServerOptions()
-<span class="fc" id="L112">                    .setHost(configuration.getHost())</span>
-<span class="fc" id="L113">                    .setPort(configuration.getPort())</span>
-<span class="fc" id="L114">                    .setHandle100ContinueAutomatically(true)</span>
-<span class="fc" id="L115">                    .setCompressionSupported(true)</span>
-<span class="fc" id="L116">                    .addWebSocketSubProtocol(&quot;undefined&quot;)</span>
-<span class="fc" id="L117">                    .setMaxWebSocketFrameSize(configuration.getMaxFrameSize())</span>
-<span class="fc" id="L118">                    .setMaxWebSocketMessageSize(configuration.getMaxFrameSize() * 4)</span>
-<span class="fc" id="L119">                    .setRegisterWebSocketWriteHandlers(true))</span>
-<span class="fc" id="L120">            .webSocketHandler(websocketHandler())</span>
-<span class="fc" id="L121">            .connectionHandler(connectionHandler())</span>
-<span class="fc" id="L122">            .requestHandler(httpHandler())</span>
-<span class="fc" id="L123">            .listen(startHandler(resultFuture));</span>
+<span class="fc" id="L110">                    .setHost(configuration.getHost())</span>
+<span class="fc" id="L111">                    .setPort(configuration.getPort())</span>
+<span class="fc" id="L112">                    .setHandle100ContinueAutomatically(true)</span>
+<span class="fc" id="L113">                    .setCompressionSupported(true)</span>
+<span class="fc" id="L114">                    .addWebSocketSubProtocol(&quot;undefined&quot;)</span>
+<span class="fc" id="L115">                    .setMaxWebSocketFrameSize(configuration.getMaxFrameSize())</span>
+<span class="fc" id="L116">                    .setMaxWebSocketMessageSize(configuration.getMaxFrameSize() * 4)</span>
+<span class="fc" id="L117">                    .setRegisterWebSocketWriteHandlers(true))</span>
+<span class="fc" id="L118">            .webSocketHandler(websocketHandler())</span>
+<span class="fc" id="L119">            .connectionHandler(connectionHandler())</span>
+<span class="fc" id="L120">            .requestHandler(httpHandler())</span>
+<span class="fc" id="L121">            .listen(startHandler(resultFuture));</span>
 
-<span class="fc" id="L125">    return resultFuture;</span>
+<span class="fc" id="L123">    return resultFuture;</span>
   }
 
   private Handler&lt;ServerWebSocket&gt; websocketHandler() {
-<span class="fc" id="L129">    return websocket -&gt; {</span>
-<span class="fc" id="L130">      final SocketAddress socketAddress = websocket.remoteAddress();</span>
-<span class="fc" id="L131">      final String connectionId = websocket.textHandlerID();</span>
-<span class="fc" id="L132">      final String token = getAuthToken(websocket);</span>
-<span class="fc bfc" id="L133" title="All 2 branches covered.">      if (token != null) {</span>
-<span class="fc" id="L134">        LOG.atTrace()</span>
-<span class="fc" id="L135">            .setMessage(&quot;Websocket authentication token {}&quot;)</span>
-<span class="pc" id="L136">            .addArgument(() -&gt; truncToken(token))</span>
-<span class="fc" id="L137">            .log();</span>
+<span class="fc" id="L127">    return websocket -&gt; {</span>
+<span class="fc" id="L128">      final SocketAddress socketAddress = websocket.remoteAddress();</span>
+<span class="fc" id="L129">      final String connectionId = websocket.textHandlerID();</span>
+<span class="fc" id="L130">      final String token = getAuthToken(websocket);</span>
+<span class="fc bfc" id="L131" title="All 2 branches covered.">      if (token != null) {</span>
+<span class="fc" id="L132">        LOG.atTrace()</span>
+<span class="fc" id="L133">            .setMessage(&quot;Websocket authentication token {}&quot;)</span>
+<span class="pc" id="L134">            .addArgument(() -&gt; truncToken(token))</span>
+<span class="fc" id="L135">            .log();</span>
       }
 
-<span class="pc bpc" id="L140" title="1 of 2 branches missed.">      if (!hasAllowedHostnameHeader(Optional.ofNullable(websocket.headers().get(&quot;Host&quot;)))) {</span>
-<span class="nc" id="L141">        websocket.reject(403);</span>
+<span class="pc bpc" id="L138" title="1 of 2 branches missed.">      if (!checkHostInAllowlist(</span>
+<span class="fc" id="L139">          Optional.ofNullable(websocket.authority()).map(HostAndPort::host))) {</span>
+<span class="nc" id="L140">        websocket.reject(403);</span>
       }
 
-<span class="fc" id="L144">      LOG.debug(&quot;Websocket Connected ({})&quot;, socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L143">      LOG.debug(&quot;Websocket Connected ({})&quot;, socketAddressAsString(socketAddress));</span>
 
-<span class="fc" id="L146">      final Handler&lt;Buffer&gt; socketHandler =</span>
+<span class="fc" id="L145">      final Handler&lt;Buffer&gt; socketHandler =</span>
           buffer -&gt; {
-<span class="fc" id="L148">            LOG.debug(</span>
+<span class="fc" id="L147">            LOG.debug(</span>
                 &quot;Received Websocket request (binary frame) {} ({})&quot;,
-<span class="fc" id="L150">                buffer.toString(),</span>
-<span class="fc" id="L151">                socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L149">                buffer.toString(),</span>
+<span class="fc" id="L150">                socketAddressAsString(socketAddress));</span>
 
-<span class="fc bfc" id="L153" title="All 2 branches covered.">            if (authenticationService.isPresent()) {</span>
-<span class="fc" id="L154">              authenticationService</span>
-<span class="fc" id="L155">                  .get()</span>
-<span class="fc" id="L156">                  .authenticate(</span>
-<span class="fc" id="L157">                      token, user -&gt; websocketMessageHandler.handle(websocket, buffer, user));</span>
+<span class="fc bfc" id="L152" title="All 2 branches covered.">            if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L153">              authenticationService</span>
+<span class="fc" id="L154">                  .get()</span>
+<span class="fc" id="L155">                  .authenticate(</span>
+<span class="fc" id="L156">                      token, user -&gt; websocketMessageHandler.handle(websocket, buffer, user));</span>
             } else {
-<span class="fc" id="L159">              websocketMessageHandler.handle(websocket, buffer, Optional.empty());</span>
+<span class="fc" id="L158">              websocketMessageHandler.handle(websocket, buffer, Optional.empty());</span>
             }
-<span class="fc" id="L161">          };</span>
-<span class="fc" id="L162">      websocket.textMessageHandler(text -&gt; socketHandler.handle(Buffer.buffer(text)));</span>
-<span class="fc" id="L163">      websocket.binaryMessageHandler(socketHandler);</span>
+<span class="fc" id="L160">          };</span>
+<span class="fc" id="L161">      websocket.textMessageHandler(text -&gt; socketHandler.handle(Buffer.buffer(text)));</span>
+<span class="fc" id="L162">      websocket.binaryMessageHandler(socketHandler);</span>
 
-<span class="fc" id="L165">      websocket.closeHandler(</span>
+<span class="fc" id="L164">      websocket.closeHandler(</span>
           v -&gt; {
-<span class="fc" id="L167">            LOG.debug(&quot;Websocket Disconnected ({})&quot;, socketAddressAsString(socketAddress));</span>
-<span class="fc" id="L168">            vertx</span>
-<span class="fc" id="L169">                .eventBus()</span>
-<span class="fc" id="L170">                .publish(SubscriptionManager.EVENTBUS_REMOVE_SUBSCRIPTIONS_ADDRESS, connectionId);</span>
-<span class="fc" id="L171">          });</span>
+<span class="fc" id="L166">            LOG.debug(&quot;Websocket Disconnected ({})&quot;, socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L167">            vertx</span>
+<span class="fc" id="L168">                .eventBus()</span>
+<span class="fc" id="L169">                .publish(SubscriptionManager.EVENTBUS_REMOVE_SUBSCRIPTIONS_ADDRESS, connectionId);</span>
+<span class="fc" id="L170">          });</span>
 
-<span class="fc" id="L173">      websocket.exceptionHandler(</span>
+<span class="fc" id="L172">      websocket.exceptionHandler(</span>
           t -&gt; {
-<span class="fc" id="L175">            LOG.debug(</span>
+<span class="fc" id="L174">            LOG.debug(</span>
                 &quot;Unrecoverable error on Websocket: {} ({})&quot;,
-<span class="fc" id="L177">                t.getMessage(),</span>
-<span class="fc" id="L178">                socketAddressAsString(socketAddress));</span>
-<span class="fc" id="L179">            websocket.close();</span>
-<span class="fc" id="L180">          });</span>
-<span class="fc" id="L181">    };</span>
+<span class="fc" id="L176">                t.getMessage(),</span>
+<span class="fc" id="L177">                socketAddressAsString(socketAddress));</span>
+<span class="fc" id="L178">            websocket.close();</span>
+<span class="fc" id="L179">          });</span>
+<span class="fc" id="L180">    };</span>
   }
 
   private Handler&lt;HttpConnection&gt; connectionHandler() {
 
-<span class="fc" id="L186">    return connection -&gt; {</span>
-<span class="fc bfc" id="L187" title="All 2 branches covered.">      if (activeConnectionsCount.get() &gt;= maxActiveConnections) {</span>
+<span class="fc" id="L185">    return connection -&gt; {</span>
+<span class="fc bfc" id="L186" title="All 2 branches covered.">      if (activeConnectionsCount.get() &gt;= maxActiveConnections) {</span>
         // disallow new connections to prevent DoS
-<span class="fc" id="L189">        LOG.warn(</span>
+<span class="fc" id="L188">        LOG.warn(</span>
             &quot;Rejecting new connection from {}. {}/{} max active connections limit reached.&quot;,
-<span class="fc" id="L191">            connection.remoteAddress(),</span>
-<span class="fc" id="L192">            activeConnectionsCount.getAndIncrement(),</span>
-<span class="fc" id="L193">            maxActiveConnections);</span>
-<span class="fc" id="L194">        connection.close();</span>
+<span class="fc" id="L190">            connection.remoteAddress(),</span>
+<span class="fc" id="L191">            activeConnectionsCount.getAndIncrement(),</span>
+<span class="fc" id="L192">            maxActiveConnections);</span>
+<span class="fc" id="L193">        connection.close();</span>
       } else {
-<span class="fc" id="L196">        LOG.debug(</span>
+<span class="fc" id="L195">        LOG.debug(</span>
             &quot;Opened connection from {}. Total of active connections: {}/{}&quot;,
-<span class="fc" id="L198">            connection.remoteAddress(),</span>
-<span class="fc" id="L199">            activeConnectionsCount.incrementAndGet(),</span>
-<span class="fc" id="L200">            maxActiveConnections);</span>
+<span class="fc" id="L197">            connection.remoteAddress(),</span>
+<span class="fc" id="L198">            activeConnectionsCount.incrementAndGet(),</span>
+<span class="fc" id="L199">            maxActiveConnections);</span>
       }
-<span class="fc" id="L202">      connection.closeHandler(</span>
+<span class="fc" id="L201">      connection.closeHandler(</span>
           c -&gt;
-<span class="fc" id="L204">              LOG.debug(</span>
+<span class="fc" id="L203">              LOG.debug(</span>
                   &quot;Connection closed from {}. Total of active connections: {}/{}&quot;,
-<span class="fc" id="L206">                  connection.remoteAddress(),</span>
-<span class="fc" id="L207">                  activeConnectionsCount.decrementAndGet(),</span>
-<span class="fc" id="L208">                  maxActiveConnections));</span>
-<span class="fc" id="L209">    };</span>
+<span class="fc" id="L205">                  connection.remoteAddress(),</span>
+<span class="fc" id="L206">                  activeConnectionsCount.decrementAndGet(),</span>
+<span class="fc" id="L207">                  maxActiveConnections));</span>
+<span class="fc" id="L208">    };</span>
   }
 
   private Handler&lt;HttpServerRequest&gt; httpHandler() {
-<span class="fc" id="L213">    final Router router = Router.router(vertx);</span>
+<span class="fc" id="L212">    final Router router = Router.router(vertx);</span>
 
     // Verify Host header to avoid rebind attack.
-<span class="fc" id="L216">    router.route().handler(checkAllowlistHostHeader());</span>
+<span class="fc" id="L215">    router.route().handler(checkAllowlistHostHeader());</span>
 
-<span class="fc bfc" id="L218" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
-<span class="fc" id="L219">      router.route(&quot;/login&quot;).handler(BodyHandler.create());</span>
-<span class="fc" id="L220">      router</span>
-<span class="fc" id="L221">          .post(&quot;/login&quot;)</span>
-<span class="fc" id="L222">          .produces(APPLICATION_JSON)</span>
-<span class="fc" id="L223">          .handler(authenticationService.get()::handleLogin);</span>
+<span class="fc bfc" id="L217" title="All 2 branches covered.">    if (authenticationService.isPresent()) {</span>
+<span class="fc" id="L218">      router.route(&quot;/login&quot;).handler(BodyHandler.create());</span>
+<span class="fc" id="L219">      router</span>
+<span class="fc" id="L220">          .post(&quot;/login&quot;)</span>
+<span class="fc" id="L221">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L222">          .handler(authenticationService.get()::handleLogin);</span>
     } else {
-<span class="fc" id="L225">      router</span>
-<span class="fc" id="L226">          .post(&quot;/login&quot;)</span>
-<span class="fc" id="L227">          .produces(APPLICATION_JSON)</span>
-<span class="fc" id="L228">          .handler(DefaultAuthenticationService::handleDisabledLogin);</span>
+<span class="fc" id="L224">      router</span>
+<span class="fc" id="L225">          .post(&quot;/login&quot;)</span>
+<span class="fc" id="L226">          .produces(APPLICATION_JSON)</span>
+<span class="fc" id="L227">          .handler(DefaultAuthenticationService::handleDisabledLogin);</span>
     }
-<span class="fc" id="L230">    router.errorHandler(403, new Logging403ErrorHandler());</span>
-<span class="fc" id="L231">    router.route().handler(WebSocketService::handleHttpNotSupported);</span>
-<span class="fc" id="L232">    return router;</span>
+<span class="fc" id="L229">    router.errorHandler(403, new Logging403ErrorHandler());</span>
+<span class="fc" id="L230">    router.route().handler(WebSocketService::handleHttpNotSupported);</span>
+<span class="fc" id="L231">    return router;</span>
   }
 
   private static void handleHttpNotSupported(final RoutingContext http) {
-<span class="fc" id="L236">    final HttpServerResponse response = http.response();</span>
-<span class="pc bpc" id="L237" title="1 of 2 branches missed.">    if (!response.closed()) {</span>
-<span class="fc" id="L238">      response.setStatusCode(400).end(&quot;Websocket endpoint can't handle HTTP requests&quot;);</span>
+<span class="fc" id="L235">    final HttpServerResponse response = http.response();</span>
+<span class="pc bpc" id="L236" title="1 of 2 branches missed.">    if (!response.closed()) {</span>
+<span class="fc" id="L237">      response.setStatusCode(400).end(&quot;Websocket endpoint can't handle HTTP requests&quot;);</span>
     }
-<span class="fc" id="L240">  }</span>
+<span class="fc" id="L239">  }</span>
 
   private Handler&lt;AsyncResult&lt;HttpServer&gt;&gt; startHandler(final CompletableFuture&lt;?&gt; resultFuture) {
-<span class="fc" id="L243">    return res -&gt; {</span>
-<span class="pc bpc" id="L244" title="1 of 2 branches missed.">      if (res.succeeded()) {</span>
+<span class="fc" id="L242">    return res -&gt; {</span>
+<span class="pc bpc" id="L243" title="1 of 2 branches missed.">      if (res.succeeded()) {</span>
 
-<span class="fc" id="L246">        final int actualPort = res.result().actualPort();</span>
-<span class="fc" id="L247">        LOG.info(</span>
+<span class="fc" id="L245">        final int actualPort = res.result().actualPort();</span>
+<span class="fc" id="L246">        LOG.info(</span>
             &quot;Websocket service started and listening on {}:{}&quot;,
-<span class="fc" id="L249">            configuration.getHost(),</span>
-<span class="fc" id="L250">            actualPort);</span>
-<span class="fc" id="L251">        configuration.setPort(actualPort);</span>
-<span class="fc" id="L252">        resultFuture.complete(null);</span>
-<span class="fc" id="L253">      } else {</span>
-<span class="nc" id="L254">        resultFuture.completeExceptionally(res.cause());</span>
+<span class="fc" id="L248">            configuration.getHost(),</span>
+<span class="fc" id="L249">            actualPort);</span>
+<span class="fc" id="L250">        configuration.setPort(actualPort);</span>
+<span class="fc" id="L251">        resultFuture.complete(null);</span>
+<span class="fc" id="L252">      } else {</span>
+<span class="nc" id="L253">        resultFuture.completeExceptionally(res.cause());</span>
       }
-<span class="fc" id="L256">    };</span>
+<span class="fc" id="L255">    };</span>
   }
 
   public CompletableFuture&lt;?&gt; stop() {
-<span class="pc bpc" id="L260" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
-<span class="nc" id="L261">      return CompletableFuture.completedFuture(null);</span>
+<span class="pc bpc" id="L259" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L260">      return CompletableFuture.completedFuture(null);</span>
     }
 
-<span class="fc" id="L264">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
+<span class="fc" id="L263">    final CompletableFuture&lt;?&gt; resultFuture = new CompletableFuture&lt;&gt;();</span>
 
-<span class="fc" id="L266">    httpServer.close(</span>
+<span class="fc" id="L265">    httpServer.close(</span>
         res -&gt; {
-<span class="pc bpc" id="L268" title="1 of 2 branches missed.">          if (res.succeeded()) {</span>
-<span class="fc" id="L269">            httpServer = null;</span>
-<span class="fc" id="L270">            resultFuture.complete(null);</span>
+<span class="pc bpc" id="L267" title="1 of 2 branches missed.">          if (res.succeeded()) {</span>
+<span class="fc" id="L268">            httpServer = null;</span>
+<span class="fc" id="L269">            resultFuture.complete(null);</span>
           } else {
-<span class="nc" id="L272">            resultFuture.completeExceptionally(res.cause());</span>
+<span class="nc" id="L271">            resultFuture.completeExceptionally(res.cause());</span>
           }
-<span class="fc" id="L274">        });</span>
+<span class="fc" id="L273">        });</span>
 
-<span class="fc" id="L276">    return resultFuture;</span>
+<span class="fc" id="L275">    return resultFuture;</span>
   }
 
   public InetSocketAddress socketAddress() {
-<span class="pc bpc" id="L280" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
-<span class="nc" id="L281">      return EMPTY_SOCKET_ADDRESS;</span>
+<span class="pc bpc" id="L279" title="1 of 2 branches missed.">    if (httpServer == null) {</span>
+<span class="nc" id="L280">      return EMPTY_SOCKET_ADDRESS;</span>
     }
-<span class="fc" id="L283">    return new InetSocketAddress(configuration.getHost(), httpServer.actualPort());</span>
+<span class="fc" id="L282">    return new InetSocketAddress(configuration.getHost(), httpServer.actualPort());</span>
   }
 
   private String socketAddressAsString(final SocketAddress socketAddress) {
-<span class="fc" id="L287">    return String.format(&quot;host=%s, port=%d&quot;, socketAddress.host(), socketAddress.port());</span>
+<span class="fc" id="L286">    return String.format(&quot;host=%s, port=%d&quot;, socketAddress.host(), socketAddress.port());</span>
   }
 
   private String getAuthToken(final ServerWebSocket websocket) {
-<span class="fc" id="L291">    return AuthenticationUtils.getJwtTokenFromAuthorizationHeaderValue(</span>
-<span class="fc" id="L292">        websocket.headers().get(&quot;Authorization&quot;));</span>
+<span class="fc" id="L290">    return AuthenticationUtils.getJwtTokenFromAuthorizationHeaderValue(</span>
+<span class="fc" id="L291">        websocket.headers().get(&quot;Authorization&quot;));</span>
   }
 
   private Handler&lt;RoutingContext&gt; checkAllowlistHostHeader() {
-<span class="fc" id="L296">    return event -&gt; {</span>
-<span class="fc bfc" id="L297" title="All 2 branches covered.">      if (hasAllowedHostnameHeader(Optional.ofNullable(event.request().host()))) {</span>
+<span class="fc" id="L295">    return event -&gt; {</span>
+<span class="fc bfc" id="L296" title="All 2 branches covered.">      if (checkHostInAllowlist(</span>
+<span class="fc" id="L297">          Optional.ofNullable(event.request().authority()).map(HostAndPort::host))) {</span>
 <span class="fc" id="L298">        event.next();</span>
       } else {
 <span class="fc" id="L300">        final HttpServerResponse response = event.response();</span>
@@ -309,32 +309,13 @@ public class WebSocketService {
   }
 
   @VisibleForTesting
-  public boolean hasAllowedHostnameHeader(final Optional&lt;String&gt; header) {
+  boolean checkHostInAllowlist(final Optional&lt;String&gt; host) {
 <span class="fc bfc" id="L313" title="All 2 branches covered.">    return configuration.getHostsAllowlist().contains(&quot;*&quot;)</span>
-<span class="fc bfc" id="L314" title="All 2 branches covered.">        || header.map(value -&gt; checkHostInAllowlist(validateHostHeader(value))).orElse(false);</span>
-  }
-
-  private Optional&lt;String&gt; validateHostHeader(final String header) {
-<span class="fc" id="L318">    final Iterable&lt;String&gt; splitHostHeader = Splitter.on(':').split(header);</span>
-<span class="fc" id="L319">    final long hostPieces = stream(splitHostHeader).count();</span>
-<span class="fc bfc" id="L320" title="All 2 branches covered.">    if (hostPieces &gt; 1) {</span>
-      // If the host contains a colon, verify the host is correctly formed - host [ &quot;:&quot; port ]
-<span class="fc bfc" id="L322" title="All 4 branches covered.">      if (hostPieces &gt; 2 || !Iterables.get(splitHostHeader, 1).matches(&quot;\\d{1,5}+&quot;)) {</span>
-<span class="fc" id="L323">        return Optional.empty();</span>
-      }
-    }
-<span class="fc" id="L326">    return Optional.ofNullable(Iterables.get(splitHostHeader, 0));</span>
-  }
-
-  private boolean checkHostInAllowlist(final Optional&lt;String&gt; hostHeader) {
-<span class="fc" id="L330">    return hostHeader</span>
-<span class="fc" id="L331">        .map(</span>
-            header -&gt;
-<span class="fc" id="L333">                configuration.getHostsAllowlist().stream()</span>
-<span class="fc" id="L334">                    .anyMatch(</span>
-                        allowlistEntry -&gt;
-<span class="fc" id="L336">                            allowlistEntry.toLowerCase().equals(header.toLowerCase())))</span>
-<span class="fc" id="L337">        .orElse(false);</span>
+<span class="fc" id="L314">        || host.map(</span>
+                header -&gt;
+<span class="fc" id="L316">                    configuration.getHostsAllowlist().stream()</span>
+<span class="fc" id="L317">                        .anyMatch(allowListEntry -&gt; allowListEntry.equalsIgnoreCase(header)))</span>
+<span class="fc bfc" id="L318" title="All 2 branches covered.">            .orElse(false);</span>
   }
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>

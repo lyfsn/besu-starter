@@ -32,74 +32,96 @@ import java.util.concurrent.ConcurrentHashMap;
   private static final int MAX_TRACKED_SEEN_TRANSACTIONS = 100_000;
 <span class="fc" id="L33">  private final Map&lt;EthPeer, Set&lt;Hash&gt;&gt; seenTransactions = new ConcurrentHashMap&lt;&gt;();</span>
 <span class="fc" id="L34">  private final Map&lt;EthPeer, Set&lt;Transaction&gt;&gt; transactionsToSend = new ConcurrentHashMap&lt;&gt;();</span>
+<span class="fc" id="L35">  private final Map&lt;EthPeer, Set&lt;Transaction&gt;&gt; transactionHashesToSend = new ConcurrentHashMap&lt;&gt;();</span>
 
   public void reset() {
-<span class="fc" id="L37">    seenTransactions.clear();</span>
-<span class="fc" id="L38">    transactionsToSend.clear();</span>
-<span class="fc" id="L39">  }</span>
+<span class="fc" id="L38">    seenTransactions.clear();</span>
+<span class="fc" id="L39">    transactionsToSend.clear();</span>
+<span class="fc" id="L40">    transactionHashesToSend.clear();</span>
+<span class="fc" id="L41">  }</span>
 
   public synchronized void markTransactionsAsSeen(
       final EthPeer peer, final Collection&lt;Transaction&gt; transactions) {
-<span class="fc" id="L43">    markTransactionHashesAsSeen(peer, toHashList(transactions));</span>
-<span class="fc" id="L44">  }</span>
+<span class="fc" id="L45">    markTransactionHashesAsSeen(peer, toHashList(transactions));</span>
+<span class="fc" id="L46">  }</span>
 
   public synchronized void markTransactionHashesAsSeen(
       final EthPeer peer, final Collection&lt;Hash&gt; txHashes) {
-<span class="fc" id="L48">    final Set&lt;Hash&gt; seenTransactionsForPeer = getOrCreateSeenTransactionsForPeer(peer);</span>
-<span class="fc" id="L49">    seenTransactionsForPeer.addAll(txHashes);</span>
-<span class="fc" id="L50">  }</span>
+<span class="fc" id="L50">    final Set&lt;Hash&gt; seenTransactionsForPeer = getOrCreateSeenTransactionsForPeer(peer);</span>
+<span class="fc" id="L51">    seenTransactionsForPeer.addAll(txHashes);</span>
+<span class="fc" id="L52">  }</span>
 
   public synchronized void addToPeerSendQueue(final EthPeer peer, final Transaction transaction) {
-<span class="fc bfc" id="L53" title="All 2 branches covered.">    if (!hasPeerSeenTransaction(peer, transaction)) {</span>
-<span class="fc" id="L54">      transactionsToSend.computeIfAbsent(peer, key -&gt; createTransactionsSet()).add(transaction);</span>
+<span class="fc bfc" id="L55" title="All 2 branches covered.">    if (!hasPeerSeenTransaction(peer, transaction)) {</span>
+<span class="fc" id="L56">      transactionsToSend.computeIfAbsent(peer, key -&gt; createTransactionsSet()).add(transaction);</span>
     }
-<span class="fc" id="L56">  }</span>
+<span class="fc" id="L58">  }</span>
+
+  public synchronized void addToPeerHashSendQueue(
+      final EthPeer peer, final Transaction transaction) {
+<span class="fc bfc" id="L62" title="All 2 branches covered.">    if (!hasPeerSeenTransaction(peer, transaction)) {</span>
+<span class="fc" id="L63">      transactionHashesToSend</span>
+<span class="fc" id="L64">          .computeIfAbsent(peer, key -&gt; createTransactionsSet())</span>
+<span class="fc" id="L65">          .add(transaction);</span>
+    }
+<span class="fc" id="L67">  }</span>
 
   public Iterable&lt;EthPeer&gt; getEthPeersWithUnsentTransactions() {
-<span class="fc" id="L59">    return transactionsToSend.keySet();</span>
+<span class="fc" id="L70">    return transactionsToSend.keySet();</span>
   }
 
   public synchronized Set&lt;Transaction&gt; claimTransactionsToSendToPeer(final EthPeer peer) {
-<span class="fc" id="L63">    final Set&lt;Transaction&gt; transactionsToSend = this.transactionsToSend.remove(peer);</span>
-<span class="fc bfc" id="L64" title="All 2 branches covered.">    if (transactionsToSend != null) {</span>
-<span class="fc" id="L65">      markTransactionsAsSeen(peer, transactionsToSend);</span>
-<span class="fc" id="L66">      return transactionsToSend;</span>
+<span class="fc" id="L74">    final Set&lt;Transaction&gt; transactionsToSend = this.transactionsToSend.remove(peer);</span>
+<span class="fc bfc" id="L75" title="All 2 branches covered.">    if (transactionsToSend != null) {</span>
+<span class="fc" id="L76">      markTransactionsAsSeen(peer, transactionsToSend);</span>
+<span class="fc" id="L77">      return transactionsToSend;</span>
     } else {
-<span class="fc" id="L68">      return emptySet();</span>
+<span class="fc" id="L79">      return emptySet();</span>
+    }
+  }
+
+  public synchronized Set&lt;Transaction&gt; claimTransactionHashesToSendToPeer(final EthPeer peer) {
+<span class="fc" id="L84">    final Set&lt;Transaction&gt; transactionHashesToSend = this.transactionHashesToSend.remove(peer);</span>
+<span class="fc bfc" id="L85" title="All 2 branches covered.">    if (transactionHashesToSend != null) {</span>
+<span class="fc" id="L86">      markTransactionHashesAsSeen(peer, toHashList(transactionHashesToSend));</span>
+<span class="fc" id="L87">      return transactionHashesToSend;</span>
+    } else {
+<span class="fc" id="L89">      return emptySet();</span>
     }
   }
 
   public boolean hasSeenTransaction(final Hash txHash) {
-<span class="fc" id="L73">    return seenTransactions.values().stream().anyMatch(seen -&gt; seen.contains(txHash));</span>
+<span class="fc" id="L94">    return seenTransactions.values().stream().anyMatch(seen -&gt; seen.contains(txHash));</span>
   }
 
   private Set&lt;Hash&gt; getOrCreateSeenTransactionsForPeer(final EthPeer peer) {
-<span class="fc" id="L77">    return seenTransactions.computeIfAbsent(peer, key -&gt; createTransactionsSet());</span>
+<span class="fc" id="L98">    return seenTransactions.computeIfAbsent(peer, key -&gt; createTransactionsSet());</span>
   }
 
   boolean hasPeerSeenTransaction(final EthPeer peer, final Transaction transaction) {
-<span class="fc" id="L81">    return hasPeerSeenTransaction(peer, transaction.getHash());</span>
+<span class="fc" id="L102">    return hasPeerSeenTransaction(peer, transaction.getHash());</span>
   }
 
   boolean hasPeerSeenTransaction(final EthPeer peer, final Hash txHash) {
-<span class="fc" id="L85">    final Set&lt;Hash&gt; seenTransactionsForPeer = seenTransactions.get(peer);</span>
-<span class="fc bfc" id="L86" title="All 4 branches covered.">    return seenTransactionsForPeer != null &amp;&amp; seenTransactionsForPeer.contains(txHash);</span>
+<span class="fc" id="L106">    final Set&lt;Hash&gt; seenTransactionsForPeer = seenTransactions.get(peer);</span>
+<span class="fc bfc" id="L107" title="All 4 branches covered.">    return seenTransactionsForPeer != null &amp;&amp; seenTransactionsForPeer.contains(txHash);</span>
   }
 
   private &lt;T&gt; Set&lt;T&gt; createTransactionsSet() {
-<span class="fc" id="L90">    return Collections.newSetFromMap(</span>
-<span class="fc" id="L91">        new LinkedHashMap&lt;&gt;(1 &lt;&lt; 4, 0.75f, true) {</span>
+<span class="fc" id="L111">    return Collections.newSetFromMap(</span>
+<span class="fc" id="L112">        new LinkedHashMap&lt;&gt;(1 &lt;&lt; 4, 0.75f, true) {</span>
           @Override
           protected boolean removeEldestEntry(final Map.Entry&lt;T, Boolean&gt; eldest) {
-<span class="pc bpc" id="L94" title="1 of 2 branches missed.">            return size() &gt; MAX_TRACKED_SEEN_TRANSACTIONS;</span>
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">            return size() &gt; MAX_TRACKED_SEEN_TRANSACTIONS;</span>
           }
         });
   }
 
   @Override
   public void onDisconnect(final EthPeer peer) {
-<span class="fc" id="L101">    seenTransactions.remove(peer);</span>
-<span class="fc" id="L102">    transactionsToSend.remove(peer);</span>
-<span class="fc" id="L103">  }</span>
+<span class="fc" id="L122">    seenTransactions.remove(peer);</span>
+<span class="fc" id="L123">    transactionsToSend.remove(peer);</span>
+<span class="fc" id="L124">    transactionHashesToSend.remove(peer);</span>
+<span class="fc" id="L125">  }</span>
 }
 </pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.8.202204050719</span></div></body></html>
