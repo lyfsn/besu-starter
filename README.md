@@ -68,3 +68,20 @@ Tue Mar 26 10:47:51 AM UTC 2024
 PR1: https://lyfsn.github.io/besu-starter/pr1
 
 PR2: https://lyfsn.github.io/besu-starter/pr2
+
+
+----
+
+g-1.jfr
+--genesis-state-hash-cache-enabled=true && first
+Tue Apr 23 03:44:23 AM UTC 2024
+2024-04-23 04:00:23.235+00:00 | vert.x-eventloop-thread-1 
+14 min
+658 GB memory allocted
+
+g-2.jfr
+--genesis-state-hash-cache-enabled=true && second
+Tue Apr 23 04:01:47 AM UTC 2024
+2024-04-23 04:02:17.515+00:00 | vert.x-eventloop-thread-1 | INFO
+30 s
+2.25 GB memory allocted
